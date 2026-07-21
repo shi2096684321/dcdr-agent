@@ -1,0 +1,10 @@
+# 开发环境配置覆盖
+spring:
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    com.example.agent: DEBUG
+    org.springframework.web: DEBUG
+    org.springframework.ai: DEBUG

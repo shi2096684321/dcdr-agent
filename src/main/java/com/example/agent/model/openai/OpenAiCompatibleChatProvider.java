@@ -1,0 +1,192 @@
+package com.example.agent.model.openai;
+
+import com.example.agent.agent.memory.Message;
+import com.example.agent.common.constant.ModelType;
+import com.example.agent.dto.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.swagger.v3.core.util.Json;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
+
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * OpenAI 兼容格式对话模型 Provider 抽象基类。
+ * OpenAI / 智谱 / 通义(兼容模式) 均使用此格式。
+ */
+@Slf4j
+public abstract class OpenAiCompatibleChatProvider implements com.example.agent.model.provider.ChatModelProvider {
+
+    protected final WebClient webClient;
+    protected final ObjectMapper mapper = new ObjectMapper();
+    protected final String name;
+    protected final String label;
+    protected final String provider;
+    protected final String model;
+    protected final Double temperature;
+    protected final Integer maxTokens;
+    protected final Set<String> capabilities;
+
+    protected OpenAiCompatibleChatProvider(String baseUrl, String apiKey, String name,
+                                           String label, String provider, String model,
+                                           Double temperature, Integer maxTokens, List<String> capabilities) {
+        this.webClient = WebClient.builder().baseUrl(baseUrl)
+                .defaultHeader("Authorization", "Bearer " + apiKey)
+                .defaultHeader("Content-Type", "application/json").build();
+        this.name = name;
+        this.label = label;
+        this.provider = provider;
+        this.model = model;
+        this.temperature = temperature;
+        this.maxTokens = maxTokens;
+        this.capabilities = capabilities != null ? Set.copyOf(capabilities) : Set.of();
+    }
+
+    protected String getChatPath() {
+        return "/v1/chat/completions";
+    }
+
+    @Override
+    public ModelType getType() {
+        return ModelType.CHAT;
+    }
+
+    @Override
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public String getLabel() {
+        return label;
+    }
+
+    @Override
+    public String getProvider() {
+        return provider;
+    }
+
+    @Override
+    public boolean supportsVision() {
+        return capabilities.contains("vision");
+    }
+
+    @Override
+    public boolean supportsFunctionCalling() {
+        return capabilities.contains("function_calling");
+    }
+
+    /**
+     * 构建请求体
+     */
+    protected String buildRequestBody(ChatRequest request, List<Message> history, boolean stream) {
+        ObjectNode body = mapper.createObjectNode();
+        body.put("model", model);
+        body.put("stream", stream);
+        if (temperature != null)
+            body.put("temperature", request.getTemperature() != null ? request.getTemperature() : temperature);
+        if (maxTokens != null) body.put("max_tokens", maxTokens);
+
+        ArrayNode messages = body.putArray("messages");
+        if (history != null) {
+            for (Message msg : history) {
+                if (msg.getContent() == null || msg.getContent().isBlank()) continue;
+                messages.addObject().put("role", msg.getRole()).put("content", msg.getContent());
+            }
+        }
+        // 当前用户消息
+        ObjectNode userMsg = messages.addObject();
+        userMsg.put("role", "user");
+        if (request.getImages() != null && !request.getImages().isEmpty() && supportsVision()) {
+            ArrayNode content = userMsg.putArray("content");
+            content.addObject().put("type", "text").put("text", request.getMessage());
+            for (String img : request.getImages()) {
+                content.addObject().put("type", "image_url")
+                        .putObject("image_url").put("url", img);
+            }
+        } else {
+            userMsg.put("content", request.getMessage());
+        }
+        return body.toString();
+    }
+
+    @Override
+    public ChatResponse invoke(ChatRequest request) {
+        String json = buildRequestBody(request, null, false);
+        try {
+            String resp = webClient.post().uri(getChatPath()).bodyValue(json)
+                    .retrieve().bodyToMono(String.class).block();
+            JsonNode root = mapper.readTree(resp);
+            String content = root.path("choices").path(0).path("message").path("content").asText();
+            ChatResponse response = new ChatResponse();
+            response.setContent(content);
+            response.setModel(model);
+            return response;
+        } catch (Exception e) {
+            log.error("{} 同步调用失败", name, e);
+            ChatResponse resp = new ChatResponse();
+            resp.setContent("调用失败: " + e.getMessage());
+            resp.setModel(model);
+            return resp;
+        }
+    }
+
+    @Override
+    public Flux<ChatChunk> stream(ChatRequest request) {
+        String json = buildRequestBody(request, null, true);
+        AtomicLong rawLines = new AtomicLong();
+        AtomicLong dataLines = new AtomicLong();
+        AtomicLong produced = new AtomicLong();
+        log.info("{} 发起流式请求, body={}", name, json);
+        return webClient.post().uri(getChatPath()).bodyValue(json)
+                .retrieve().bodyToFlux(String.class)
+                .doOnNext(line -> {
+                    long n = rawLines.incrementAndGet();
+                    log.debug("[RAW] 收到字符串行({}): {}", n, line);
+                })
+                .map(line -> {
+                    // 兼容两种格式: 标准 SSE 带 "data:" 前缀, 或裸 JSON 行(无前缀)
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith("data:")) {
+                        trimmed = trimmed.substring(5).trim();
+                    }
+                    return trimmed;
+                })
+                .filter(data -> !data.isEmpty() && !"[DONE]".equals(data))
+                .doOnNext(d -> dataLines.incrementAndGet())
+                .mapNotNull(data -> {
+                    try {
+                        JsonNode root = mapper.readTree(data);
+                        JsonNode delta = root.path("choices").path(0).path("delta").path("content");
+                        JsonNode reasoningContent = root.path("choices").path(0).path("delta").path("reasoning_content");
+                        // reasoning_content(思维链) 与 content(正文) 是模型返回的两个互斥阶段,
+                        // 每个 chunk 只携带当前实际存在的那个字段, 另一个保持为 null 不下发
+                        String contentText = (!delta.isMissingNode() && !delta.isNull()) ? delta.asText() : null;
+                        String reasoningText = (!reasoningContent.isMissingNode() && !reasoningContent.isNull()) ? reasoningContent.asText() : null;
+                        boolean hasContent = contentText != null && !contentText.isEmpty();
+                        boolean hasReasoning = reasoningText != null && !reasoningText.isEmpty();
+                        if (hasContent || hasReasoning) {
+                            produced.incrementAndGet();
+                            log.debug("[CONTENT] 解析到推理内容: {}，[CONTENT] 解析到文本块: {}", reasoningText, contentText);
+                            return ChatChunk.chunk(hasContent ? contentText : null, hasReasoning ? reasoningText : null);
+                        }
+                        return null;
+                    } catch (Exception e) {
+                        log.warn("解析SSE失败: {}", data);
+                        return null;
+                    }
+                })
+                .doOnComplete(() -> log.info("{} 流式接收完成: 原始字符串行={}, 有效data行={}, 生成文本块={}",
+                        name, rawLines.get(), dataLines.get(), produced.get()))
+                .onErrorResume(e -> {
+                    log.error("{} 流式调用失败", name, e);
+                    return Flux.just(ChatChunk.error("流式调用失败: " + e.getMessage(), "MODEL_ERROR"));
+                });
+    }
+}

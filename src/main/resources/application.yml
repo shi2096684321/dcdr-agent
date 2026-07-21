@@ -1,0 +1,143 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: java-agent
+
+  # H2 数据库配置(开发期)
+  datasource:
+    url: jdbc:h2:file:./data/database/agent;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true
+      path: /h2-console
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+
+  # WebFlux 配置
+  codec:
+    max-in-memory-size: 16MB
+
+# ===== Agent 核心配置 =====
+agent:
+  name: "JavaAgent"
+
+  # 记忆配置
+  memory:
+    max-messages: 20
+    storage: memory
+
+  # 文件存储配置
+  storage:
+    base-dir: ./data
+    image-dir: ./data/images
+    video-dir: ./data/videos
+    upload-dir: ./data/uploads
+
+  # 模型配置
+  models:
+    default-chat: "openai-chat"
+
+    chat:
+      - name: "openai-chat"
+        enabled: true
+        provider: "openai"
+        api-key: ${OPENAI_API_KEY:sk-demo-key}
+        base-url: "https://api.openai.com"
+        model: "gpt-4o"
+        temperature: 0.7
+        max-tokens: 2000
+        capabilities:
+          - vision
+          - function_calling
+
+      - name: "zhipu-chat"
+        enabled: true
+        provider: "zhipu"
+        api-key: ${ZHIPU_API_KEY:demo-key}
+        base-url: "https://open.bigmodel.cn/api/paas/v4"
+        model: "glm-4-plus"
+        temperature: 0.7
+        capabilities:
+          - function_calling
+
+      - name: "qwen-chat"
+        enabled: false
+        provider: "qwen"
+        api-key: ${DASHSCOPE_API_KEY:demo-key}
+        base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        model: "qwen-max"
+
+      - name: "deepseek-chat"
+        enabled: true
+        provider: "deepseek"
+        api-key: "sk-b8bb098d0a3a45508f86d7b5c8cd1b34"
+        base-url: "https://api.deepseek.com"
+        model: "deepseek-v4-flash"
+
+    image:
+      - name: "openai-image"
+        enabled: true
+        provider: "openai"
+        api-key: ${OPENAI_API_KEY:sk-demo-key}
+        base-url: "https://api.openai.com"
+        model: "dall-e-3"
+        size: "1024x1024"
+
+      - name: "zhipu-image"
+        enabled: true
+        provider: "zhipu"
+        api-key: ${ZHIPU_API_KEY:demo-key}
+        base-url: "https://open.bigmodel.cn/api/paas/v4"
+        model: "cogview-3"
+
+    video:
+      - name: "kling-video"
+        enabled: false
+        provider: "kuaishou"
+        api-key: ${KLING_API_KEY:demo-key}
+        base-url: "https://api.klingai.com"
+        model: "kling-v1"
+
+# 工具配置
+agent-tools:
+  weather:
+    enabled: true
+    api-key: ${WEATHER_API_KEY:demo-key}
+    base-url: "https://restapi.amap.com/v3/weather/weatherInfo"
+  calculator:
+    enabled: true
+  time:
+    enabled: true
+
+# SpringDoc OpenAPI 配置
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+    enabled: true
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+    tags-sorter: alpha
+    operations-sorter: method
+    doc-expansion: none
+  packages-to-scan: com.example.agent.controller
+  default-flat-param-object: true
+
+# 日志
+logging:
+  level:
+    com.example.agent: DEBUG
+    org.springframework.ai: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

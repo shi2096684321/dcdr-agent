@@ -1,0 +1,39 @@
+package com.example.agent.dto;
+
+import io.swagger.v3.oas.annotations.media.Schema;
+import lombok.Data;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * 对话请求
+ */
+@Data
+@Schema(description = "对话请求")
+public class ChatRequest {
+
+    /** 会话ID */
+    @Schema(description = "会话 ID", example = "a1b2c3d4", requiredMode = Schema.RequiredMode.REQUIRED)
+    private String sessionId;
+
+    /** 用户消息内容 */
+    @Schema(description = "用户消息内容", example = "你好", requiredMode = Schema.RequiredMode.REQUIRED)
+    private String message;
+
+    /** 指定模型(可选,不传则用会话默认或系统默认) */
+    @Schema(description = "指定模型名称（可选，不传则用会话默认或系统默认）", example = "openai-chat")
+    private String model;
+
+    /** 图片URL列表(多模态输入,可选) */
+    @Schema(description = "图片 URL 列表（多模态输入，可选）")
+    private List<String> images = new ArrayList<>();
+
+    /** 温度参数(可选) */
+    @Schema(description = "温度参数（可选）", example = "0.7")
+    private Double temperature;
+
+    /** 是否流式(默认true) */
+    @Schema(description = "是否流式输出（默认 true）", defaultValue = "true")
+    private boolean stream = true;
+}

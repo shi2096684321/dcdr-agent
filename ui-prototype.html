@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Java AI Agent - 双模式 UI 原型</title>
+    <link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <script src="https://unpkg.com/element-plus"></script>
+    <script src="https://unpkg.com/@element-plus/icons-vue"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f0f2f5; height: 100vh; overflow: hidden; }
+        #app { height: 100vh; display: flex; flex-direction: column; }
+
+        /* ===== 通用 ===== */
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .gradient-green { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+        .gradient-orange { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+
+        /* ===== 顶部导航 ===== */
+        .header { height: 56px; background: #fff; border-bottom: 1px solid #e8e8e8; display: flex; align-items: center; padding: 0 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); z-index: 100; flex-shrink: 0; }
+        .header-logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; color: #303133; }
+        .header-logo .logo-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 18px; }
+        .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+
+        /* 模式切换标签 */
+        .mode-switch { display: flex; background: #f5f7fa; border-radius: 8px; padding: 3px; }
+        .mode-tab { padding: 5px 16px; font-size: 13px; border-radius: 6px; cursor: pointer; color: #606266; transition: all 0.2s; display: flex; align-items: center; gap: 5px; user-select: none; }
+        .mode-tab.active { background: #fff; color: #667eea; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+
+        /* 模型选择器 */
+        .model-selector { min-width: 220px; }
+
+        /* 模型类型徽章 */
+        .model-badge { font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-left: 6px; }
+        .badge-chat { background: #e6f7ff; color: #1890ff; }
+        .badge-image { background: #fff0f6; color: #eb2f96; }
+        .badge-video { background: #f6ffed; color: #52c41a; }
+        .badge-audio { background: #fff7e6; color: #fa8c16; }
+
+        /* ===== 主体容器 ===== */
+        .main-container { flex: 1; display: flex; overflow: hidden; }
+
+        /* ===== 左侧栏（通用） ===== */
+        .sidebar { width: 260px; background: #fff; border-right: 1px solid #e8e8e8; display: flex; flex-direction: column; flex-shrink: 0; }
+        .sidebar-header { padding: 16px; border-bottom: 1px solid #f0f0f0; }
+        .new-btn { width: 100%; height: 40px; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; transition: opacity 0.2s; }
+        .new-btn:hover { opacity: 0.9; }
+        .list-area { flex: 1; overflow-y: auto; padding: 8px; }
+        .list-item { padding: 10px 12px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; display: flex; align-items: center; gap: 10px; transition: all 0.2s; }
+        .list-item:hover { background: #f5f7fa; }
+        .list-item.active { background: #f0f4ff; color: #667eea; font-weight: 500; }
+        .item-icon { font-size: 16px; color: #909399; flex-shrink: 0; }
+        .list-item.active .item-icon { color: #667eea; }
+        .item-title { flex: 1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .item-meta { font-size: 11px; color: #c0c4cc; }
+        .sidebar-footer { padding: 12px 16px; border-top: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #606266; }
+
+        /* ============================================================
+           对话模式样式
+           ============================================================ */
+        .chat-area { flex: 1; display: flex; flex-direction: column; background: #f7f8fa; min-width: 0; }
+        .chat-header { padding: 12px 24px; background: #fff; border-bottom: 1px solid #f0f0f0; display: flex; align-items: center; gap: 8px; }
+        .chat-title { font-size: 15px; font-weight: 500; color: #303133; }
+        .chat-actions { margin-left: auto; display: flex; gap: 8px; }
+
+        .message-list { flex: 1; overflow-y: auto; padding: 24px 0; }
+        .message-list::-webkit-scrollbar { width: 6px; }
+        .message-list::-webkit-scrollbar-thumb { background: #dcdfe6; border-radius: 3px; }
+        .message-wrapper { max-width: 820px; margin: 0 auto; padding: 0 24px; }
+        .message-item { margin-bottom: 24px; display: flex; gap: 12px; }
+        .msg-avatar { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; color: #fff; }
+        .msg-content { flex: 1; min-width: 0; }
+        .msg-role { font-size: 12px; color: #909399; margin-bottom: 4px; }
+        .msg-bubble { padding: 12px 16px; border-radius: 8px; font-size: 14px; line-height: 1.7; word-break: break-word; background: #fff; border: 1px solid #e8e8e8; }
+        .msg-bubble h1,.msg-bubble h2,.msg-bubble h3 { margin: 12px 0 8px; }
+        .msg-bubble p { margin: 8px 0; }
+        .msg-bubble ul,.msg-bubble ol { padding-left: 20px; margin: 8px 0; }
+        .msg-bubble code { background: #f5f7fa; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #e96900; font-family: 'Consolas', monospace; }
+        .msg-bubble pre { background: #1e1e1e; color: #d4d4d4; padding: 14px; border-radius: 8px; overflow-x: auto; margin: 10px 0; font-size: 13px; }
+        .msg-bubble pre code { background: none; color: inherit; padding: 0; }
+        .msg-bubble table { border-collapse: collapse; margin: 10px 0; width: 100%; }
+        .msg-bubble th,.msg-bubble td { border: 1px solid #e8e8e8; padding: 8px 12px; text-align: left; }
+        .msg-bubble th { background: #f5f7fa; font-weight: 600; }
+        .msg-image { max-width: 320px; border-radius: 8px; cursor: pointer; transition: transform 0.2s; }
+        .msg-image:hover { transform: scale(1.02); }
+
+        /* 输入区 */
+        .input-area { padding: 16px 24px 20px; background: #f7f8fa; }
+        .input-wrapper { max-width: 820px; margin: 0 auto; background: #fff; border: 1px solid #dcdfe6; border-radius: 12px; padding: 12px 16px; transition: border-color 0.2s; }
+        .input-wrapper:focus-within { border-color: #667eea; box-shadow: 0 0 0 3px rgba(102,126,234,0.1); }
+        .input-toolbar { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+        .toolbar-btn { width: 32px; height: 32px; border: none; background: none; cursor: pointer; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: #606266; font-size: 16px; transition: background 0.2s; }
+        .toolbar-btn:hover { background: #f5f7fa; }
+        .input-textarea { width: 100%; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; min-height: 24px; max-height: 160px; font-family: inherit; color: #303133; }
+        .input-textarea::placeholder { color: #c0c4cc; }
+        .input-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+        .input-hint { font-size: 12px; color: #c0c4cc; }
+        .send-btn { width: 36px; height: 36px; border: none; border-radius: 8px; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+        .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* 欢迎页 */
+        .welcome-screen { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; }
+        .welcome-logo { width: 72px; height: 72px; border-radius: 16px; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; margin-bottom: 20px; }
+        .welcome-title { font-size: 26px; font-weight: 600; color: #303133; margin-bottom: 8px; }
+        .welcome-subtitle { font-size: 14px; color: #909399; margin-bottom: 32px; }
+        .welcome-suggestions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; max-width: 600px; width: 100%; }
+        .suggestion-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 16px; cursor: pointer; transition: all 0.2s; }
+        .suggestion-card:hover { border-color: #667eea; box-shadow: 0 2px 12px rgba(102,126,234,0.15); }
+        .suggestion-icon { font-size: 20px; margin-bottom: 8px; }
+        .suggestion-title { font-size: 14px; font-weight: 500; color: #303133; margin-bottom: 4px; }
+        .suggestion-desc { font-size: 12px; color: #909399; }
+
+        /* ============================================================
+           创作模式样式 (参考 Banana Pro Studio — 左控右显)
+           ============================================================ */
+
+        /* 创作区整体 */
+        .creative-area { flex: 1; display: flex; overflow: hidden; min-width: 0; background: #1a1a1a; }
+
+        /* 左侧参数控制面板 */
+        .creative-panel {
+            width: 360px;
+            background: #1e1e1e;
+            border-right: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            flex-shrink: 0;
+            color: #e0e0e0;
+        }
+        .creative-panel::-webkit-scrollbar { width: 4px; }
+        .creative-panel::-webkit-scrollbar-thumb { background: #444; border-radius: 2px; }
+
+        /* 面板头部：模式切换 + 模型选择 */
+        .panel-top-section { padding: 20px 20px 0; }
+        .creative-mode-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+        .creative-mode-tab {
+            flex: 1; padding: 8px 0; text-align: center; font-size: 13px; border-radius: 8px;
+            cursor: pointer; transition: all 0.2s; border: 1px solid transparent;
+            background: #2a2a2a; color: #888; display: flex; align-items: center; justify-content: center; gap: 6px;
+            user-select: none;
+        }
+        .creative-mode-tab.active { background: rgba(102,126,234,0.15); color: #667eea; border-color: #667eea; }
+        .creative-mode-tab:not(.active):hover { background: #333; color: #bbb; }
+
+        /* 模型选择卡片 */
+        .model-select-card {
+            background: #252525; border-radius: 10px; padding: 12px 14px; cursor: pointer;
+            display: flex; align-items: center; gap: 10px; transition: all 0.2s; border: 1px solid transparent;
+        }
+        .model-select-card:hover { border-color: #555; }
+        .model-avatar { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+        .model-info { flex: 1; min-width: 0; }
+        .model-name { font-size: 14px; font-weight: 600; color: #eee; }
+        .model-desc { font-size: 11px; color: #777; margin-top: 2px; }
+        .model-badge-sm { font-size: 10px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+
+        /* 分组标题 */
+        .section-title {
+            font-size: 12px; color: #888; font-weight: 500; margin: 20px 0 10px 20px;
+            display: flex; align-items: center; gap: 6px; letter-spacing: 0.5px;
+        }
+        .section-title .icon { font-size: 14px; }
+
+        /* 参考图上传区 */
+        .refer-upload-zone {
+            margin: 0 20px; background: #252525; border-radius: 10px; border: 1px dashed #444;
+            padding: 20px; text-align: center; cursor: pointer; transition: all 0.2s; position: relative;
+        }
+        .refer-upload-zone:hover { border-color: #667eea; background: rgba(102,126,234,0.05); }
+        .refer-upload-zone.has-image { padding: 8px; border-style: solid; border-color: #555; }
+        .upload-placeholder { color: #666; }
+        .upload-placeholder .upload-icon-big { font-size: 28px; margin-bottom: 6px; }
+        .upload-placeholder .upload-text { font-size: 13px; color: #999; }
+        .upload-placeholder .upload-sub { font-size: 11px; color: #666; margin-top: 4px; }
+        .refer-preview-img { width: 100%; border-radius: 8px; display: block; }
+        .refer-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; }
+        .refer-filename { font-size: 12px; color: #aaa; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; margin-right: 8px; }
+
+        /* Prompt 输入区 */
+        .prompt-section { margin: 0 20px; }
+        .prompt-textarea-wrap { position: relative; }
+        .prompt-textarea {
+            width: 100%; min-height: 120px; background: #252525; border: 1px solid #333; border-radius: 10px;
+            padding: 12px 14px; color: #e0e0e0; font-size: 14px; line-height: 1.6; resize: vertical;
+            outline: none; font-family: inherit; transition: border-color 0.2s;
+        }
+        .prompt-textarea:focus { border-color: #667eea; }
+        .prompt-textarea::placeholder { color: #555; }
+        .prompt-counter { position: absolute; right: 10px; bottom: 8px; font-size: 11px; color: #555; }
+        .prompt-options { display: flex; gap: 8px; margin-top: 8px; }
+        .prompt-opt-btn {
+            padding: 4px 10px; font-size: 11px; border-radius: 6px; cursor: pointer;
+            background: #2a2a2a; color: #888; border: 1px solid transparent; transition: all 0.2s;
+        }
+        .prompt-opt-btn:hover { background: #333; color: #bbb; }
+
+        /* 参数选项行 */
+        .param-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 20px; }
+        .param-label { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #bbb; }
+        .param-label .label-icon { font-size: 15px; color: #777; }
+        .param-value { display: flex; align-items: center; gap: 4px; }
+
+        /* 自定义下拉框风格 */
+        .custom-select {
+            background: #252525; border: 1px solid #333; border-radius: 8px; padding: 6px 12px;
+            color: #ddd; font-size: 13px; outline: none; cursor: pointer; appearance: none;
+            min-width: 90px; text-align: center; transition: border-color 0.2s;
+        }
+        .custom-select:focus { border-color: #667eea; }
+        .custom-select option { background: #2a2a2a; color: #ddd; }
+
+        /* Toggle 开关 */
+        .toggle-switch { position: relative; width: 40px; height: 22px; cursor: pointer; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0; border-radius: 11px;
+            background: #444; transition: 0.3s;
+        }
+        .toggle-slider::before {
+            content: ''; position: absolute; width: 17px; height: 17px; left: 2px; bottom: 2px;
+            background: #ccc; border-radius: 50%; transition: 0.3s;
+        }
+        .toggle-switch input:checked + .toggle-slider { background: #43e97b; }
+        .toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); background: #fff; }
+
+        /* 底部生成按钮区 */
+        .generate-section {
+            margin: 20px; padding: 16px 0; border-top: 1px solid #333;
+        }
+        .gen-cost-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: 12px; color: #777; }
+        .cost-info { display: flex; align-items: center; gap: 4px; }
+        .cost-num { color: #f0c040; font-weight: 600; }
+        .generate-btn {
+            width: 100%; height: 46px; border: none; border-radius: 10px; font-size: 15px;
+            font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+            color: #fff; transition: all 0.2s; position: relative; overflow: hidden;
+        }
+        .generate-btn:active { transform: scale(0.98); }
+        .generate-btn.loading { pointer-events: none; opacity: 0.85; }
+        .gen-spinner {
+            width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* 右侧结果展示区 */
+        .preview-area {
+            flex: 1; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; position: relative; background: #111; min-width: 0;
+        }
+
+        /* 结果图片/视频 */
+        .result-media {
+            max-width: 85%; max-height: 80%; border-radius: 12px;
+            box-shadow: 0 8px 40px rgba(0,0,0,0.5);
+            object-fit: contain;
+        }
+        .result-img { max-height: 75vh; }
+
+        /* 空状态 */
+        .preview-empty { text-align: center; color: #555; }
+        .preview-empty-icon { font-size: 64px; margin-bottom: 16px; opacity: 0.4; }
+        .preview-empty-text { font-size: 16px; color: #666; margin-bottom: 6px; }
+        .preview-empty-hint { font-size: 13px; color: #444; }
+
+        /* 结果操作栏 */
+        .result-actions {
+            position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 10px; background: rgba(30,30,30,0.9);
+            backdrop-filter: blur(8px); border-radius: 12px; padding: 8px 16px;
+            border: 1px solid rgba(255,255,255,0.06);
+        }
+        .result-action-btn {
+            padding: 8px 18px; border: none; border-radius: 8px; font-size: 13px;
+            cursor: pointer; font-weight: 500; display: flex; align-items: center; gap: 6px;
+            transition: all 0.2s; color: #ddd;
+        }
+        .result-action-btn.primary {
+            background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); color: #000;
+        }
+        .result-action-btn.secondary {
+            background: rgba(255,255,255,0.08); color: #bbb;
+        }
+        .result-action-btn.secondary:hover { background: rgba(255,255,255,0.15); }
+
+        /* 顶部模式指示（预览区上方） */
+        .preview-toolbar {
+            position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 8px; z-index: 5;
+        }
+        .view-toggle {
+            padding: 6px 16px; border-radius: 8px; font-size: 12px; cursor: pointer;
+            background: rgba(30,30,30,0.8); backdrop-filter: blur(8px);
+            color: #888; border: 1px solid rgba(255,255,255,0.08); transition: all 0.2s;
+            user-select: none;
+        }
+        .view-toggle.active { color: #43e97b; border-color: rgba(67,233,123,0.3); }
+
+        /* 图片预览 Dialog */
+        .preview-dialog .el-dialog__body { padding: 16px; text-align: center; }
+
+        /* 历史记录小面板 */
+        .history-strip {
+            position: absolute; right: 16px; top: 60px; bottom: 80px; width: 64px;
+            display: flex; flex-direction: column; gap: 6px; overflow-y: auto;
+            padding: 8px 0; scrollbar-width: thin;
+        }
+        .history-thumb {
+            width: 56px; height: 56px; border-radius: 8px; overflow: hidden; cursor: pointer;
+            border: 2px solid transparent; transition: all 0.2s; opacity: 0.6;
+            background: #222; display: flex; align-items: center; justify-content: center;
+            color: #444; font-size: 20px;
+        }
+        .history-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .history-thumb:hover { opacity: 1; border-color: #555; }
+        .history-thumb.active { opacity: 1; border-color: #667eea; }
+    </style>
+</head>
+<body>
+<div id="app">
+    <!-- ===== 顶部导航 ===== -->
+    <div class="header">
+        <div class="header-logo">
+            <div class="logo-icon gradient-bg">🤖</div>
+            <span>Java AI Agent</span>
+        </div>
+        <div class="header-right">
+            <!-- 模式切换 -->
+            <div class="mode-switch">
+                <div class="mode-tab" :class="{ active: mode === 'chat' }" @click="switchMode('chat')">
+                    <el-icon><ChatDotRound /></el-icon> 对话模式
+                </div>
+                <div class="mode-tab" :class="{ active: mode === 'creative' }" @click="switchMode('creative')">
+                    <el-icon><PictureFilled /></el-icon> 创作模式
+                </div>
+            </div>
+            <!-- 模型选择 -->
+            <el-select v-model="currentModel" placeholder="选择模型" class="model-selector" @change="onModelChange">
+                <el-option-group label="对话模型">
+                    <el-option v-for="m in chatModels" :key="m.name" :label="m.label" :value="m.name">
+                        <span style="float:left">{{ m.label }}</span>
+                        <span class="model-badge badge-chat">对话</span>
+                    </el-option>
+                </el-option-group>
+                <el-option-group label="图片生成">
+                    <el-option v-for="m in imageModels" :key="m.name" :label="m.label" :value="m.name">
+                        <span style="float:left">{{ m.label }}</span>
+                        <span class="model-badge badge-image">图片</span>
+                    </el-option>
+                </el-option-group>
+                <el-option-group label="视频生成">
+                    <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name">
+                        <span style="float:left">{{ m.label }}</span>
+                        <span class="model-badge badge-video">视频</span>
+                    </el-option>
+                </el-option-group>
+            </el-select>
+            <el-tooltip content="设置" placement="bottom">
+                <el-button :icon="'Setting'" circle />
+            </el-tooltip>
+        </div>
+    </div>
+
+    <!-- ===== 主体 ===== -->
+    <div class="main-container">
+
+        <!-- ==================== 对话模式 ==================== -->
+        <template v-if="mode === 'chat'">
+            <!-- 左侧会话列表 -->
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <button class="new-btn gradient-bg" @click="createSession">
+                        <el-icon><Plus /></el-icon> 新建对话
+                    </button>
+                </div>
+                <div class="list-area">
+                    <div v-for="s in sessions" :key="s.id" class="list-item" :class="{active: s.id === currentSessionId}" @click="switchSession(s.id)">
+                        <el-icon class="item-icon"><ChatDotRound /></el-icon>
+                        <span class="item-title">{{ s.title }}</span>
+                        <span class="item-meta">{{ s.time }}</span>
+                    </div>
+                </div>
+                <div class="sidebar-footer">
+                    <el-avatar :size="28" class="gradient-bg">U</el-avatar>
+                    <span>用户名</span>
+                </div>
+            </div>
+
+            <!-- 对话区 -->
+            <div class="chat-area">
+                <div class="chat-header" v-if="currentSession">
+                    <el-icon><ChatLineRound /></el-icon>
+                    <span class="chat-title">{{ currentSession.title }}</span>
+                    <div class="chat-actions">
+                        <el-button text :icon="'Download'" />
+                        <el-button text :icon="'Delete'" />
+                    </div>
+                </div>
+
+                <!-- 欢迎页 -->
+                <div class="welcome-screen" v-if="!currentSession">
+                    <div class="welcome-logo gradient-bg">💬</div>
+                    <div class="welcome-title">你好，我是 AI 助手</div>
+                    <div class="welcome-subtitle">对话模式 · 支持文字对话、图片理解、工具调用</div>
+                    <div class="welcome-suggestions">
+                        <div class="suggestion-card" @click="quickSend('帮我用Java写一个快速排序')">
+                            <div class="suggestion-icon">💻</div>
+                            <div class="suggestion-title">写代码</div>
+                            <div class="suggestion-desc">帮我用Java写一个快速排序</div>
+                        </div>
+                        <div class="suggestion-card" @click="quickSend('这张图片里有什么？', true)">
+                            <div class="suggestion-icon">🖼️</div>
+                            <div class="suggestion-title">图片理解</div>
+                            <div class="suggestion-desc">上传图片，AI帮你识别内容</div>
+                        </div>
+                        <div class="suggestion-card" @click="quickSend('北京今天天气怎么样？')">
+                            <div class="suggestion-icon">🌤️</div>
+                            <div class="suggestion-title">查询天气</div>
+                            <div class="suggestion-desc">北京今天天气怎么样？</div>
+                        </div>
+                        <div class="suggestion-card" @click="quickSend('帮我算一下 1234 × 5678')">
+                            <div class="suggestion-icon">🔢</div>
+                            <div class="suggestion-title">数学计算</div>
+                            <div class="suggestion-desc">帮我算一下 1234 × 5678</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 消息列表 -->
+                <div class="message-list" ref="msgList" v-if="currentSession">
+                    <div class="message-wrapper">
+                        <div v-for="msg in currentMessages" :key="msg.id" class="message-item">
+                            <div class="msg-avatar" :class="msg.role === 'user' ? 'gradient-bg' : 'gradient-green'">
+                                <span v-if="msg.role === 'user'">U</span>
+                                <span v-else>🤖</span>
+                            </div>
+                            <div class="msg-content">
+                                <div class="msg-role">{{ msg.role === 'user' ? '我' : 'Agent · ' + (msg.model || currentModelLabel) }}</div>
+                                <div class="msg-bubble">
+                                    <div v-if="msg.type === 'text'" v-html="msg.content"></div>
+                                    <div v-if="msg.type === 'image'">
+                                        <img :src="msg.imageUrl" class="msg-image" @click="previewUrl = msg.imageUrl; previewVisible = true" />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 输入区 -->
+                <div class="input-area">
+                    <div class="input-wrapper">
+                        <div class="input-toolbar">
+                            <el-tooltip content="上传图片" placement="top"><button class="toolbar-btn">📎</button></el-tooltip>
+                            <el-tooltip content="清除对话" placement="top"><button class="toolbar-btn">🧹</button></el-tooltip>
+                        </div>
+                        <textarea class="input-textarea" v-model="chatInput" placeholder="输入消息，Enter 发送，Shift+Enter 捷行..."
+                            @keydown.enter.exact.prevent="sendChatMessage" rows="1"></textarea>
+                        <div class="input-footer">
+                            <span class="input-hint">当前模型: {{ currentModelLabel }}</span>
+                            <button class="send-btn gradient-bg" @click="sendChatMessage">
+                                <el-icon><Promotion /></el-icon>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </template>
+
+        <!-- ==================== 创作模式 (Banana 风格: 左控右显) ==================== -->
+        <template v-if="mode === 'creative'">
+            <!-- 左侧项目列表 (窄侧栏) -->
+            <div class="sidebar">
+                <div class="sidebar-header">
+                    <button class="new-btn gradient-orange" @click="createProject">
+                        <el-icon><Plus /></el-icon> 新建项目
+                    </button>
+                </div>
+                <div class="list-area">
+                    <div v-for="p in projects" :key="p.id" class="list-item" :class="{active: p.id === currentProjectId}" @click="switchProject(p.id)">
+                        <el-icon class="item-icon"><PictureFilled /></el-icon>
+                        <span class="item-title">{{ p.name }}</span>
+                        <span class="item-meta">{{ p.genCount }}张</span>
+                    </div>
+                </div>
+                <div class="sidebar-footer">
+                    <el-avatar :size="28" class="gradient-orange">U</el-avatar>
+                    <span>用户名</span>
+                </div>
+            </div>
+
+            <!-- 左侧参数控制面板 -->
+            <div class="creative-panel">
+                <div class="panel-top-section">
+                    <!-- 子模式切换: 图片生成 / 视频生成 -->
+                    <div class="creative-mode-tabs">
+                        <div class="creative-mode-tab" :class="{active: subMode === 'image'}" @click="subMode = 'image'">
+                            🖼️ 图片生成
+                        </div>
+                        <div class="creative-mode-tab" :class="{active: subMode === 'video'}" @click="subMode = 'video'">
+                            🎬 视频生成
+                        </div>
+                    </div>
+
+                    <!-- 模型选择卡 -->
+                    <div class="model-select-card" @click="showModelPicker = true">
+                        <div class="model-avatar gradient-orange">🌙</div>
+                        <div class="model-info">
+                            <div class="model-name">{{ creativeModelLabel }}</div>
+                            <div class="model-desc">{{ creativeModelDesc }}</div>
+                        </div>
+                        <span class="model-badge-sm" :class="subMode === 'image' ? 'badge-image' : 'badge-video'">
+                            {{ subMode === 'image' ? '图片' : '视频' }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- 参考图上传 -->
+                <div class="section-title">
+                    <span class="icon">📌</span> 参考图 (Refer)
+                    <el-tag size="small" type="info" effect="plain" style="margin-left:auto;font-size:10px;">可选</el-tag>
+                </div>
+                <div class="refer-upload-zone" :class="{'has-image': referImage}" @click="$refs.referInput.click()">
+                    <template v-if="!referImage">
+                        <div class="upload-placeholder">
+                            <div class="upload-icon-big">📷</div>
+                            <div class="upload-text">点击、拖拽或 Ctrl+V 上传</div>
+                            <div class="upload-sub">支持 JPG / PNG / WebP，最大 10MB</div>
+                        </div>
+                    </template>
+                    <template v-else>
+                        <img :src="referImage" class="refer-preview-img" />
+                        <div class="refer-actions">
+                            <span class="refer-filename">{{ referFileName }}</span>
+                            <button @click.stop="removeRefer" style="background:none;border:none;color:#eb2f96;cursor:pointer;font-size:13px;">删除 ✕</button>
+                        </div>
+                    </template>
+                    <input type="file" ref="referInput" accept="image/*" style="display:none" @change="onReferUpload" />
+                </div>
+
+                <!-- 提示词 -->
+                <div class="section-title"><span class="icon">✏️</span> 提示词 (Prompt)</div>
+                <div class="prompt-section">
+                    <div class="prompt-textarea-wrap">
+                        <textarea class="prompt-textarea" v-model="creativePrompt"
+                            :placeholder="subMode === 'image'
+                                ? '描述你想要生成的画面，如：一只在月光下的橘猫，赛博朋克风格...'
+                                : '描述视频内容，如：一只猫在霓虹灯街道上行走...'"
+                            maxlength="2000"></textarea>
+                        <span class="prompt-counter">{{ creativePrompt.length }} / 2000</span>
+                    </div>
+                    <div class="prompt-options">
+                        <button class="prompt-opt-btn">✨ 魔法提示</button>
+                        <button class="prompt-opt-btn">🔄 从历史中选择</button>
+                    </div>
+                </div>
+
+                <!-- 引擎选择 -->
+                <div class="section-title"><span class="icon">⚡</span> 引擎选择</div>
+                <div class="param-row">
+                    <span class="param-label">
+                        <span class="label-icon">🔮</span> 图像引擎
+                    </span>
+                    <select class="custom-select" v-model="engineType">
+                        <option value="auto">自动</option>
+                        <option value="stable">Stable Diffusion</option>
+                        <option value="flux">FLUX</option>
+                        <option value="midjourney">Midjourney</option>
+                    </select>
+                </div>
+
+                <!-- 比例 & 尺寸 -->
+                <div class="section-title"><span class="icon">📐</span> 尺寸与比例</div>
+                <div class="param-row">
+                    <span class="param-label"><span class="label-icon">📊</span> 生成比例</span>
+                    <select class="custom-select" v-model="aspectRatio">
+                        <option value="auto">自动</option>
+                        <option value="1:1">1:1 方形</option>
+                        <option value="3:4">3:4 竖版</option>
+                        <option value="4:3">4:3 横版</option>
+                        <option value="9:16">9:16 手机</option>
+                        <option value="16:9">16:9 宽屏</option>
+                    </select>
+                </div>
+                <div class="param-row">
+                    <span class="param-label"><span class="label-icon">📏</span> 生成尺寸</span>
+                    <select class="custom-select" v-model="outputSize">
+                        <option value="1K">1K</option>
+                        <option value="2K">2K</option>
+                    </select>
+                </div>
+
+                <!-- 风格 -->
+                <div class="param-row">
+                    <span class="param-label"><span class="label-icon">🎨</span> 风格保障</span>
+                    <select class="custom-select" v-model="artStyle">
+                        <option value="">无</option>
+                        <option value="vivid">生动 Vivid</option>
+                        <option value="natural">自然 Natural</option>
+                        <option value="anime">动漫 Anime</option>
+                        <option value="oil">油画 Oil</option>
+                        <option value="watercolor">水彩 Watercolor</option>
+                    </select>
+                </div>
+
+                <!-- 风险保障开关 -->
+                <div class="param-row" style="margin-top: 4px;">
+                    <span class="param-label"><span class="label-icon">🛡️</span> 风险保障</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" v-model="safeMode" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+
+                <!-- 生成按钮 -->
+                <div class="generate-section">
+                    <div class="gen-cost-row" v-if="subMode === 'image'">
+                        <span class="cost-info">本次消耗 <span class="cost-num">{{ costCredits }}</span> 积分 💰</span>
+                    </div>
+                    <button class="generate-btn gradient-green" :class="{loading: isGenerating}" @click="doGenerate">
+                        <span v-if="!isGenerating">
+                            ✨ {{ subMode === 'image' ? '生成' : '生成视频' }}
+                        </span>
+                        <span v-else class="gen-spinner"></span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 右侧结果展示区 -->
+            <div class="preview-area">
+                <!-- 视图切换 -->
+                <div class="preview-toolbar">
+                    <div class="view-toggle" :class="{active: viewMode==='result'}" @click="viewMode='result'">结果展示</div>
+                    <div class="view-toggle" :class="{active: viewMode==='gallery'}" @click="viewMode='gallery'">画廊浏览</div>
+                </div>
+
+                <!-- 历史缩略图条 -->
+                <div class="history-strip" v-if="generatedImages.length > 0 && !isGenerating">
+                    <div v-for="(img,idx) in generatedImages" :key="idx"
+                        class="history-thumb" :class="{active: selectedResultIndex === idx}"
+                        @click="selectedResultIndex = idx">
+                        <img v-if="img" :src="img" />
+                        <span v-else>🖼️</span>
+                    </div>
+                </div>
+
+                <!-- 结果内容 -->
+                <template v-if="currentResultImage">
+                    <img :src="currentResultImage" class="result-media result-img" v-if="!isGenerating" />
+
+                    <!-- 生成中状态 -->
+                    <div v-if="isGenerating" class="preview-empty">
+                        <div class="preview-empty-icon">🎨</div>
+                        <div class="preview-empty-text">正在生成中...</div>
+                        <div class="preview-empty-hint">{{ creativeModelLabel }} 正在为你创作，请稍候 ⏱️</div>
+                    </div>
+                </template>
+                <template v-else>
+                    <!-- 空状态 -->
+                    <div class="preview-empty">
+                        <div class="preview-empty-icon">🖼️</div>
+                        <div class="preview-empty-text">等待生成</div>
+                        <div class="preview-empty-hint">在左侧输入提示词并点击「生成」按钮</div>
+                    </div>
+                </template>
+
+                <!-- 操作按钮 -->
+                <div class="result-actions" v-if="currentResultImage && !isGenerating">
+                    <button class="result-action-btn primary" @click="doGenerate">🔄 立即复现生成</button>
+                    <button class="result-action-btn secondary" @click="downloadResult">⬇ 下载</button>
+                    <button class="result-action-btn secondary" @click="copyPromptToClip">📋 复制提示词</button>
+                </div>
+            </div>
+        </template>
+    </div>
+
+    <!-- 图片预览 Dialog -->
+    <el-dialog v-model="previewVisible" width="680px" align-center class="preview-dialog">
+        <img :src="previewUrl" style="width:100%;border-radius:8px" />
+    </el-dialog>
+
+    <!-- 模型选择弹窗 -->
+    <el-dialog v-model="showModelPicker" title="选择模型" width="400px" align-center>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+            <div v-for="m in availableCreativeModels" :key="m.name"
+                class="model-select-card" @click="selectCreativeModel(m)"
+                :style="{ borderColor: m.name === creativeModel ? '#667eea' : 'transparent' }">
+                <div class="model-avatar" :class="m.type === 'image' ? 'gradient-orange' : 'gradient-green'" style="font-size:14px;">
+                    {{ m.icon }}
+                </div>
+                <div class="model-info">
+                    <div class="model-name">{{ m.label }}</div>
+                    <div class="model-desc">{{ m.desc }}</div>
+                </div>
+                <span class="model-badge-sm" :class="'badge-' + m.type">{{ m.typeLabel }}</span>
+            </div>
+        </div>
+    </el-dialog>
+</div>
+
+<script>
+const { createApp, ref, reactive, computed, nextTick, onMounted } = Vue;
+
+const app = createApp({
+    setup() {
+        // ===== 模型定义 =====
+        const chatModels = [
+            { name: 'openai-chat', label: 'GPT-4o', type: 'chat' },
+            { name: 'zhipu-chat', label: 'GLM-4-Plus', type: 'chat' },
+            { name: 'qwen-chat', label: 'Qwen-Max', type: 'chat' },
+        ];
+        const imageModels = [
+            { name: 'nano-pro', label: 'Nano Banana Pro', icon:'🌙', desc: 'Gemini 2.5 Flash Thinking · 多模态', type: 'image', typeLabel: '图片' },
+            { name: 'openai-image', label: 'DALL-E 3', icon:'🎨', desc: 'OpenAI 最新图像生成模型', type: 'image', typeLabel: '图片' },
+            { name: 'zhipu-image', label: 'CogView-3', icon:'👁️', desc: '智谱视觉语言大模型', type: 'image', typeLabel: '图片' },
+        ];
+        const videoModels = [
+            { name: 'kling-video', label: '可灵 (Kling)', icon:'🎬', desc: '快手 AI 视频生成', type: 'video', typeLabel: '视频' },
+            { name: 'sora-video', label: 'Sora', icon:'🌀', desc: 'OpenAI 视频生成模型', type: 'video', typeLabel: '视频' },
+        ];
+        const availableCreativeModels = [...imageModels, ...videoModels];
+
+        // ===== 全局状态 =====
+        const mode = ref('chat'); // 'chat' | 'creative'
+        const currentModel = ref('openai-chat');
+        const isGenerating = ref(false);
+
+        const currentModelLabel = computed(() => {
+            const all = [...chatModels, ...imageModels, ...videoModels];
+            return all.find(m => m.name === currentModel.value)?.label || '';
+        });
+
+        // ===== 模式切换 =====
+        function switchMode(m) { mode.value = m; }
+
+        function onModelChange(val) {
+            if (imageModels.some(m => m.name === val) || videoModels.some(m => m.name === val)) {
+                mode.value = 'creative';
+                // 自动匹配 creative model
+                const found = availableCreativeModels.find(m => m.name === val);
+                if (found) creativeModel.value = val;
+            } else {
+                mode.value = 'chat';
+            }
+        }
+
+        // ===== 对话模式数据 =====
+        const sessions = reactive([
+            { id: '1', title: 'Java快速排序', time: '刚刚', messages: [
+                { id: '1', role: 'user', type: 'text', content: '<p>帮我用Java写一个快速排序</p>' },
+                { id: '2', role: 'assistant', type: 'text', model: 'GPT-4o', content: '<p>好的！这是Java快速排序实现：</p><pre><code>public class QuickSort {\n    public static void quickSort(int[] arr, int low, int high) {\n        if (low &lt; high) {\n            int p = partition(arr, low, high);\n            quickSort(arr, low, p - 1);\n            quickSort(arr, p + 1, high);\n        }\n    }\n}</code></pre><p>时间复杂度：平均 <code>O(n log n)</code></p>' }
+            ]},
+            { id: '2', title: '查询北京天气', time: '10分钟前', messages: [
+                { id: '1', role: 'user', type: 'text', content: '<p>北京今天天气怎么样？</p>' },
+                { id: '2', role: 'assistant', type: 'text', model: 'GLM-4-Plus', content: '<p>北京今天天气：</p><ul><li>☀️ <strong>晴</strong></li><li>🌡️ <strong>28°C</strong></li><li>💧 <strong>湿度 45%</strong></li></ul>' }
+            ]},
+        ]);
+        const currentSessionId = ref(null);
+        const chatInput = ref('');
+        const currentSession = computed(() => sessions.find(s => s.id === currentSessionId.value));
+        const currentMessages = computed(() => currentSession.value?.messages || []);
+        const msgList = ref(null);
+
+        function createSession() {
+            const id = String(Date.now());
+            sessions.unshift({ id, title: '新对话', time: '刚刚', messages: [] });
+            currentSessionId.value = id;
+        }
+        function switchSession(id) { currentSessionId.value = id; }
+        function quickSend(text, hasImage = false) {
+            createSession();
+            chatInput.value = text;
+            sendChatMessage();
+        }
+        function sendChatMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            if (!currentSession.value) createSession();
+            currentSession.value.messages.push({ id: String(Date.now()), role: 'user', type: 'text', content: `<p>${text}</p>` });
+            chatInput.value = '';
+            setTimeout(() => {
+                currentSession.value.messages.push({
+                    id: String(Date.now()+1), role: 'assistant', type: 'text', model: currentModelLabel.value,
+                    content: `<p>收到你的消息：「${text}」</p><p>这是 UI 原型演示，实际使用时会连接 <strong>${currentModelLabel.value}</strong> 模型进行回复。</p>`
+                });
+                nextTick(() => { if (msgList.value) msgList.value.scrollTop = msgList.value.scrollHeight; });
+            }, 500);
+        }
+
+        // ===== 创作模式数据 =====
+        const projects = reactive([
+            { id: '1', name: '猫咪创意图', genCount: 5 },
+            { id: '2', name: '产品宣传视频', genCount: 2 },
+        ]);
+        const currentProjectId = ref('1');
+        const subMode = ref('image'); // 'image' | 'video'
+
+        // 创作模型相关
+        const creativeModel = ref('nano-pro'); // 当前选中的创作模型
+        const showModelPicker = ref(false);
+
+        const creativeModelLabel = computed(() => {
+            return availableCreativeModels.find(m => m.name === creativeModel.value)?.label || '';
+        });
+        const creativeModelDesc = computed(() => {
+            return availableCreativeModels.find(m => m.name === creativeModel.value)?.desc || '';
+        });
+
+        function selectCreativeModel(m) {
+            creativeModel.value = m.name;
+            subMode.value = m.type; // 根据模型类型切换子模式
+            showModelPicker.value = false;
+            // 同步全局模型
+            currentModel.value = m.name;
+        }
+
+        // 参数控制
+        const creativePrompt = ref('');
+        const referImage = ref('');
+        const referFileName = ref('');
+        const engineType = ref('auto');
+        const aspectRatio = ref('auto');
+        const outputSize = ref('1K');
+        const artStyle = ref('vivid');
+        const safeMode = ref(true);
+        const costCredits = computed(() => Math.max(1, Math.ceil((creativePrompt.value.length || 50) / 50)));
+
+        // 结果展示
+        const generatedImages = reactive([]);
+        const selectedResultIndex = ref(-1);
+        const currentResultImage = computed(() =>
+            selectedResultIndex.value >= 0 ? generatedImages[selectedResultIndex.value] : null
+        );
+        const viewMode = ref('result');
+
+        function onReferUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            referFileName.value = file.name;
+            const reader = new FileReader();
+            reader.onload = (ev) => { referImage.value = ev.target.result; };
+            reader.readAsDataURL(file);
+        }
+        function removeRefer() { referImage.value = ''; referFileName.value = ''; }
+
+        // 示例生成图片 URL
+        const sampleImages = [
+            'https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?w=800',
+            'https://images.unsplash.com/photo-1574158622682-e40e69881006?w=800',
+            'https://images.unsplash.com/photo-1518791841217-8f162f1e1131?w=800',
+            'https://images.unsplash.com/photo-1495360010541-f48722b34f7d?w=800',
+        ];
+
+        function doGenerate() {
+            if (!creativePrompt.value.trim()) {
+                alert('请先输入提示词！');
+                return;
+            }
+            isGenerating.value = true;
+            setTimeout(() => {
+                const img = sampleImages[generatedImages.length % sampleImages.length];
+                generatedImages.push(img);
+                selectedResultIndex.value = generatedImages.length - 1;
+                isGenerating.value = false;
+            }, 2200);
+        }
+
+        function downloadResult() {
+            if (!currentResultImage.value) return;
+            const a = document.createElement('a');
+            a.href = currentResultImage.value;
+            a.download = `agent-${Date.now()}.png`;
+            a.click();
+        }
+
+        function copyPromptToClip() {
+            navigator.clipboard.writeText(creativePrompt.value).then(() => {
+                // 简单提示
+                const tip = document.createElement('div');
+                tip.textContent = '已复制到剪贴板 ✓';
+                tip.style.cssText = 'position:fixed;top:70px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:8px 20px;border-radius:8px;z-index:9999;font-size:13px;';
+                document.body.appendChild(tip);
+                setTimeout(() => tip.remove(), 1500);
+            }).catch(() => alert('复制失败'));
+        }
+
+        function createProject() {
+            const id = String(Date.now());
+            projects.unshift({ id, name: '新项目', genCount: 0 });
+            currentProjectId.value = id;
+            generatedImages.splice(0, generatedImages.length);
+            selectedResultIndex.value = -1;
+            creativePrompt.value = '';
+            referImage.value = '';
+        }
+        function switchProject(id) { currentProjectId.value = id; }
+
+        // 图片预览
+        const previewVisible = ref(false);
+        const previewUrl = ref('');
+
+        return {
+            mode, currentModel, currentModelLabel, isGenerating,
+            chatModels, imageModels, videoModels,
+            switchMode, onModelChange,
+            sessions, currentSessionId, currentSession, currentMessages,
+            chatInput, msgList, createSession, switchSession, quickSend, sendChatMessage,
+
+            // 创作模式
+            projects, currentProjectId, createProject, switchProject,
+            subMode, availableCreativeModels, creativeModel, showModelPicker,
+            creativeModelLabel, creativeModelDesc, selectCreativeModel,
+            creativePrompt, referImage, referFileName,
+            engineType, aspectRatio, outputSize, artStyle, safeMode, costCredits,
+            onReferUpload, removeRefer,
+            generatedImages, selectedResultIndex, currentResultImage, viewMode,
+            isGenerating, doGenerate, downloadResult, copyPromptToClip,
+            previewVisible, previewUrl,
+        };
+    }
+});
+
+for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+    app.component(key, component);
+}
+app.use(ElementPlus);
+app.mount('#app');
+</script>
+</body>
+</html>
