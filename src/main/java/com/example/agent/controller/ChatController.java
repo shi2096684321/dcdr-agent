@@ -1,5 +1,6 @@
 package com.example.agent.controller;
 
+import com.example.agent.agent.ActiveChatRegistry;
 import com.example.agent.agent.AgentOrchestrator;
 import com.example.agent.common.Result;
 import com.example.agent.dto.ChatChunk;
@@ -28,6 +29,7 @@ import reactor.core.publisher.Flux;
 public class ChatController {
 
     private final AgentOrchestrator orchestrator;
+    private final ActiveChatRegistry activeChatRegistry;
 
     /**
      * 流式对话 (SSE)
@@ -69,5 +71,23 @@ public class ChatController {
     public Result<ChatResponse> chat(@RequestBody ChatRequest request) {
         log.info("同步对话: session={}", request.getSessionId());
         return Result.success(orchestrator.chatSync(request));
+    }
+
+    /**
+     * 中断会话(停止生成)
+     * <p>
+     * 前端在流式对话进行中调用, 取消上游大模型调用并下发 interrupted 信号。
+     * 返回 true 表示确有进行中的对话被中断, false 表示该会话当前没有进行中的对话。
+     */
+    @Operation(
+            summary = "中断会话(停止生成)",
+            description = "中断指定会话正在进行的流式对话, 真正取消底层模型 HTTP 请求。\n\n" +
+                    "适用于前端「停止生成」按钮。若客户端已断开连接, 后端会自动取消, 无需调用本接口。"
+    )
+    @PostMapping("/stop")
+    public Result<Boolean> stop(@RequestParam String sessionId) {
+        log.info("中断会话请求: session={}", sessionId);
+        boolean stopped = activeChatRegistry.stop(sessionId);
+        return Result.success(stopped);
     }
 }

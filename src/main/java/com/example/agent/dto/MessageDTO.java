@@ -25,6 +25,9 @@ public class MessageDTO {
     /** 文本内容 */
     @Schema(description = "文本内容")
     private String content;
+    /** 推理内容(思维链, assistant消息) */
+    @Schema(description = "推理内容（思维链，assistant 消息）")
+    private String reasoningContent;
     /** 图片URL(type=image时) */
     @Schema(description = "图片 URL（type=image 时）")
     private String imageUrl;

@@ -56,7 +56,9 @@
       <div class="input-area">
         <div class="input-box">
           <textarea v-model="input" placeholder="输入消息, Enter发送? Shift+Enter换行" @keydown.enter.exact.prevent="send" rows="1"></textarea>
-          <button class="send-btn gradient-bg" @click="send" :disabled="!input.trim() || streaming">发送</button>
+          <button class="send-btn gradient-bg" @click="streaming ? stop() : send()" :disabled="!input.trim() && !streaming">
+            {{ streaming ? '停止' : '发送' }}
+          </button>
         </div>
       </div>
     </div>
@@ -65,7 +67,7 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { getSessions, createSession, getMessages, streamChat, renameSession } from '../api'
+import { getSessions, createSession, getMessages, streamChat, stopChat, renameSession } from '../api'
 import MarkdownIt from 'markdown-it'
 const md = new MarkdownIt()
 const vFocus = { mounted: (el) => el.focus() }
@@ -123,11 +125,13 @@ async function send() {
   streaming.value = true
   streamContent.value = ''
   reasoningContent.value = ''
+  let interrupted = false
   scrollBottom()
   await streamChat(
     { sessionId: currentSessionId.value, message: text, model: props.currentModel },
     (chunk) => {
       if (chunk.type === 'error') { streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
+      if (chunk.type === 'interrupted') { interrupted = true; return }
       if (chunk.type !== 'chunk') return
       const ok = (v) => v != null
       if (ok(chunk.reasoningContent)) { reasoningContent.value += chunk.reasoningContent; scrollBottom() }
@@ -135,7 +139,7 @@ async function send() {
     },
     () => {
       if (streamContent.value || reasoningContent.value) {
-        messages.value.push({ id: Date.now(), role: 'assistant', content: streamContent.value, reasoningContent: reasoningContent.value })
+        messages.value.push({ id: Date.now(), role: 'assistant', content: streamContent.value, reasoningContent: reasoningContent.value, interrupted })
       }
       streamContent.value = ''
       reasoningContent.value = ''
@@ -145,6 +149,12 @@ async function send() {
     },
     (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = '' }
   )
+}
+
+/** 中断当前会话(停止生成) */
+function stop() {
+  if (!streaming.value || !currentSessionId.value) return
+  stopChat(currentSessionId.value)
 }
 onMounted(() => { loadSessions() })
 </script>

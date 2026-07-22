@@ -46,8 +46,8 @@ async function send() {
       else if (chunk.type === 'error') { streamContent.value += '\n[\u9519\u8bef] ' + chunk.message }
     },
     () => {
-      if (streamContent.value) {
-        messages.value.push({ id: Date.now(), role: 'assistant', content: streamContent.value })
+      if (streamContent.value || streamReasoning.value) {
+        messages.value.push({ id: Date.now(), role: 'assistant', content: streamContent.value, reasoningContent: streamReasoning.value })
       }
       streamContent.value = ''
       streamReasoning.value = ''

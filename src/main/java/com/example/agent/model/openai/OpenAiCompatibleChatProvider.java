@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
@@ -32,6 +33,18 @@ public abstract class OpenAiCompatibleChatProvider implements com.example.agent.
     protected final Double temperature;
     protected final Integer maxTokens;
     protected final Set<String> capabilities;
+
+    /**
+     * 同步调用总超时: 超过该时长仍未返回完整响应即中断并抛异常。
+     * 同步模式只有一次发射, 故为"总等待时长"。可按需调整, 后续可提升为可配置字段。
+     */
+    private static final Duration SYNC_TIMEOUT = Duration.ofSeconds(60);
+
+    /**
+     * 流式空闲超时: 自上一次收到数据(或订阅)起, 超过该时长仍无新 chunk 即中断。
+     * 这是"空闲/无响应超时"而非"总时长", 长文本持续生成不会触发; 用于防止模型服务假死挂起。
+     */
+    private static final Duration STREAM_TIMEOUT = Duration.ofSeconds(120);
 
     protected OpenAiCompatibleChatProvider(String baseUrl, String apiKey, String name,
                                            String label, String provider, String model,
@@ -117,11 +130,11 @@ public abstract class OpenAiCompatibleChatProvider implements com.example.agent.
     }
 
     @Override
-    public ChatResponse invoke(ChatRequest request) {
-        String json = buildRequestBody(request, null, false);
+    public ChatResponse invoke(ChatRequest request, List<Message> history) {
+        String json = buildRequestBody(request, history, false);
         try {
-            String resp = webClient.post().uri(getChatPath()).bodyValue(json)
-                    .retrieve().bodyToMono(String.class).block();
+        String resp = webClient.post().uri(getChatPath()).bodyValue(json)
+                .retrieve().bodyToMono(String.class).block(SYNC_TIMEOUT);
             JsonNode root = mapper.readTree(resp);
             String content = root.path("choices").path(0).path("message").path("content").asText();
             ChatResponse response = new ChatResponse();
@@ -138,14 +151,15 @@ public abstract class OpenAiCompatibleChatProvider implements com.example.agent.
     }
 
     @Override
-    public Flux<ChatChunk> stream(ChatRequest request) {
-        String json = buildRequestBody(request, null, true);
+    public Flux<ChatChunk> stream(ChatRequest request, List<Message> history) {
+        String json = buildRequestBody(request, history, true);
         AtomicLong rawLines = new AtomicLong();
         AtomicLong dataLines = new AtomicLong();
         AtomicLong produced = new AtomicLong();
         log.info("{} 发起流式请求, body={}", name, json);
         return webClient.post().uri(getChatPath()).bodyValue(json)
                 .retrieve().bodyToFlux(String.class)
+                .timeout(STREAM_TIMEOUT)
                 .doOnNext(line -> {
                     long n = rawLines.incrementAndGet();
                     log.debug("[RAW] 收到字符串行({}): {}", n, line);

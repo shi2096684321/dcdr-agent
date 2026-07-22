@@ -1,6 +1,5 @@
 package com.example.agent.agent.memory;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -9,7 +8,6 @@ import lombok.NoArgsConstructor;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class Message {
 
     /** 角色: user / assistant / system */
@@ -18,6 +16,19 @@ public class Message {
     private String content;
     /** 使用的模型(assistant消息) */
     private String model;
+    /** 推理内容(思维链, assistant消息, 可能为空) */
+    private String reasoningContent;
+
+    public Message(String role, String content, String model) {
+        this(role, content, model, null);
+    }
+
+    public Message(String role, String content, String model, String reasoningContent) {
+        this.role = role;
+        this.content = content;
+        this.model = model;
+        this.reasoningContent = reasoningContent;
+    }
 
     public static Message system(String content) {
         return new Message("system", content, null);
@@ -29,5 +40,9 @@ public class Message {
 
     public static Message assistant(String content, String model) {
         return new Message("assistant", content, model);
+    }
+
+    public static Message assistant(String content, String reasoningContent, String model) {
+        return new Message("assistant", content, model, reasoningContent);
     }
 }

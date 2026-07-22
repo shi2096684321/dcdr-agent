@@ -12,8 +12,8 @@ import lombok.Data;
 @Schema(description = "流式消息块 - SSE 推送的最小单元")
 public class ChatChunk {
 
-    /** 块类型: chunk / tool_call / tool_result / done / error */
-    @Schema(description = "块类型", allowableValues = {"chunk", "tool_call", "tool_result", "done", "error"}, example = "chunk")
+    /** 块类型: chunk / tool_call / tool_result / done / error / interrupted */
+    @Schema(description = "块类型", allowableValues = {"chunk", "tool_call", "tool_result", "done", "error", "interrupted"}, example = "chunk")
     private String type;
 
     /** 文本内容(type=chunk时) */
@@ -91,6 +91,14 @@ public class ChatChunk {
         c.setType("error");
         c.setMessage(message);
         c.setCode(code);
+        return c;
+    }
+
+    /** 中断块: 用户主动中断或客户端断开后由后端下发 */
+    public static ChatChunk interrupted() {
+        ChatChunk c = new ChatChunk();
+        c.setType("interrupted");
+        c.setMessage("对话已被用户中断");
         return c;
     }
 }

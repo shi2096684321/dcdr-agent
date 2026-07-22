@@ -32,7 +32,7 @@ public class InMemoryChatMemory implements ChatMemory {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
         List<Message> messages = new ArrayList<>(entities.size());
         for (MessageEntity e : entities) {
-            messages.add(new Message(e.getRole(), e.getContent(), e.getModel()));
+            messages.add(new Message(e.getRole(), e.getContent(), e.getModel(), e.getReasoningContent()));
         }
         return messages;
     }
@@ -58,6 +58,7 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setContent(message.getContent());
         entity.setModel(message.getModel());
         entity.setCreatedAt(LocalDateTime.now());
+        entity.setReasoningContent(message.getReasoningContent());
         messageRepository.save(entity);
 
         // 上下文窗口控制: 超出时截断最早的非 system 消息

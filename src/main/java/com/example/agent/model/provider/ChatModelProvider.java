@@ -1,10 +1,13 @@
 package com.example.agent.model.provider;
 
+import com.example.agent.agent.memory.Message;
 import com.example.agent.common.constant.ModelType;
 import com.example.agent.dto.ChatRequest;
 import com.example.agent.dto.ChatResponse;
 import com.example.agent.dto.ChatChunk;
 import reactor.core.publisher.Flux;
+
+import java.util.List;
 
 /**
  * 对话模型提供者接口
@@ -26,11 +29,15 @@ public interface ChatModelProvider {
     /** 提供商名称 */
     String getProvider();
 
-    /** 同步调用 */
-    ChatResponse invoke(ChatRequest request);
+    /** 同步调用
+     * @param request 当前请求(包含本次用户消息)
+     * @param history 对话历史(不含本次用户消息), 用于构造多轮上下文 */
+    ChatResponse invoke(ChatRequest request, List<Message> history);
 
-    /** 流式调用(返回响应流) */
-    Flux<ChatChunk> stream(ChatRequest request);
+    /** 流式调用(返回响应流)
+     * @param request 当前请求(包含本次用户消息)
+     * @param history 对话历史(不含本次用户消息), 用于构造多轮上下文 */
+    Flux<ChatChunk> stream(ChatRequest request, List<Message> history);
 
     /** 是否支持多模态(图片输入) */
     default boolean supportsVision() {

@@ -91,6 +91,7 @@ public class SessionManager {
                 dto.setRole(msg.getRole());
                 dto.setType("text");
                 dto.setContent(msg.getContent());
+                dto.setReasoningContent(msg.getReasoningContent());
                 dto.setModel(msg.getModel());
                 dto.setCreatedAt(LocalDateTime.now());
                 dtos.add(dto);
@@ -167,6 +168,7 @@ public class SessionManager {
         dto.setRole(m.getRole());
         dto.setType(m.getType());
         dto.setContent(m.getContent());
+        dto.setReasoningContent(m.getReasoningContent());
         dto.setImageUrl(m.getImageUrl());
         dto.setModel(m.getModel());
         dto.setToolsUsed(m.getToolsUsed());
