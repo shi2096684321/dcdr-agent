@@ -23,6 +23,10 @@ public class AgentProperties {
     public static class MemoryConfig {
         private int maxMessages = 20;
         private String storage = "memory";
+        /** 估算上下文 token 上限, 达到 warn-ratio 比例时提示用户开启新对话 */
+        private int contextTokenLimit = 8000;
+        /** 触发提示的阈值比例(0~1) */
+        private double contextWarnRatio = 0.8;
     }
 
     @Data

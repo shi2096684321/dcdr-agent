@@ -36,6 +36,9 @@ agent:
   memory:
     max-messages: 20
     storage: memory
+    # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
+    context-token-limit: 8000
+    context-warn-ratio: 0.8
 
   # 文件存储配置
   storage:

@@ -2,8 +2,8 @@
   <div class="app-container">
     <header class="app-header">
       <div class="logo">
-        <div class="logo-icon gradient-bg">AI</div>
-        <span>Java AI Agent</span>
+        <img :src="logoUrl" class="logo-img" alt="DCDR" />
+        <span>DCDR</span>
       </div>
       <div class="header-right">
         <div class="mode-switch">
@@ -36,6 +36,7 @@ import { ref, computed, onMounted } from 'vue'
 import { getModels } from './api'
 import ChatMode from './components/ChatMode.vue'
 import CreativeMode from './components/CreativeMode.vue'
+import logoUrl from './assets/dcdr-logo.png'
 
 const mode = ref('chat')
 const models = ref([])
@@ -56,7 +57,7 @@ onMounted(async () => { models.value = await getModels() })
 .app-container { height: 100vh; display: flex; flex-direction: column; }
 .app-header { height: 56px; background: #fff; border-bottom: 1px solid #e8e8e8; display: flex; align-items: center; padding: 0 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); z-index: 100; }
 .logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
-.logo-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 14px; font-weight: bold; }
+.logo-img { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
 .mode-switch { display: flex; background: #f5f7fa; border-radius: 8px; padding: 3px; }
 .mode-tab { padding: 5px 16px; font-size: 13px; border-radius: 6px; cursor: pointer; color: #606266; user-select: none; }

@@ -47,6 +47,14 @@ public class ChatChunk {
     @Schema(description = "Token 消耗（type=done 时）")
     private ChatResponse.TokenUsage tokenUsage;
 
+    /** 结束原因(type=usage/done时, 来自模型 finish_reason, 如 stop/length/content_filter/insufficient_system_resource) */
+    @Schema(description = "结束原因（来自模型 finish_reason）")
+    private String finishReason;
+
+    /** 本次请求服务端耗时(毫秒, type=done时) */
+    @Schema(description = "本次请求服务端耗时(毫秒)")
+    private Long durationMs;
+
     // ===== 静态工厂方法 =====
 
     public static ChatChunk chunk(String content) {
@@ -86,6 +94,15 @@ public class ChatChunk {
         return c;
     }
 
+    /** 完成块: 携带 token 统计 + 服务端耗时(毫秒) */
+    public static ChatChunk done(int prompt, int completion, int total, long durationMs) {
+        ChatChunk c = new ChatChunk();
+        c.setType("done");
+        c.setTokenUsage(new ChatResponse.TokenUsage(prompt, completion, total));
+        c.setDurationMs(durationMs);
+        return c;
+    }
+
     public static ChatChunk error(String message, String code) {
         ChatChunk c = new ChatChunk();
         c.setType("error");
@@ -99,6 +116,22 @@ public class ChatChunk {
         ChatChunk c = new ChatChunk();
         c.setType("interrupted");
         c.setMessage("对话已被用户中断");
+        return c;
+    }
+
+    /** 上下文接近上限提示: 建议用户开启新对话 */
+    public static ChatChunk contextWarning(String message) {
+        ChatChunk c = new ChatChunk();
+        c.setType("context_warning");
+        c.setMessage(message != null ? message : "对话已较长，建议开启新对话");
+        return c;
+    }
+
+    /** 用量块: 模型真实返回的 token 消耗(prompt/completion/total) */
+    public static ChatChunk usage(int prompt, int completion, int total) {
+        ChatChunk c = new ChatChunk();
+        c.setType("usage");
+        c.setTokenUsage(new ChatResponse.TokenUsage(prompt, completion, total));
         return c;
     }
 }

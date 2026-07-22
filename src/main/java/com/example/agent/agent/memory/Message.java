@@ -18,6 +18,8 @@ public class Message {
     private String model;
     /** 推理内容(思维链, assistant消息, 可能为空) */
     private String reasoningContent;
+    /** token 消耗(assistant消息, 仅统计用, 可为空) */
+    private Integer tokenUsage;
 
     public Message(String role, String content, String model) {
         this(role, content, model, null);
@@ -44,5 +46,11 @@ public class Message {
 
     public static Message assistant(String content, String reasoningContent, String model) {
         return new Message("assistant", content, model, reasoningContent);
+    }
+
+    public static Message assistant(String content, String reasoningContent, String model, Integer tokenUsage) {
+        Message m = new Message("assistant", content, model, reasoningContent);
+        m.setTokenUsage(tokenUsage);
+        return m;
     }
 }

@@ -42,7 +42,9 @@ public class ChatController {
                     "- `tool_call`: 工具调用开始\n" +
                     "- `tool_result`: 工具执行结果\n" +
                     "- `done`: 结束块，携带 token 统计\n" +
-                    "- `error`: 错误信息",
+                    "- `error`: 错误信息\n" +
+                    "- `interrupted`: 用户主动中断\n" +
+                    "- `context_warning`: 上下文接近上限，建议开启新对话",
             responses = {
                     @ApiResponse(responseCode = "200", description = "SSE 流，逐条推送 ChatChunk",
                             content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,

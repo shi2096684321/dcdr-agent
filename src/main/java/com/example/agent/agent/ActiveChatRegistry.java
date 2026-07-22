@@ -65,10 +65,16 @@ public class ActiveChatRegistry {
         private final FluxSink<ChatChunk> sink;
         private final Disposable upstream;
         private final AtomicBoolean finished = new AtomicBoolean(false);
+        /** 中断时由调用方注入的回调: 负责下发 interrupted + 带(估算)token 的 done + complete */
+        private Runnable onInterrupt;
 
         public ChatHandle(FluxSink<ChatChunk> sink, Disposable upstream) {
             this.sink = sink;
             this.upstream = upstream;
+        }
+
+        public void setOnInterrupt(Runnable onInterrupt) {
+            this.onInterrupt = onInterrupt;
         }
 
         /** 仅取消上游(客户端断开连接时使用, 不再向已关闭的通道写数据) */
@@ -87,8 +93,13 @@ public class ActiveChatRegistry {
                     upstream.dispose();
                 }
                 try {
-                    sink.next(ChatChunk.interrupted());
-                    sink.complete();
+                    if (onInterrupt != null) {
+                        // 由调用方决定下发内容(含估算 token 的 done), 保证中断也能统计 token
+                        onInterrupt.run();
+                    } else {
+                        sink.next(ChatChunk.interrupted());
+                        sink.complete();
+                    }
                 } catch (Exception e) {
                     log.warn("下发中断信号失败(连接可能已关闭)", e);
                 }

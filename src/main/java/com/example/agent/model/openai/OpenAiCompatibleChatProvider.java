@@ -177,6 +177,25 @@ public abstract class OpenAiCompatibleChatProvider implements com.example.agent.
                 .mapNotNull(data -> {
                     try {
                         JsonNode root = mapper.readTree(data);
+                        // 1. usage 节点(流式最后一块, choices 可能为空): 优先识别并回传真实 token 消耗
+                        //    注意: 该块同时携带 finish_reason, 需一并读取(不要 early-return 漏掉)
+                        JsonNode usageNode = root.path("usage");
+                        if (!usageNode.isMissingNode() && !usageNode.isNull()) {
+                            int prompt = usageNode.path("prompt_tokens").asInt(0);
+                            int completion = usageNode.path("completion_tokens").asInt(0);
+                            int total = usageNode.path("total_tokens").asInt(0);
+                            log.debug("[USAGE] 解析到 token 消耗: prompt={}, completion={}, total={}", prompt, completion, total);
+                            ChatChunk usageChunk = ChatChunk.usage(prompt, completion, total);
+                            JsonNode finishNode = root.path("choices").path(0).path("finish_reason");
+                            if (!finishNode.isMissingNode() && !finishNode.isNull()) {
+                                String fr = finishNode.asText();
+                                if (!fr.isEmpty()) {
+                                    usageChunk.setFinishReason(fr);
+                                    log.debug("[FINISH] 解析到结束原因: {}", fr);
+                                }
+                            }
+                            return usageChunk;
+                        }
                         JsonNode delta = root.path("choices").path(0).path("delta").path("content");
                         JsonNode reasoningContent = root.path("choices").path(0).path("delta").path("reasoning_content");
                         // reasoning_content(思维链) 与 content(正文) 是模型返回的两个互斥阶段,

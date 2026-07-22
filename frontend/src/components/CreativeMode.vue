@@ -12,7 +12,7 @@
     </aside>
     <div class="control-panel">
       <div class="model-card">
-        <div class="model-avatar gradient-orange">AI</div>
+        <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
         <div><div class="model-name">{{ modelLabel }}</div><div class="model-desc">图片生成模型</div></div>
       </div>
       <div class="section-title">参考图 (可选)</div>
@@ -33,7 +33,7 @@
       <button class="gen-btn gradient-green" @click="generate" :disabled="!prompt.trim() || generating">{{ generating ? '生成中...' : '生成' }}</button>
     </div>
     <div class="preview-area">
-      <div v-if="images.length===0 && !generating" class="empty"><div class="empty-icon">AI</div><p>等待生成</p><p class="hint">输入提示词并点击生成</p></div>
+      <div v-if="images.length===0 && !generating" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">输入提示词并点击生成</p></div>
       <img v-if="currentImg && !generating" :src="currentImg" class="result-img" />
       <div v-if="generating" class="loading"><div class="spinner"></div><p>正在生成中...</p></div>
       <div v-if="images.length>0" class="history">
@@ -50,6 +50,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { getProjects, createProject, generateImage } from '../api'
+import logoUrl from '../assets/dcdr-logo.png'
 const props = defineProps({ currentModel: String, imageModels: Array })
 const projects = ref([])
 const currentProjectId = ref(null)
@@ -93,7 +94,8 @@ onMounted(() => loadProjects())
 .meta{font-size:11px;color:#c0c4cc}
 .control-panel{width:340px;background:#1e1e1e;color:#e0e0e0;padding:20px;overflow-y:auto}
 .model-card{background:#252525;border-radius:10px;padding:12px;display:flex;align-items:center;gap:10px;margin-bottom:16px}
-.model-avatar{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
+.model-avatar{width:32px;height:32px;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.avatar-img{width:100%;height:100%;object-fit:cover}
 .model-name{font-size:14px;font-weight:600}
 .model-desc{font-size:11px;color:#777}
 .section-title{font-size:12px;color:#888;margin:16px 0 8px}
@@ -108,7 +110,7 @@ onMounted(() => loadProjects())
 .gen-btn:disabled{opacity:0.5}
 .preview-area{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;position:relative;background:#111}
 .empty{text-align:center;color:#555}
-.empty-icon{font-size:48px;margin-bottom:16px;opacity:0.4}
+.empty-icon{width:72px;height:72px;border-radius:16px;object-fit:cover;margin-bottom:16px;opacity:0.5}
 .hint{font-size:13px;color:#444}
 .result-img{max-width:85%;max-height:75vh;border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,0.5)}
 .loading{text-align:center;color:#666}
