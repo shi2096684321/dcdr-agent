@@ -10,11 +10,17 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.Duration;
+import java.util.concurrent.TimeoutException;
+
 /**
  * 智谱 CogView 图片生成 Provider
  */
 @Slf4j
 public class ZhipuImageProvider implements ImageModelProvider {
+
+    /** 单次生成请求的最大等待时长, 超时判定为失败以释放线程池线程 */
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(120);
 
     private final WebClient webClient;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -41,7 +47,9 @@ public class ZhipuImageProvider implements ImageModelProvider {
         try {
             String resp = webClient.post().uri("/images/generations")
                     .bodyValue(body.toString())
-                    .retrieve().bodyToMono(String.class).block();
+                    .retrieve().bodyToMono(String.class)
+                    .timeout(REQUEST_TIMEOUT)
+                    .block();
             JsonNode root = mapper.readTree(resp);
             String imageUrl = root.path("data").path(0).path("url").asText();
             ImageResponse response = new ImageResponse();
@@ -52,9 +60,24 @@ public class ZhipuImageProvider implements ImageModelProvider {
             response.setModel(model);
             return response;
         } catch (Exception e) {
+            if (isTimeout(e)) {
+                log.error("智谱图片生成超时({}s), 判定失败", REQUEST_TIMEOUT.getSeconds(), e);
+                throw new RuntimeException("图片生成超时, 请稍后重试", e);
+            }
             log.error("智谱图片生成失败, 进入演示模式", e);
             return demoResponse(request);
         }
+    }
+
+    /** 判断异常链中是否包含超时(区别于其他网络/业务异常, 超时不走演示兜底) */
+    private boolean isTimeout(Throwable e) {
+        while (e != null) {
+            if (e instanceof TimeoutException) {
+                return true;
+            }
+            e = e.getCause();
+        }
+        return false;
     }
 
     private ImageResponse demoResponse(ImageRequest request) {

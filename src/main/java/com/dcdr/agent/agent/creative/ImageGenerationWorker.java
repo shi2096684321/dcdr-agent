@@ -8,10 +8,13 @@ import com.dcdr.agent.dto.ImageRequest;
 import com.dcdr.agent.dto.ImageResponse;
 import com.dcdr.agent.model.provider.ImageModelProvider;
 import com.dcdr.agent.model.registry.ModelRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -34,6 +37,7 @@ public class ImageGenerationWorker {
     private final ProjectManager projectManager;
     private final ReferImageStorage referImageStorage;
     private final GeneratedImageStorage generatedImageStorage;
+    private final ObjectMapper objectMapper;
 
     /**
      * 异步执行图片生成, 完成/失败后更新生成记录。
@@ -86,12 +90,44 @@ public class ImageGenerationWorker {
         extra.setPrompt(request.getPrompt());
         extra.setSize(request.getSize());
         extra.setReferImageUrl(referImageStorage.save(request.getReferImage()));
-        extra.setResultUrl(url);
-        extra.setThumbnailUrl(url);
+        // 与主记录一致: 下载落盘, 转为本地长期 URL(避免厂商临时链接过期)
+        String localUrl = generatedImageStorage.store(url);
+        extra.setResultUrl(localUrl);
+        extra.setThumbnailUrl(localUrl);
         extra.setModel(request.getModel());
+        extra.setParamsJson(buildParamsJson(request));
         extra.setStatus("completed");
         extra.setCostCredits(1);
         extra.setCreatedAt(LocalDateTime.now());
         return extra;
+    }
+
+    /** 与主记录保持一致的参数序列化(便于详情回显) */
+    private String buildParamsJson(ImageRequest request) {
+        try {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (request.getNegativePrompt() != null && !request.getNegativePrompt().isBlank()) {
+                params.put("negativePrompt", request.getNegativePrompt());
+            }
+            if (request.getStyle() != null && !request.getStyle().isBlank()) {
+                params.put("style", request.getStyle());
+            }
+            if (request.getN() != null) {
+                params.put("n", request.getN());
+            }
+            if (request.getPromptExtend() != null) {
+                params.put("promptExtend", request.getPromptExtend());
+            }
+            if (request.getWatermark() != null) {
+                params.put("watermark", request.getWatermark());
+            }
+            if (request.getSeed() != null) {
+                params.put("seed", request.getSeed());
+            }
+            return params.isEmpty() ? null : objectMapper.writeValueAsString(params);
+        } catch (Exception e) {
+            log.warn("额外图片参数序列化失败, 将不写入 paramsJson", e);
+            return null;
+        }
     }
 }

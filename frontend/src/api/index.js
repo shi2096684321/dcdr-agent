@@ -15,6 +15,7 @@ export const createProject = (data) => api.post('/api/projects', data).then(r =>
 export const deleteProject = (id) => api.delete(`/api/projects/${id}`).then(r => r.data)
 export const renameProject = (id, name) => api.put(`/api/projects/${id}`, { name }).then(r => r.data)
 export const getGenerations = (id) => api.get(`/api/projects/${id}/generations`).then(r => r.data.data)
+export const getThreadPoolStats = () => api.get('/api/system/thread-pool').then(r => r.data.data)
 export const uploadFile = (file) => { const fd = new FormData(); fd.append('file', file); return api.post('/api/files/upload', fd).then(r => r.data.data) }
 
 // 按 sessionId 记录进行中的 fetch 读取控制器, 供中断时本地中止

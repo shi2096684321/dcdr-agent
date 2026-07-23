@@ -12,7 +12,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -45,7 +47,7 @@ public class CreativeEngine {
      * 立即创建一条 pending 记录并返回, 真正的模型调用在后台线程池执行,
      * 完成后回写状态。前端凭返回的记录 ID 轮询 {@code GET /api/generations/{id}} 获取结果。
      */
-    public GenerationDTO generateImage(ImageRequest request) {
+    public List<GenerationDTO> generateImage(ImageRequest request) {
         log.info("提交图片生成任务, 模型: {}, 提示词: {}", request.getModel(), request.getPrompt());
 
         if (request.getPrompt() == null || request.getPrompt().isBlank()) {
@@ -57,24 +59,62 @@ public class CreativeEngine {
             projectId = projectManager.createProject("未命名项目", "image", request.getModel()).getId();
         }
 
+        // 官方接口仅支持单次单张生成, 应用层将 n>1 拆分为 n 个互相独立的任务,
+        // 每个任务单线程处理一张图(各自一条 pending 记录), 效果等同逐张生成。
+        int n = (request.getN() == null || request.getN() < 1) ? 1 : request.getN();
+        // 参考图与参数在各任务间共享, 提前计算一次避免重复落盘
+        String referImageUrl = referImageStorage.save(request.getReferImage());
+        String paramsJson = buildParamsJson(request);
+
+        List<GenerationDTO> records = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            ImageRequest single = cloneWithN(request, projectId, 1);
+            GenerationDTO record = createPendingRecord(single, projectId, referImageUrl, paramsJson);
+            projectManager.addGeneration(projectId, record);
+            // 后台异步执行(各自独立线程), 不阻塞当前请求线程
+            imageGenerationWorker.process(record.getId(), single);
+            records.add(record);
+        }
+
+        log.info("图片生成任务已提交, 共{}个独立任务, 状态=pending", records.size());
+        return records;
+    }
+
+    /** 复制请求并将生成数量固定为 1(单任务单张) */
+    private ImageRequest cloneWithN(ImageRequest src, String projectId, int n) {
+        ImageRequest r = new ImageRequest();
+        r.setProjectId(projectId);
+        r.setModel(src.getModel());
+        r.setPrompt(src.getPrompt());
+        r.setReferImage(src.getReferImage());
+        r.setEngineType(src.getEngineType());
+        r.setSize(src.getSize());
+        r.setAspectRatio(src.getAspectRatio());
+        r.setStyle(src.getStyle());
+        r.setNegativePrompt(src.getNegativePrompt());
+        r.setN(n);
+        r.setPromptExtend(src.getPromptExtend());
+        r.setWatermark(src.getWatermark());
+        r.setSeed(src.getSeed());
+        r.setSafeMode(src.isSafeMode());
+        return r;
+    }
+
+    /** 构造一条 pending 状态的生成记录(不触发实际模型调用) */
+    private GenerationDTO createPendingRecord(ImageRequest request, String projectId,
+                                               String referImageUrl, String paramsJson) {
         GenerationDTO record = new GenerationDTO();
         record.setId("gen_" + UUID.randomUUID().toString().replace("-", ""));
         record.setProjectId(projectId);
-        record.setType("image");
+        record.setType(request.getEngineType() != null ? request.getEngineType() : "image");
         record.setPrompt(request.getPrompt());
         record.setSize(request.getSize());
-        record.setReferImageUrl(referImageStorage.save(request.getReferImage()));
+        record.setReferImageUrl(referImageUrl);
         record.setModel(request.getModel());
+        record.setParamsJson(paramsJson);
         record.setCostCredits(calculateCredits(request.getPrompt()));
         record.setStatus("pending");
         record.setCreatedAt(LocalDateTime.now());
-        record.setParamsJson(buildParamsJson(request));
-        projectManager.addGeneration(projectId, record);
-
-        // 后台异步执行, 不阻塞当前请求线程
-        imageGenerationWorker.process(record.getId(), request);
-
-        log.info("图片生成任务已提交, id={}, 状态=pending", record.getId());
         return record;
     }
 

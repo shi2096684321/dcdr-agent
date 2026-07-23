@@ -12,8 +12,10 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 /**
  * 阿里云百炼(DashScope) 通义万相文生图 Provider。
@@ -28,6 +30,9 @@ public class QwenImageProvider implements ImageModelProvider {
 
     /** qwen-image-2.0 同步文生图接口 */
     private static final String GENERATION_URI = "/api/v1/services/aigc/multimodal-generation/generation";
+
+    /** 单次生成请求的最大等待时长, 超时判定为失败以释放线程池线程 */
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(120);
 
     private final WebClient webClient;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -65,9 +70,24 @@ public class QwenImageProvider implements ImageModelProvider {
             response.setModel(model);
             return response;
         } catch (Exception e) {
+            if (isTimeout(e)) {
+                log.error("通义万相图片生成超时({}s), 判定失败", REQUEST_TIMEOUT.getSeconds(), e);
+                throw new RuntimeException("图片生成超时, 请稍后重试", e);
+            }
             log.error("通义万相图片生成失败, 进入演示模式", e);
             return demoResponse(request);
         }
+    }
+
+    /** 判断异常链中是否包含超时(区别于其他网络/业务异常, 超时不走演示兜底) */
+    private boolean isTimeout(Throwable e) {
+        while (e != null) {
+            if (e instanceof TimeoutException) {
+                return true;
+            }
+            e = e.getCause();
+        }
+        return false;
     }
 
     /** 同步调用 qwen-image-2.0 文生图接口, 返回所有图片 URL */
@@ -100,7 +120,9 @@ public class QwenImageProvider implements ImageModelProvider {
 
         String resp = webClient.post().uri(GENERATION_URI)
                 .bodyValue(body.toString())
-                .retrieve().bodyToMono(String.class).block();
+                .retrieve().bodyToMono(String.class)
+                .timeout(REQUEST_TIMEOUT)
+                .block();
 
         return parseUrls(resp);
     }
