@@ -58,6 +58,7 @@ public class InMemoryChatMemory implements ChatMemory {
             Message m = new Message(e.getRole(), e.getContent(), e.getModel(), e.getReasoningContent());
             m.setTokenUsage(e.getTokenUsage());
             m.setError(e.getError());
+            m.setInterrupted(e.getInterrupted());
             m.setSeq(e.getSeq());
             m.setImages(parseImages(e.getImages()));
             m.setVisionModel(e.getVisionModel());
@@ -93,6 +94,7 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setReasoningContent(message.getReasoningContent());
         entity.setTokenUsage(message.getTokenUsage());
         entity.setError(message.getError());
+        entity.setInterrupted(message.getInterrupted());
         entity.setImages(toJson(message.getImages()));
         entity.setVisionModel(message.getVisionModel());
         entity.setImageStatus(message.getImageStatus());

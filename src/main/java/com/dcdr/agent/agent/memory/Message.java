@@ -27,6 +27,8 @@ public class Message {
 
     /** 是否为失败(错误)消息 */
     private Boolean error;
+    /** 是否被用户手动中断(产生不完整的回复) */
+    private Boolean interrupted;
     /** 用户上传的图片URL列表(多模态, 可为空) */
     private List<String> images;
 

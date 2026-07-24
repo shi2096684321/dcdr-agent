@@ -192,6 +192,7 @@ public class SessionManager {
         dto.setTokenUsage(m.getTokenUsage());
         dto.setSeq(m.getSeq());
         dto.setError(m.getError());
+        dto.setInterrupted(m.getInterrupted());
         dto.setCreatedAt(m.getCreatedAt());
         return dto;
     }

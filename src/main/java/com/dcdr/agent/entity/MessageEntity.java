@@ -76,6 +76,9 @@ public class MessageEntity {
     /** 是否为失败(错误)消息, 用于前端展示重试入口 */
     @Column
     private Boolean error;
+    /** 是否被用户手动中断(产生不完整的回复) */
+    @Column
+    private Boolean interrupted;
 
     @Column(nullable = false)
     private LocalDateTime createdAt;

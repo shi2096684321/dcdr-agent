@@ -98,6 +98,8 @@
             <template v-else>
               <div v-if="msg.content" class="msg-bubble" v-html="renderMarkdown(msg.content)"></div>
 
+              <div v-if="msg.interrupted" class="msg-interrupted">⚠ 已中断，以下为已生成的内容</div>
+
               <!-- 元信息 -->
               <div v-if="msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
                 <span v-if="msg.durationMs != null">⏱ {{ (msg.durationMs / 1000).toFixed(1) }}s</span>
@@ -189,6 +191,7 @@ const currentSessionId = ref(null)
 const messages = ref([])
 const input = ref('')
 const streaming = ref(false)
+const interruptedRef = ref(false)
 const streamContent = ref('')
 const reasoningContent = ref('')
 const statusHint = ref('')
@@ -362,7 +365,7 @@ async function send(opts = {}) {
   streamContent.value = ''
   reasoningContent.value = ''
   statusHint.value = ''
-  let interrupted = false
+  interruptedRef.value = false
   scrollBottom()
 
   await streamChat(
@@ -375,7 +378,7 @@ async function send(opts = {}) {
     (chunk) => {
       if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
       if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
-      if (chunk.type === 'interrupted') { statusHint.value = ''; interrupted = true; return }
+      if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
       if (chunk.type === 'done') {
         statusHint.value = ''
@@ -396,7 +399,7 @@ async function send(opts = {}) {
           role: 'assistant',
           content: streamContent.value,
           reasoningContent: reasoningContent.value,
-          interrupted,
+          interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
           durationMs: lastDurationMs.value
         })
@@ -411,10 +414,10 @@ async function send(opts = {}) {
       if (currentSessionId.value) {
         getMessages(currentSessionId.value)
           .then(list => {
+            // 仅当数量一致时回写后端 seq(用于编辑/重试截断历史);
+            // 数量不一致(如刚中断, 本地消息尚未持久化)时保留本地消息, 避免把正在输出的内容冲掉
             if (list && list.length === messages.value.length) {
               list.forEach((m, i) => { if (messages.value[i]) messages.value[i].seq = m.seq })
-            } else if (list && list.length) {
-              messages.value = list
             }
           })
           .catch(() => {})
@@ -427,6 +430,7 @@ async function send(opts = {}) {
 /** 中断当前会话(停止生成) */
 function stop() {
   if (!streaming.value || !currentSessionId.value) return
+  interruptedRef.value = true
   stopChat(currentSessionId.value)
 }
 
@@ -566,6 +570,7 @@ onMounted(() => { loadSessions() })
 /* 元信息 */
 .msg-meta { margin-top: 8px; display: flex; gap: 10px; font-size: 12px; color: #909399; }
 .msg-meta span { background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 8px; padding: 3px 10px; }
+.msg-interrupted { margin-top: 6px; font-size: 12px; color: #d97706; background: rgba(217,119,6,0.1); border: 1px solid rgba(217,119,6,0.3); border-radius: 8px; padding: 4px 10px; }
 
 /* 光标动画 */
 .cursor { animation: blink 1s infinite; color: #667eea; font-weight: bold; }

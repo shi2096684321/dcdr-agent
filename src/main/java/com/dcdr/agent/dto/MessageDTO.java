@@ -23,6 +23,9 @@ public class MessageDTO {
     /** 是否为失败(错误)消息 */
     @Schema(description = "是否为失败消息（用于前端重试）")
     private Boolean error;
+    /** 是否被用户手动中断(产生不完整的回复) */
+    @Schema(description = "是否被用户手动中断（生成不完整）")
+    private Boolean interrupted;
     /** 角色: user / assistant / system */
     @Schema(description = "角色", allowableValues = {"user", "assistant", "system"}, example = "user")
     private String role;

@@ -129,6 +129,8 @@ public class AgentOrchestrator {
                         // 流式调用模型
                         StringBuilder accumulated = new StringBuilder();
                         StringBuilder reasoningAccumulated = new StringBuilder();
+                        // 防止正常完成与中断并发时重复保存助手消息(只保存一条)
+                        final java.util.concurrent.atomic.AtomicBoolean assistantSaved = new java.util.concurrent.atomic.AtomicBoolean(false);
                         // handle 引用需在 doOnComplete/doOnError 中访问, 用数组持有以满足 effectively final
                         final ActiveChatRegistry.ChatHandle[] handleHolder = new ActiveChatRegistry.ChatHandle[1];
                         // 捕获模型真实返回的 token 消耗与结束原因, 用于回填 done 块
@@ -169,7 +171,9 @@ public class AgentOrchestrator {
                                     if ("insufficient_system_resource".equals(fr) || "content_filter".equals(fr)) {
                                         assistantMessage.setError(true);
                                     }
-                                    memory.save(sessId, assistantMessage);
+                                    if (assistantSaved.compareAndSet(false, true)) {
+                                        memory.save(sessId, assistantMessage);
+                                    }
                                     // 更新会话时间
                                     sessionManager.touch(sessId);
                                     sink.next(ChatChunk.done(p, c, t, durationMs));
@@ -214,10 +218,21 @@ public class AgentOrchestrator {
                                     + tokenEstimator.estimate(reasoningAccumulated.toString());
                             int estT = estP + estC;
                             long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+                            // 手动终止也要保留已生成的部分(即使不完整)
+                            String intC = accumulated.toString();
+                            String intR = reasoningAccumulated.toString();
+                            if (!intC.isEmpty() || !intR.isEmpty()) {
+                                if (assistantSaved.compareAndSet(false, true)) {
+                                    Message partial = Message.assistant(intC, intR, provider.getName(), estT);
+                                    partial.setInterrupted(true);
+                                    memory.save(sessId, partial);
+                                }
+                            }
                             sink.next(ChatChunk.interrupted());
                             sink.next(ChatChunk.done(estP, estC, estT, durationMs));
                             sink.complete();
                             activeChatRegistry.unregister(sessId);
+                            log.info("会话 {} 手动中断, 已保留部分生成内容", sessId);
                         });
                         handleHolder[0] = handle;
                         activeChatRegistry.register(sessId, handle);
