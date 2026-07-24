@@ -58,9 +58,25 @@ public class AgentOrchestrator {
             List<Message> history,
             ChatModelProvider provider,
             String imageFallbackWarning,
+            String imageUnrecognizedError,
+            String visionModel,
+            String imageStatus,
+            String imageCaption,
+            String imageTokenUsage,
             List<Message> contextForEstimate,
             boolean nearLimit,
             int estTokens
+    ) {}
+
+    /** 图片预处理结果(含路由元信息, 用于落库与前端提示) */
+    private record ImagePrep(
+            String fallbackWarning,     // 切换到视觉模型直接回答的提示
+            String unrecognizedError,   // 识别失败提示(需直接提示并中止作答)
+            String visionModel,         // 最终回答的视觉模型名
+            String imageStatus,         // none(无图/忽略) / vision(视觉模型直接回答)
+            String imageCaption,        // 预留(直接回答模式下为空)
+            String imageTokenUsage,     // 预留(直接回答模式下为空)
+            ChatModelProvider answerProvider  // 最终用于回答的模型(视觉模型直接回答时为视觉模型)
     ) {}
 
     /**
@@ -86,15 +102,28 @@ public class AgentOrchestrator {
                         // 计时起点(用于统计模型生成耗时, 不含图片识别预处理)
                         final long startNanos = System.nanoTime();
 
+                        // 图片识别失败: 直接提示并结束, 不再调用模型作答(避免文本模型基于缺失图片硬答)
+                        if (ctx.imageUnrecognizedError() != null) {
+                            sink.next(ChatChunk.error(ctx.imageUnrecognizedError(), "IMAGE_UNRECOGNIZED"));
+                            sink.complete();
+                            activeChatRegistry.unregister(sessId);
+                            return;
+                        }
+
                         // 上下文接近上限提示: 用「将发送给模型的完整上下文」做估算, 在调用模型前先下发, 不阻断对话
                         if (ctx.nearLimit()) {
                             sink.next(ChatChunk.contextWarning(
                                     String.format("对话已较长（约 %d token），接近上下文上限，建议开启新对话以免丢失早期内容。",
                                             ctx.estTokens())));
                         }
-                        // 图片自动路由降级提示(已用视觉模型识别后作答)
+                        // 图片自动路由降级提示(已切换视觉模型直接作答)
                         if (ctx.imageFallbackWarning() != null) {
                             sink.next(ChatChunk.contextWarning(ctx.imageFallbackWarning()));
+                        }
+                        // 图片识别过程提示: 视觉模型从读图到产出首个 token 需数秒,
+                        // 先下发识别中状态, 避免前端在此空窗期显得"卡住"
+                        if ("vision".equals(ctx.imageStatus())) {
+                            sink.next(ChatChunk.status("正在识别图片内容，请稍候…"));
                         }
 
                         // 流式调用模型
@@ -208,7 +237,7 @@ public class AgentOrchestrator {
 
         // 有图片时在管线前拼接"正在识别图片"状态提示(立即发出, 不阻塞)
         Flux<ChatChunk> result = hasImages
-                ? Flux.concat(Flux.just(ChatChunk.status("正在识别图片，请稍候…")), pipeline)
+                ? Flux.concat(Flux.just(ChatChunk.status("正在处理图片，请稍候…")), pipeline)
                 : pipeline;
 
         return result.onErrorResume(e -> Flux.just(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR")));
@@ -216,8 +245,8 @@ public class AgentOrchestrator {
 
     /**
      * 阻塞的准备阶段(在 boundedElastic 线程执行):
-     * 确保会话、加载记忆、路由决策、保存用户消息、图片自动路由(含视觉识别降级)、上下文上限估算。
-     * 结果封装为 ChatContext 交给流式主链路(此时 request 中的图片已被解析为 base64 / 识别文本已注入)。
+     * 确保会话、加载记忆、路由决策、保存用户消息、图片自动路由(不支持视觉时直接切换视觉模型回答)、上下文上限估算。
+     * 结果封装为 ChatContext 交给流式主链路(此时 request 中的图片已被解析为 base64, 最终回答模型已确定)。
      */
     private ChatContext prepareForChat(ChatRequest request) {
         // 1. 确保有会话
@@ -237,15 +266,26 @@ public class AgentOrchestrator {
         ChatModelProvider provider = router.route(request, history);
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
 
-        // 4. 保存用户消息到记忆(含上传图片)
-        boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
-        memory.save(sessId, Message.user(request.getMessage(), request.getImages()));
-        if (firstMessage) {
-            sessionManager.autoTitleFromFirstMessage(sessId, request.getMessage());
-        }
+        // 4.1 图片自动路由(必须先执行: 会 mutate request —— 解析 base64 / 决定最终回答模型)
+        //      —— 必须在保存用户消息之前完成, 以便把路由元信息(模型/状态)一并落库
+        String userOriginal = request.getMessage();   // 捕获用户原话(模型路由前)
+        List<String> originalImages = request.getImages();  // 捕获原始图片(相对路径/url), 单独用于落库; 模型侧统一用解析后的 base64
+        ImagePrep prep = prepareImagesForModel(request, history, provider);
+        provider = prep.answerProvider();  // 最终回答模型(不支持视觉时切换为视觉模型, 直接看图回答)
+        String imageFallbackWarning = prep.fallbackWarning();
+        String imageUnrecognizedError = prep.unrecognizedError();
 
-        // 4.1 图片自动路由: 解析本地图片为 base64, 并对不支持视觉的模型先做图片识别降级(阻塞调用)
-        String imageFallbackWarning = prepareImagesForModel(request, history, provider);
+        // 4. 保存用户消息到记忆(含图片路由元信息; content 存用户原话, imageCaption 直接回答模式下为空)
+        boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
+        Message userMsg = Message.user(userOriginal, originalImages);
+        userMsg.setVisionModel(prep.visionModel());
+        userMsg.setImageStatus(prep.imageStatus());
+        userMsg.setImageCaption(prep.imageCaption());
+        userMsg.setImageTokenUsage(prep.imageTokenUsage());
+        memory.save(sessId, userMsg);
+        if (firstMessage) {
+            sessionManager.autoTitleFromFirstMessage(sessId, userOriginal);
+        }
 
         // 2.1 上下文上限估算(用于调用模型前的提示)
         List<Message> contextForEstimate = new ArrayList<>(history);
@@ -253,7 +293,9 @@ public class AgentOrchestrator {
         boolean nearLimit = tokenEstimator.isNearLimit(contextForEstimate);
         int est = nearLimit ? tokenEstimator.estimate(contextForEstimate) : 0;
 
-        return new ChatContext(sessId, history, provider, imageFallbackWarning, contextForEstimate, nearLimit, est);
+        return new ChatContext(sessId, history, provider, imageFallbackWarning, imageUnrecognizedError,
+                prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
+                contextForEstimate, nearLimit, est);
     }
 
     /**
@@ -269,21 +311,39 @@ public class AgentOrchestrator {
 
         List<Message> history = memory.load(sessionId);
         ChatModelProvider provider = router.route(request, history);
+
+        // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)
+        String userOriginal = request.getMessage();
+        List<String> originalImages = request.getImages();  // 捕获原始图片(相对路径/url), 单独用于落库; 模型侧统一用解析后的 base64
+        ImagePrep prepSync = prepareImagesForModel(request, history, provider);
+        String imageFallbackWarning = prepSync.fallbackWarning();
+
         boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
-        memory.save(sessionId, Message.user(request.getMessage(), request.getImages()));
+        Message userMsg = Message.user(userOriginal, originalImages);
+        userMsg.setVisionModel(prepSync.visionModel());
+        userMsg.setImageStatus(prepSync.imageStatus());
+        userMsg.setImageCaption(prepSync.imageCaption());
+        userMsg.setImageTokenUsage(prepSync.imageTokenUsage());
+        memory.save(sessionId, userMsg);
         if (firstMessage) {
-            sessionManager.autoTitleFromFirstMessage(sessionId, request.getMessage());
+            sessionManager.autoTitleFromFirstMessage(sessionId, userOriginal);
         }
 
-        // 图片自动路由: 解析本地图片为 base64, 并对不支持视觉的模型先做图片识别降级
-        String imageFallbackWarning = prepareImagesForModel(request, history, provider);
+        // 图片未能识别: 直接返回提示, 不再调用模型作答
+        if (prepSync.unrecognizedError() != null) {
+            ChatResponse r = new ChatResponse();
+            r.setContent(prepSync.unrecognizedError());
+            r.setContextWarning(prepSync.unrecognizedError());
+            r.setModel(prepSync.visionModel());
+            return r;
+        }
 
-        ChatResponse response = provider.invoke(request, history);
+        ChatResponse response = prepSync.answerProvider().invoke(request, history);
         if (imageFallbackWarning != null) {
             response.setContextWarning(imageFallbackWarning);
         }
         Integer usage = response.getTokenUsage() != null ? response.getTokenUsage().getTotal() : null;
-        memory.save(sessionId, Message.assistant(response.getContent(), null, provider.getName(), usage));
+        memory.save(sessionId, Message.assistant(response.getContent(), null, prepSync.answerProvider().getName(), usage));
 
         sessionManager.touch(sessionId);
 
@@ -292,13 +352,13 @@ public class AgentOrchestrator {
 
     /**
      * 图片自动路由与可访问性处理:
-     * 1. 将本地相对路径图片解析为 base64 data URL(无论哪种模型, 保证视觉模型能读到)
-     * 2. 若当前模型不支持视觉但用户上传了图片 → 自动用视觉模型把图片识别成文字描述,
-     *    注入当前用户消息文本并清空 images(降级为纯文本模型处理), 避免图片被静默丢弃
+     * 1. 将本地相对路径图片解析为 base64 data URL(供视觉模型直接读取)
+     * 2. 若当前模型不支持视觉但用户上传了图片 → 直接切换到视觉模型看图回答(一步),
+     *    不再“先识别再交给纯文本模型”, 避免重复调用与图片细节丢失
      */
-    /** 返回降级提示文案(若有), 无降级则返回 null */
-    private String prepareImagesForModel(ChatRequest request, List<Message> history, ChatModelProvider provider) {
-        // 1. 解析当前消息图片为可访问的 base64 形式
+    /** 图片预处理: 返回降级成功提示或识别失败提示(失败时需直接提示并中止作答) */
+    private ImagePrep prepareImagesForModel(ChatRequest request, List<Message> history, ChatModelProvider provider) {
+        // 1. 解析当前消息图片为可访问的 base64 形式(供视觉模型直接读取)
         List<String> resolved = imageResolver.resolveForModel(request.getImages());
         request.setImages(resolved);
 
@@ -309,49 +369,29 @@ public class AgentOrchestrator {
             }
         }
 
-        // 3. 自动路由降级: 当前模型不支持视觉但有图片
-        if (provider.supportsVision() || resolved == null || resolved.isEmpty()) {
-            return null;
+        // 3. 决定最终回答模型:
+        //    有图片且当前模型不支持视觉时, 直接用视觉模型看图回答(一步), 不再"先识别再交给纯文本模型"。
+        boolean hasImage = resolved != null && !resolved.isEmpty();
+        if (!hasImage) {
+            // 无图片: 原模型直接回答
+            return new ImagePrep(null, null, null, "none", null, null, provider);
         }
+        if (provider.supportsVision()) {
+            // 当前模型即视觉模型: 直接看图回答
+            return new ImagePrep(null, null, provider.getName(), "vision", null, null, provider);
+        }
+        // 当前模型不支持视觉但有图片: 自动切换到视觉模型直接回答(一步)
         ChatModelProvider vision = registry.getFirstVisionChatProvider();
         if (vision == null) {
             log.warn("用户上传了图片, 但当前模型[{}]不支持视觉且无可用视觉模型, 图片将被忽略", provider.getName());
-            return null;
+            return new ImagePrep("当前没有可用的视觉模型，上传的图片将被忽略，仅按文字内容回答。",
+                    null, null, "none", null, null, provider);
         }
-        StringBuilder desc = new StringBuilder();
-        int idx = 1;
-        for (String img : resolved) {
-            try {
-                String d = recognizeImage(vision, img);
-                if (d != null && !d.isBlank()) {
-                    desc.append("\n[图片 ").append(idx).append(" 识别结果]: ").append(d.trim());
-                }
-            } catch (Exception e) {
-                log.warn("图片识别失败(降级跳过): {}", img, e);
-            }
-            idx++;
-        }
-        if (desc.length() > 0) {
-            String aug = (request.getMessage() == null ? "" : request.getMessage())
-                    + "\n\n[以下是用户上传图片的识别内容, 请基于这些信息回答问题]:" + desc;
-            request.setMessage(aug);
-            request.setImages(null); // 纯文本模型不再携带图片
-            log.info("已用视觉模型[{}]识别 {} 张图片, 注入文本模型[{}]", vision.getName(), resolved.size(), provider.getName());
-            return String.format("当前模型「%s」不支持直接看图，已用视觉模型「%s」先将图片内容识别为文字，再交由该模型作答；"
-                    + "模型无法直接引用原图中的细节，如需更精确的视觉理解，请切换到支持看图的模型。",
-                    provider.getName(), vision.getName());
-        }
-        return null;
+        log.info("当前模型[{}]不支持看图, 自动切换到视觉模型[{}]直接回答", provider.getName(), vision.getName());
+        return new ImagePrep(
+                String.format("当前模型「%s」不支持直接看图，已自动切换到视觉模型「%s」直接理解并回答图片。",
+                        provider.getName(), vision.getName()),
+                null, vision.getName(), "vision", null, null, vision);
     }
 
-    /** 用视觉模型识别单张图片, 返回文字描述 */
-    private String recognizeImage(ChatModelProvider vision, String img) {
-        ChatRequest r = new ChatRequest();
-        r.setModel(vision.getName());
-        r.setMessage("请尽可能详细地描述这张图片: 包括图中所有可见文字(OCR)、图表与数据、界面布局、物体与颜色等。"
-                + "只输出图片本身的描述, 不要回答任何问题。");
-        r.setImages(List.of(img));
-        ChatResponse resp = vision.invoke(r, List.of());
-        return resp != null ? resp.getContent() : null;
-    }
 }

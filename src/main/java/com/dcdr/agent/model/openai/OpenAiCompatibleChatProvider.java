@@ -41,7 +41,7 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
      * 同步调用总超时: 超过该时长仍未返回完整响应即中断并抛异常。
      * 同步模式只有一次发射, 故为"总等待时长"。可按需调整, 后续可提升为可配置字段。
      */
-    private static final Duration SYNC_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration SYNC_TIMEOUT = Duration.ofSeconds(120);
 
     /**
      * 流式空闲超时: 自上一次收到数据(或订阅)起, 超过该时长仍无新 chunk 即中断。

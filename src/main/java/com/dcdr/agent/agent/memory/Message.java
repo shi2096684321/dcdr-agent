@@ -30,6 +30,18 @@ public class Message {
     /** 用户上传的图片URL列表(多模态, 可为空) */
     private List<String> images;
 
+    /** 做图片识别的视觉模型名(降级场景, 非降级为 null) */
+    private String visionModel;
+
+    /** 图片识别状态: none(无图/视觉模型直接看) / recognized(降级识别成功) / failed(降级识别失败) */
+    private String imageStatus;
+
+    /** 图片识别结果原文(结构化存储, 与用户原话分离) */
+    private String imageCaption;
+
+    /** 图片识别消耗的 token(JSON: {"prompt":x,"completion":y,"total":z}, 可能为 null) */
+    private String imageTokenUsage;
+
     public Message(String role, String content, String model) {
         this(role, content, model, null);
     }

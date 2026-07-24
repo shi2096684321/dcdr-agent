@@ -60,6 +60,10 @@ public class InMemoryChatMemory implements ChatMemory {
             m.setError(e.getError());
             m.setSeq(e.getSeq());
             m.setImages(parseImages(e.getImages()));
+            m.setVisionModel(e.getVisionModel());
+            m.setImageStatus(e.getImageStatus());
+            m.setImageCaption(e.getImageCaption());
+            m.setImageTokenUsage(e.getImageTokenUsage());
             messages.add(m);
         }
         return messages;
@@ -90,6 +94,10 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setTokenUsage(message.getTokenUsage());
         entity.setError(message.getError());
         entity.setImages(toJson(message.getImages()));
+        entity.setVisionModel(message.getVisionModel());
+        entity.setImageStatus(message.getImageStatus());
+        entity.setImageCaption(message.getImageCaption());
+        entity.setImageTokenUsage(message.getImageTokenUsage());
         messageRepository.save(entity);
 
         // 上下文窗口控制: 超出时截断最早的非 system 消息

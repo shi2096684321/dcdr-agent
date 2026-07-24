@@ -47,6 +47,22 @@ public class MessageEntity {
     @Column(length = 8000)
     private String images;
 
+    /** 做图片识别的视觉模型名(降级场景) */
+    @Column(length = 64)
+    private String visionModel;
+
+    /** 图片识别状态: none / recognized / failed */
+    @Column(length = 16)
+    private String imageStatus;
+
+    /** 图片识别结果原文(结构化存储) */
+    @Column(columnDefinition = "TEXT")
+    private String imageCaption;
+
+    /** 图片识别消耗的 token(JSON 字符串) */
+    @Column(length = 128)
+    private String imageTokenUsage;
+
     /** 使用的模型(assistant 消息) */
     @Column(length = 64)
     private String model;
