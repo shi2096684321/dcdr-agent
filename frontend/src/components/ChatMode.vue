@@ -87,13 +87,29 @@
             </div>
 
             <!-- 文本内容 -->
-            <div v-if="msg.content" class="msg-bubble" v-html="renderMarkdown(msg.content)"></div>
-
-            <!-- 元信息 -->
-            <div v-if="msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
-              <span v-if="msg.durationMs != null">⏱ {{ (msg.durationMs / 1000).toFixed(1) }}s</span>
-              <span v-if="msg.tokenUsage != null">🪙 {{ msg.tokenUsage }} token</span>
+            <div v-if="editingSeq !== null && editingSeq === msg.seq" class="edit-box">
+              <textarea v-model="editBuffer" class="edit-textarea" placeholder="编辑消息内容..."
+                        @keydown.ctrl.enter="saveEdit(msg)" @keydown.meta.enter="saveEdit(msg)"></textarea>
+              <div class="msg-actions">
+                <button class="btn btn-small btn-primary" @click="saveEdit(msg)">保存并重新生成</button>
+                <button class="btn btn-small" @click="cancelEdit">取消</button>
+              </div>
             </div>
+            <template v-else>
+              <div v-if="msg.content" class="msg-bubble" v-html="renderMarkdown(msg.content)"></div>
+
+              <!-- 元信息 -->
+              <div v-if="msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
+                <span v-if="msg.durationMs != null">⏱ {{ (msg.durationMs / 1000).toFixed(1) }}s</span>
+                <span v-if="msg.tokenUsage != null">🪙 {{ msg.tokenUsage }} token</span>
+              </div>
+
+              <!-- 操作: 编辑历史消息 / 重新生成助手回答 -->
+              <div v-if="!streaming" class="msg-actions">
+                <button v-if="msg.role === 'user'" class="btn btn-small" @click="startEdit(msg)" title="编辑并重新生成">✏️ 编辑</button>
+                <button v-if="msg.role === 'assistant'" class="btn btn-small" @click="retry(msg)" title="重新生成此回答">🔄 重新生成</button>
+              </div>
+            </template>
           </div>
         </div>
 
@@ -108,7 +124,10 @@
                 <div v-html="renderMarkdown(reasoningContent)"></div>
               </details>
             </div>
-            <div class="msg-bubble streaming">{{ streamContent }}<span class="cursor">|</span></div>
+            <div v-if="statusHint && !streamContent && !reasoningContent" class="msg-status">
+              <span class="status-dot"></span>{{ statusHint }}
+            </div>
+            <div v-else class="msg-bubble streaming">{{ streamContent }}<span class="cursor">|</span></div>
           </div>
         </div>
       </div>
@@ -156,7 +175,7 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { getSessions, createSession, getMessages, streamChat, stopChat, renameSession, deleteSession, uploadFile } from '../api'
+import { getSessions, createSession, getMessages, streamChat, stopChat, renameSession, deleteSession, uploadFile, deleteMessages } from '../api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import logoUrl from '../assets/dcdr-logo.png'
@@ -172,12 +191,17 @@ const input = ref('')
 const streaming = ref(false)
 const streamContent = ref('')
 const reasoningContent = ref('')
+const statusHint = ref('')
 const msgBox = ref(null)
 const editingId = ref(null)
 const editText = ref('')
 const contextWarning = ref(null)
 const lastTokenUsage = ref(null)
 const lastDurationMs = ref(null)
+
+// 消息编辑/重试
+const editingSeq = ref(null)
+const editBuffer = ref('')
 
 // 文件相关
 const fileInput = ref(null)
@@ -287,11 +311,12 @@ function quickSend(text) {
 
 function scrollBottom() { nextTick(() => { if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight }) }
 
-async function send() {
+async function send(opts = {}) {
+  const overrideImages = opts.images || null
   const text = input.value.trim()
   const hasFiles = selectedFiles.value.length > 0
 
-  if ((!text && !hasFiles) || streaming.value) return
+  if ((!text && !hasFiles && !overrideImages) || streaming.value) return
   contextWarning.value = null
   lastTokenUsage.value = null
   lastDurationMs.value = null
@@ -323,6 +348,10 @@ async function send() {
         ElMessage.error(`上传 ${sf.file.name} 失败`)
       }
     }
+  } else if (overrideImages) {
+    // 编辑/重试时复用已上传的图片(无需重新上传)
+    userMsg.images = overrideImages.map(i => typeof i === 'string' ? { url: i, name: '' } : i)
+    userMsg.videos = []
   }
 
   messages.value.push(userMsg)
@@ -332,21 +361,30 @@ async function send() {
   streaming.value = true
   streamContent.value = ''
   reasoningContent.value = ''
+  statusHint.value = ''
   let interrupted = false
   scrollBottom()
 
   await streamChat(
-    { sessionId: currentSessionId.value, message: text, model: props.currentModel },
+    {
+      sessionId: currentSessionId.value,
+      message: text,
+      model: props.currentModel,
+      images: (userMsg.images || []).map(i => i.url)
+    },
     (chunk) => {
-      if (chunk.type === 'error') { streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
-      if (chunk.type === 'interrupted') { interrupted = true; return }
-      if (chunk.type === 'context_warning') { contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
+      if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
+      if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
+      if (chunk.type === 'interrupted') { statusHint.value = ''; interrupted = true; return }
+      if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
       if (chunk.type === 'done') {
+        statusHint.value = ''
         lastTokenUsage.value = chunk.tokenUsage?.total ?? null
         lastDurationMs.value = chunk.durationMs ?? null
         return
       }
       if (chunk.type !== 'chunk') return
+      statusHint.value = ''
       const ok = (v) => v != null
       if (ok(chunk.reasoningContent)) { reasoningContent.value += chunk.reasoningContent; scrollBottom() }
       if (ok(chunk.content)) { streamContent.value += chunk.content; scrollBottom() }
@@ -365,11 +403,24 @@ async function send() {
       }
       streamContent.value = ''
       reasoningContent.value = ''
+      statusHint.value = ''
       streaming.value = false
       loadSessions()
       scrollBottom()
+      // 将后端 seq 回写到本地消息, 以支持编辑/重试时按 seq 截断历史
+      if (currentSessionId.value) {
+        getMessages(currentSessionId.value)
+          .then(list => {
+            if (list && list.length === messages.value.length) {
+              list.forEach((m, i) => { if (messages.value[i]) messages.value[i].seq = m.seq })
+            } else if (list && list.length) {
+              messages.value = list
+            }
+          })
+          .catch(() => {})
+      }
     },
-    (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = '' }
+    (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = ''; statusHint.value = '' }
   )
 }
 
@@ -377,6 +428,51 @@ async function send() {
 function stop() {
   if (!streaming.value || !currentSessionId.value) return
   stopChat(currentSessionId.value)
+}
+
+/** 进入编辑态 */
+function startEdit(msg) {
+  editingSeq.value = msg.seq
+  editBuffer.value = msg.content || ''
+}
+
+/** 取消编辑 */
+function cancelEdit() {
+  editingSeq.value = null
+  editBuffer.value = ''
+}
+
+/** 保存编辑后的消息: 截断该消息之后的历史并重新生成 */
+async function saveEdit(msg) {
+  const newContent = (editBuffer.value || '').trim()
+  if (!newContent) return
+  const seq = msg.seq
+  const idx = messages.value.indexOf(msg)
+  editingSeq.value = null
+  editBuffer.value = ''
+  if (seq != null) {
+    try { await deleteMessages(currentSessionId.value, seq) } catch (e) { console.error('删除历史消息失败', e) }
+  }
+  // 截断该消息及其后的所有消息(本地)
+  if (idx >= 0) messages.value = messages.value.slice(0, idx)
+  input.value = newContent
+  await send({ images: msg.images })
+}
+
+/** 重新生成助手回答: 移除该助手消息及其前一条用户消息之后的历史, 并重新发送用户消息 */
+async function retry(msg) {
+  const idx = messages.value.indexOf(msg)
+  if (idx < 0) return
+  const userMsg = messages.value[idx - 1]
+  if (!userMsg || userMsg.role !== 'user') return
+  const userSeq = userMsg.seq
+  if (userSeq != null) {
+    try { await deleteMessages(currentSessionId.value, userSeq) } catch (e) { console.error('删除历史消息失败', e) }
+  }
+  // 移除用户消息及其后的所有消息(含失败的助手消息)
+  messages.value = messages.value.slice(0, idx - 1)
+  input.value = userMsg.content
+  await send({ images: userMsg.images })
 }
 
 onMounted(() => { loadSessions() })
@@ -457,6 +553,11 @@ onMounted(() => { loadSessions() })
 /* 消息气泡 */
 .msg-bubble { padding: 14px 18px; border-radius: 14px; background: #fff; border: 1px solid #e8ecf4; font-size: 14px; line-height: 1.8; box-shadow: 0 2px 8px rgba(0,0,0,0.04); word-break: break-word; }
 .msg-bubble.streaming { border-color: #667eea33; }
+.msg-status { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 12px;
+  background: #667eea11; color: #667eea; font-size: 14px; }
+.msg-status .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #667eea;
+  animation: statusPulse 1s ease-in-out infinite; }
+@keyframes statusPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
 .msg-bubble :deep(pre) { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: #e0e0e0; padding: 16px; border-radius: 10px; overflow-x: auto; margin: 10px 0; }
 .msg-bubble :deep(code) { background: #f5f7fa; padding: 3px 8px; border-radius: 5px; font-size: 13px; color: #e83e8c; }
 .msg-bubble :deep(p) { margin: 8px 0; }
@@ -509,4 +610,17 @@ onMounted(() => { loadSessions() })
 .image-preview-modal { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; align-items: center; justify-content: center; cursor: pointer; animation: fadeIn 0.2s ease; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 .preview-image { max-width: 90vw; max-height: 90vh; object-fit: contain; border-radius: 8px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+
+/* 消息操作(编辑/重试) */
+.msg-actions { margin-top: 8px; display: flex; gap: 8px; }
+.btn { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #dcdfe6; background: #fff; color: #606266; padding: 5px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: all 0.2s; }
+.btn:hover { border-color: #667eea; color: #667eea; background: #667eea0d; }
+.btn-small { padding: 4px 10px; font-size: 12px; }
+.btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-color: transparent; color: #fff; }
+.btn-primary:hover { color: #fff; opacity: 0.9; }
+
+/* 编辑历史消息 */
+.edit-box { background: #fff; border: 1px solid #667eea44; border-radius: 14px; padding: 10px; box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.edit-textarea { width: 100%; min-height: 84px; resize: vertical; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafbff; color: #303133; padding: 10px 12px; font-size: 14px; line-height: 1.6; outline: none; font-family: inherit; box-sizing: border-box; }
+.edit-textarea:focus { border-color: #667eea; background: #fff; }
 </style>

@@ -6,8 +6,12 @@ import com.dcdr.agent.repository.MessageRepository;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -21,10 +25,29 @@ public class InMemoryChatMemory implements ChatMemory {
 
     private final int maxMessages;
     private final MessageRepository messageRepository;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public InMemoryChatMemory(AgentProperties properties, MessageRepository messageRepository) {
         this.maxMessages = properties.getMemory().getMaxMessages();
         this.messageRepository = messageRepository;
+    }
+
+    private static List<String> parseImages(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String toJson(List<String> images) {
+        if (images == null || images.isEmpty()) return null;
+        try {
+            return MAPPER.writeValueAsString(images);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override
@@ -34,6 +57,9 @@ public class InMemoryChatMemory implements ChatMemory {
         for (MessageEntity e : entities) {
             Message m = new Message(e.getRole(), e.getContent(), e.getModel(), e.getReasoningContent());
             m.setTokenUsage(e.getTokenUsage());
+            m.setError(e.getError());
+            m.setSeq(e.getSeq());
+            m.setImages(parseImages(e.getImages()));
             messages.add(m);
         }
         return messages;
@@ -62,6 +88,8 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setCreatedAt(LocalDateTime.now());
         entity.setReasoningContent(message.getReasoningContent());
         entity.setTokenUsage(message.getTokenUsage());
+        entity.setError(message.getError());
+        entity.setImages(toJson(message.getImages()));
         messageRepository.save(entity);
 
         // 上下文窗口控制: 超出时截断最早的非 system 消息
@@ -84,5 +112,16 @@ public class InMemoryChatMemory implements ChatMemory {
     @Transactional
     public void clear(String sessionId) {
         messageRepository.deleteBySessionId(sessionId);
+    }
+
+    @Override
+    @Transactional
+    public void deleteFrom(String sessionId, int fromSeq) {
+        List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
+        for (MessageEntity e : entities) {
+            if (e.getSeq() >= fromSeq) {
+                messageRepository.delete(e);
+            }
+        }
     }
 }

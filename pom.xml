@@ -60,6 +60,8 @@
         </dependency>
 
         <!-- SpringDoc OpenAPI (Swagger UI) - 接口文档自动生成 -->
+        <!-- 2.6.0 是已缓存、可启动的版本; 之前 swagger 异常是本地残留的旧版 springdoc jar
+             污染类路径所致, 并非 2.6.0 本身问题。请确保 IDE 清理缓存后重新导入。 -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webflux-ui</artifactId>

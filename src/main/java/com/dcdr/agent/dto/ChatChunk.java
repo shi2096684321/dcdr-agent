@@ -119,6 +119,14 @@ public class ChatChunk {
         return c;
     }
 
+    /** 临时状态提示: 如"正在识别图片…", 前端展示为过渡态, 收到正文/完成后清除 */
+    public static ChatChunk status(String message) {
+        ChatChunk c = new ChatChunk();
+        c.setType("status");
+        c.setMessage(message);
+        return c;
+    }
+
     /** 上下文接近上限提示: 建议用户开启新对话 */
     public static ChatChunk contextWarning(String message) {
         ChatChunk c = new ChatChunk();

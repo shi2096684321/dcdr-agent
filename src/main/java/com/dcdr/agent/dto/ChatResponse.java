@@ -26,6 +26,10 @@ public class ChatResponse {
     @Schema(description = "Token 消耗")
     private TokenUsage tokenUsage;
 
+    /** 上下文/能力提示(如: 当前模型不支持看图, 已用视觉模型识别后作答) */
+    @Schema(description = "上下文或能力提示信息")
+    private String contextWarning;
+
     @Data
     @Schema(description = "Token 消耗统计")
     public static class TokenUsage {

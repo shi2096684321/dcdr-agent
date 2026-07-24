@@ -18,4 +18,7 @@ public interface ChatMemory {
 
     /** 清空会话记忆 */
     void clear(String sessionId);
+
+    /** 删除会话中 seq >= fromSeq 的消息(用于编辑/重试时截断历史) */
+    void deleteFrom(String sessionId, int fromSeq);
 }

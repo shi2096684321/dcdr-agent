@@ -8,6 +8,7 @@ export const createSession = (data) => api.post('/api/sessions', data).then(r =>
 export const deleteSession = (id) => api.delete(`/api/sessions/${id}`).then(r => r.data)
 export const renameSession = (id, title) => api.put(`/api/sessions/${id}/title`, { title }).then(r => r.data)
 export const getMessages = (id) => api.get(`/api/sessions/${id}/messages`).then(r => r.data.data)
+export const deleteMessages = (id, fromSeq) => api.delete(`/api/sessions/${id}/messages`, { params: { fromSeq } }).then(r => r.data)
 export const generateImage = (data) => api.post('/api/images/generate', data).then(r => r.data.data)
 export const getGeneration = (id) => api.get(`/api/generations/${id}`).then(r => r.data.data)
 export const getProjects = () => api.get('/api/projects').then(r => r.data.data)

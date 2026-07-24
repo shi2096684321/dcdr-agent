@@ -1,5 +1,6 @@
 package com.dcdr.agent.controller;
 
+import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.MessageDTO;
@@ -26,6 +27,7 @@ import java.util.Map;
 public class SessionController {
 
     private final SessionManager sessionManager;
+    private final ChatMemory memory;
 
     @Operation(summary = "获取会话列表", description = "返回当前所有会话（不含消息内容）")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
@@ -77,5 +79,17 @@ public class SessionController {
     @GetMapping("/{id}/messages")
     public Result<List<MessageDTO>> messages(@Parameter(description = "会话 ID", required = true) @PathVariable String id) {
         return Result.success(sessionManager.getMessages(id));
+    }
+
+    @Operation(summary = "删除会话中的部分消息", description = "删除 seq >= fromSeq 的消息，用于编辑历史或重试失败时截断上下文")
+    @ApiResponse(responseCode = "200", description = "删除成功")
+    @DeleteMapping("/{id}/messages")
+    public Result<Void> deleteMessages(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
+                                       @Parameter(description = "从此序号(含)开始删除", required = true) @RequestParam int fromSeq) {
+        if (sessionManager.getSession(id) == null) {
+            return Result.error(404, "会话不存在");
+        }
+        memory.deleteFrom(id, fromSeq);
+        return Result.success();
     }
 }

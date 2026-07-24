@@ -13,4 +13,9 @@ public class DeepseekChatProvider extends OpenAiCompatibleChatProvider {
                 config.getName(), "deepseek-v4-flash", "deepseek", config.getModel(),
                 config.getTemperature(), config.getMaxTokens(), config.getCapabilities());
     }
+
+    @Override
+    protected String getChatPath() {
+        return "/chat/completions";
+    }
 }

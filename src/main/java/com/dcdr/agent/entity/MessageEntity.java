@@ -43,8 +43,9 @@ public class MessageEntity {
     @Column(length = 8000)
     private String reasoningContent;
 
-    @Column(length = 1024)
-    private String imageUrl;
+    /** 用户上传的图片URL列表, 以 JSON 数组字符串存储(多模态) */
+    @Column(length = 8000)
+    private String images;
 
     /** 使用的模型(assistant 消息) */
     @Column(length = 64)
@@ -55,6 +56,10 @@ public class MessageEntity {
     private String toolsUsed;
 
     private Integer tokenUsage;
+
+    /** 是否为失败(错误)消息, 用于前端展示重试入口 */
+    @Column
+    private Boolean error;
 
     @Column(nullable = false)
     private LocalDateTime createdAt;

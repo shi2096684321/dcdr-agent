@@ -4,6 +4,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 消息 DTO
@@ -16,6 +17,12 @@ public class MessageDTO {
     private String id;
     @Schema(description = "所属会话 ID")
     private String sessionId;
+    /** 会话内自增序号, 用于按 seq 截断历史(编辑/重试) */
+    @Schema(description = "会话内序号（用于编辑/重试时截断历史）")
+    private Integer seq;
+    /** 是否为失败(错误)消息 */
+    @Schema(description = "是否为失败消息（用于前端重试）")
+    private Boolean error;
     /** 角色: user / assistant / system */
     @Schema(description = "角色", allowableValues = {"user", "assistant", "system"}, example = "user")
     private String role;
@@ -28,9 +35,9 @@ public class MessageDTO {
     /** 推理内容(思维链, assistant消息) */
     @Schema(description = "推理内容（思维链，assistant 消息）")
     private String reasoningContent;
-    /** 图片URL(type=image时) */
-    @Schema(description = "图片 URL（type=image 时）")
-    private String imageUrl;
+    /** 用户上传的图片URL列表(多模态) */
+    @Schema(description = "用户上传的图片 URL 列表（多模态，user 消息）")
+    private List<String> images;
     /** 使用的模型 */
     @Schema(description = "使用的模型（assistant 消息）")
     private String model;

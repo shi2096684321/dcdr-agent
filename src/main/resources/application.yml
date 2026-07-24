@@ -46,6 +46,7 @@ agent:
     image-dir: ./data/images
     video-dir: ./data/videos
     upload-dir: ./data/uploads
+    upload-url-prefix: /api/files/uploads
     generated-dir: ./data/generated
 
   # 模型配置
@@ -76,11 +77,14 @@ agent:
           - function_calling
 
       - name: "qwen-chat"
-        enabled: false
+        enabled: true
         provider: "qwen"
-        api-key: ${DASHSCOPE_API_KEY:demo-key}
+        api-key: "sk-68a97d79d1f5479491be3ae83fa4655c"
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        model: "qwen-max"
+        model: "qwen3.7-max-2026-06-08"
+        capabilities:
+          - vision
+          - function_calling
 
       - name: "deepseek-chat"
         enabled: true
@@ -88,6 +92,8 @@ agent:
         api-key: "sk-b8bb098d0a3a45508f86d7b5c8cd1b34"
         base-url: "https://api.deepseek.com"
         model: "deepseek-v4-flash"
+        capabilities:
+          - function_calling
 
     image:
       - name: "openai-image"
@@ -144,7 +150,7 @@ springdoc:
     tags-sorter: alpha
     operations-sorter: method
     doc-expansion: none
-  packages-to-scan: com.example.agent.controller
+  packages-to-scan: com.dcdr.agent.controller
   default-flat-param-object: true
 
 # 日志

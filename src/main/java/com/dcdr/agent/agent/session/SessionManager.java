@@ -8,12 +8,15 @@ import com.dcdr.agent.entity.MessageEntity;
 import com.dcdr.agent.entity.SessionEntity;
 import com.dcdr.agent.repository.MessageRepository;
 import com.dcdr.agent.repository.SessionRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -93,6 +96,9 @@ public class SessionManager {
                 dto.setContent(msg.getContent());
                 dto.setReasoningContent(msg.getReasoningContent());
                 dto.setModel(msg.getModel());
+                dto.setSeq(msg.getSeq());
+                dto.setError(msg.getError());
+                dto.setImages(msg.getImages());
                 dto.setCreatedAt(LocalDateTime.now());
                 dtos.add(dto);
             }
@@ -161,6 +167,17 @@ public class SessionManager {
         return dto;
     }
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private static List<String> parseImages(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     static MessageDTO toMessageDTO(MessageEntity m) {
         MessageDTO dto = new MessageDTO();
         dto.setId(m.getSessionId() + "_" + m.getSeq());
@@ -169,10 +186,12 @@ public class SessionManager {
         dto.setType(m.getType());
         dto.setContent(m.getContent());
         dto.setReasoningContent(m.getReasoningContent());
-        dto.setImageUrl(m.getImageUrl());
+        dto.setImages(parseImages(m.getImages()));
         dto.setModel(m.getModel());
         dto.setToolsUsed(m.getToolsUsed());
         dto.setTokenUsage(m.getTokenUsage());
+        dto.setSeq(m.getSeq());
+        dto.setError(m.getError());
         dto.setCreatedAt(m.getCreatedAt());
         return dto;
     }

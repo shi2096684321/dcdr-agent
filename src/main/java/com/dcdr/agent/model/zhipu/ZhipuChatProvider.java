@@ -15,4 +15,9 @@ public class ZhipuChatProvider extends OpenAiCompatibleChatProvider {
                 config.getName(), "GLM-4-Plus", "zhipu", config.getModel(),
                 config.getTemperature(), config.getMaxTokens(), config.getCapabilities());
     }
+
+    @Override
+    protected String getChatPath() {
+        return "/chat/completions";
+    }
 }

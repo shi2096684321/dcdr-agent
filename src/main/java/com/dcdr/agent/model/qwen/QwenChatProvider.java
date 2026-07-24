@@ -13,4 +13,9 @@ public class QwenChatProvider extends OpenAiCompatibleChatProvider {
                 config.getName(), "Qwen-Max", "qwen", config.getModel(),
                 config.getTemperature(), config.getMaxTokens(), config.getCapabilities());
     }
+
+    @Override
+    protected String getChatPath() {
+        return "/chat/completions";
+    }
 }

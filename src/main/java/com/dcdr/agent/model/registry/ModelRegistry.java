@@ -83,6 +83,13 @@ public class ModelRegistry {
                 .orElseThrow(() -> new BusinessException(500, "没有可用的对话模型"));
     }
 
+    /** 获取任一支持视觉的对话模型(用于图片识别降级路由) */
+    public ChatModelProvider getFirstVisionChatProvider() {
+        return chatProviders.values().stream()
+                .filter(ChatModelProvider::supportsVision)
+                .findFirst().orElse(null);
+    }
+
     /**
      * 按名称获取任意类型的 Provider
      */

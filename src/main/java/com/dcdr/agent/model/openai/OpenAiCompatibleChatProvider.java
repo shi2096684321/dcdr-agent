@@ -113,20 +113,36 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         if (history != null) {
             for (Message msg : history) {
                 if (msg.getContent() == null || msg.getContent().isBlank()) continue;
-                messages.addObject().put("role", msg.getRole()).put("content", msg.getContent());
+                ObjectNode mNode = messages.addObject();
+                mNode.put("role", msg.getRole());
+                List<String> imgs = msg.getImages();
+                if (imgs != null && !imgs.isEmpty() && supportsVision() && "user".equals(msg.getRole())) {
+                    ArrayNode content = mNode.putArray("content");
+                    content.addObject().put("type", "text").put("text", msg.getContent());
+                    for (String img : imgs) {
+                        content.addObject().put("type", "image_url")
+                                .putObject("image_url").put("url", img);
+                    }
+                } else {
+                    mNode.put("content", msg.getContent());
+                }
             }
         }
         // 当前用户消息
         ObjectNode userMsg = messages.addObject();
         userMsg.put("role", "user");
-        if (request.getImages() != null && !request.getImages().isEmpty() && supportsVision()) {
+        List<String> images = request.getImages();
+        if (images != null && !images.isEmpty() && supportsVision()) {
             ArrayNode content = userMsg.putArray("content");
             content.addObject().put("type", "text").put("text", request.getMessage());
-            for (String img : request.getImages()) {
+            for (String img : images) {
                 content.addObject().put("type", "image_url")
                         .putObject("image_url").put("url", img);
             }
         } else {
+            if (images != null && !images.isEmpty() && !supportsVision()) {
+                log.warn("[{}] 当前模型不支持视觉能力, 已忽略 {} 张上传图片", name, images.size());
+            }
             userMsg.put("content", request.getMessage());
         }
         return body.toString();
