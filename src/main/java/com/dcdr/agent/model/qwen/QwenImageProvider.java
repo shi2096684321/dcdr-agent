@@ -205,7 +205,8 @@ public class QwenImageProvider implements ImageModelProvider {
     private ImageResponse demoResponse(ImageRequest request) {
         ImageResponse response = new ImageResponse();
         response.setId("gen_" + System.currentTimeMillis());
-        int seed = Math.abs(request.getPrompt().hashCode()) % 1000;
+        // 未显式指定种子时每次随机, 避免"相同提示词永远生成同一张图"(重新生成无变化)
+        int seed = request.getSeed() != null ? request.getSeed() : (int) (Math.random() * 100000);
         String url = "https://picsum.photos/seed/" + seed + "/1024/1024";
         response.setImageUrl(url);
         response.setImageUrls(List.of(url));

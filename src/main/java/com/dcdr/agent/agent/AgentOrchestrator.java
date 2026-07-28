@@ -11,6 +11,7 @@ import com.dcdr.agent.dto.SessionDTO;
 import com.dcdr.agent.agent.image.ChatImageService;
 import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.model.provider.ChatModelProvider;
+import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -45,11 +46,13 @@ public class AgentOrchestrator {
     private final ModelRegistry registry;
     private final ImageResolver imageResolver;
     private final ChatImageService chatImageService;
+    private final ToolRegistry toolRegistry;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
-                             ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService) {
+                             ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
+                             ToolRegistry toolRegistry) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -58,6 +61,7 @@ public class AgentOrchestrator {
         this.registry = registry;
         this.imageResolver = imageResolver;
         this.chatImageService = chatImageService;
+        this.toolRegistry = toolRegistry;
     }
 
     /**
@@ -137,10 +141,11 @@ public class AgentOrchestrator {
                             sink.next(ChatChunk.status("正在识别图片内容，请稍候…"));
                         }
 
-                        // 若模型支持函数调用且已配置生图模型, 注入 image_generation 工具, 支持 AI 自动文生图
-                        if (provider.supportsFunctionCalling() && chatImageService != null
-                                && registry.getDefaultImageProvider() != null) {
-                            request.setTools(Collections.singletonList(chatImageService.getToolDefinition()));
+                        // 若模型支持函数调用, 注入标记 supportsStreaming 的工具定义(默认仅 image_generation;
+                        // Weather/Calculator 等不会暴露给流式对话)
+                        List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitions();
+                        if (provider.supportsFunctionCalling() && !toolDefs.isEmpty()) {
+                            request.setTools(toolDefs);
                         }
 
                         // 流式调用模型
@@ -186,7 +191,7 @@ public class AgentOrchestrator {
 
                         // 工具执行阶段(文生图, 含阻塞 IO, 走弹性线程)
                         Flux<ChatChunk> toolFlux = Flux
-                                .defer(() -> executeImageTools(toolCalls, accumulated.toString(),
+                                .defer(() -> executeTools(toolCalls, accumulated.toString(),
                                         reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError))
                                 .subscribeOn(Schedulers.boundedElastic());
 
@@ -230,6 +235,9 @@ public class AgentOrchestrator {
                                             }
                                             activeChatRegistry.unregister(sessId);
                                             log.info("会话 {} 对话完成", sessId);
+                                            // 关键: 正常完成也必须 complete 外层 Flux,
+                                            // 否则 SSE 连接不关闭, 前端收不到结束信号, 发送按钮卡在"取消"
+                                            sink.complete();
                                         }
                                 );
 
@@ -356,68 +364,85 @@ public class AgentOrchestrator {
             + "不要重复生成; 若用户本轮要求对历史图片进行修改, 应明确说明修改意图后再生成。";
 
     /**
-     * 执行对话内的文生图工具调用(image_generation):
-     * 逐个解析工具入参并调用生图服务, 返回图片分块(image), 并把生成的 URL 回填到 outUrls。
+     * 执行对话内的工具调用: 经通用 ToolRegistry 分发到对应 Tool.execute。
+     * 文生图(image_generation)结果额外渲染为 image 分块并回填 outUrls / outPrompts 供落库陈述句;
+     * 其它工具结果渲染为 tool_result 分块。
      */
-    private Flux<ChatChunk> executeImageTools(List<ChatChunk> toolCalls, String accumulatedText,
-                                             String reasoningText, List<String> outUrls,
-                                             List<String> outPrompts, String[] outError) {
+    private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
+                                        List<String> outUrls, List<String> outPrompts, String[] outError) {
+        if (toolCalls.isEmpty()) {
+            return Flux.empty();
+        }
         // 仅当本轮确有生图调用时, 才下发"正在生成"等待提示(避免普通对话误发)
         boolean hasImageCall = toolCalls.stream()
                 .anyMatch(tc -> "image_generation".equals(tc.getTool()));
-        if (!hasImageCall) {
-            return Flux.empty();
-        }
-        // status 先即时下发, 生图阻塞放入 defer 之后执行, 保证前端先看到等待提示再看到结果
-        return Flux.concat(
-                Flux.just(ChatChunk.status("正在生成图片，请稍候…")),
-                Flux.defer(() -> {
-                    List<String> all = new ArrayList<>();
-                    int callCount = 0;
-                    for (ChatChunk tc : toolCalls) {
-                        if (!"image_generation".equals(tc.getTool())) {
-                            continue;
+        Flux<ChatChunk> head = hasImageCall
+                ? Flux.just(ChatChunk.status("正在生成图片，请稍候…"))
+                : Flux.empty();
+        return Flux.concat(head, Flux.defer(() -> {
+            List<ChatChunk> chunks = new ArrayList<>();
+            int callCount = 0;
+            for (ChatChunk tc : toolCalls) {
+                String name = tc.getTool();
+                Map<String, Object> params = new LinkedHashMap<>();
+                try {
+                    if (tc.getArgs() != null && !tc.getArgs().isBlank()) {
+                        params = mapper.readValue(tc.getArgs(), Map.class);
+                    }
+                } catch (Exception e) {
+                    log.warn("工具 {} 参数解析失败: {}", name, tc.getArgs(), e);
+                }
+                // 文生图兜底: 模型未给 prompt 时用已累积文本作为提示词
+                if ("image_generation".equals(name)) {
+                    Object p = params.get("prompt");
+                    if (p == null || p.toString().isBlank()) {
+                        params.put("prompt", accumulatedText);
+                    }
+                }
+                String result;
+                try {
+                    result = toolRegistry.execute(name, params);   // 统一经 ToolRegistry 分发
+                } catch (Exception e) {
+                    outError[0] = e.getMessage();
+                    log.error("工具 {} 执行失败", name, e);
+                    return Flux.just(ChatChunk.error("工具执行失败: " + e.getMessage(), "TOOL_ERROR"));
+                }
+                if ("image_generation".equals(name)) {
+                    callCount++;
+                    try {
+                        Map<String, Object> res = mapper.readValue(result, Map.class);
+                        Object prompt = res.get("prompt");
+                        List<String> urls = new ArrayList<>();
+                        Object urlsObj = res.get("urls");
+                        if (urlsObj instanceof List) {
+                            for (Object u : (List<?>) urlsObj) {
+                                if (u != null) urls.add(u.toString());
+                            }
                         }
-                        callCount++;
-                        try {
-                            Map<String, Object> args = new LinkedHashMap<>();
-                            if (tc.getArgs() != null && !tc.getArgs().isBlank()) {
-                                args = mapper.readValue(tc.getArgs(), Map.class);
-                            }
-                            Object p = args.get("prompt");
-                            String prompt = p != null ? p.toString() : null;
-                            if (prompt == null || prompt.isBlank()) {
-                                prompt = accumulatedText; // 兜底用已累积文本作为提示词
-                            }
-                            Object s = args.get("size");
-                            Object st = args.get("style");
-                            List<String> urls = chatImageService.generate(
-                                    prompt, s != null ? s.toString() : null, st != null ? st.toString() : null);
-                            if (urls != null) {
-                                all.addAll(urls);
-                            }
-                            outPrompts.add(prompt);   // 记录本轮实际生图内容, 供落库陈述句使用
-                        } catch (Exception e) {
-                            outError[0] = e.getMessage();
-                            log.error("对话内文生图工具执行失败", e);
-                            return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
+                        if (urls.isEmpty()) {
+                            // 生图未产出图片(且未抛异常): 与原始行为一致, 不报错, 直接返回空
+                            return Flux.empty();
                         }
+                        for (String u : urls) {
+                            chunks.add(ChatChunk.image(u));
+                            outUrls.add(u);
+                        }
+                        if (prompt != null) outPrompts.add(prompt.toString());
+                    } catch (Exception e) {
+                        outError[0] = e.getMessage();
+                        log.error("文生图结果解析失败", e);
+                        return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
                     }
-                    if (callCount > 1) {
-                        // 历史形态修正 + system 约束后, 多余调用本不该发生; 若仍多发, 说明用户确需多张, 全部执行不丢弃
-                        log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
-                    }
-                    if (all.isEmpty()) {
-                        return Flux.empty();
-                    }
-                    outUrls.addAll(all);
-                    List<ChatChunk> chunks = new ArrayList<>();
-                    for (String u : all) {
-                        chunks.add(ChatChunk.image(u));
-                    }
-                    return Flux.fromIterable(chunks);
-                })
-        );
+                } else {
+                    chunks.add(ChatChunk.toolResult(name, result));
+                }
+            }
+            if (callCount > 1) {
+                // system 约束后多余调用本不该发生; 若仍多发, 说明用户确需多张, 全部执行不丢弃
+                log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
+            }
+            return Flux.fromIterable(chunks);
+        }));
     }
 
     /**
@@ -536,7 +561,7 @@ public class AgentOrchestrator {
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
 
         // 3.1 平台级生图约束(仅当本轮会注入生图工具时前置为 system 消息, 不落库):
-        //     与 executeImageTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险,
+        //     与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险,
         //     从源头降低模型因历史图片而重复调用 image_generation。
         if (provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
             boolean hasPolicy = history.stream()

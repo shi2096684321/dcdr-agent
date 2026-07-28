@@ -31,7 +31,13 @@ public class ImageGenerationTool extends AbstractTool {
 
     @Override
     public String getDescription() {
-        return "根据文本提示词生成图片。当用户明确要求画图、生成图片、创作插画、设计图、出图等文生图意图时使用。";
+        return "根据文本提示词生成图片。当用户明确要求画图、生成图片、创作插画、设计图、出图等文生图意图时使用。"
+                + "注意：仅生成用户本轮新请求的图片; 历史对话中已生成过的图片不要重复生成。";
+    }
+
+    @Override
+    public boolean supportsStreaming() {
+        return true;   // 允许在流式对话中被模型调用(自动文生图)
     }
 
     @Override

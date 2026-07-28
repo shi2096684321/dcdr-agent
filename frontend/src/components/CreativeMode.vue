@@ -85,7 +85,7 @@
         <div class="hist-meta">{{ historyPage }} / {{ historyTotalPages }} · 共 {{ images.length }} 张</div>
       </div>
       <div v-if="currentImg && !generating" class="actions">
-        <button class="act primary" @click="generate">重新生成</button>
+        <button class="act primary" @click="regenerate">重新生成</button>
         <button class="act secondary" @click="openDetail(images[selIdx])">查看详情</button>
         <a class="act secondary" :href="currentImg" download>下载</a>
       </div>
@@ -196,14 +196,23 @@ const refSupported = computed(() => !props.currentModel?.includes('qwen-image-2.
 const currentImg = computed(() => selIdx.value >= 0 ? images.value[selIdx.value]?.resultUrl : null)
 async function loadProjects() { projects.value = await getProjects() }
 // 从后端加载某项目下历史生成图片(刷新/切换项目不丢失)
-async function loadProjectImages(id) {
+// newIds: 可选, 本次刚成功生成的图片 id 集合, 用于生成结束后自动定位到新图而非最后一张
+async function loadProjectImages(id, newIds = null) {
   if (!id) { images.value = []; selIdx.value = -1; return }
   try {
     const gens = await getGenerations(id)
     images.value = (gens || [])
       .filter(g => g.status === 'completed' && g.resultUrl)
-    selIdx.value = images.value.length ? images.value.length - 1 : -1
-    historyPage.value = Math.max(1, Math.ceil(images.value.length / HISTORY_PAGE_SIZE))
+    // 后端按创建时间倒序, index 0 为最新。优先选中本次刚生成的图片(按 id 定位),
+    // 否则默认显示最新一张(而非最旧的最后一张)
+    let sel = 0
+    if (newIds && newIds.length) {
+      const found = images.value.findIndex(g => newIds.includes(g.id))
+      if (found >= 0) sel = found
+    }
+    selIdx.value = images.value.length ? sel : -1
+    // 历史缩略图翻页到选中项所在页, 保证高亮项可见
+    historyPage.value = selIdx.value >= 0 ? Math.floor(selIdx.value / HISTORY_PAGE_SIZE) + 1 : 1
   } catch (e) { console.error('加载历史图片失败', e); images.value = []; selIdx.value = -1 }
 }
 async function newProject() {
@@ -327,16 +336,36 @@ async function pollGeneration(id, interval = 2000, timeout = 180000) {
   }
   return null
 }
+// 重新生成: 用当前选中图片已保存的 prompt/参数回填控制面板后再提交,
+// 这样即使文本框为空(如刷新页面/切换项目后)也能正常重生成, 而不是被守卫静默 return
+async function regenerate() {
+  const cur = images.value[selIdx.value]
+  if (cur) {
+    if (cur.prompt) prompt.value = cur.prompt
+    if (cur.paramsJson) {
+      try {
+        const p = JSON.parse(cur.paramsJson)
+        if (p.size) size.value = p.size
+        if (p.style) styleVal.value = p.style
+        if (p.negativePrompt != null) negativePrompt.value = p.negativePrompt
+        if (p.n != null) n.value = p.n
+        if (p.promptExtend != null) promptExtend.value = p.promptExtend
+        if (p.watermark != null) watermark.value = p.watermark
+      } catch (e) { console.error('解析重生成参数失败', e) }
+    }
+  }
+  await generate()
+}
+
 async function generate() {
   if (!prompt.value.trim() || generating.value) return
   if (!currentProjectId.value) await ensureProject()
   generating.value = true
   doneCount.value = 0
   failedCount.value = 0
-  // 1. 提交任务, 立即拿到 n 条 pending 记录(每张独立一个任务)
-  let tasks = []
   try {
-    tasks = await generateImage({
+    // 1. 提交任务, 立即拿到 n 条 pending 记录(每张独立一个任务)
+    const tasks = await generateImage({
       model: props.currentModel, prompt: prompt.value, size: size.value,
       style: styleVal.value, referImage: referImage.value || null,
       negativePrompt: negativePrompt.value || null,
@@ -346,34 +375,41 @@ async function generate() {
       seed: seed.value || null,
       projectId: currentProjectId.value
     })
+    totalCount.value = tasks.length
+    liveImages.value = tasks.map(() => null)
+    loadThreadPoolStats()   // 提交后立即反映线程占用
+    // 2. 逐张轮询, 每完成一张即时填充并推进进度条
+    let timedOut = false
+    const newIds = []   // 本次成功生成的图片 id, 用于生成后自动定位到新图
+    await Promise.all(tasks.map((t, idx) => (async () => {
+      const r = await pollGeneration(t.id)
+      if (r && r.status === 'completed' && r.resultUrl) {
+        liveImages.value[idx] = r
+        doneCount.value++
+        if (r.id) newIds.push(r.id)
+      } else if (r && r.status === 'failed') {
+        liveImages.value[idx] = r   // 标记失败以展示失败角标
+        failedCount.value++
+      } else {
+        timedOut = true
+      }
+    })()))
+    // 3. 整批结束, 用权威数据刷新项目图片与计数, 并定位到刚生成的图片
+    //    以下刷新即使失败也不应阻塞按钮复位(各自兜底, 不让 generating 卡死)
+    try { await loadProjectImages(currentProjectId.value, newIds) }
+    catch (e) { console.error('刷新历史图片失败', e); ElMessage.error('刷新历史图片失败，请手动刷新') }
+    try { await loadProjects() }
+    catch (e) { console.error('刷新项目列表失败', e) }
+    if (failedCount.value) ElMessage.error(`有 ${failedCount.value} 张生成失败`)
+    else if (timedOut && doneCount.value === 0) ElMessage.warning('生成超时，请稍后在项目历史中查看')
   } catch (e) {
     console.error(e)
+    const msg = e?.response?.data?.message || e?.message || e
+    ElMessage.error('提交生成任务失败：' + msg)
+  } finally {
+    // 关键: 无论成功/失败/刷新异常, 都必须复位 generating, 否则按钮会卡死, 之后点击被静默忽略
     generating.value = false
-    return
   }
-  totalCount.value = tasks.length
-  liveImages.value = tasks.map(() => null)
-  loadThreadPoolStats()   // 提交后立即反映线程占用
-  // 2. 逐张轮询, 每完成一张即时填充并推进进度条
-  let timedOut = false
-  await Promise.all(tasks.map((t, idx) => (async () => {
-    const r = await pollGeneration(t.id)
-    if (r && r.status === 'completed' && r.resultUrl) {
-      liveImages.value[idx] = r
-      doneCount.value++
-    } else if (r && r.status === 'failed') {
-      liveImages.value[idx] = r   // 标记失败以展示失败角标
-      failedCount.value++
-    } else {
-      timedOut = true
-    }
-  })()))
-  // 3. 整批结束, 用权威数据刷新项目图片与计数
-  await loadProjectImages(currentProjectId.value)
-  await loadProjects()
-  if (failedCount.value) ElMessage.error(`有 ${failedCount.value} 张生成失败`)
-  else if (timedOut && doneCount.value === 0) ElMessage.warning('生成超时，请稍后在项目历史中查看')
-  generating.value = false
 }
 onMounted(async () => {
   await loadProjects()

@@ -18,4 +18,12 @@ public interface Tool {
 
     /** 执行工具 */
     String execute(Map<String, Object> params);
+
+    /**
+     * 是否允许在流式对话(chat)中被模型调用, 默认 false。
+     * 用于避免把仅适用于其它场景(如创作 / agent)的工具暴露给流式对话。
+     */
+    default boolean supportsStreaming() {
+        return false;
+    }
 }

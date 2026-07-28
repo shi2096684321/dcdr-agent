@@ -67,14 +67,11 @@ public class ChatImageService {
         return urls;
     }
 
-    /** 返回可直接注入 ChatRequest.tools 的 OpenAI function calling 工具定义(Map) */
-    public Map<String, Object> getToolDefinition() {
-        Map<String, Object> def = new LinkedHashMap<>();
-        def.put("type", "function");
-        Map<String, Object> fn = new LinkedHashMap<>();
-        fn.put("name", "image_generation");
-        fn.put("description", "根据文本提示词生成图片。当用户明确要求画图、生成图片、创作插画、设计图、出图等文生图意图时使用。"
-                + "注意：仅生成用户本轮新请求的图片; 历史对话中已生成过的图片不要重复生成。");
+    /**
+     * 文生图工具的参数 JSON Schema。这是参数的唯一来源, Tool 框架(ImageGenerationTool)
+     * 通过 getParameterSchema() 复用它, 由 ToolRegistry 统一包装成 OpenAI tools 定义发给模型。
+     */
+    public Map<String, Object> buildParameters() {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("type", "object");
         Map<String, Object> props = new LinkedHashMap<>();
@@ -92,17 +89,13 @@ public class ChatImageService {
         props.put("style", style);
         params.put("properties", props);
         params.put("required", Collections.singletonList("prompt"));
-        fn.put("parameters", params);
-        def.put("function", fn);
-        return def;
+        return params;
     }
 
     /** 返回工具参数 JSON Schema 字符串(供 Tool 接口实现复用) */
     public String getParameterSchemaJson() {
         try {
-            Map<String, Object> def = getToolDefinition();
-            Object params = ((Map<?, ?>) def.get("function")).get("parameters");
-            return mapper.writeValueAsString(params);
+            return mapper.writeValueAsString(buildParameters());
         } catch (Exception e) {
             throw new IllegalStateException(e);
         }
