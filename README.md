@@ -1,11 +1,19 @@
 # dcdr-agent
 
-#### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+基于 Spring Boot + Vue 3 的开源智能体（Agent）平台，支持流式对话、文生图创作，以及对多厂商大模型的统一编排与工具调用（Function Calling）。
 
-#### 软件架构
+当前版本：**v1.0.0**（发行说明见 [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)）。
+
+## ✨ 特性
+
+- **流式对话**：SSE 实时输出，推理（CoT）内容单独展示；支持消息编辑 / 重试 / 截断与对话过程中断（stop）。
+- **上下文保护**：上下文长度估算与超长提醒，避免超出模型上下文窗口。
+- **多模态**：对话内文生图（ChatImageService）、图片识别与视觉模型自动路由问答。
+- **创作模式**：文生图项目化管理、异步生成任务、批量生成与参数套用。
+- **工具调用（Function Calling）**：内置 `calculator` / `time` / `weather` / `image_generation`，统一工具框架，结果流式回传并落库。
+- **多模型适配**：SPI 风格 Provider 抽象，已内置 OpenAI 兼容系、通义千问、DeepSeek、智谱（Zhipu），按 UI 模式 / 模型类型自动路由。
+
+## 🧱 软件架构
 
 项目采用前后端分离架构：后端为 Java（Spring Boot），前端为 Vue 3 + Vite + Element Plus。
 
@@ -33,19 +41,19 @@ frontend/
 │   │   ├── ImagePreviewModal.vue#   图片全屏预览弹窗(v-model:url)
 │   │   └── GenerationDetailDialog.vue  # 创作模式图片详情弹窗(含参数套用)
 │   ├── composables/             # Vue 组合式函数(可复用逻辑)
-│   │   └── useMarkdown.js       #   共享 markdown-it 实例 + renderMarkdown
-│   ├── stores/                  # Pinia 状态管理(已注册, 预留, 暂未使用)
+│   │   └── useMarkdown.js        #   共享 markdown-it 实例 + renderMarkdown
+│   ├── stores/                  # Pinia 状态管理(已注册, 预留)
 │   ├── styles/                  # 全局样式
-│   │   ├── base.css             #   基础重置
+│   │   ├── base.css              #   基础重置
 │   │   ├── gradients.css        #   .gradient-bg/green/orange 工具类
 │   │   └── index.css            #   入口, 由 main.js 引入
-│   ├── utils/                   # 通用工具函数
+│   ├── utils/                    # 通用工具函数
 │   │   └── format.js             #   formatDuration / formatDate / styleLabel
 │   ├── views/                   # 页面级组件(对应一个模式/路由)
-│   │   ├── ChatView.vue         #   对话模式: 侧边栏 + 消息列表 + 流式输出 + 输入区
-│   │   └── CreativeView.vue     #   创作模式: 项目侧边栏 + 控制面板 + 预览区
-│   ├── App.vue                  # 根组件: 布局 + <AppHeader> + 视图编排
-│   └── main.js                  # 入口: 注册 Pinia / ElementPlus, 引入 styles
+│   │   ├── ChatView.vue          #   对话模式: 侧边栏 + 消息列表 + 流式输出 + 输入区
+│   │   └── CreativeView.vue      #   创作模式: 项目侧边栏 + 控制面板 + 预览区
+│   ├── App.vue                   # 根组件: 布局 + <AppHeader> + 视图编排
+│   └── main.js                   # 入口: 注册 Pinia / ElementPlus, 引入 styles
 ├── index.html
 ├── vite.config.js               # Vite 配置(含 @ 别名与 /api 代理到 8080)
 └── package.json
@@ -75,10 +83,10 @@ src/main/
 │   │   ├── image/
 │   │   │   └── ChatImageService.java  # 对话内文生图(走 SSE)
 │   │   ├── memory/                 #   上下文记忆
-│   │   │   ├── ChatMemory.java     #     记忆接口
+│   │   │   ├── ChatMemory.java        #     记忆接口
 │   │   │   ├── InMemoryChatMemory.java #  内存实现
-│   │   │   ├── Message.java        #     消息载体
-│   │   │   └── TokenEstimator.java #     token 估算(上下文告警用)
+│   │   │   ├── Message.java           #     消息载体
+│   │   │   └── TokenEstimator.java    #     token 估算(上下文告警用)
 │   │   └── session/                #   会话/项目管理
 │   │       ├── SessionManager.java
 │   │       └── ProjectManager.java
@@ -98,10 +106,10 @@ src/main/
 │   │   ├── AgentProperties.java    #   agent 相关配置项
 │   │   ├── AsyncConfig.java        #   异步线程池(图片生成)
 │   │   ├── CorsConfig.java         #   跨域
-│   │   ├── ModelAutoConfiguration.java  # 模型 provider 装配
-│   │   ├── OpenApiConfig.java       #   OpenAPI/Swagger 文档
-│   │   ├── ToolAutoConfiguration.java   # 工具装配
-│   │   └── ToolsProperties.java      #   工具开关配置
+│   │   ├── ModelAutoConfiguration.java    # 模型 provider 装配
+│   │   ├── OpenApiConfig.java      #   OpenAPI/Swagger 文档
+│   │   ├── ToolAutoConfiguration.java     # 工具装配
+│   │   └── ToolsProperties.java    #   工具开关配置
 │   ├── controller/                 # REST 控制器(对前端 /api/*)
 │   │   ├── ChatController.java     #   /api/chat/* (流式对话 / 文生图 / stop)
 │   │   ├── SessionController.java  #   /api/sessions + /api/sessions/{id}/messages
@@ -122,7 +130,7 @@ src/main/
 │   │   ├── SessionEntity.java      #   会话
 │   │   ├── MessageEntity.java      #   消息(含 seq, 支持编辑/重试截断)
 │   │   ├── ProjectEntity.java      #   创作项目
-│   │   └── GenerationEntity.java  #   图片生成记录
+│   │   └── GenerationEntity.java   #   图片生成记录
 │   ├── model/                      # 模型 Provider(SPI 风格)
 │   │   ├── provider/               #   接口定义
 │   │   │   ├── ChatModelProvider.java
@@ -157,7 +165,7 @@ src/main/
 │       └── WeatherTool.java
 └── resources/
     ├── application.yml             # 主配置(模型 key、数据源、端口等)
-    └── application-dev.yml          # 开发环境覆盖
+    └── application-dev.yml         # 开发环境覆盖
 ```
 
 分层约定：
@@ -166,31 +174,72 @@ src/main/
 - `entity/` 与 `dto/` 分离：实体面向数据库，DTO 面向前端协议，避免双向耦合。
 - `tool/` 以接口 + 抽象类 + 注册表实现可插拔，LLM 通过 function calling 选择性调用。
 
-#### 安装教程
+## 🚀 安装与运行
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+### 环境要求
 
-#### 使用说明
+- JDK 17
+- Maven 3.9+
+- Node.js 18+（前端构建）
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+### 后端
 
-#### 参与贡献
+```bash
+# 在项目根目录
+mvn spring-boot:run
+```
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+后端默认监听 `http://localhost:8080`，Swagger 文档见 `http://localhost:8080/swagger-ui.html`。
 
+### 前端
 
-#### 特技
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+前端开发服务器通过 Vite 代理将 `/api` 转发到后端 8080 端口。
+
+## ⚙️ 配置说明
+
+主要配置位于 `src/main/resources/application.yml`：
+
+- **模型 Key**：在 `agent.models` 下为各 chat / image / video provider 配置 `api-key`；支持环境变量（如 `OPENAI_API_KEY`、`ZHIPU_API_KEY`、`DASHSCOPE_API_KEY`）。
+- **天气工具**：`agent-tools.weather` 默认演示模式（`api-key` 为 `demo-key` 时返回模拟数据）。配置真实高德 Key：
+  ```yaml
+  agent-tools:
+    weather:
+      enabled: true
+      api-key: ${WEATHER_API_KEY:demo-key}
+  ```
+- **数据源**：默认 H2 文件库 `./data/database/agent`，可通过 `spring.datasource` 切换为 MySQL 等。
+
+## 🛠 内置工具
+
+| 工具 | 说明 | 备注 |
+|---|---|---|
+| `calculator` | 数学表达式计算（四则运算） | 本地执行，开箱即用 |
+| `time` | 当前时间与日期查询 | 本地执行，开箱即用 |
+| `weather` | 城市天气查询 | 默认演示模式，配置 Key 后返回真实数据 |
+| `image_generation` | 文生图 | 复用对话内生图模型 |
+
+新增工具：实现 `Tool` 接口并标注 `@Component`，在 `ToolAutoConfiguration` 中会自动注册；如需在流式对话中暴露，重写 `supportsStreaming()` 返回 `true`。
+
+## 📚 文档
+
+- [`docs/01-需求文档.md`](docs/01-需求文档.md)
+- [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
+- [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md)
+- [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)
+
+## 🤝 参与贡献
+
+1. Fork 本仓库
+2. 新建 `feat_xxx` 分支
+3. 提交代码（建议遵循 Conventional Commits）
+4. 新建 Pull Request
+
+## 📄 许可证
+
+本项目许可证详见仓库 LICENSE 文件（如有）。
