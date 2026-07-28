@@ -79,6 +79,11 @@ public class WeatherTool extends AbstractTool {
         }
     }
 
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
+
     /** 演示模式模拟天气数据 */
     private String simulateWeather(String city) {
         int temp = 15 + city.hashCode() % 20;

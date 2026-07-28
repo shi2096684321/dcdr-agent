@@ -46,4 +46,9 @@ public class TimeTool extends AbstractTool {
             default -> "当前时间: " + now.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm:ss"));
         };
     }
+
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
 }

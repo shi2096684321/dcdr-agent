@@ -164,6 +164,8 @@ public class AgentOrchestrator {
                         // 本轮实际生图的内容摘要(prompt), 供落库陈述句使用, 让下一轮模型明确"这些图片已生成过"
                         final List<String> generatedPrompts = new ArrayList<>();
                         final String[] toolError = new String[1];
+                        // 非图片工具(如 calculator/weather)的执行结果, 供落库时并入助手消息, 保证可见且可持久化
+                        final List<String> toolResults = new ArrayList<>();
 
                         // 主链路: 转发模型流式分块并采集 usage / 文本 / 工具调用
                         Flux<ChatChunk> upstream = provider.stream(request, history)
@@ -192,12 +194,12 @@ public class AgentOrchestrator {
                         // 工具执行阶段(文生图, 含阻塞 IO, 走弹性线程)
                         Flux<ChatChunk> toolFlux = Flux
                                 .defer(() -> executeTools(toolCalls, accumulated.toString(),
-                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError))
+                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults))
                                 .subscribeOn(Schedulers.boundedElastic());
 
                         // 收尾阶段: 保存助手消息(含图片)并下发 done + 结束原因提示
                         Flux<ChatChunk> finalizeFlux = Flux.defer(() -> finalizeAssistant(sessId, provider,
-                                accumulated, reasoningAccumulated, toolCalls, generatedUrls, generatedPrompts, toolError,
+                                accumulated, reasoningAccumulated, toolCalls, generatedUrls, generatedPrompts, toolError, toolResults,
                                 usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
 
                         Disposable upstreamSub = upstream
@@ -375,7 +377,8 @@ public class AgentOrchestrator {
      * 其它工具结果渲染为 tool_result 分块。
      */
     private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
-                                        List<String> outUrls, List<String> outPrompts, String[] outError) {
+                                        List<String> outUrls, List<String> outPrompts, String[] outError,
+                                        List<String> outToolResults) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
@@ -440,6 +443,7 @@ public class AgentOrchestrator {
                         return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
                     }
                 } else {
+                    outToolResults.add(result);
                     chunks.add(ChatChunk.toolResult(name, result));
                 }
             }
@@ -458,6 +462,7 @@ public class AgentOrchestrator {
     private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
                                              StringBuilder accumulated, StringBuilder reasoning,
                                              List<ChatChunk> toolCalls, List<String> urls, List<String> prompts, String[] toolError,
+                                             List<String> toolResults,
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
                                              AtomicBoolean assistantSaved) {
@@ -493,8 +498,16 @@ public class AgentOrchestrator {
                     // 关键: 生图轮也要携带推理内容, 否则刷新后会丢失(assistantImage 工厂不设置 reasoningContent)
                     assistantMessage.setReasoningContent(reasoning.toString());
                 } else {
-                    // 工具被调用但未产出图片(失败): 退化为文本/错误消息
+                    // 工具被调用但未产出图片(非图片工具, 如 calculator/weather): 将执行结果并入助手消息
                     String content = accumulated.toString();
+                    if (!toolResults.isEmpty()) {
+                        StringBuilder sb = new StringBuilder();
+                        if (content != null && !content.isBlank()) {
+                            sb.append(content).append("\n");
+                        }
+                        sb.append(String.join("\n", toolResults));
+                        content = sb.toString();
+                    }
                     if (content.isEmpty() && toolError[0] != null) {
                         content = "图片生成失败：" + toolError[0];
                     }

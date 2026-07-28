@@ -339,7 +339,15 @@ async function send(opts = {}) {
       if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
       if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
-      if (chunk.type === 'tool_call') { statusHint.value = '正在调用工具生成图片…'; scrollBottom(); return }
+      if (chunk.type === 'tool_call') {
+        if (chunk.tool === 'image_generation') {
+          statusHint.value = '正在调用工具生成图片…'
+        } else {
+          statusHint.value = `正在调用工具：${chunk.tool || ''}…`
+        }
+        scrollBottom(); return
+      }
+      if (chunk.type === 'tool_result') { statusHint.value = ''; streamContent.value += `\n${chunk.result || ''}\n`; scrollBottom(); return }
       if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
       if (chunk.type === 'done') {
         statusHint.value = ''
@@ -418,7 +426,15 @@ async function sendImage() {
     { sessionId: currentSessionId.value, prompt: text },
     (chunk) => {
       if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
-      if (chunk.type === 'tool_call') { statusHint.value = '正在生成图片…'; scrollBottom(); return }
+      if (chunk.type === 'tool_call') {
+        if (chunk.tool === 'image_generation') {
+          statusHint.value = '正在生成图片…'
+        } else {
+          statusHint.value = `正在调用工具：${chunk.tool || ''}…`
+        }
+        scrollBottom(); return
+      }
+      if (chunk.type === 'tool_result') { statusHint.value = ''; streamContent.value += `\n${chunk.result || ''}\n`; scrollBottom(); return }
       if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
       if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || ''; return }

@@ -60,6 +60,11 @@ public class CalculatorTool extends AbstractTool {
         }
     }
 
+    @Override
+    public boolean supportsStreaming() {
+        return true;
+    }
+
     /** 简单降级计算(仅支持两个操作数) */
     private String simpleCalculate(String expr) {
         expr = expr.replaceAll("\\s", "");
