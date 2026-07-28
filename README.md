@@ -230,7 +230,8 @@ npm run dev
 
 - [`docs/01-需求文档.md`](docs/01-需求文档.md)
 - [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
-- [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md)
+- [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md)（知识库 / 认证 / 多 Agent）
+- [`docs/04-V1.1规划文档.md`](docs/04-V1.1规划文档.md)（语音 STT/TTS / 视频生成）
 - [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)
 
 ## 🤝 参与贡献
