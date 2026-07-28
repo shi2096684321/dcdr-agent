@@ -20,6 +20,8 @@ public class Message {
     private String content;
     /** 使用的模型(assistant消息) */
     private String model;
+    /** 消息类型: text / image / video */
+    private String type;
     /** 推理内容(思维链, assistant消息, 可能为空) */
     private String reasoningContent;
     /** token 消耗(assistant消息, 仅统计用, 可为空) */
@@ -71,6 +73,14 @@ public class Message {
 
     public static Message assistant(String content, String model) {
         return new Message("assistant", content, model);
+    }
+
+    /** 文生图结果消息: assistant 角色, 携带图片 URL 列表, type=image */
+    public static Message assistantImage(List<String> imageUrls, String content, String model) {
+        Message m = new Message("assistant", content, model);
+        m.setImages(imageUrls);
+        m.setType("image");
+        return m;
     }
 
     public static Message assistant(String content, String reasoningContent, String model) {

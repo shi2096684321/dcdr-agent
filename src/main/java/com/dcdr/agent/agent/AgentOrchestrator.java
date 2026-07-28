@@ -8,8 +8,11 @@ import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.SessionDTO;
+import com.dcdr.agent.agent.image.ChatImageService;
+import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.model.provider.ChatModelProvider;
 import com.dcdr.agent.model.registry.ModelRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
@@ -17,8 +20,13 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Agent 编排器 - 协调模型路由、记忆管理、流式输出
@@ -36,10 +44,12 @@ public class AgentOrchestrator {
     private final TokenEstimator tokenEstimator;
     private final ModelRegistry registry;
     private final ImageResolver imageResolver;
+    private final ChatImageService chatImageService;
+    private final ObjectMapper mapper = new ObjectMapper();
 
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
-                             ModelRegistry registry, ImageResolver imageResolver) {
+                             ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -47,6 +57,7 @@ public class AgentOrchestrator {
         this.tokenEstimator = tokenEstimator;
         this.registry = registry;
         this.imageResolver = imageResolver;
+        this.chatImageService = chatImageService;
     }
 
     /**
@@ -126,24 +137,41 @@ public class AgentOrchestrator {
                             sink.next(ChatChunk.status("正在识别图片内容，请稍候…"));
                         }
 
+                        // 若模型支持函数调用且已配置生图模型, 注入 image_generation 工具, 支持 AI 自动文生图
+                        if (provider.supportsFunctionCalling() && chatImageService != null
+                                && registry.getDefaultImageProvider() != null) {
+                            request.setTools(Collections.singletonList(chatImageService.getToolDefinition()));
+                        }
+
                         // 流式调用模型
                         StringBuilder accumulated = new StringBuilder();
                         StringBuilder reasoningAccumulated = new StringBuilder();
                         // 防止正常完成与中断并发时重复保存助手消息(只保存一条)
-                        final java.util.concurrent.atomic.AtomicBoolean assistantSaved = new java.util.concurrent.atomic.AtomicBoolean(false);
-                        // handle 引用需在 doOnComplete/doOnError 中访问, 用数组持有以满足 effectively final
+                        final AtomicBoolean assistantSaved = new AtomicBoolean(false);
+                        // handle 引用需在回调中访问, 用数组持有以满足 effectively final
                         final ActiveChatRegistry.ChatHandle[] handleHolder = new ActiveChatRegistry.ChatHandle[1];
                         // 捕获模型真实返回的 token 消耗与结束原因, 用于回填 done 块
                         final ChatResponse.TokenUsage[] usageHolder = new ChatResponse.TokenUsage[1];
                         final String[] finishReasonHolder = new String[1];
-                        Disposable upstream = provider.stream(request, history)
+                        // 收集模型发起的工具调用(自动文生图)与生成结果
+                        final List<ChatChunk> toolCalls = new ArrayList<>();
+                        final List<String> generatedUrls = new ArrayList<>();
+                        // 本轮实际生图的内容摘要(prompt), 供落库陈述句使用, 让下一轮模型明确"这些图片已生成过"
+                        final List<String> generatedPrompts = new ArrayList<>();
+                        final String[] toolError = new String[1];
+
+                        // 主链路: 转发模型流式分块并采集 usage / 文本 / 工具调用
+                        Flux<ChatChunk> upstream = provider.stream(request, history)
                                 .doOnNext(chunk -> {
-                                    sink.next(chunk);
                                     if ("usage".equals(chunk.getType()) && chunk.getTokenUsage() != null) {
                                         usageHolder[0] = chunk.getTokenUsage();
                                         if (chunk.getFinishReason() != null) {
                                             finishReasonHolder[0] = chunk.getFinishReason();
                                         }
+                                        return;
+                                    }
+                                    if ("tool_call".equals(chunk.getType())) {
+                                        toolCalls.add(chunk);
                                         return;
                                     }
                                     if ("chunk".equals(chunk.getType())) {
@@ -154,63 +182,59 @@ public class AgentOrchestrator {
                                             reasoningAccumulated.append(chunk.getReasoningContent());
                                         }
                                     }
-                                })
-                                .doOnComplete(() -> {
-                                    // 统计 token: 优先模型真实 usage, 否则用已累积文本估算兜底(杜绝"0 token")
-                                    ChatResponse.TokenUsage u = usageHolder[0];
-                                    int p = u != null ? u.getPrompt() : tokenEstimator.estimate(contextForEstimate);
-                                    int c = u != null ? u.getCompletion()
-                                            : tokenEstimator.estimate(accumulated.toString())
-                                                + tokenEstimator.estimate(reasoningAccumulated.toString());
-                                    int t = u != null ? u.getTotal() : (p + c);
-                                    long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
-                                    // 保存助手回复(含推理内容 + token 消耗)到记忆
-                                    String fr = finishReasonHolder[0];
-                                    Message assistantMessage = Message.assistant(accumulated.toString(),
-                                            reasoningAccumulated.toString(), provider.getName(), t);
-                                    if ("insufficient_system_resource".equals(fr) || "content_filter".equals(fr)) {
-                                        assistantMessage.setError(true);
-                                    }
-                                    if (assistantSaved.compareAndSet(false, true)) {
-                                        memory.save(sessId, assistantMessage);
-                                    }
-                                    // 更新会话时间
-                                    sessionManager.touch(sessId);
-                                    sink.next(ChatChunk.done(p, c, t, durationMs));
-                                    // 根据 finish_reason 补充提示(截断/被打断不再伪装成正常完成)
-                                    if ("length".equals(fr)) {
-                                        sink.next(ChatChunk.contextWarning(
-                                                "回答已达长度上限(max_tokens)被截断，可尝试简化问题或开启新对话。"));
-                                    } else if ("insufficient_system_resource".equals(fr)) {
-                                        sink.next(ChatChunk.error("生成因后端推理资源不足被打断", "RESOURCE_LIMIT"));
-                                    } else if ("content_filter".equals(fr)) {
-                                        sink.next(ChatChunk.contextWarning("回答触发安全策略过滤。"));
-                                    }
-                                    sink.complete();
-                                    if (handleHolder[0] != null) {
-                                        handleHolder[0].markFinished();
-                                    }
-                                    activeChatRegistry.unregister(sessId);
-                                    log.info("会话 {} 对话完成", sessId);
-                                })
-                                .doOnError(e -> {
-                                    log.error("会话 {} 对话失败", sessId, e);
-                                    // 持久化失败消息, 便于前端展示并支持重试
-                                    Message errMsg = Message.assistant("模型调用失败: " + e.getMessage(), null,
-                                            provider != null ? provider.getName() : null, null);
-                                    errMsg.setError(true);
-                                    memory.save(sessId, errMsg);
-                                    sink.next(ChatChunk.error("模型调用失败: " + e.getMessage(), "MODEL_ERROR"));
-                                    sink.complete();
-                                    if (handleHolder[0] != null) {
-                                        handleHolder[0].markFinished();
-                                    }
-                                    activeChatRegistry.unregister(sessId);
-                                })
-                                .subscribe();
+                                });
+
+                        // 工具执行阶段(文生图, 含阻塞 IO, 走弹性线程)
+                        Flux<ChatChunk> toolFlux = Flux
+                                .defer(() -> executeImageTools(toolCalls, accumulated.toString(),
+                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError))
+                                .subscribeOn(Schedulers.boundedElastic());
+
+                        // 收尾阶段: 保存助手消息(含图片)并下发 done + 结束原因提示
+                        Flux<ChatChunk> finalizeFlux = Flux.defer(() -> finalizeAssistant(sessId, provider,
+                                accumulated, reasoningAccumulated, toolCalls, generatedUrls, generatedPrompts, toolError,
+                                usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
+
+                        Disposable upstreamSub = upstream
+                                .concatWith(toolFlux)
+                                .concatWith(finalizeFlux)
+                                .subscribe(
+                                        sink::next,
+                                        e -> {
+                                            log.error("会话 {} 对话失败", sessId, e);
+                                            sink.next(ChatChunk.error("模型调用失败: " + e.getMessage(), "MODEL_ERROR"));
+                                            sink.complete();
+                                            // 落库失败消息改为异步尽力而为, 不阻塞 SSE 关闭,
+                                            // 避免 DB 锁/慢查询导致前端收不到结束信号、发送按钮卡在"取消"
+                                            try {
+                                                Message errMsg = Message.assistant("模型调用失败: " + e.getMessage(),
+                                                        null, provider != null ? provider.getName() : null, null);
+                                                errMsg.setError(true);
+                                                Message toSave = errMsg;
+                                                Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
+                                                        .subscribeOn(Schedulers.boundedElastic())
+                                                        .timeout(Duration.ofSeconds(10))
+                                                        .doOnError(ex -> log.error("保存失败消息异常", ex))
+                                                        .subscribe();
+                                            } catch (Exception ex) {
+                                                log.error("保存失败消息异常", ex);
+                                            }
+                                            if (handleHolder[0] != null) {
+                                                handleHolder[0].markFinished();
+                                            }
+                                            activeChatRegistry.unregister(sessId);
+                                        },
+                                        () -> {
+                                            if (handleHolder[0] != null) {
+                                                handleHolder[0].markFinished();
+                                            }
+                                            activeChatRegistry.unregister(sessId);
+                                            log.info("会话 {} 对话完成", sessId);
+                                        }
+                                );
 
                         // 注册句柄: 支持主动中断 + 客户端断开时自动取消上游模型调用
-                        ActiveChatRegistry.ChatHandle handle = new ActiveChatRegistry.ChatHandle(sink, upstream);
+                        ActiveChatRegistry.ChatHandle handle = new ActiveChatRegistry.ChatHandle(sink, upstreamSub);
                         // 中断回调: 下发 interrupted + 用已累积文本估算 token 的 done(模型 usage 中途断开时拿不到)
                         handle.setOnInterrupt(() -> {
                             int estP = tokenEstimator.estimate(contextForEstimate);
@@ -225,7 +249,13 @@ public class AgentOrchestrator {
                                 if (assistantSaved.compareAndSet(false, true)) {
                                     Message partial = Message.assistant(intC, intR, provider.getName(), estT);
                                     partial.setInterrupted(true);
-                                    memory.save(sessId, partial);
+                                    // 异步落库, 不阻塞 SSE 结束
+                                    Message toSave = partial;
+                                    Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
+                                            .subscribeOn(Schedulers.boundedElastic())
+                                            .timeout(Duration.ofSeconds(10))
+                                            .doOnError(ex -> log.error("保存中断消息异常", ex))
+                                            .subscribe();
                                 }
                             }
                             sink.next(ChatChunk.interrupted());
@@ -238,8 +268,8 @@ public class AgentOrchestrator {
                         activeChatRegistry.register(sessId, handle);
                         sink.onDispose(() -> {
                             // 客户端断开 SSE 连接时, 取消上游 HTTP 请求, 避免孤儿流继续消耗 token
-                            if (!upstream.isDisposed()) {
-                                upstream.dispose();
+                            if (!upstreamSub.isDisposed()) {
+                                upstreamSub.dispose();
                             }
                             activeChatRegistry.unregister(sessId);
                         });
@@ -256,6 +286,230 @@ public class AgentOrchestrator {
                 : pipeline;
 
         return result.onErrorResume(e -> Flux.just(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR")));
+    }
+
+    /**
+     * 对话内文生图(按钮触发): 即时流式返回生成的图片, 并落库用户消息与助手图片消息
+     */
+    public Flux<ChatChunk> generateImageInChat(ChatImageRequest req) {
+        String sessionId = req.getSessionId();
+        if (sessionId == null || sessionId.isBlank()) {
+            SessionDTO session = sessionManager.createSession("新对话", null, null);
+            sessionId = session.getId();
+            req.setSessionId(sessionId);
+        }
+        final String sessId = sessionId;
+
+        // 确保会话存在并落库用户消息
+        List<Message> history = memory.load(sessId);
+        boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
+        Message userMsg = Message.user(req.getPrompt());
+        memory.save(sessId, userMsg);
+        if (firstMessage) {
+            sessionManager.autoTitleFromFirstMessage(sessId, req.getPrompt());
+        }
+
+        // 校验生图模型是否已配置
+        if (registry.getDefaultImageProvider() == null) {
+            Message err = Message.assistant("未配置图片生成模型，无法使用文生图功能。", null, null, null);
+            err.setError(true);
+            memory.save(sessId, err);
+            return Flux.just(ChatChunk.error("未配置图片生成模型，无法使用文生图功能。", "NO_IMAGE_MODEL"));
+        }
+        final String modelName = registry.getDefaultImageProvider().getName();
+
+        // 等待提示先于阻塞生图下发, 保证前端先看到"正在生成", 而非图片生成完才提示
+        return Flux.concat(
+                Flux.just(ChatChunk.status("正在生成图片，请稍候…")),
+                Mono.fromCallable(() -> chatImageService.generate(req.getPrompt(), req.getSize(), req.getStyle()))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .flatMapMany(urls -> {
+                            if (urls == null || urls.isEmpty()) {
+                                return Flux.just(ChatChunk.error("图片生成失败：模型未返回图片", "IMAGE_GEN_ERROR"));
+                            }
+                            List<ChatChunk> chunks = new ArrayList<>();
+                            for (String u : urls) {
+                                chunks.add(ChatChunk.image(u));
+                            }
+                            return Flux.fromIterable(chunks).concatWith(Flux.defer(() -> {
+                                Message m = Message.assistantImage(urls, "", modelName);
+                                memory.save(sessId, m);
+                                sessionManager.touch(sessId);
+                                return Flux.just(ChatChunk.done(0, 0, 0, 0));
+                            }));
+                        })
+                        .onErrorResume(e -> {
+                            Message err = Message.assistant("图片生成失败: " + e.getMessage(), null, modelName, null);
+                            err.setError(true);
+                            memory.save(sessId, err);
+                            return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
+                        })
+        );
+    }
+
+    /**
+     * 平台级生图约束(不持久化, 仅在向模型发起请求时注入为 system 消息):
+     * 约束模型只生成本轮新请求的图片, 不为历史已完成的图片重复生图(根治历史诱导重画)。
+     */
+    private static final String IMAGE_GENERATION_POLICY =
+            "文生图策略：只生成用户本轮明确新请求的图片。历史对话中已生成过的图片视为已完成, "
+            + "不要重复生成; 若用户本轮要求对历史图片进行修改, 应明确说明修改意图后再生成。";
+
+    /**
+     * 执行对话内的文生图工具调用(image_generation):
+     * 逐个解析工具入参并调用生图服务, 返回图片分块(image), 并把生成的 URL 回填到 outUrls。
+     */
+    private Flux<ChatChunk> executeImageTools(List<ChatChunk> toolCalls, String accumulatedText,
+                                             String reasoningText, List<String> outUrls,
+                                             List<String> outPrompts, String[] outError) {
+        // 仅当本轮确有生图调用时, 才下发"正在生成"等待提示(避免普通对话误发)
+        boolean hasImageCall = toolCalls.stream()
+                .anyMatch(tc -> "image_generation".equals(tc.getTool()));
+        if (!hasImageCall) {
+            return Flux.empty();
+        }
+        // status 先即时下发, 生图阻塞放入 defer 之后执行, 保证前端先看到等待提示再看到结果
+        return Flux.concat(
+                Flux.just(ChatChunk.status("正在生成图片，请稍候…")),
+                Flux.defer(() -> {
+                    List<String> all = new ArrayList<>();
+                    int callCount = 0;
+                    for (ChatChunk tc : toolCalls) {
+                        if (!"image_generation".equals(tc.getTool())) {
+                            continue;
+                        }
+                        callCount++;
+                        try {
+                            Map<String, Object> args = new LinkedHashMap<>();
+                            if (tc.getArgs() != null && !tc.getArgs().isBlank()) {
+                                args = mapper.readValue(tc.getArgs(), Map.class);
+                            }
+                            Object p = args.get("prompt");
+                            String prompt = p != null ? p.toString() : null;
+                            if (prompt == null || prompt.isBlank()) {
+                                prompt = accumulatedText; // 兜底用已累积文本作为提示词
+                            }
+                            Object s = args.get("size");
+                            Object st = args.get("style");
+                            List<String> urls = chatImageService.generate(
+                                    prompt, s != null ? s.toString() : null, st != null ? st.toString() : null);
+                            if (urls != null) {
+                                all.addAll(urls);
+                            }
+                            outPrompts.add(prompt);   // 记录本轮实际生图内容, 供落库陈述句使用
+                        } catch (Exception e) {
+                            outError[0] = e.getMessage();
+                            log.error("对话内文生图工具执行失败", e);
+                            return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
+                        }
+                    }
+                    if (callCount > 1) {
+                        // 历史形态修正 + system 约束后, 多余调用本不该发生; 若仍多发, 说明用户确需多张, 全部执行不丢弃
+                        log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
+                    }
+                    if (all.isEmpty()) {
+                        return Flux.empty();
+                    }
+                    outUrls.addAll(all);
+                    List<ChatChunk> chunks = new ArrayList<>();
+                    for (String u : all) {
+                        chunks.add(ChatChunk.image(u));
+                    }
+                    return Flux.fromIterable(chunks);
+                })
+        );
+    }
+
+    /**
+     * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
+     * 并下发 done 分块与 finish_reason 相关提示。
+     */
+    private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
+                                             StringBuilder accumulated, StringBuilder reasoning,
+                                             List<ChatChunk> toolCalls, List<String> urls, List<String> prompts, String[] toolError,
+                                             ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
+                                             long startNanos, List<Message> contextForEstimate,
+                                             AtomicBoolean assistantSaved) {
+        ChatResponse.TokenUsage u = usageHolder[0];
+        int p = u != null ? u.getPrompt() : tokenEstimator.estimate(contextForEstimate);
+        int c = u != null ? u.getCompletion()
+                : tokenEstimator.estimate(accumulated.toString()) + tokenEstimator.estimate(reasoning.toString());
+        int t = u != null ? u.getTotal() : (p + c);
+        long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
+        String fr = finishReasonHolder[0];
+
+        // 仅构建待落库消息(不在此处阻塞 SSE)
+        Message assistantMessage = null;
+        // 生图轮给下一轮模型的陈述句(仅追加部分): 同时回传前端, 保证实时流与刷新后内容一致
+        final String[] appendedStatement = { null };
+        if (assistantSaved.compareAndSet(false, true)) {
+            if (!toolCalls.isEmpty()) {
+                if (!urls.isEmpty()) {
+                    // 落库为陈述句形态(含本轮生图内容摘要), 让下一轮模型明确"这些图片已生成过",
+                    // 避免历史诱导模型把已生成图片当成本轮目标重复生成。
+                    String content = accumulated.toString();
+                    if (!prompts.isEmpty()) {
+                        StringBuilder sb = new StringBuilder();
+                        if (content != null && !content.isBlank()) {
+                            sb.append(content).append("\n");
+                        }
+                        String stmt = "已生成图片：" + String.join("、", prompts) + "。";
+                        sb.append(stmt);
+                        appendedStatement[0] = stmt;
+                        content = sb.toString();
+                    }
+                    assistantMessage = Message.assistantImage(urls, content, provider.getName());
+                    // 关键: 生图轮也要携带推理内容, 否则刷新后会丢失(assistantImage 工厂不设置 reasoningContent)
+                    assistantMessage.setReasoningContent(reasoning.toString());
+                } else {
+                    // 工具被调用但未产出图片(失败): 退化为文本/错误消息
+                    String content = accumulated.toString();
+                    if (content.isEmpty() && toolError[0] != null) {
+                        content = "图片生成失败：" + toolError[0];
+                    }
+                    assistantMessage = Message.assistant(content, reasoning.toString(), provider.getName(), t);
+                    if (toolError[0] != null) {
+                        assistantMessage.setError(true);
+                    }
+                }
+            } else {
+                assistantMessage = Message.assistant(accumulated.toString(), reasoning.toString(), provider.getName(), t);
+            }
+            if ("insufficient_system_resource".equals(fr) || "content_filter".equals(fr)) {
+                assistantMessage.setError(true);
+            }
+        }
+
+        // 落库与会话时间戳更新改为异步尽力而为, 不阻塞 SSE 结束信号;
+        // 否则 DB 锁/慢查询会卡住 SSE 关闭, 前端一直收不到 done、发送按钮卡在"取消"
+        if (assistantMessage != null) {
+            Message toSave = assistantMessage;
+            Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .timeout(Duration.ofSeconds(10))
+                    .doOnError(ex -> log.error("保存助手消息异常", ex))
+                    .subscribe();
+        }
+        Mono.fromCallable(() -> { sessionManager.touch(sessId); return null; })
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(Duration.ofSeconds(10))
+                .doOnError(ex -> log.error("更新会话时间戳异常", ex))
+                .subscribe();
+
+        List<ChatChunk> tail = new ArrayList<>();
+        // 把落库陈述句回传给前端(仅追加部分), 使实时流与刷新后持久化内容一致, 避免"刷新后多一句已生成图片"
+        if (appendedStatement[0] != null) {
+            tail.add(ChatChunk.chunk(appendedStatement[0]));
+        }
+        tail.add(ChatChunk.done(p, c, t, durationMs));
+        if ("length".equals(fr)) {
+            tail.add(ChatChunk.contextWarning("回答已达长度上限(max_tokens)被截断，可尝试简化问题或开启新对话。"));
+        } else if ("insufficient_system_resource".equals(fr)) {
+            tail.add(ChatChunk.error("生成因后端推理资源不足被打断", "RESOURCE_LIMIT"));
+        } else if ("content_filter".equals(fr)) {
+            tail.add(ChatChunk.contextWarning("回答触发安全策略过滤。"));
+        }
+        return Flux.fromIterable(tail);
     }
 
     /**
@@ -280,6 +534,19 @@ public class AgentOrchestrator {
         // 3. 路由决策
         ChatModelProvider provider = router.route(request, history);
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
+
+        // 3.1 平台级生图约束(仅当本轮会注入生图工具时前置为 system 消息, 不落库):
+        //     与 executeImageTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险,
+        //     从源头降低模型因历史图片而重复调用 image_generation。
+        if (provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
+            boolean hasPolicy = history.stream()
+                    .anyMatch(m -> "system".equals(m.getRole()) && IMAGE_GENERATION_POLICY.equals(m.getContent()));
+            if (!hasPolicy) {
+                List<Message> withPolicy = new ArrayList<>(history);
+                withPolicy.add(0, Message.system(IMAGE_GENERATION_POLICY));
+                history = withPolicy;
+            }
+        }
 
         // 4.1 图片自动路由(必须先执行: 会 mutate request —— 解析 base64 / 决定最终回答模型)
         //      —— 必须在保存用户消息之前完成, 以便把路由元信息(模型/状态)一并落库

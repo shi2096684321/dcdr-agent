@@ -63,8 +63,8 @@ agent:
         temperature: 0.7
         max-tokens: 2000
         capabilities:
-          - vision
-          - function_calling
+#          - vision
+#          - function_calling
 
       - name: "zhipu-chat"
         enabled: true
@@ -74,7 +74,7 @@ agent:
         model: "glm-4-plus"
         temperature: 0.7
         capabilities:
-          - function_calling
+#          - function_calling
 
       - name: "qwen-chat"
         enabled: true
@@ -83,7 +83,7 @@ agent:
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model: "qwen3.7-max-2026-06-08"
         capabilities:
-          - vision
+#          - vision
           - function_calling
 
       - name: "deepseek-chat"
@@ -96,8 +96,17 @@ agent:
           - function_calling
 
     image:
-      - name: "openai-image"
+      - name: "qwen-image"
         enabled: true
+        provider: "qwen"
+        #        api-key: ${DASHSCOPE_API_KEY:demo-key}
+        api-key: "sk-68a97d79d1f5479491be3ae83fa4655c"
+        base-url: "https://dashscope.aliyuncs.com"
+        model: "qwen-image-2.0-pro-2026-06-22"
+        size: "1024x1024"
+
+      - name: "openai-image"
+        enabled: false
         provider: "openai"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
         base-url: "https://api.openai.com"
@@ -105,20 +114,11 @@ agent:
         size: "1024x1024"
 
       - name: "zhipu-image"
-        enabled: true
+        enabled: false
         provider: "zhipu"
         api-key: ${ZHIPU_API_KEY:demo-key}
         base-url: "https://open.bigmodel.cn/api/paas/v4"
         model: "cogview-3"
-
-      - name: "qwen-image"
-        enabled: true
-        provider: "qwen"
-#        api-key: ${DASHSCOPE_API_KEY:demo-key}
-        api-key: "sk-68a97d79d1f5479491be3ae83fa4655c"
-        base-url: "https://dashscope.aliyuncs.com"
-        model: "qwen-image-2.0-pro-2026-06-22"
-        size: "1024x1024"
 
     video:
       - name: "kling-video"

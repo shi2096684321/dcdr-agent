@@ -16,7 +16,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -145,6 +148,15 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
             }
             userMsg.put("content", request.getMessage());
         }
+        // 函数调用工具(仅支持 function calling 的模型生效, OpenAI 格式)
+        List<Map<String, Object>> tools = request.getTools();
+        if (tools != null && !tools.isEmpty() && supportsFunctionCalling()) {
+            ArrayNode toolsNode = body.putArray("tools");
+            for (Map<String, Object> t : tools) {
+                toolsNode.addPOJO(t);
+            }
+            body.put("tool_choice", "auto");
+        }
         return body.toString();
     }
 
@@ -175,6 +187,9 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         AtomicLong rawLines = new AtomicLong();
         AtomicLong dataLines = new AtomicLong();
         AtomicLong produced = new AtomicLong();
+        // 函数调用累积器: 跨 SSE chunk 拼接 tool_calls
+        Map<Integer, ToolCallState> toolCallMap = new LinkedHashMap<>();
+        List<ToolCallState> toolCalls = new ArrayList<>();
         log.info("{} 发起流式请求, body={}", name, json);
         return webClient.post().uri(getChatPath()).bodyValue(json)
                 .retrieve().bodyToFlux(String.class)
@@ -215,6 +230,28 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                             }
                             return usageChunk;
                         }
+                        // 函数调用: delta.tool_calls 跨 chunk 增量拼接
+                        JsonNode toolCallsNode = root.path("choices").path(0).path("delta").path("tool_calls");
+                        if (toolCallsNode.isArray() && !toolCallsNode.isEmpty()) {
+                            for (JsonNode tc : toolCallsNode) {
+                                int idx = tc.path("index").asInt(0);
+                                ToolCallState st = toolCallMap.get(idx);
+                                if (st == null) {
+                                    st = new ToolCallState();
+                                    toolCallMap.put(idx, st);
+                                    toolCalls.add(st);
+                                }
+                                JsonNode fn = tc.path("function");
+                                if (!fn.path("name").isMissingNode() && !fn.path("name").isNull()) {
+                                    st.name = fn.path("name").asText();
+                                }
+                                JsonNode argsNode = fn.path("arguments");
+                                if (!argsNode.isMissingNode() && !argsNode.isNull() && !argsNode.asText().isEmpty()) {
+                                    st.arguments.append(argsNode.asText());
+                                }
+                            }
+                            return null;
+                        }
                         JsonNode delta = root.path("choices").path(0).path("delta").path("content");
                         JsonNode reasoningContent = root.path("choices").path(0).path("delta").path("reasoning_content");
                         // reasoning_content(思维链) 与 content(正文) 是模型返回的两个互斥阶段,
@@ -234,11 +271,26 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                         return null;
                     }
                 })
+                .concatWith(Flux.defer(() -> {
+                    if (toolCalls.isEmpty()) return Flux.empty();
+                    log.info("{} 检测到函数调用: {}", name, toolCalls.stream().map(t -> t.name).toList());
+                    List<ChatChunk> chunks = new ArrayList<>(toolCalls.size());
+                    for (ToolCallState st : toolCalls) {
+                        chunks.add(ChatChunk.toolCall(st.name, st.arguments.toString()));
+                    }
+                    return Flux.fromIterable(chunks);
+                }))
                 .doOnComplete(() -> log.info("{} 流式接收完成: 原始字符串行={}, 有效data行={}, 生成文本块={}",
                         name, rawLines.get(), dataLines.get(), produced.get()))
                 .onErrorResume(e -> {
                     log.error("{} 流式调用失败", name, e);
                     return Flux.just(ChatChunk.error("流式调用失败: " + e.getMessage(), "MODEL_ERROR"));
                 });
+    }
+
+    /** 函数调用累积状态(跨 SSE chunk 拼接 name/arguments) */
+    private static final class ToolCallState {
+        String name;
+        StringBuilder arguments = new StringBuilder();
     }
 }

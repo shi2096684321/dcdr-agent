@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话请求
@@ -36,4 +37,8 @@ public class ChatRequest {
     /** 是否流式(默认true) */
     @Schema(description = "是否流式输出（默认 true）", defaultValue = "true")
     private boolean stream = true;
+
+    /** 函数调用工具定义列表(OpenAI function calling 格式), 由后端按需注入 */
+    @Schema(description = "函数调用工具定义列表(OpenAI function calling 格式)", hidden = true)
+    private List<Map<String, Object>> tools;
 }

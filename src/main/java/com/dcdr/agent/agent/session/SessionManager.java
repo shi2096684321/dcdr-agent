@@ -92,7 +92,7 @@ public class SessionManager {
                 dto.setId(sessionId + "_" + (++idx));
                 dto.setSessionId(sessionId);
                 dto.setRole(msg.getRole());
-                dto.setType("text");
+                dto.setType(msg.getType() != null ? msg.getType() : "text");
                 dto.setContent(msg.getContent());
                 dto.setReasoningContent(msg.getReasoningContent());
                 dto.setModel(msg.getModel());

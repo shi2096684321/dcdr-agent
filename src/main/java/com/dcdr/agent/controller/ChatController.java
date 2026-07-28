@@ -4,6 +4,7 @@ import com.dcdr.agent.agent.ActiveChatRegistry;
 import com.dcdr.agent.agent.AgentOrchestrator;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.ChatChunk;
+import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -55,6 +56,32 @@ public class ChatController {
     public Flux<ServerSentEvent<ChatChunk>> chatStream(@RequestBody ChatRequest request) {
         log.info("流式对话: session={}", request.getSessionId());
         return orchestrator.chat(request)
+                .map(chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build());
+    }
+
+    /**
+     * 对话内文生图 (SSE)
+     * <p>
+     * 按钮触发的文生图: 即时流式返回生成的图片, 并落库用户消息与助手图片消息。
+     */
+    @Operation(
+            summary = "对话内文生图 (SSE)",
+            description = "根据提示词生成图片, 通过 SSE 逐块推送。\n\n" +
+                    "块类型 (ChatChunk.type):\n" +
+                    "- `status`: 生成中提示\n" +
+                    "- `image`: 图片结果(携带 imageUrl)\n" +
+                    "- `done`: 结束块\n" +
+                    "- `error`: 错误信息",
+            responses = {
+                    @ApiResponse(responseCode = "200", description = "SSE 流，逐条推送 ChatChunk",
+                            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+                                    schema = @Schema(implementation = ChatChunk.class)))
+            }
+    )
+    @PostMapping(value = "/image", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<ChatChunk>> chatImage(@RequestBody ChatImageRequest request) {
+        log.info("对话内文生图: session={}, prompt={}", request.getSessionId(), request.getPrompt());
+        return orchestrator.generateImageInChat(request)
                 .map(chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build());
     }
 

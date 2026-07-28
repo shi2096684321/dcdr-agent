@@ -126,10 +126,17 @@
                 <div v-html="renderMarkdown(reasoningContent)"></div>
               </details>
             </div>
-            <div v-if="statusHint && !streamContent && !reasoningContent" class="msg-status">
+            <div v-if="streamImages.length" class="msg-images">
+              <div v-for="(img, idx) in streamImages" :key="idx" class="msg-image-wrapper">
+                <img :src="img" :alt="'生成的图片'" class="msg-image"
+                     @click="previewImage(img)" loading="lazy" />
+              </div>
+            </div>
+            <div v-if="statusHint" class="msg-status">
               <span class="status-dot"></span>{{ statusHint }}
             </div>
-            <div v-else class="msg-bubble streaming">{{ streamContent }}<span class="cursor">|</span></div>
+            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming">{{ streamContent }}<span class="cursor">|</span></div>
+            <div v-else-if="!statusHint" class="msg-bubble streaming"><span class="cursor">|</span></div>
           </div>
         </div>
       </div>
@@ -150,6 +157,9 @@
 
         <div class="input-box">
           <div class="input-actions">
+            <!-- 文生图按钮 -->
+            <button class="action-btn" title="文生图（AI 绘图）：请避免使用受版权保护的角色 / 品牌 / Logo 名称" @click="sendImage"
+                    :disabled="streaming || !input.trim()">🎨</button>
             <!-- 图片上传按钮 -->
             <label class="action-btn" title="上传图片/视频">
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
@@ -177,7 +187,7 @@
 
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { getSessions, createSession, getMessages, streamChat, stopChat, renameSession, deleteSession, uploadFile, deleteMessages } from '../api'
+import { getSessions, createSession, getMessages, streamChat, streamChatImage, stopChat, renameSession, deleteSession, uploadFile, deleteMessages } from '../api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import logoUrl from '../assets/dcdr-logo.png'
@@ -194,6 +204,7 @@ const streaming = ref(false)
 const interruptedRef = ref(false)
 const streamContent = ref('')
 const reasoningContent = ref('')
+const streamImages = ref([])
 const statusHint = ref('')
 const msgBox = ref(null)
 const editingId = ref(null)
@@ -364,6 +375,7 @@ async function send(opts = {}) {
   streaming.value = true
   streamContent.value = ''
   reasoningContent.value = ''
+  streamImages.value = []
   statusHint.value = ''
   interruptedRef.value = false
   scrollBottom()
@@ -380,6 +392,8 @@ async function send(opts = {}) {
       if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
       if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
+      if (chunk.type === 'tool_call') { statusHint.value = '正在调用工具生成图片…'; scrollBottom(); return }
+      if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
       if (chunk.type === 'done') {
         statusHint.value = ''
         lastTokenUsage.value = chunk.tokenUsage?.total ?? null
@@ -393,12 +407,14 @@ async function send(opts = {}) {
       if (ok(chunk.content)) { streamContent.value += chunk.content; scrollBottom() }
     },
     () => {
-      if (streamContent.value || reasoningContent.value) {
+      if (streamContent.value || reasoningContent.value || streamImages.value.length) {
         messages.value.push({
           id: Date.now(),
           role: 'assistant',
           content: streamContent.value,
           reasoningContent: reasoningContent.value,
+          images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
+          type: streamImages.value.length ? 'image' : 'text',
           interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
           durationMs: lastDurationMs.value
@@ -406,6 +422,7 @@ async function send(opts = {}) {
       }
       streamContent.value = ''
       reasoningContent.value = ''
+      streamImages.value = []
       statusHint.value = ''
       streaming.value = false
       loadSessions()
@@ -424,6 +441,84 @@ async function send(opts = {}) {
       }
     },
     (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = ''; statusHint.value = '' }
+  )
+}
+
+/** 文生图(按钮触发): 将输入框内容作为提示词, 调用 /api/chat/image 即时生成图片 */
+async function sendImage() {
+  const text = input.value.trim()
+  if (!text || streaming.value) return
+  contextWarning.value = null
+  lastTokenUsage.value = null
+  lastDurationMs.value = null
+  if (!currentSessionId.value) await newSession()
+
+  const userMsg = { id: Date.now(), role: 'user', content: text }
+  messages.value.push(userMsg)
+  input.value = ''
+  selectedFiles.value = []
+
+  streaming.value = true
+  streamContent.value = ''
+  reasoningContent.value = ''
+  streamImages.value = []
+  statusHint.value = '正在生成图片，请稍候…'
+  interruptedRef.value = false
+  scrollBottom()
+
+  await streamChatImage(
+    { sessionId: currentSessionId.value, prompt: text },
+    (chunk) => {
+      if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
+      if (chunk.type === 'tool_call') { statusHint.value = '正在生成图片…'; scrollBottom(); return }
+      if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
+      if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
+      if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || ''; return }
+      if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
+      if (chunk.type === 'done') {
+        statusHint.value = ''
+        lastTokenUsage.value = chunk.tokenUsage?.total ?? null
+        lastDurationMs.value = chunk.durationMs ?? null
+        return
+      }
+      if (chunk.type !== 'chunk') return
+      statusHint.value = ''
+      if (chunk.reasoningContent) { reasoningContent.value += chunk.reasoningContent; scrollBottom() }
+      if (chunk.content) { streamContent.value += chunk.content; scrollBottom() }
+    },
+    () => {
+      if (streamImages.value.length || streamContent.value || reasoningContent.value) {
+        messages.value.push({
+          id: Date.now(),
+          role: 'assistant',
+          content: streamContent.value,
+          reasoningContent: reasoningContent.value,
+          images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
+          type: streamImages.value.length ? 'image' : 'text',
+          interrupted: interruptedRef.value,
+          tokenUsage: lastTokenUsage.value,
+          durationMs: lastDurationMs.value
+        })
+      }
+      streamContent.value = ''
+      reasoningContent.value = ''
+      streamImages.value = []
+      statusHint.value = ''
+      streaming.value = false
+      loadSessions()
+      scrollBottom()
+      // 回写后端 seq, 支持编辑/重试时按 seq 截断历史
+      if (currentSessionId.value) {
+        getMessages(currentSessionId.value)
+          .then(list => {
+            if (list && list.length === messages.value.length) {
+              list.forEach((m, i) => { if (messages.value[i]) messages.value[i].seq = m.seq })
+            }
+          })
+          .catch(() => {})
+      }
+    },
+    (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = ''; streamImages.value = []; statusHint.value = '' }
   )
 }
 

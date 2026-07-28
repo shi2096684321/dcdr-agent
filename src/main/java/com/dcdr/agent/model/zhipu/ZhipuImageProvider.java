@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.Duration;
 import java.util.concurrent.TimeoutException;
@@ -64,9 +65,49 @@ public class ZhipuImageProvider implements ImageModelProvider {
                 log.error("智谱图片生成超时({}s), 判定失败", REQUEST_TIMEOUT.getSeconds(), e);
                 throw new RuntimeException("图片生成超时, 请稍后重试", e);
             }
-            log.error("智谱图片生成失败, 进入演示模式", e);
+            String raw = extractResponseBody(e);
+            String bizMsg = parseBusinessError(raw);
+            if (bizMsg != null) {
+                // 平台明确拒绝的业务错误(鉴权/参数/IP侵权等): 直接抛出让前端提示失败, 不返回占位假图
+                log.error("智谱图片生成被平台拒绝: {}", bizMsg);
+                throw new RuntimeException("图片生成失败: " + bizMsg, e);
+            }
+            log.error("智谱图片生成失败, 进入演示模式{}", raw, e);
             return demoResponse(request);
         }
+    }
+
+    /** 从 WebClient 异常中提取服务端返回的原始错误体(纯文本), 便于排查 401 等 */
+    private String extractResponseBody(Throwable e) {
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof WebClientResponseException wcre) {
+                String b = wcre.getResponseBodyAsString();
+                if (b != null && !b.isBlank()) {
+                    return " [服务端返回: " + b + "]";
+                }
+                return " [HTTP " + wcre.getStatusCode() + "]";
+            }
+            t = t.getCause();
+        }
+        return "";
+    }
+
+    /** 解析平台返回的结构化业务错误(code+message); 非业务错误(如网络异常)返回 null, 继续走演示兜底 */
+    private String parseBusinessError(String detail) {
+        if (detail == null || detail.isBlank() || !detail.startsWith(" [服务端返回: ")) {
+            return null;
+        }
+        String json = detail.substring(" [服务端返回: ".length(), detail.length() - 1);
+        try {
+            JsonNode root = mapper.readTree(json);
+            if (root.has("code") && root.path("code").asText(null) != null) {
+                return root.path("message").asText(root.path("code").asText());
+            }
+        } catch (Exception ignore) {
+            // 非 JSON, 视为非结构化错误, 继续演示兜底
+        }
+        return null;
     }
 
     /** 判断异常链中是否包含超时(区别于其他网络/业务异常, 超时不走演示兜底) */

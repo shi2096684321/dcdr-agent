@@ -35,6 +35,10 @@ public class ChatChunk {
     @Schema(description = "工具执行结果（type=tool_result 时）")
     private String result;
 
+    /** 图片 URL(type=image 时, 文生图内联结果) */
+    @Schema(description = "图片 URL（type=image 时，文生图内联结果）")
+    private String imageUrl;
+
     /** 错误信息(type=error时) */
     @Schema(description = "错误信息（type=error 时）")
     private String message;
@@ -84,6 +88,14 @@ public class ChatChunk {
         c.setType("tool_result");
         c.setTool(tool);
         c.setResult(result);
+        return c;
+    }
+
+    /** 文生图内联结果: type=image, 携带可访问的图片 URL */
+    public static ChatChunk image(String imageUrl) {
+        ChatChunk c = new ChatChunk();
+        c.setType("image");
+        c.setImageUrl(imageUrl);
         return c;
     }
 

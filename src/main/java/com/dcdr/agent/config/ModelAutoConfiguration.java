@@ -44,9 +44,9 @@ public class ModelAutoConfiguration {
                     if (!c.isEnabled()) continue;
                     try {
                         switch (c.getProvider()) {
+                            case "qwen" -> { registry.registerImageProvider(new QwenImageProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName())); imageCount++; }
                             case "openai" -> { registry.registerImageProvider(new OpenAiImageProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getSize())); imageCount++; }
                             case "zhipu" -> { registry.registerImageProvider(new ZhipuImageProvider(c.getBaseUrl(), c.getApiKey(), c.getModel())); imageCount++; }
-                            case "qwen" -> { registry.registerImageProvider(new QwenImageProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName())); imageCount++; }
                         }
                     } catch (Exception e) { log.error("注册图片模型失败: {}", c.getName(), e); }
                 }

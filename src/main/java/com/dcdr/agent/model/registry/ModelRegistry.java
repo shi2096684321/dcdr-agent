@@ -67,6 +67,11 @@ public class ModelRegistry {
         return p;
     }
 
+    /** 默认图片模型: 返回已配置的第一个图片 Provider(复用创作模式已配模型) */
+    public ImageModelProvider getDefaultImageProvider() {
+        return imageProviders.values().stream().findFirst().orElse(null);
+    }
+
     public VideoModelProvider getVideoProvider(String name) {
         VideoModelProvider p = videoProviders.get(name);
         if (p == null) {
