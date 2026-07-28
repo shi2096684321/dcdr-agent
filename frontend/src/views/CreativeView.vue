@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="creative-mode">
     <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false" title="展开侧边栏">»</button>
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
@@ -92,59 +92,24 @@
     </div>
 
     <!-- 详情弹窗 -->
-    <Teleport to="body">
-      <div v-if="showDetail && detailGen" class="img-viewer" @click.self="closeDetail">
-        <button class="viewer-close" @click="closeDetail">&times;</button>
-        <div class="viewer-stage">
-          <img :src="detailGen.resultUrl" class="viewer-img" />
-        </div>
-        <div class="viewer-panel">
-          <div class="vp-head">
-            <p class="vp-title">{{ detailGen.prompt || '无提示词' }}</p>
-            <span class="vp-tag">{{ detailGen.status === 'completed' ? '已完成' : detailGen.status }}</span>
-          </div>
-          <div class="vp-section">
-            <span class="vp-label">提示词</span>
-            <pre class="vp-prompt">{{ detailGen.prompt }}</pre>
-          </div>
-          <div v-if="detailGen.paramsJson" class="vp-section">
-            <span class="vp-label">生成参数</span>
-            <div class="vp-grid">
-              <div class="vp-cell"><span>尺寸</span><b>{{ detailGen.size || '-' }}</b></div>
-              <div class="vp-cell"><span>风格</span><b>{{ styleLabel(parseParam('style')) }}</b></div>
-              <div class="vp-cell"><span>数量</span><b>{{ parseParam('n') || 1 }}</b></div>
-              <div class="vp-cell"><span>随机种子</span><b>{{ parseParam('seed') != null ? parseParam('seed') : '-' }}</b></div>
-              <div class="vp-cell"><span>模型</span><b>{{ detailGen.model || '-' }}</b></div>
-              <div class="vp-cell"><span>智能改写</span><b>{{ parseParam('promptExtend') ? '开' : '关' }}</b></div>
-              <div class="vp-cell"><span>水印</span><b>{{ parseParam('watermark') ? '开' : '关' }}</b></div>
-            </div>
-          </div>
-          <div v-if="parseParam('negativePrompt')" class="vp-section">
-            <span class="vp-label">反向提示词</span>
-            <pre class="vp-prompt">{{ parseParam('negativePrompt') }}</pre>
-          </div>
-          <div class="vp-section">
-            <span class="vp-label">元信息</span>
-            <div class="vp-grid">
-              <div class="vp-cell"><span>耗时</span><b>{{ formatDuration(detailGen.durationMs) }}</b></div>
-              <div class="vp-cell"><span>创建时间</span><b>{{ formatDate(detailGen.createdAt) }}</b></div>
-            </div>
-          </div>
-          <div class="vp-actions">
-            <button class="vp-btn ghost" @click="applyParams(detailGen)">套用参数</button>
-          </div>
-          <a class="vp-download" :href="detailGen.resultUrl" download>&#x2B07; 下载图片</a>
-        </div>
-      </div>
-    </Teleport>
+    <GenerationDetailDialog
+      :detail-gen="detailGen"
+      @close="closeDetail"
+      @apply-params="applyParams"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getProjects, createProject, generateImage, getGeneration, getGenerations, getThreadPoolStats, deleteProject, renameProject } from '../api'
-import logoUrl from '../assets/dcdr-logo.png'
+import {
+  getProjects, createProject, generateImage, getGeneration, getGenerations,
+  getThreadPoolStats, deleteProject, renameProject
+} from '@/api'
+import logoUrl from '@/assets/dcdr-logo.png'
+import GenerationDetailDialog from '@/components/GenerationDetailDialog.vue'
+
 const props = defineProps({ currentModel: String, imageModels: Array })
 const projects = ref([])
 
@@ -187,12 +152,9 @@ const pagedHistory = computed(() => {
 })
 // 页码越界自动修正(删除/清空后)
 watch(historyTotalPages, (n) => { if (historyPage.value > n) historyPage.value = n })
-const showDetail = ref(false)  // 详情弹窗
 const detailGen = ref(null)    // 当前查看的 generation
 const sidebarCollapsed = ref(false)
 const modelLabel = computed(() => props.imageModels?.find(x => x.name === props.currentModel)?.label || props.currentModel)
-// qwen-image-2.0 文生图接口不支持参考图, 图生图需走 qwen-image-edit
-const refSupported = computed(() => !props.currentModel?.includes('qwen-image-2.0'))
 const currentImg = computed(() => selIdx.value >= 0 ? images.value[selIdx.value]?.resultUrl : null)
 async function loadProjects() { projects.value = await getProjects() }
 // 从后端加载某项目下历史生成图片(刷新/切换项目不丢失)
@@ -221,49 +183,21 @@ async function newProject() {
 }
 function openDetail(gen) {
   detailGen.value = gen
-  showDetail.value = true
 }
 function closeDetail() {
-  showDetail.value = false
   detailGen.value = null
 }
-/** 从 paramsJson 中解析参数 */
-function parseParam(key) {
-  if (!detailGen.value?.paramsJson) return null
-  try {
-    const params = JSON.parse(detailGen.value.paramsJson)
-    return params[key] ?? null
-  } catch { return null }
-}
-function styleLabel(v) {
-  const map = { vivid: '生动', natural: '自然', anime: '动漫', oil: '油画' }
-  return map[v] || v || '-'
-}
-function formatDuration(ms) {
-  if (!ms) return '-'
-  const s = Math.round(ms / 1000)
-  if (s < 60) return s + 's'
-  return Math.floor(s / 60) + 'm' + (s % 60) + 's'
-}
-function formatDate(dt) {
-  if (!dt) return '-'
-  const d = new Date(dt)
-  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`
-}
 /** 将详情中的参数套用到当前控制面板 */
-function applyParams(gen) {
-  try {
-    const params = gen.paramsJson ? JSON.parse(gen.paramsJson) : {}
-    if (params.prompt) prompt.value = params.prompt
-    if (params.size) size.value = params.size
-    else if (gen.size) size.value = gen.size
-    if (params.style) styleVal.value = params.style
-    if (params.negativePrompt != null) negativePrompt.value = params.negativePrompt
-    if (params.n != null) n.value = params.n
-    if (params.promptExtend != null) promptExtend.value = params.promptExtend
-    if (params.watermark != null) watermark.value = params.watermark
-    closeDetail()
-  } catch(e) { console.error('解析参数失败', e) }
+function applyParams({ gen, params }) {
+  if (params.prompt) prompt.value = params.prompt
+  if (params.size) size.value = params.size
+  else if (gen.size) size.value = gen.size
+  if (params.style) styleVal.value = params.style
+  if (params.negativePrompt != null) negativePrompt.value = params.negativePrompt
+  if (params.n != null) n.value = params.n
+  if (params.promptExtend != null) promptExtend.value = params.promptExtend
+  if (params.watermark != null) watermark.value = params.watermark
+  closeDetail()
 }
 // 隐式确保有归属项目(直接生成但尚无项目时), 不重置用户输入
 async function ensureProject() {
@@ -740,88 +674,4 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
 .act.primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
 .act.secondary { background: rgba(255, 255, 255, 0.08); color: var(--text); }
 .act.secondary:hover { background: rgba(255, 255, 255, 0.15); border-color: var(--border-strong); }
-
-/* ===== 详情查看器 ===== */
-.img-viewer {
-  position: fixed; inset: 0; z-index: 200;
-  background: rgba(8, 9, 14, 0.82); display: flex;
-  backdrop-filter: blur(12px);
-  animation: fadein 0.25s var(--ease);
-}
-.viewer-close {
-  position: absolute; top: 18px; right: 18px; z-index: 210;
-  width: 42px; height: 42px; border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1); border: 1px solid var(--border);
-  color: #fff; font-size: 20px; cursor: pointer;
-  display: flex; align-items: center; justify-content: center;
-  transition: all 0.2s var(--ease);
-}
-.viewer-close:hover { background: rgba(255, 255, 255, 0.2); transform: rotate(90deg); }
-.viewer-stage { flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden; cursor: zoom-out; padding: 24px; }
-.viewer-img {
-  max-width: 90%; max-height: 90%; object-fit: contain; border-radius: 12px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
-  transition: transform 0.12s ease-out;
-  animation: fadein 0.3s var(--ease);
-}
-.viewer-panel {
-  width: 372px; display: flex; flex-direction: column; padding: 24px;
-  overflow-y: auto; gap: 20px;
-  background: rgba(38, 41, 56, 0.97); backdrop-filter: blur(24px);
-  border-left: 1px solid var(--border-strong);
-  box-shadow: -20px 0 60px rgba(0, 0, 0, 0.4);
-}
-.vp-head { display: flex; flex-direction: column; gap: 10px; }
-.vp-title { font-size: 16px; font-weight: 600; line-height: 1.45; margin: 0; word-break: break-word; color: #f4f6fb; }
-.vp-tag {
-  align-self: flex-start; font-size: 11px; padding: 3px 10px; border-radius: var(--radius-pill);
-  background: rgba(52, 211, 153, 0.18); color: #6ee7b7;
-  border: 1px solid rgba(52, 211, 153, 0.35); font-weight: 600; letter-spacing: 0.02em;
-}
-.vp-section { display: flex; flex-direction: column; gap: 8px; }
-.vp-label { font-size: 11px; color: #c2c8d6; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
-.vp-prompt {
-  background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: var(--radius-card);
-  padding: 13px; font-size: 13px; line-height: 1.65; color: #e8ebf3;
-  white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow-y: auto;
-}
-.vp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.vp-cell {
-  background: rgba(0, 0, 0, 0.22); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px;
-  padding: 11px; display: flex; flex-direction: column; gap: 4px;
-  transition: all 0.18s var(--ease);
-}
-.vp-cell:hover { border-color: rgba(255, 255, 255, 0.25); background: rgba(0, 0, 0, 0.32); }
-.vp-cell span { font-size: 11px; color: #aeb4c4; font-weight: 500; }
-.vp-cell b { font-size: 13px; font-weight: 600; color: #f4f6fb; font-family: 'SF Mono', ui-monospace, monospace; }
-.vp-actions { display: flex; gap: 10px; }
-.vp-btn {
-  flex: 1; padding: 11px; border: 1px solid rgba(255, 255, 255, 0.16); border-radius: var(--radius-card);
-  font-size: 13px; font-weight: 600; cursor: pointer; background: rgba(255, 255, 255, 0.08); color: #f4f6fb;
-  transition: all 0.2s var(--ease);
-}
-.vp-btn.ghost { background: rgba(139, 127, 245, 0.12); color: #b8aef9; border-color: rgba(139, 127, 245, 0.25); }
-.vp-btn.ghost:hover { background: rgba(139, 127, 245, 0.22); border-color: var(--accent); }
-.vp-download {
-  display: flex; align-items: center; justify-content: center; gap: 7px; padding: 13px;
-  border-radius: var(--radius-card); background: rgba(139, 127, 245, 0.12);
-  color: #f4f6fb; font-weight: 700; text-decoration: none; font-size: 14px;
-  border: 1px solid rgba(139, 127, 245, 0.25);
-  transition: all 0.2s var(--ease);
-}
-.vp-download:hover { background: rgba(139, 127, 245, 0.22); border-color: var(--accent); }
-.viewer-zoom {
-  position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 8px;
-  background: rgba(0, 0, 0, 0.5); padding: 7px 14px; border-radius: var(--radius-pill);
-  color: #fff; font-size: 13px; backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
-}
-.viewer-zoom button {
-  width: 30px; height: 30px; border-radius: 50%; border: none;
-  background: rgba(255, 255, 255, 0.12); color: #fff; cursor: pointer; font-size: 16px;
-  transition: all 0.18s var(--ease);
-}
-.viewer-zoom button:hover { background: rgba(255, 255, 255, 0.25); }
-.viewer-zoom .reset { width: auto; padding: 0 12px; border-radius: 14px; font-size: 12px; }
 </style>

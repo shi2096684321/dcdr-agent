@@ -1,0 +1,4 @@
+/* 项目通用渐变背景工具类(被多个组件引用, 需全局可用) */
+.gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+.gradient-green { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
+.gradient-orange { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
