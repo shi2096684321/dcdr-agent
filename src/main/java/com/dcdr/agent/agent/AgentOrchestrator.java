@@ -339,8 +339,14 @@ public class AgentOrchestrator {
                             for (String u : urls) {
                                 chunks.add(ChatChunk.image(u));
                             }
+                            // 关键: 按钮生图即使没有任何文本, 也要在 assistant 内容里记下"已生成图片",
+                            // 否则下一轮模型在历史中看不到已生成记录, 会把前一张图重新生成一份(历史诱导重画)。
+                            // 注意: 不拼接用户原题(req.getPrompt()), 那是对话指令而非图片描述, 直接拼进历史会污染下一轮上下文;
+                            // 图片主体已记录在 user 消息中, 此处仅作"本轮已生图"的声明即可。
+                            String imgContent = "已生成图片。";
+                            chunks.add(ChatChunk.chunk(imgContent));
                             return Flux.fromIterable(chunks).concatWith(Flux.defer(() -> {
-                                Message m = Message.assistantImage(urls, "", modelName);
+                                Message m = Message.assistantImage(urls, imgContent, modelName);
                                 memory.save(sessId, m);
                                 sessionManager.touch(sessId);
                                 return Flux.just(ChatChunk.done(0, 0, 0, 0));
