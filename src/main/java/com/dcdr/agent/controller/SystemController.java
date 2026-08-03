@@ -25,17 +25,28 @@ public class SystemController {
     @Qualifier("generationExecutor")
     private ThreadPoolTaskExecutor generationExecutor;
 
+    @Autowired
+    @Qualifier("videoExecutor")
+    private ThreadPoolTaskExecutor videoExecutor;
+
     @Operation(summary = "查询生成线程池状态",
-            description = "返回图片/视频生成线程池的活跃线程、队列与可用线程数, 供前端展示资源占用")
+            description = "分别返回图片/视频生成线程池的活跃线程、队列与可用线程数, 供前端展示资源占用")
     @GetMapping("/thread-pool")
     public Result<ThreadPoolStatsDTO> threadPool() {
         ThreadPoolStatsDTO stats = new ThreadPoolStatsDTO();
-        stats.setCorePoolSize(generationExecutor.getCorePoolSize());
-        stats.setMaxPoolSize(generationExecutor.getMaxPoolSize());
-        stats.setPoolSize(generationExecutor.getPoolSize());
-        stats.setActiveCount(generationExecutor.getActiveCount());
-        stats.setQueueSize(generationExecutor.getThreadPoolExecutor().getQueue().size());
-        stats.setAvailable(Math.max(0, stats.getMaxPoolSize() - stats.getActiveCount()));
+        stats.setImagePool(snapshot(generationExecutor));
+        stats.setVideoPool(snapshot(videoExecutor));
         return Result.success(stats);
+    }
+
+    private ThreadPoolStatsDTO.PoolStats snapshot(ThreadPoolTaskExecutor executor) {
+        ThreadPoolStatsDTO.PoolStats s = new ThreadPoolStatsDTO.PoolStats();
+        s.setCorePoolSize(executor.getCorePoolSize());
+        s.setMaxPoolSize(executor.getMaxPoolSize());
+        s.setPoolSize(executor.getPoolSize());
+        s.setActiveCount(executor.getActiveCount());
+        s.setQueueSize(executor.getThreadPoolExecutor().getQueue().size());
+        s.setAvailable(Math.max(0, s.getMaxPoolSize() - s.getActiveCount()));
+        return s;
     }
 }

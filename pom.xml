@@ -11,7 +11,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.example</groupId>
+    <groupId>com.dcdr</groupId>
     <artifactId>java-agent</artifactId>
     <version>1.0.0</version>
     <name>java-agent</name>

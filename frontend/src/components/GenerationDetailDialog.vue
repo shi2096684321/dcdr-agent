@@ -3,7 +3,9 @@
     <div v-if="detailGen" class="img-viewer" @click.self="$emit('close')">
       <button class="viewer-close" @click="$emit('close')">&times;</button>
       <div class="viewer-stage">
-        <img :src="detailGen.resultUrl" class="viewer-img" />
+        <!-- 视频类型用 video 播放, 图片类型用 img -->
+        <video v-if="isVideo" :src="detailGen.resultUrl" class="viewer-img" controls autoplay loop></video>
+        <img v-else :src="detailGen.resultUrl" class="viewer-img" />
       </div>
       <div class="viewer-panel">
         <div class="vp-head">
@@ -14,7 +16,20 @@
           <span class="vp-label">提示词</span>
           <pre class="vp-prompt">{{ detailGen.prompt }}</pre>
         </div>
-        <div v-if="detailGen.paramsJson" class="vp-section">
+        <!-- 视频参数 -->
+        <div v-if="isVideo && detailGen.paramsJson" class="vp-section">
+          <span class="vp-label">生成参数</span>
+          <div class="vp-grid">
+            <div class="vp-cell"><span>时长</span><b>{{ parseParam('duration') || '-' }}</b></div>
+            <div class="vp-cell"><span>比例</span><b>{{ parseParam('aspectRatio') || '-' }}</b></div>
+            <div class="vp-cell"><span>首帧参考</span><b>{{ parseParam('hasReferImage') ? '有' : '无' }}</b></div>
+            <div class="vp-cell"><span>尾帧参考</span><b>{{ parseParam('hasEndImage') ? '有' : '无' }}</b></div>
+            <div class="vp-cell"><span>模型</span><b>{{ detailGen.model || '-' }}</b></div>
+            <div class="vp-cell"><span>随机种子</span><b>{{ parseParam('seed') != null ? parseParam('seed') : '-' }}</b></div>
+          </div>
+        </div>
+        <!-- 图片参数 -->
+        <div v-else-if="!isVideo && detailGen.paramsJson" class="vp-section">
           <span class="vp-label">生成参数</span>
           <div class="vp-grid">
             <div class="vp-cell"><span>尺寸</span><b>{{ detailGen.size || '-' }}</b></div>
@@ -24,6 +39,7 @@
             <div class="vp-cell"><span>模型</span><b>{{ detailGen.model || '-' }}</b></div>
             <div class="vp-cell"><span>智能改写</span><b>{{ parseParam('promptExtend') ? '开' : '关' }}</b></div>
             <div class="vp-cell"><span>水印</span><b>{{ parseParam('watermark') ? '开' : '关' }}</b></div>
+            <div class="vp-cell"><span>参考图</span><b>{{ parseParam('hasReferImage') ? '有' : '无' }}</b></div>
           </div>
         </div>
         <div v-if="parseParam('negativePrompt')" class="vp-section">
@@ -40,19 +56,22 @@
         <div class="vp-actions">
           <button class="vp-btn ghost" @click="onApplyParams">套用参数</button>
         </div>
-        <a class="vp-download" :href="detailGen.resultUrl" download>⬇ 下载图片</a>
+        <a class="vp-download" :href="detailGen.resultUrl" :download="isVideo ? 'video.mp4' : 'image.png'">⬇ {{ isVideo ? '下载视频' : '下载图片' }}</a>
       </div>
     </div>
   </Teleport>
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { formatDuration, formatDate, styleLabel } from '@/utils/format'
 
 const props = defineProps({
   detailGen: { type: Object, default: null }
 })
-const emit = defineEmits(['close', 'apply-params'])
+const emit = defineEmits(['close', 'apply-params', 'apply-video-params'])
+
+const isVideo = computed(() => (props.detailGen?.type || 'image') === 'video')
 
 /** 从 paramsJson 中解析参数 */
 function parseParam(key) {
@@ -63,13 +82,14 @@ function parseParam(key) {
   } catch { return null }
 }
 
-/** 套用参数: 解析后回传给父组件, 由父组件赋值到控制面板状态 */
+/** 套用参数: 解析后按类型回传给父组件 */
 function onApplyParams() {
   const gen = props.detailGen
   if (!gen) return
   try {
     const params = gen.paramsJson ? JSON.parse(gen.paramsJson) : {}
-    emit('apply-params', { gen, params })
+    if (isVideo.value) emit('apply-video-params', { gen, params })
+    else emit('apply-params', { gen, params })
   } catch (e) {
     console.error('解析参数失败', e)
   }

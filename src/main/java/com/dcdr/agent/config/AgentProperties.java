@@ -43,6 +43,8 @@ public class AgentProperties {
         private List<ModelConfig> chat = new ArrayList<>();
         private List<ModelConfig> image = new ArrayList<>();
         private List<ModelConfig> video = new ArrayList<>();
+        /** 语音模型 (STT/TTS), V1.1 新增 */
+        private List<ModelConfig> audio = new ArrayList<>();
     }
 
     @Data
@@ -53,6 +55,8 @@ public class AgentProperties {
         private String apiKey;
         private String baseUrl;
         private String model;
+        /** 图生视频专用模型名(可选, 默认同 model), 如万相 wan2.7-i2v 系列 */
+        private String modelI2v;
         private Double temperature;
         private Integer maxTokens;
         private String size;

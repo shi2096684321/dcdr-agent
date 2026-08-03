@@ -20,6 +20,11 @@
             <span>{{ m.label }}</span><el-tag size="small" type="danger" style="margin-left:8px">图片</el-tag>
           </el-option>
         </el-option-group>
+        <el-option-group label="视频生成">
+          <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name">
+            <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left:8px">视频</el-tag>
+          </el-option>
+        </el-option-group>
       </el-select>
     </div>
   </header>
@@ -38,6 +43,7 @@ const emit = defineEmits(['update:currentModel', 'update:mode'])
 
 const chatModels = computed(() => props.models.filter(m => m.type === 'CHAT'))
 const imageModels = computed(() => props.models.filter(m => m.type === 'IMAGE'))
+const videoModels = computed(() => props.models.filter(m => m.type === 'VIDEO'))
 
 function onModelChange(val) {
   emit('update:currentModel', val)

@@ -42,6 +42,9 @@ public class FileController {
     @Value("${agent.storage.generated-dir:./data/generated}")
     private String generatedDir;
 
+    @Value("${agent.storage.video-dir:./data/videos}")
+    private String videoDir;
+
     @Operation(summary = "上传文件", description = "上传文件（如图片），返回可访问的 URL 路径")
     @ApiResponse(responseCode = "200", description = "返回文件 url 与 filename",
             content = @Content(schema = @Schema(example = "{\"url\":\"/api/files/uploads/2026/07/01/xxx.png\",\"filename\":\"xxx.png\"}")))
@@ -93,6 +96,27 @@ public class FileController {
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_TYPE, resolveContentType(file))
                 .body(new FileSystemResource(f));
+    }
+
+    @Operation(summary = "访问生成的视频", description = "访问文生视频落盘后的本地视频(长期有效)")
+    @GetMapping("/videos/{year}/{month}/{day}/{file}")
+    public ResponseEntity<Resource> serveVideo(@Parameter(description = "年, 如 2026") @PathVariable String year,
+                                               @Parameter(description = "月, 如 07") @PathVariable String month,
+                                               @Parameter(description = "日, 如 23") @PathVariable String day,
+                                               @Parameter(description = "文件名") @PathVariable String file) {
+        Path path = Paths.get(videoDir, year, month, day, file);
+        File f = path.toFile();
+        if (!f.exists()) return ResponseEntity.notFound().build();
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, resolveVideoContentType(file))
+                .body(new FileSystemResource(f));
+    }
+
+    private String resolveVideoContentType(String filename) {
+        String lower = filename.toLowerCase();
+        if (lower.endsWith(".webm")) return "video/webm";
+        if (lower.endsWith(".mov")) return "video/quicktime";
+        return "video/mp4";
     }
 
     private String resolveContentType(String filename) {

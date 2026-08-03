@@ -28,15 +28,19 @@ public class CreativeEngine {
     private final ModelRegistry registry;
     private final ProjectManager projectManager;
     private final ImageGenerationWorker imageGenerationWorker;
+    private final VideoGenerationWorker videoGenerationWorker;
     private final ReferImageStorage referImageStorage;
     private final ObjectMapper objectMapper;
 
     public CreativeEngine(ModelRegistry registry, ProjectManager projectManager,
-                          ImageGenerationWorker imageGenerationWorker, ReferImageStorage referImageStorage,
+                          ImageGenerationWorker imageGenerationWorker,
+                          VideoGenerationWorker videoGenerationWorker,
+                          ReferImageStorage referImageStorage,
                           ObjectMapper objectMapper) {
         this.registry = registry;
         this.projectManager = projectManager;
         this.imageGenerationWorker = imageGenerationWorker;
+        this.videoGenerationWorker = videoGenerationWorker;
         this.referImageStorage = referImageStorage;
         this.objectMapper = objectMapper;
     }
@@ -144,6 +148,63 @@ public class CreativeEngine {
 
         log.info("视频生成完成, 耗时 {}ms", duration);
         return result;
+    }
+
+    /**
+     * 提交视频生成任务(异步)。V1.1 新增。
+     * <p>
+     * 立即创建一条 pending 记录并返回, 真正的模型调用在后台线程池执行,
+     * 完成后回写状态。前端凭返回的记录 ID 轮询 {@code GET /api/videos/{id}/status} 获取结果。
+     */
+    public GenerationDTO submitVideo(VideoRequest request) {
+        log.info("提交视频生成任务, 模型: {}, 提示词: {}", request.getModel(), request.getPrompt());
+
+        if (request.getPrompt() == null || request.getPrompt().isBlank()) {
+            throw new IllegalArgumentException("提示词不能为空");
+        }
+
+        String projectId = request.getProjectId();
+        if (projectId == null) {
+            projectId = projectManager.createProject("未命名项目", "video", request.getModel()).getId();
+        }
+
+        String referImageUrl = referImageStorage.save(request.getReferImage());
+
+        GenerationDTO record = new GenerationDTO();
+        record.setId("gen_" + UUID.randomUUID().toString().replace("-", ""));
+        record.setProjectId(projectId);
+        record.setType("video");
+        record.setPrompt(request.getPrompt());
+        record.setReferImageUrl(referImageUrl);
+        record.setModel(request.getModel());
+        record.setParamsJson(buildVideoParamsJson(request));
+        record.setCostCredits(10);
+        record.setStatus("pending");
+        record.setCreatedAt(LocalDateTime.now());
+
+        projectManager.addGeneration(projectId, record);
+        // 后台异步执行, 不阻塞当前请求线程
+        videoGenerationWorker.process(record.getId(), request);
+
+        log.info("视频生成任务已提交, id={}, 状态=pending", record.getId());
+        return record;
+    }
+
+    /** 序列化视频生成参数(时长/比例)到 paramsJson, 便于后续回显与审计 */
+    private String buildVideoParamsJson(VideoRequest request) {
+        try {
+            Map<String, Object> params = new LinkedHashMap<>();
+            if (request.getDuration() != null) {
+                params.put("duration", request.getDuration());
+            }
+            if (request.getAspectRatio() != null) {
+                params.put("aspectRatio", request.getAspectRatio());
+            }
+            return params.isEmpty() ? null : objectMapper.writeValueAsString(params);
+        } catch (Exception e) {
+            log.warn("视频参数序列化失败, 将不写入 paramsJson", e);
+            return null;
+        }
     }
 
     private int calculateCredits(String prompt) {

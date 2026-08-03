@@ -1,10 +1,14 @@
 package com.dcdr.agent.config;
 
 import com.dcdr.agent.model.deepseek.DeepseekChatProvider;
+import com.dcdr.agent.model.kling.KlingVideoProvider;
+import com.dcdr.agent.model.openai.OpenAiAudioProvider;
 import com.dcdr.agent.model.openai.OpenAiChatProvider;
 import com.dcdr.agent.model.openai.OpenAiImageProvider;
+import com.dcdr.agent.model.qwen.QwenAudioProvider;
 import com.dcdr.agent.model.qwen.QwenChatProvider;
 import com.dcdr.agent.model.qwen.QwenImageProvider;
+import com.dcdr.agent.model.wan.WanVideoProvider;
 import com.dcdr.agent.model.zhipu.ZhipuChatProvider;
 import com.dcdr.agent.model.zhipu.ZhipuImageProvider;
 import com.dcdr.agent.model.registry.ModelRegistry;
@@ -25,7 +29,7 @@ public class ModelAutoConfiguration {
     public CommandLineRunner modelRegistrar(ModelRegistry registry) {
         return args -> {
             AgentProperties.ModelsConfig models = properties.getModels();
-            int chatCount = 0, imageCount = 0;
+            int chatCount = 0, imageCount = 0, videoCount = 0, audioCount = 0;
             if (models.getChat() != null) {
                 for (AgentProperties.ModelConfig c : models.getChat()) {
                     if (!c.isEnabled()) continue;
@@ -51,8 +55,30 @@ public class ModelAutoConfiguration {
                     } catch (Exception e) { log.error("注册图片模型失败: {}", c.getName(), e); }
                 }
             }
+            if (models.getVideo() != null) {
+                for (AgentProperties.ModelConfig c : models.getVideo()) {
+                    if (!c.isEnabled()) continue;
+                    try {
+                        switch (c.getProvider()) {
+                            case "kuaishou" -> { registry.registerVideoProvider(new KlingVideoProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName())); videoCount++; }
+                            case "wan" -> { registry.registerVideoProvider(new WanVideoProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName(), c.getModelI2v())); videoCount++; }
+                        }
+                    } catch (Exception e) { log.error("注册视频模型失败: {}", c.getName(), e); }
+                }
+            }
+            if (models.getAudio() != null) {
+                for (AgentProperties.ModelConfig c : models.getAudio()) {
+                    if (!c.isEnabled()) continue;
+                    try {
+                        switch (c.getProvider()) {
+                            case "openai" -> { registry.registerAudioProvider(new OpenAiAudioProvider(c.getBaseUrl(), c.getApiKey(), c.getName())); audioCount++; }
+                            case "qwen" -> { registry.registerAudioProvider(new QwenAudioProvider(c.getBaseUrl(), c.getApiKey(), c.getName(), c.getModel())); audioCount++; }
+                        }
+                    } catch (Exception e) { log.error("注册语音模型失败: {}", c.getName(), e); }
+                }
+            }
             if (models.getDefaultChat() != null) registry.setDefaultChatProvider(models.getDefaultChat());
-            log.info("模型注册完成: 对话{}个, 图片{}个", chatCount, imageCount);
+            log.info("模型注册完成: 对话{}个, 图片{}个, 视频{}个, 语音{}个", chatCount, imageCount, videoCount, audioCount);
         };
     }
 }

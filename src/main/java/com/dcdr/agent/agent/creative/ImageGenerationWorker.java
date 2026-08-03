@@ -103,9 +103,18 @@ public class ImageGenerationWorker {
     }
 
     /** 与主记录保持一致的参数序列化(便于详情回显) */
-    private String buildParamsJson(ImageRequest request) {
+        private String buildParamsJson(ImageRequest request) {
         try {
             Map<String, Object> params = new LinkedHashMap<>();
+            // 提示词与尺寸需入库, 否则详情/套用无法回填
+            if (request.getPrompt() != null && !request.getPrompt().isBlank()) {
+                params.put("prompt", request.getPrompt());
+            }
+            if (request.getSize() != null && !request.getSize().isBlank()) {
+                params.put("size", request.getSize());
+            }
+            // 参考图仅记录是否使用, base64 不入库, 套用时无法回填
+            params.put("hasReferImage", request.getReferImage() != null && !request.getReferImage().isBlank());
             if (request.getNegativePrompt() != null && !request.getNegativePrompt().isBlank()) {
                 params.put("negativePrompt", request.getNegativePrompt());
             }

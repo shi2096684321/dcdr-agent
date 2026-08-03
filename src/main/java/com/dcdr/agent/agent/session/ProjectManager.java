@@ -1,6 +1,7 @@
 package com.dcdr.agent.agent.session;
 
 import com.dcdr.agent.dto.GenerationDTO;
+import com.dcdr.agent.dto.GenerationPageDTO;
 import com.dcdr.agent.dto.ProjectDTO;
 import com.dcdr.agent.entity.GenerationEntity;
 import com.dcdr.agent.entity.ProjectEntity;
@@ -8,11 +9,15 @@ import com.dcdr.agent.repository.GenerationRepository;
 import com.dcdr.agent.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * 项目管理器 (创作模式) - 管理创作项目和生成记录
@@ -103,6 +108,29 @@ public class ProjectManager {
         return generationRepository.findByProjectIdOrderByCreatedAtDesc(projectId).stream()
                 .map(ProjectManager::toDTO)
                 .toList();
+    }
+
+    /**
+     * 分页获取项目的生成历史, 可按 type (image/video) 过滤。
+     *
+     * @param projectId 项目 ID
+     * @param type      生成类型, 为空表示不过滤
+     * @param page      页码 (从 1 开始)
+     * @param size      每页大小
+     */
+    public GenerationPageDTO getGenerationsPage(String projectId, String type, int page, int size) {
+        if (!projectRepository.existsById(projectId)) {
+            throw new RuntimeException("项目不存在: " + projectId);
+        }
+        int zeroBased = Math.max(page - 1, 0);
+        Pageable pageable = PageRequest.of(zeroBased, size);
+        Page<GenerationEntity> result = (type == null || type.isBlank())
+                ? generationRepository.findByProjectIdOrderByCreatedAtDesc(projectId, pageable)
+                : generationRepository.findByProjectIdAndType(projectId, type, pageable);
+        List<GenerationDTO> records = result.getContent().stream()
+                .map(ProjectManager::toDTO)
+                .toList();
+        return GenerationPageDTO.of(records, result.getTotalElements(), page, size);
     }
 
     /** 获取单条生成记录 */

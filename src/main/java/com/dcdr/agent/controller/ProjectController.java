@@ -3,6 +3,7 @@ package com.dcdr.agent.controller;
 import com.dcdr.agent.agent.session.ProjectManager;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.GenerationDTO;
+import com.dcdr.agent.dto.GenerationPageDTO;
 import com.dcdr.agent.dto.ProjectDTO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -64,10 +65,14 @@ public class ProjectController {
         return Result.success(p);
     }
 
-    @Operation(summary = "获取项目生成记录", description = "返回项目下的所有图片/视频生成记录")
-    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = GenerationDTO.class)))
+    @Operation(summary = "获取项目生成记录", description = "分页返回项目下的图片/视频生成记录, 可按 type (image/video) 过滤")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = GenerationPageDTO.class)))
     @GetMapping("/{id}/generations")
-    public Result<List<GenerationDTO>> generations(@Parameter(description = "项目 ID", required = true) @PathVariable String id) {
-        return Result.success(projectManager.getGenerations(id));
+    public Result<GenerationPageDTO> generations(
+            @Parameter(description = "项目 ID", required = true) @PathVariable String id,
+            @Parameter(description = "生成类型过滤: image / video, 不传表示全部") @RequestParam(required = false) String type,
+            @Parameter(description = "页码 (从 1 开始)") @RequestParam(defaultValue = "1") int page,
+            @Parameter(description = "每页大小") @RequestParam(defaultValue = "20") int size) {
+        return Result.success(projectManager.getGenerationsPage(id, type, page, size));
     }
 }

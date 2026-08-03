@@ -1,0 +1,48 @@
+package com.dcdr.agent.controller;
+
+import com.dcdr.agent.agent.creative.CreativeEngine;
+import com.dcdr.agent.agent.session.ProjectManager;
+import com.dcdr.agent.common.Result;
+import com.dcdr.agent.dto.GenerationDTO;
+import com.dcdr.agent.dto.VideoRequest;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * 视频生成接口 (V1.1)
+ * <p>
+ * - POST /api/videos/generate     提交文生视频任务(异步, 立即返回 pending 记录)
+ * - GET  /api/videos/{id}/status  轮询任务状态与结果
+ * <p>
+ * 视频生成耗时较长(30s~数分钟), 采用异步任务 + 轮询模式:
+ * 提交时立即创建 pending 记录返回, 真正的模型调用在后台线程池执行,
+ * 完成后回写状态。前端凭记录 ID 轮询状态。
+ */
+@Slf4j
+@RestController
+@RequestMapping("/api/videos")
+@RequiredArgsConstructor
+@Tag(name = "视频生成", description = "创作模式 - 文生视频接口(异步任务)")
+public class VideoController {
+
+    private final CreativeEngine creativeEngine;
+    private final ProjectManager projectManager;
+
+    @Operation(summary = "提交视频生成任务",
+            description = "异步提交, 立即返回 pending 状态的生成记录, 前端凭记录 ID 轮询 /api/videos/{id}/status 获取最终结果")
+    @PostMapping("/generate")
+    public Result<GenerationDTO> generate(@RequestBody VideoRequest request) {
+        log.info("视频生成任务提交: model={}", request.getModel());
+        return Result.success(creativeEngine.submitVideo(request));
+    }
+
+    @Operation(summary = "查询视频任务状态",
+            description = "轮询任务状态(pending/processing/completed/failed)与结果 videoUrl")
+    @GetMapping("/{id}/status")
+    public Result<GenerationDTO> status(@PathVariable String id) {
+        return Result.success(projectManager.getGeneration(id));
+    }
+}

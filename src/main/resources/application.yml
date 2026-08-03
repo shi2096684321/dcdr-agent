@@ -122,11 +122,41 @@ agent:
 
     video:
       - name: "kling-video"
-        enabled: false
+        enabled: true
         provider: "kuaishou"
         api-key: ${KLING_API_KEY:demo-key}
         base-url: "https://api.klingai.com"
         model: "kling-v1"
+
+      # 阿里云百炼 通义万相2.7 文生视频(新版协议, 仅支持 wan2.7 系列)
+      # 配置有效 DASHSCOPE_API_KEY(即百炼 API Key) 后将 enabled 改为 true
+      # 如需北京地域专属域名可改 base-url 为 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com
+      - name: "wan-video"
+        enabled: true
+        provider: "wan"
+#        api-key: ${DASHSCOPE_API_KEY:demo-key}
+        api-key: "sk-68a97d79d1f5479491be3ae83fa4655c"
+        base-url: "https://dashscope.aliyuncs.com"
+        model: "wan2.7-t2v-2026-06-12"
+        model-i2v: "happyhorse-1.1-i2v"   # 图生视频(i2v)专用模型名
+
+    # 语音模型 (STT/TTS), V1.1 新增; 配置有效 OPENAI_API_KEY 后将 enabled 改为 true
+    audio:
+      - name: "openai-audio"
+        enabled: false
+        provider: "openai"
+        api-key: ${OPENAI_API_KEY:sk-demo-key}
+        base-url: "https://api.openai.com"
+        model: "whisper-1"
+
+      # 阿里云百炼 Sambert 语音合成 (仅 TTS); 配置有效 DASHSCOPE_API_KEY 后将 enabled 改为 true
+      # 注意: 百炼语音合成不支持本地音频 STT, 语音识别仍请使用 openai-audio
+      - name: "qwen-audio"
+        enabled: false
+        provider: "qwen"
+        api-key: ${DASHSCOPE_API_KEY:demo-key}
+        base-url: "https://dashscope.aliyuncs.com"
+        model: "sambert-zhide-v1"
 
 # 工具配置
 agent-tools:

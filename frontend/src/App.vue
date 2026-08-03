@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="app-container">
     <AppHeader
       v-model:current-model="currentModel"
@@ -7,7 +7,7 @@
     />
     <main class="app-main">
       <ChatView v-if="mode==='chat'" :current-model="currentModel" />
-      <CreativeView v-else :current-model="currentModel" :image-models="imageModels" />
+      <CreativeView v-else :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
     </main>
   </div>
 </template>
@@ -24,6 +24,7 @@ const models = ref([])
 const currentModel = ref('openai-chat')
 const chatModels = computed(() => models.value.filter(m => m.type === 'CHAT'))
 const imageModels = computed(() => models.value.filter(m => m.type === 'IMAGE'))
+const videoModels = computed(() => models.value.filter(m => m.type === 'VIDEO'))
 
 onMounted(async () => { models.value = await getModels() })
 </script>

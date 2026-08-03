@@ -20,9 +20,19 @@
       </div>
     </aside>
     <div class="control-panel">
+      <!-- 图片 / 视频 生成切换 -->
+      <div class="gen-type-tabs">
+        <div class="gtab" :class="{active: genType==='image'}" @click="genType='image'">图片生成</div>
+        <div class="gtab" :class="{active: genType==='video'}" @click="genType='video'">视频生成</div>
+      </div>
+      <template v-if="genType==='image'">
       <div class="model-card">
         <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
-        <div><div class="model-name">{{ modelLabel }}</div><div class="model-desc">图片生成模型</div></div>
+        <div class="model-select-wrap">
+          <el-select :model-value="selectedImageModel" @update:model-value="onSelectImageModel" placeholder="选择图片模型" size="default" style="width:100%">
+            <el-option v-for="m in imageModels" :key="m.name" :label="m.label" :value="m.name" />
+          </el-select>
+        </div>
       </div>
       <div class="section-title">参考图 (可选)</div>
       <div class="upload-zone" @click="$refs.fileInput.click()">
@@ -50,13 +60,64 @@
       <div class="param-row"><span>水印</span>
         <label class="switch"><input type="checkbox" v-model="watermark" /><span class="slider"></span></label>
       </div>
-      <div class="thread-status" :class="{busy: threadStats && threadStats.available === 0}">
+      <div class="thread-status" :class="{busy: threadStats && threadStats.imagePool && threadStats.imagePool.available === 0}">
         <span class="ts-dot"></span>
-        <span class="ts-text">生成线程 可用 <b>{{ threadStats ? threadStats.available : '-' }}</b> / {{ threadStats ? threadStats.maxPoolSize : '-' }}<template v-if="threadStats">（活跃 {{ threadStats.activeCount }}）</template></span>
+        <span class="ts-text">生成线程 可用 <b>{{ threadStats?.imagePool ? threadStats.imagePool.available : '-' }}</b> / {{ threadStats?.imagePool ? threadStats.imagePool.maxPoolSize : '-' }}<template v-if="threadStats?.imagePool">（活跃 {{ threadStats.imagePool.activeCount }}）</template></span>
       </div>
       <button class="gen-btn gradient-green" @click="generate" :disabled="!prompt.trim() || generating">{{ generating ? '生成中...' : '生成' }}</button>
+      </template>
+
+      <!-- 视频生成控制面板 -->
+      <template v-else>
+        <div class="model-card">
+          <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
+          <div class="model-select-wrap">
+          <el-select :model-value="selectedVideoModel" @update:model-value="onSelectVideoModel" placeholder="选择视频模型" size="default" style="width:100%">
+              <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name" />
+          </el-select>
+          </div>
+        </div>
+        <div class="section-title">提示词</div>
+        <textarea v-model="videoPrompt" class="prompt-input" placeholder="描述你想要生成的视频画面..." rows="5"></textarea>
+        <div class="section-title">首帧参考图 (可选)</div>
+        <div class="upload-zone" @click="$refs.videoFileInput.click()">
+          <span v-if="!videoReferImage" class="placeholder">点击上传首帧参考图（图生视频）</span>
+          <img v-else :src="videoReferImage" class="refer-preview" />
+          <input type="file" ref="videoFileInput" accept="image/*" style="display:none" @change="onVideoUpload" />
+        </div>
+        <template v-if="capEndImage">
+          <div class="section-title">尾帧参考图 (首尾帧模式, 可选)</div>
+          <div class="upload-zone" @click="$refs.videoEndFileInput.click()">
+            <span v-if="!videoEndImage" class="placeholder">点击上传尾帧参考图（需配合首帧）</span>
+            <img v-else :src="videoEndImage" class="refer-preview" />
+            <input type="file" ref="videoEndFileInput" accept="image/*" style="display:none" @change="onVideoEndUpload" />
+          </div>
+          <p v-if="!videoReferImage" class="param-hint">尾帧需配合首帧参考图一起使用</p>
+        </template>
+        <template v-if="capNegativePrompt">
+          <div class="section-title">反向提示词 (可选)</div>
+          <textarea v-model="videoNegativePrompt" class="prompt-input" placeholder="描述不希望出现的画面，例如：模糊、变形、文字..." rows="2"></textarea>
+        </template>
+        <template v-if="capSeed">
+          <div class="param-row"><span>随机种子</span>
+            <input v-model.number="videoSeed" type="number" class="num-input" placeholder="留空随机" />
+          </div>
+        </template>
+        <div class="param-row"><span>时长</span>
+          <select v-model.number="videoDuration" class="select"><option :value="5">5 秒</option><option :value="10">10 秒</option></select>
+        </div>
+        <div class="param-row"><span>比例</span>
+          <select v-model="videoAspect" class="select"><option value="16:9">16:9 横版</option><option value="9:16">9:16 竖版</option><option value="1:1">1:1 方形</option></select>
+        </div>
+        <div class="thread-status" :class="{busy: threadStats && threadStats.videoPool && threadStats.videoPool.available === 0}">
+          <span class="ts-dot"></span>
+          <span class="ts-text">视频线程 可用 <b>{{ threadStats?.videoPool ? threadStats.videoPool.available : '-' }}</b> / {{ threadStats?.videoPool ? threadStats.videoPool.maxPoolSize : '-' }}<template v-if="threadStats?.videoPool">（活跃 {{ threadStats.videoPool.activeCount }}）</template></span>
+        </div>
+        <button class="gen-btn gradient-green" @click="generateVideo" :disabled="!videoPrompt.trim() || videoGenerating">{{ videoGenerating ? '生成中...' : '生成视频' }}</button>
+      </template>
     </div>
     <div class="preview-area">
+      <template v-if="genType==='image'">
       <div v-if="images.length===0 && !generating" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">输入提示词并点击生成</p></div>
       <img v-if="currentImg && !generating" :src="currentImg" class="result-img" />
       <div v-if="generating" class="gen-progress">
@@ -74,21 +135,50 @@
           </div>
         </div>
       </div>
-      <div v-if="images.length>0" class="history">
+      <div v-if="imageTotal>0" class="history">
         <div class="hist-pages">
-          <button class="hist-nav" :disabled="historyPage<=1" @click="historyPage--" title="上一页">‹</button>
+          <button class="hist-nav" :disabled="historyPage<=1" @click="changeImagePage(historyPage-1)" title="上一页">‹</button>
           <div class="thumb-list">
             <div v-for="item in pagedHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:selIdx===item.idx}" @click="selIdx=item.idx"><img :src="item.g.resultUrl" /></div>
           </div>
-          <button class="hist-nav" :disabled="historyPage>=historyTotalPages" @click="historyPage++" title="下一页">›</button>
+          <button class="hist-nav" :disabled="historyPage>=historyTotalPages" @click="changeImagePage(historyPage+1)" title="下一页">›</button>
         </div>
-        <div class="hist-meta">{{ historyPage }} / {{ historyTotalPages }} · 共 {{ images.length }} 张</div>
+        <div class="hist-meta">{{ historyPage }} / {{ historyTotalPages }} · 共 {{ imageTotal }} 张</div>
       </div>
       <div v-if="currentImg && !generating" class="actions">
         <button class="act primary" @click="regenerate">重新生成</button>
         <button class="act secondary" @click="openDetail(images[selIdx])">查看详情</button>
         <a class="act secondary" :href="currentImg" download>下载</a>
       </div>
+      </template>
+
+      <!-- 视频预览 -->
+      <template v-else>
+        <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="empty">
+          <p>{{ videoStatus==='pending' ? '排队中...' : '渲染中...' }}</p>
+          <div class="gen-progress"><div class="loading-grid"><div class="loading-tile"><div class="tile-shimmer"></div><div class="tile-bar"><i></i></div></div></div></div>
+        </div>
+        <div v-else-if="!currentVideo && !resultVideo" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p></div>
+        <video v-else :src="currentVideo || resultVideo" class="result-img" controls autoplay loop></video>
+        <div v-if="currentVideo || resultVideo" class="actions">
+          <a class="act secondary" :href="currentVideo || resultVideo" download>下载</a>
+          <button class="act secondary" @click="openDetail(videos[videoSelIdx])">查看详情</button>
+        </div>
+        <!-- 视频历史缩略图 -->
+        <div v-if="videoTotal>0" class="history">
+          <div class="hist-pages">
+            <button class="hist-nav" :disabled="videoHistoryPage<=1" @click="changeVideoPage(videoHistoryPage-1)" title="上一页">‹</button>
+            <div class="thumb-list">
+              <div v-for="item in pagedVideoHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:videoSelIdx===item.idx}" @click="videoSelIdx=item.idx">
+                <video :src="item.g.resultUrl" class="thumb-video" muted preload="metadata"></video>
+                <button class="thumb-detail" title="查看详情" @click.stop="openDetail(item.g)">ⓘ</button>
+              </div>
+            </div>
+            <button class="hist-nav" :disabled="videoHistoryPage>=videoHistoryTotalPages" @click="changeVideoPage(videoHistoryPage+1)" title="下一页">›</button>
+          </div>
+          <div class="hist-meta">{{ videoHistoryPage }} / {{ videoHistoryTotalPages }} · 共 {{ videoTotal }} 个</div>
+        </div>
+      </template>
     </div>
 
     <!-- 详情弹窗 -->
@@ -96,6 +186,7 @@
       :detail-gen="detailGen"
       @close="closeDetail"
       @apply-params="applyParams"
+      @apply-video-params="applyVideoParams"
     />
   </div>
 </template>
@@ -107,10 +198,38 @@ import {
   getProjects, createProject, generateImage, getGeneration, getGenerations,
   getThreadPoolStats, deleteProject, renameProject
 } from '@/api'
+import { generateVideo as submitVideoTask, getVideoStatus } from '@/api/video'
 import logoUrl from '@/assets/dcdr-logo.png'
 import GenerationDetailDialog from '@/components/GenerationDetailDialog.vue'
 
-const props = defineProps({ currentModel: String, imageModels: Array })
+const props = defineProps({ currentModel: String, imageModels: Array, videoModels: Array })
+const emit = defineEmits(['update:currentModel'])
+// 图片 / 视频 生成模式切换
+const genType = ref('image')
+// 图片/视频各自独立持有选中模型(以对应类型为准, 互不干扰)
+// 默认取各自类型列表的第一项, 避免共用单一 currentModel 导致的互相串号
+const selectedImageModel = ref('')
+const selectedVideoModel = ref('')
+// 模型列表就绪后, 若尚未选择则默认选中第一项
+function syncDefaultModels() {
+  if (!selectedImageModel.value && props.imageModels?.length) selectedImageModel.value = props.imageModels[0].name
+  if (!selectedVideoModel.value && props.videoModels?.length) selectedVideoModel.value = props.videoModels[0].name
+}
+// 选中图片模型: 仅更新本地图片状态, 并回传顶栏(创作模式下展示用)
+function onSelectImageModel(val) { selectedImageModel.value = val; emit('update:currentModel', val) }
+// 选中视频模型: 仅更新本地视频状态
+function onSelectVideoModel(val) {
+  selectedVideoModel.value = val
+  emit('update:currentModel', val)
+  // 切换模型后清理不兼容的参数, 避免脏数据带入请求
+  videoEndImage.value = ''
+  videoNegativePrompt.value = ''
+  videoSeed.value = null
+}
+// 同步顶栏模型: 无论默认初始化 / 手动切换 / 切换 Tab, 顶栏始终显示"当前类型选中的模型"
+watch([selectedImageModel, selectedVideoModel, genType], () => {
+  emit('update:currentModel', genType.value === 'video' ? selectedVideoModel.value : selectedImageModel.value)
+})
 const projects = ref([])
 
 // 项目内联重命名状态
@@ -138,48 +257,171 @@ let threadTimer = null
 async function loadThreadPoolStats() {
   try { threadStats.value = await getThreadPoolStats() } catch (e) { /* 非关键指标, 忽略 */ }
 }
-const images = ref([])       // 完整 generation 对象数组
+const images = ref([])       // 当前页的图片 generation 对象数组 (后端分页)
 const selIdx = ref(-1)
-// 历史缩略图分页
+// 历史缩略图分页 (后端分页)
 const HISTORY_PAGE_SIZE = 8
 const historyPage = ref(1)
-const historyTotalPages = computed(() => Math.max(1, Math.ceil(images.value.length / HISTORY_PAGE_SIZE)))
-const pagedHistory = computed(() => {
-  const start = (historyPage.value - 1) * HISTORY_PAGE_SIZE
-  return images.value
-    .slice(start, start + HISTORY_PAGE_SIZE)
-    .map((g, idx) => ({ g, idx: start + idx }))
-})
-// 页码越界自动修正(删除/清空后)
-watch(historyTotalPages, (n) => { if (historyPage.value > n) historyPage.value = n })
+const imageTotal = ref(0)
+const historyTotalPages = computed(() => Math.max(1, Math.ceil(imageTotal.value / HISTORY_PAGE_SIZE)))
+const pagedHistory = computed(() => images.value.map((g, idx) => ({ g, idx })))
 const detailGen = ref(null)    // 当前查看的 generation
 const sidebarCollapsed = ref(false)
-const modelLabel = computed(() => props.imageModels?.find(x => x.name === props.currentModel)?.label || props.currentModel)
+// ===== 视频生成状态 =====
+const videoPrompt = ref('')
+const videoDuration = ref(5)
+const videoAspect = ref('16:9')
+const videoReferImage = ref('')   // 首帧参考图(图生视频, base64 dataURL)
+const videoEndImage = ref('')     // 尾帧参考图(首尾帧模式, 仅可灵支持, 需配合首帧)
+const videoNegativePrompt = ref('') // 反向提示词(仅万相支持)
+const videoSeed = ref(null)       // 随机种子复现(仅万相支持)
+// 当前视频模型支持的可选能力(由后端 ModelInfo.capabilities 下发)
+const videoCaps = computed(() => {
+  const m = props.videoModels?.find(x => x.name === selectedVideoModel.value)
+  return m?.capabilities || []
+})
+const capEndImage = computed(() => videoCaps.value.includes('end-image'))
+const capNegativePrompt = computed(() => videoCaps.value.includes('negative-prompt'))
+const capSeed = computed(() => videoCaps.value.includes('seed'))
+const videoGenerating = ref(false)
+const resultVideo = ref('')
+const videoStatus = ref('')   // pending | processing | succeeded | failed
+let videoPollTimer = null
+// 视频历史(按 type==='video' 区分, 与图片互不混入, 后端分页)
+const videos = ref([])         // 当前页的视频 generation 对象数组
+const videoSelIdx = ref(-1)
+const videoHistoryPage = ref(1)
+const videoTotal = ref(0)
+const videoHistoryTotalPages = computed(() => Math.max(1, Math.ceil(videoTotal.value / HISTORY_PAGE_SIZE)))
+const pagedVideoHistory = computed(() => videos.value.map((g, idx) => ({ g, idx })))
+// 当前选中的视频(历史点击或刚生成)
+const currentVideo = computed(() => videoSelIdx.value >= 0 ? videos.value[videoSelIdx.value]?.resultUrl : null)
+async function generateVideo() {
+  if (!videoPrompt.value.trim() || videoGenerating.value) return
+  if (!currentProjectId.value) await ensureProject()
+  videoGenerating.value = true
+  resultVideo.value = ''
+  videoStatus.value = 'pending'
+  try {
+    const data = await submitVideoTask({
+      prompt: videoPrompt.value,
+      model: selectedVideoModel.value,
+      duration: videoDuration.value,
+      aspectRatio: videoAspect.value,
+      referImage: videoReferImage.value || null,
+      endImage: capEndImage.value ? (videoEndImage.value || null) : null,
+      negativePrompt: capNegativePrompt.value ? (videoNegativePrompt.value || null) : null,
+      seed: capSeed.value ? (videoSeed.value || null) : null,
+      projectId: currentProjectId.value
+    })
+    // 后端返回 pending 任务, 启动轮询
+    startVideoPolling(data.id)
+  } catch (e) {
+    ElMessage.error(e?.message || '视频生成失败')
+    videoStatus.value = ''
+    videoGenerating.value = false
+  }
+}
+function startVideoPolling(id) {
+  stopVideoPolling()
+  const tick = async () => {
+    try {
+      const st = await getVideoStatus(id)
+      videoStatus.value = st.status
+      if (st.status === 'completed' || st.status === 'succeeded') {
+        resultVideo.value = st.resultUrl
+        stopVideoPolling()
+        videoGenerating.value = false
+        // 刷新历史并定位到刚生成的视频
+        if (currentProjectId.value) await loadProjectImages(currentProjectId.value, [st.id])
+      } else if (st.status === 'failed') {
+        ElMessage.error(st.error || '视频生成失败')
+        stopVideoPolling()
+        videoGenerating.value = false
+      }
+    } catch (e) {
+      ElMessage.error(e?.message || '查询视频状态失败')
+      stopVideoPolling()
+      videoGenerating.value = false
+    }
+  }
+  tick()
+  videoPollTimer = setInterval(tick, 3000)
+}
+function stopVideoPolling() {
+  if (videoPollTimer) { clearInterval(videoPollTimer); videoPollTimer = null }
+}
 const currentImg = computed(() => selIdx.value >= 0 ? images.value[selIdx.value]?.resultUrl : null)
 async function loadProjects() { projects.value = await getProjects() }
-// 从后端加载某项目下历史生成图片(刷新/切换项目不丢失)
-// newIds: 可选, 本次刚成功生成的图片 id 集合, 用于生成结束后自动定位到新图而非最后一张
+// 从后端分页加载某项目下历史生成记录 (图片/视频各自分页, 互不混入)
+// 加载当前页: 图片加载 historyPage, 视频加载 videoHistoryPage
 async function loadProjectImages(id, newIds = null) {
-  if (!id) { images.value = []; selIdx.value = -1; return }
+  if (!id) { images.value = []; selIdx.value = -1; imageTotal.value = 0; videos.value = []; videoSelIdx.value = -1; videoTotal.value = 0; return }
   try {
-    const gens = await getGenerations(id)
-    images.value = (gens || [])
-      .filter(g => g.status === 'completed' && g.resultUrl)
-    // 后端按创建时间倒序, index 0 为最新。优先选中本次刚生成的图片(按 id 定位),
-    // 否则默认显示最新一张(而非最旧的最后一张)
-    let sel = 0
+    // 新生成记录优先跳到第 1 页 (最新在前), 便于自动定位
+    if (newIds && newIds.length) {
+      historyPage.value = 1
+      videoHistoryPage.value = 1
+    }
+    await Promise.all([loadImagePage(id), loadVideoPage(id)])
+    // 优先选中本次刚生成的记录(按 id 定位), 否则默认显示最新一张
+    let imgSel = 0
     if (newIds && newIds.length) {
       const found = images.value.findIndex(g => newIds.includes(g.id))
-      if (found >= 0) sel = found
+      if (found >= 0) imgSel = found
     }
-    selIdx.value = images.value.length ? sel : -1
-    // 历史缩略图翻页到选中项所在页, 保证高亮项可见
-    historyPage.value = selIdx.value >= 0 ? Math.floor(selIdx.value / HISTORY_PAGE_SIZE) + 1 : 1
-  } catch (e) { console.error('加载历史图片失败', e); images.value = []; selIdx.value = -1 }
+    selIdx.value = images.value.length ? imgSel : -1
+    let vidSel = 0
+    if (newIds && newIds.length) {
+      const found = videos.value.findIndex(g => newIds.includes(g.id))
+      if (found >= 0) vidSel = found
+    }
+    videoSelIdx.value = videos.value.length ? vidSel : -1
+  } catch (e) { console.error('加载历史记录失败', e); images.value = []; selIdx.value = -1; imageTotal.value = 0; videos.value = []; videoSelIdx.value = -1; videoTotal.value = 0 }
+}
+
+// 图片历史分页加载 (后端)
+async function loadImagePage(id) {
+  const page = await getGenerations(id, { type: 'image', page: historyPage.value, size: HISTORY_PAGE_SIZE })
+  images.value = (page?.records || []).filter(g => g.status === 'completed' && g.resultUrl)
+  imageTotal.value = page?.total || 0
+  // 仅保留当前页范围内的选中(切换页后重置选中, 避免越界)
+  if (selIdx.value >= images.value.length) selIdx.value = -1
+}
+
+// 视频历史分页加载 (后端)
+async function loadVideoPage(id) {
+  const page = await getGenerations(id, { type: 'video', page: videoHistoryPage.value, size: HISTORY_PAGE_SIZE })
+  videos.value = (page?.records || []).filter(g => g.status === 'completed' && g.resultUrl)
+  videoTotal.value = page?.total || 0
+  if (videoSelIdx.value >= videos.value.length) videoSelIdx.value = -1
+}
+
+// 图片历史翻页 (后端)
+async function changeImagePage(p) {
+  const max = historyTotalPages.value
+  const next = Math.min(Math.max(p, 1), max)
+  if (next === historyPage.value) return
+  historyPage.value = next
+  selIdx.value = -1
+  await loadImagePage(currentProjectId.value)
+}
+
+// 视频历史翻页 (后端)
+async function changeVideoPage(p) {
+  const max = videoHistoryTotalPages.value
+  const next = Math.min(Math.max(p, 1), max)
+  if (next === videoHistoryPage.value) return
+  videoHistoryPage.value = next
+  videoSelIdx.value = -1
+  await loadVideoPage(currentProjectId.value)
 }
 async function newProject() {
-  const p = await createProject({ name: 'New Project', mode: 'image', model: props.currentModel })
-  projects.value.unshift(p); currentProjectId.value = p.id; images.value = []; selIdx.value = -1; historyPage.value = 1; prompt.value = ''
+  const p = await createProject({ name: 'New Project', mode: 'image', model: selectedImageModel.value || props.currentModel })
+  projects.value.unshift(p); currentProjectId.value = p.id
+  images.value = []; selIdx.value = -1; historyPage.value = 1; imageTotal.value = 0
+  videos.value = []; videoSelIdx.value = -1; videoHistoryPage.value = 1; videoTotal.value = 0
+  prompt.value = ''
 }
 function openDetail(gen) {
   detailGen.value = gen
@@ -189,24 +431,70 @@ function closeDetail() {
 }
 /** 将详情中的参数套用到当前控制面板 */
 function applyParams({ gen, params }) {
-  if (params.prompt) prompt.value = params.prompt
+  if (!params || Object.keys(params).length === 0) {
+    ElMessage.warning('该记录没有可套用的参数')
+    return
+  }
+  const applied = []
+  if (params.prompt) { prompt.value = params.prompt; applied.push('提示词') }
   if (params.size) size.value = params.size
   else if (gen.size) size.value = gen.size
-  if (params.style) styleVal.value = params.style
-  if (params.negativePrompt != null) negativePrompt.value = params.negativePrompt
-  if (params.n != null) n.value = params.n
-  if (params.promptExtend != null) promptExtend.value = params.promptExtend
-  if (params.watermark != null) watermark.value = params.watermark
+  if (params.size || gen.size) applied.push('尺寸')
+  if (params.style) { styleVal.value = params.style; applied.push('风格') }
+  if (params.negativePrompt != null) { negativePrompt.value = params.negativePrompt; applied.push('反向提示词') }
+  if (params.n != null) { n.value = params.n; applied.push('数量') }
+  if (params.promptExtend != null) { promptExtend.value = params.promptExtend; applied.push('智能改写') }
+  if (params.watermark != null) { watermark.value = params.watermark; applied.push('水印') }
+  // 参考图(base64 未存储)无法回填
+  if (params.hasReferImage) {
+    ElMessage.info('参考图未保存，无法回填（仅记录使用了参考图）')
+  }
   closeDetail()
+  ElMessage.success('已套用：' + (applied.join('、') || '无可用字段'))
+}
+/** 把后端存的 duration 字符串(如 "5s")转成秒数 */
+function parseDurationToSeconds(d) {
+  if (typeof d === 'number') return d
+  const m = String(d).match(/(\d+)/)
+  return m ? parseInt(m[1], 10) : 5
+}
+/** 套用视频参数到视频控制面板 */
+function applyVideoParams({ params }) {
+  if (!params || Object.keys(params).length === 0) {
+    ElMessage.warning('该记录没有可套用的参数')
+    return
+  }
+  const applied = []
+  if (params.prompt) { videoPrompt.value = params.prompt; applied.push('提示词') }
+  if (params.aspectRatio) { videoAspect.value = params.aspectRatio; applied.push('比例') }
+  if (params.duration) { videoDuration.value = parseDurationToSeconds(params.duration); applied.push('时长') }
+  if (params.negativePrompt != null) { videoNegativePrompt.value = params.negativePrompt; applied.push('反向提示词') }
+  if (params.seed != null) { videoSeed.value = params.seed; applied.push('随机种子') }
+  if (params.model) {
+    selectedVideoModel.value = params.model
+    emit('update:currentModel', params.model)
+    applied.push('模型')
+  }
+  // 首帧/尾帧(base64 未存储)无法回填
+  const unfilled = []
+  if (params.hasReferImage) unfilled.push('首帧参考图')
+  if (params.hasEndImage) unfilled.push('尾帧参考图')
+  if (unfilled.length) {
+    ElMessage.info(unfilled.join('、') + '未保存，无法回填（仅记录使用了参考图）')
+  }
+  closeDetail()
+  ElMessage.success('已套用：' + (applied.join('、') || '无可用字段'))
 }
 // 隐式确保有归属项目(直接生成但尚无项目时), 不重置用户输入
 async function ensureProject() {
   if (currentProjectId.value) return
-  const p = await createProject({ name: 'New Project', mode: 'image', model: props.currentModel })
+  const p = await createProject({ name: 'New Project', mode: 'image', model: selectedImageModel.value || props.currentModel })
   projects.value.unshift(p); currentProjectId.value = p.id
 }
 async function switchProject(id) {
   currentProjectId.value = id
+  historyPage.value = 1
+  videoHistoryPage.value = 1
   await loadProjectImages(id)
 }
 
@@ -249,6 +537,8 @@ async function removeProject(p) {
       currentProjectId.value = null
       images.value = []
       selIdx.value = -1
+      imageTotal.value = 0
+      historyPage.value = 1
     }
     await loadProjects()
     if (!currentProjectId.value && projects.value.length) {
@@ -260,6 +550,8 @@ async function removeProject(p) {
   }
 }
 function onUpload(e) { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => referImage.value = ev.target.result; r.readAsDataURL(f) }
+function onVideoUpload(e) { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => videoReferImage.value = ev.target.result; r.readAsDataURL(f) }
+function onVideoEndUpload(e) { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev => videoEndImage.value = ev.target.result; r.readAsDataURL(f) }
 // 轮询生成任务状态, 直到完成/失败或超时
 async function pollGeneration(id, interval = 2000, timeout = 180000) {
   const start = Date.now()
@@ -300,7 +592,7 @@ async function generate() {
   try {
     // 1. 提交任务, 立即拿到 n 条 pending 记录(每张独立一个任务)
     const tasks = await generateImage({
-      model: props.currentModel, prompt: prompt.value, size: size.value,
+      model: selectedImageModel.value, prompt: prompt.value, size: size.value,
       style: styleVal.value, referImage: referImage.value || null,
       negativePrompt: negativePrompt.value || null,
       n: n.value,
@@ -347,15 +639,17 @@ async function generate() {
 }
 onMounted(async () => {
   await loadProjects()
+  // 模型列表由父组件注入(props), 此处初始化各自的默认选中(以对应类型为准)
+  syncDefaultModels()
   if (projects.value.length) {
     currentProjectId.value = projects.value[0].id
     await loadProjectImages(currentProjectId.value)
   }
   await loadThreadPoolStats()
-  // 每 2s 刷新线程池状态, 展示实时可用线程
-  threadTimer = setInterval(loadThreadPoolStats, 2000)
+  // 每 6s 刷新线程池状态, 展示实时可用线程(频率已调低, 降低请求压力)
+  threadTimer = setInterval(loadThreadPoolStats, 6000)
 })
-onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
+onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPolling() })
 </script>
 
 <style scoped>
@@ -461,6 +755,12 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
 .icon-btn.danger:hover { color: var(--danger); background: rgba(248, 113, 113, 0.12); }
 .meta { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
+/* ===== 图片/视频 切换 Tab ===== */
+.gen-type-tabs { display: flex; gap: 6px; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 4px; }
+.gtab { flex: 1; text-align: center; padding: 8px 0; font-size: 13px; color: var(--text-2); border-radius: var(--radius-pill); cursor: pointer; transition: all 0.2s var(--ease); user-select: none; }
+.gtab:hover { color: var(--text); background: var(--surface-hover); }
+.gtab.active { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 2px 12px var(--accent-glow); }
+
 /* ===== 控制面板 ===== */
 .control-panel {
   width: 348px; padding: 22px; overflow-y: auto;
@@ -484,6 +784,7 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
 .avatar-img { width: 100%; height: 100%; object-fit: cover; }
 .model-name { font-size: 14px; font-weight: 600; letter-spacing: 0.01em; }
 .model-desc { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.model-select-wrap { flex: 1; min-width: 0; }
 
 .section-title {
   font-size: 11px; color: var(--text-3); margin: 18px 0 8px;
@@ -497,6 +798,13 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
 .upload-zone:hover { border-color: var(--accent); background: var(--surface-2); }
 .placeholder { color: var(--text-3); font-size: 13px; }
 .refer-preview { max-width: 100%; border-radius: 10px; }
+.param-hint { margin: 6px 2px 0; color: var(--text-3); font-size: 12px; }
+.num-input {
+  width: 120px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-card); padding: 7px 10px; color: var(--text);
+  font-size: 14px; outline: none; font-family: inherit;
+}
+.num-input:focus { border-color: var(--accent); background: var(--surface-2); }
 
 .prompt-input {
   width: 100%; background: var(--surface); border: 1px solid var(--border);
@@ -658,7 +966,15 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer) })
 }
 .thumb:hover { opacity: 0.85; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; }
+.thumb-video { width: 100%; height: 100%; object-fit: cover; background: #000; }
 .thumb.active { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.thumb-detail {
+  position: absolute; right: 3px; top: 3px; z-index: 2;
+  width: 18px; height: 18px; border-radius: 50%; line-height: 16px; text-align: center;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; border: none; cursor: pointer;
+  opacity: 0; transition: opacity 0.15s ease;
+}
+.thumb:hover .thumb-detail { opacity: 1; }
 
 .actions { position: absolute; bottom: 30px; display: flex; gap: 10px; }
 .act {

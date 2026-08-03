@@ -8,20 +8,34 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 /**
  * 异步任务线程池配置。
  * <p>
- * 用于图片/视频等长耗时生成任务的后台执行, 避免阻塞 HTTP 请求线程。
+ * 图片与视频生成任务分开使用独立线程池, 避免慢速视频任务抢占图片生成线程。
  */
 @Configuration
 @EnableAsync
 public class AsyncConfig {
 
-    /** 生成任务专用线程池 */
+    /** 图片生成专用线程池(单任务快、并发高) */
     @Bean("generationExecutor")
     public ThreadPoolTaskExecutor generationExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(2);
+        executor.setCorePoolSize(4);
         executor.setMaxPoolSize(8);
         executor.setQueueCapacity(50);
-        executor.setThreadNamePrefix("gen-");
+        executor.setThreadNamePrefix("gen-img-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(30);
+        executor.initialize();
+        return executor;
+    }
+
+    /** 视频生成专用线程池(单任务慢、需限制并发以免打爆上游 API) */
+    @Bean("videoExecutor")
+    public ThreadPoolTaskExecutor videoExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(30);
+        executor.setThreadNamePrefix("gen-video-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(30);
         executor.initialize();

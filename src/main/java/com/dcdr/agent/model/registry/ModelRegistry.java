@@ -4,6 +4,7 @@ import com.dcdr.agent.common.constant.ModelType;
 import com.dcdr.agent.common.constant.UIMode;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.ModelInfo;
+import com.dcdr.agent.model.provider.AudioModelProvider;
 import com.dcdr.agent.model.provider.ChatModelProvider;
 import com.dcdr.agent.model.provider.ImageModelProvider;
 import com.dcdr.agent.model.provider.VideoModelProvider;
@@ -25,6 +26,7 @@ public class ModelRegistry {
     private final Map<String, ChatModelProvider> chatProviders = new ConcurrentHashMap<>();
     private final Map<String, ImageModelProvider> imageProviders = new ConcurrentHashMap<>();
     private final Map<String, VideoModelProvider> videoProviders = new ConcurrentHashMap<>();
+    private final Map<String, AudioModelProvider> audioProviders = new ConcurrentHashMap<>();
 
     private String defaultChatProvider;
 
@@ -43,6 +45,11 @@ public class ModelRegistry {
     public void registerVideoProvider(VideoModelProvider provider) {
         videoProviders.put(provider.getName(), provider);
         log.info("注册视频模型: {} ({})", provider.getName(), provider.getLabel());
+    }
+
+    public void registerAudioProvider(AudioModelProvider provider) {
+        audioProviders.put(provider.getName(), provider);
+        log.info("注册语音模型: {} ({})", provider.getName(), provider.getLabel());
     }
 
     public void setDefaultChatProvider(String name) {
@@ -80,6 +87,19 @@ public class ModelRegistry {
         return p;
     }
 
+    public AudioModelProvider getAudioProvider(String name) {
+        AudioModelProvider p = audioProviders.get(name);
+        if (p == null) {
+            throw new BusinessException(404, "语音模型不存在: " + name, "MODEL_NOT_FOUND");
+        }
+        return p;
+    }
+
+    /** 默认语音模型: 返回已配置的第一个语音 Provider */
+    public AudioModelProvider getDefaultAudioProvider() {
+        return audioProviders.values().stream().findFirst().orElse(null);
+    }
+
     public ChatModelProvider getDefaultChatProvider() {
         if (defaultChatProvider != null && chatProviders.containsKey(defaultChatProvider)) {
             return chatProviders.get(defaultChatProvider);
@@ -102,6 +122,7 @@ public class ModelRegistry {
         if (chatProviders.containsKey(name)) return chatProviders.get(name);
         if (imageProviders.containsKey(name)) return imageProviders.get(name);
         if (videoProviders.containsKey(name)) return videoProviders.get(name);
+        if (audioProviders.containsKey(name)) return audioProviders.get(name);
         throw new BusinessException(404, "模型不存在: " + name, "MODEL_NOT_FOUND");
     }
 
@@ -112,7 +133,8 @@ public class ModelRegistry {
         List<ModelInfo> list = new ArrayList<>();
         chatProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
         imageProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
-        videoProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
+        videoProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), p.capabilities())));
+        audioProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
         return list;
     }
 
@@ -133,6 +155,7 @@ public class ModelRegistry {
         if (chatProviders.containsKey(name)) return ModelType.CHAT;
         if (imageProviders.containsKey(name)) return ModelType.IMAGE;
         if (videoProviders.containsKey(name)) return ModelType.VIDEO;
+        if (audioProviders.containsKey(name)) return ModelType.AUDIO;
         throw new BusinessException(404, "模型不存在: " + name, "MODEL_NOT_FOUND");
     }
 }
