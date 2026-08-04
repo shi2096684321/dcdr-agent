@@ -51,7 +51,7 @@ public class GenerationEntity {
     @Column(nullable = false)
     private int costCredits;
 
-    /** 状态: pending / completed / failed */
+    /** 状态: pending(排队中) / processing(渲染中) / completed / failed */
     @Column(nullable = false, length = 16)
     private String status;
 
@@ -59,6 +59,9 @@ public class GenerationEntity {
     private String errorMessage;
 
     private long durationMs;
+
+    /** 后端真正开始生成(进入渲染线程)的时刻, 毫秒时间戳; 用于前端以真实生成起点计算耗时 */
+    private Long startedAt;
 
     @Column(nullable = false)
     private LocalDateTime createdAt;

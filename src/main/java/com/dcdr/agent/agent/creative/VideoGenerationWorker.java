@@ -43,6 +43,12 @@ public class VideoGenerationWorker {
         long start = System.currentTimeMillis();
         GenerationDTO update = new GenerationDTO();
         update.setId(generationId);
+        // 进入本方法即表示已拿到线程池线程(脱离排队), 回写 processing 标记"渲染中"
+        // 仍在队列中等待的任务保持提交时的 pending, 前端据此区分"排队中 / 渲染中"
+        // startedAt = 真正开始渲染的时间戳, 用于前端区分"排队耗时"与"渲染用时"
+        update.setStatus("processing");
+        update.setStartedAt(System.currentTimeMillis());
+        projectManager.updateGeneration(update);
         try {
             VideoModelProvider provider = registry.getVideoProvider(request.getModel());
             GenerationDTO result = provider.generate(request);

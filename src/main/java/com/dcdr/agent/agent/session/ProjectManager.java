@@ -150,6 +150,7 @@ public class ProjectManager {
             e.setThumbnailUrl(record.getThumbnailUrl());
             e.setErrorMessage(record.getErrorMessage());
             e.setDurationMs(record.getDurationMs());
+            if (record.getStartedAt() != null) e.setStartedAt(record.getStartedAt());
             generationRepository.save(e);
         });
     }
@@ -183,6 +184,7 @@ public class ProjectManager {
         dto.setStatus(e.getStatus());
         dto.setErrorMessage(e.getErrorMessage());
         dto.setDurationMs(e.getDurationMs());
+        dto.setStartedAt(e.getStartedAt());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setSize(e.getSize());
         return dto;

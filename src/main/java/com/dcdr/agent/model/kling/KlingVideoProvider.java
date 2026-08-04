@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -44,13 +45,20 @@ public class KlingVideoProvider implements VideoModelProvider {
     private final boolean demo;
 
     public KlingVideoProvider(String baseUrl, String apiKey, String model, String name) {
+        this(baseUrl, apiKey, "bearer", model, name);
+    }
+
+    public KlingVideoProvider(String baseUrl, String apiKey, String authScheme, String model, String name) {
+        this.demo = apiKey == null || apiKey.isBlank() || apiKey.toLowerCase().contains("demo");
+        // authScheme=raw 时部分中转平台要求 "Authorization: <key>"(不带 Bearer 前缀)
+        // authScheme=bearer(默认) 时 "Authorization: Bearer <key>"
+        String authHeader = "raw".equalsIgnoreCase(authScheme) ? apiKey : "Bearer " + apiKey;
         this.webClient = WebClient.builder().baseUrl(baseUrl)
-                .defaultHeader("Authorization", "Bearer " + apiKey)
+                .defaultHeader("Authorization", authHeader)
                 .defaultHeader("Content-Type", "application/json")
                 .build();
         this.model = model;
         this.name = name;
-        this.demo = apiKey == null || apiKey.isBlank() || apiKey.contains("demo");
     }
 
     @Override public String getName() { return name; }
@@ -131,11 +139,18 @@ public class KlingVideoProvider implements VideoModelProvider {
             uri = "/v1/videos/text2video";
         }
 
-        String resp = webClient.post().uri(uri)
-                .bodyValue(body.toString())
-                .retrieve().bodyToMono(String.class)
-                .timeout(Duration.ofSeconds(30))
-                .block();
+        String resp;
+        try {
+            resp = webClient.post().uri(uri)
+                    .bodyValue(body.toString())
+                    .retrieve().bodyToMono(String.class)
+                    .timeout(Duration.ofSeconds(30))
+                    .block();
+        } catch (WebClientResponseException ex) {
+            // 4xx/5xx: 打印可灵返回的具体错误体(含 code/message), 便于定位鉴权/套餐问题
+            log.error("可灵创建任务失败 [{} {}]: {}", ex.getStatusCode().value(), ex.getStatusText(), ex.getResponseBodyAsString());
+            throw new RuntimeException("可灵创建任务失败 [" + ex.getStatusCode() + "]: " + ex.getResponseBodyAsString(), ex);
+        }
         try {
             JsonNode root = mapper.readTree(resp);
             String taskId = root.path("data").path("task_id").asText();
@@ -152,10 +167,17 @@ public class KlingVideoProvider implements VideoModelProvider {
     private String pollTask(String taskId, String pollPrefix) throws InterruptedException {
         long deadline = System.currentTimeMillis() + MAX_WAIT.toMillis();
         while (System.currentTimeMillis() < deadline) {
-            String resp = webClient.get().uri(pollPrefix + taskId)
-                    .retrieve().bodyToMono(String.class)
-                    .timeout(Duration.ofSeconds(30))
-                    .block();
+            String resp;
+            try {
+                resp = webClient.get().uri(pollPrefix + taskId)
+                        .retrieve().bodyToMono(String.class)
+                        .timeout(Duration.ofSeconds(30))
+                        .block();
+            } catch (WebClientResponseException ex) {
+                // 轮询查询失败也打印可灵返回的错误体, 便于排查
+                log.error("可灵查询任务失败 [{} {}]: {}", ex.getStatusCode().value(), ex.getStatusText(), ex.getResponseBodyAsString());
+                throw new RuntimeException("可灵查询任务失败 [" + ex.getStatusCode() + "]: " + ex.getResponseBodyAsString(), ex);
+            }
             try {
                 JsonNode root = mapper.readTree(resp);
                 String status = root.path("data").path("task_status").asText();

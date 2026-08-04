@@ -54,6 +54,8 @@ public class AgentProperties {
         private String provider;
         private String apiKey;
         private String baseUrl;
+        /** 鉴权头格式: bearer(默认, 即 "Bearer <key>") 或 raw(即 "<key>", 部分中转平台用) */
+        private String authScheme = "bearer";
         private String model;
         /** 图生视频专用模型名(可选, 默认同 model), 如万相 wan2.7-i2v 系列 */
         private String modelI2v;

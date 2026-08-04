@@ -74,42 +74,42 @@ public class FileController {
 
     @Operation(summary = "访问上传的文件", description = "根据日期路径与文件名访问已上传的文件")
     @GetMapping("/uploads/{*filepath}")
-    public ResponseEntity<Resource> download(@Parameter(hidden = true) @PathVariable String filepath) {
+    public Mono<ResponseEntity<Resource>> download(@Parameter(hidden = true) @PathVariable String filepath) {
         String normalized = filepath.startsWith("/") ? filepath.substring(1) : filepath;
         Path path = Paths.get(uploadDir, normalized);
         File f = path.toFile();
-        if (!f.exists()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok()
+        if (!f.exists()) return Mono.just(ResponseEntity.notFound().build());
+        return Mono.just(ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_TYPE, resolveContentType(f.getName()))
-                .body(new FileSystemResource(f));
+                .body(new FileSystemResource(f)));
     }
 
     @Operation(summary = "访问生成的图片", description = "访问文生图落盘后的本地图片(长期有效)")
     @GetMapping("/generated/{year}/{month}/{day}/{file}")
-    public ResponseEntity<Resource> serveGenerated(@Parameter(description = "年, 如 2026") @PathVariable String year,
-                                                   @Parameter(description = "月, 如 07") @PathVariable String month,
-                                                   @Parameter(description = "日, 如 23") @PathVariable String day,
-                                                   @Parameter(description = "文件名") @PathVariable String file) {
+    public Mono<ResponseEntity<Resource>> serveGenerated(@Parameter(description = "年, 如 2026") @PathVariable String year,
+                                                         @Parameter(description = "月, 如 07") @PathVariable String month,
+                                                         @Parameter(description = "日, 如 23") @PathVariable String day,
+                                                         @Parameter(description = "文件名") @PathVariable String file) {
         Path path = Paths.get(generatedDir, year, month, day, file);
         File f = path.toFile();
-        if (!f.exists()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok()
+        if (!f.exists()) return Mono.just(ResponseEntity.notFound().build());
+        return Mono.just(ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_TYPE, resolveContentType(file))
-                .body(new FileSystemResource(f));
+                .body(new FileSystemResource(f)));
     }
 
     @Operation(summary = "访问生成的视频", description = "访问文生视频落盘后的本地视频(长期有效)")
     @GetMapping("/videos/{year}/{month}/{day}/{file}")
-    public ResponseEntity<Resource> serveVideo(@Parameter(description = "年, 如 2026") @PathVariable String year,
-                                               @Parameter(description = "月, 如 07") @PathVariable String month,
-                                               @Parameter(description = "日, 如 23") @PathVariable String day,
-                                               @Parameter(description = "文件名") @PathVariable String file) {
+    public Mono<ResponseEntity<Resource>> serveVideo(@Parameter(description = "年, 如 2026") @PathVariable String year,
+                                                     @Parameter(description = "月, 如 07") @PathVariable String month,
+                                                     @Parameter(description = "日, 如 23") @PathVariable String day,
+                                                     @Parameter(description = "文件名") @PathVariable String file) {
         Path path = Paths.get(videoDir, year, month, day, file);
         File f = path.toFile();
-        if (!f.exists()) return ResponseEntity.notFound().build();
-        return ResponseEntity.ok()
+        if (!f.exists()) return Mono.just(ResponseEntity.notFound().build());
+        return Mono.just(ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_TYPE, resolveVideoContentType(file))
-                .body(new FileSystemResource(f));
+                .body(new FileSystemResource(f)));
     }
 
     private String resolveVideoContentType(String filename) {

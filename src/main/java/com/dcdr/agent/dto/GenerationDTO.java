@@ -36,13 +36,15 @@ public class GenerationDTO {
     private String paramsJson;
     @Schema(description = "消耗积分")
     private int costCredits;
-    /** 状态: pending / completed / failed */
-    @Schema(description = "状态", allowableValues = {"pending", "completed", "failed"}, example = "completed")
+    /** 状态: pending(排队中) / processing(渲染中) / completed / failed */
+    @Schema(description = "状态", allowableValues = {"pending", "processing", "completed", "failed"}, example = "completed")
     private String status;
     @Schema(description = "错误信息")
     private String errorMessage;
     @Schema(description = "耗时（毫秒）")
     private long durationMs;
+    @Schema(description = "后端开始生成时刻（毫秒时间戳）, 用于前端以真实生成起点计算耗时")
+    private Long startedAt;
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 }

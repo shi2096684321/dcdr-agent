@@ -60,7 +60,7 @@ public class ModelAutoConfiguration {
                     if (!c.isEnabled()) continue;
                     try {
                         switch (c.getProvider()) {
-                            case "kuaishou" -> { registry.registerVideoProvider(new KlingVideoProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName())); videoCount++; }
+                            case "kuaishou" -> { registry.registerVideoProvider(new KlingVideoProvider(c.getBaseUrl(), c.getApiKey(), c.getAuthScheme(), c.getModel(), c.getName())); videoCount++; }
                             case "wan" -> { registry.registerVideoProvider(new WanVideoProvider(c.getBaseUrl(), c.getApiKey(), c.getModel(), c.getName(), c.getModelI2v())); videoCount++; }
                         }
                     } catch (Exception e) { log.error("注册视频模型失败: {}", c.getName(), e); }

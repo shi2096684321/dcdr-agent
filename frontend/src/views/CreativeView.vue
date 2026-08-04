@@ -154,9 +154,26 @@
 
       <!-- 视频预览 -->
       <template v-else>
-        <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="empty">
-          <p>{{ videoStatus==='pending' ? '排队中...' : '渲染中...' }}</p>
-          <div class="gen-progress"><div class="loading-grid"><div class="loading-tile"><div class="tile-shimmer"></div><div class="tile-bar"><i></i></div></div></div></div>
+        <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="video-progress">
+          <div class="vp-stage-icon">{{ videoStageIcon }}</div>
+          <div class="vp-status">{{ videoStageLabel }}</div>
+          <div class="vp-bar"><i :style="{ width: videoProgressPercent + '%' }"></i></div>
+          <div class="vp-metrics">
+            <div class="vp-metric">
+              <span class="vp-metric-label">排队耗时</span>
+              <span class="vp-metric-value">{{ videoQueueText }}</span>
+            </div>
+            <div class="vp-metric">
+              <span class="vp-metric-label">渲染用时</span>
+              <span class="vp-metric-value">{{ videoRenderText }}</span>
+            </div>
+          </div>
+          <div class="vp-stage-track">
+            <span class="vp-stage" :class="{active: videoStageIndex>=0, done: videoStageIndex>0}">① 排队</span>
+            <span class="vp-stage" :class="{active: videoStageIndex>=1, done: videoStageIndex>1}">② 渲染</span>
+            <span class="vp-stage" :class="{active: videoStageIndex>=2, done: videoStageIndex>2}">③ 收尾</span>
+          </div>
+          <p class="vp-tip">视频生成无真实进度，进度为阶段估算；排队/渲染时间取自后端真实时间节点</p>
         </div>
         <div v-else-if="!currentVideo && !resultVideo" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p></div>
         <video v-else :src="currentVideo || resultVideo" class="result-img" controls autoplay loop></video>
@@ -287,6 +304,61 @@ const videoGenerating = ref(false)
 const resultVideo = ref('')
 const videoStatus = ref('')   // pending | processing | succeeded | failed
 let videoPollTimer = null
+// 视频生成阶段式进度(纯前端估算, 厂商无真实百分比)
+// 0: 排队 1: 渲染 2: 收尾 3: 完成(成功)
+const videoStageIndex = ref(0)
+// 各阶段预计耗时(秒); 渲染耗时与视频时长正相关
+// 排队阶段不预测真实时长(取决于池空闲), 仅给一个上限用于估算爬升
+const QUEUE_EST_SEC = 8
+const videoStageEst = computed(() => {
+  const dur = Number(videoDuration.value) || 5
+  return [QUEUE_EST_SEC, Math.max(20, dur * 6), 6]   // 排队 / 渲染 / 收尾
+})
+const videoTotalEstSec = computed(() => videoStageEst.value.reduce((a, b) => a + b, 0))
+const videoStartTs = ref(0)             // 提交时刻(ms, 前端记, 仅兜底)
+const videoStageStartTs = ref(0)        // 进入当前阶段的时刻(ms)
+const videoNow = ref(Date.now())        // 响应式时钟(每秒自增), 驱动进度/时长重算
+// 后端真实时间节点(轮询回填): createdAt 提交时刻, startedAt 进入渲染时刻(ms), durationMs 总耗时
+const videoCreatedAtMs = ref(0)
+const videoStartedAtMs = ref(0)
+const videoDurationMs = ref(0)
+let videoRafTimer = null
+// 基于计时 + 阶段推进的实时进度(估算值, 非厂商真实百分比)
+const videoProgressPercent = computed(() => {
+  if (videoStageIndex.value >= 3) return 100
+  if (videoStageIndex.value === 0) {
+    // 排队中: 缓慢爬升, 上限 15%(避免真实排队时长不可预测导致进度跑飞)
+    const q = Math.min((videoNow.value - videoStageStartTs.value) / 1000 / QUEUE_EST_SEC, 1)
+    return Math.round(Math.min(q, 1) * 15)
+  }
+  let done = 0
+  for (let i = 0; i < videoStageIndex.value; i++) done += videoStageEst.value[i]
+  const cur = videoStageEst.value[videoStageIndex.value] || 1
+  const stageElapsed = (videoNow.value - videoStageStartTs.value) / 1000
+  done += Math.min(stageElapsed, cur)
+  return Math.max(0, Math.min(99, Math.round((done / videoTotalEstSec.value) * 100)))
+})
+// 排队耗时: 提交 -> 进入渲染; 渲染前实时(now-提交), 渲染开始后固定(startedAt-提交)
+const videoQueueMs = computed(() => {
+  if (!videoCreatedAtMs.value) return 0
+  return videoStartedAtMs.value
+    ? videoStartedAtMs.value - videoCreatedAtMs.value
+    : Math.max(0, videoNow.value - videoCreatedAtMs.value)
+})
+// 渲染用时: 进入渲染 -> 完成; 渲染前为0, 渲染中实时(now-startedAt), 完成用 durationMs
+const videoRenderMs = computed(() => {
+  if (!videoStartedAtMs.value) return 0
+  if (videoDurationMs.value) return videoDurationMs.value
+  return Math.max(0, videoNow.value - videoStartedAtMs.value)
+})
+const videoQueueText = computed(() => fmtDuration(Math.floor(videoQueueMs.value / 1000)))
+const videoRenderText = computed(() => fmtDuration(Math.floor(videoRenderMs.value / 1000)))
+const videoStageIcon = computed(() => ['⏳', '🎬', '✨', '✅'][videoStageIndex.value] || '⏳')
+const videoStageLabel = computed(() => ['排队中...', '渲染中...', '收尾处理中...', '即将完成'][videoStageIndex.value] || '排队中...')
+function fmtDuration(sec) {
+  const m = Math.floor(sec / 60), s = sec % 60
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`
+}
 // 视频历史(按 type==='video' 区分, 与图片互不混入, 后端分页)
 const videos = ref([])         // 当前页的视频 generation 对象数组
 const videoSelIdx = ref(-1)
@@ -302,6 +374,15 @@ async function generateVideo() {
   videoGenerating.value = true
   resultVideo.value = ''
   videoStatus.value = 'pending'
+  // 初始化阶段式进度
+  videoStageIndex.value = 0
+  videoStartTs.value = Date.now()
+  videoStageStartTs.value = videoStartTs.value
+  // 清空后端时间节点, 待轮询回填(createdAt 兜底用本地提交时刻)
+  videoCreatedAtMs.value = videoStartTs.value
+  videoStartedAtMs.value = 0
+  videoDurationMs.value = 0
+  startVideoProgressTicker()
   try {
     const data = await submitVideoTask({
       prompt: videoPrompt.value,
@@ -319,34 +400,70 @@ async function generateVideo() {
   } catch (e) {
     ElMessage.error(e?.message || '视频生成失败')
     videoStatus.value = ''
-    videoGenerating.value = false
+    stopVideoProgress()
   }
 }
 function startVideoPolling(id) {
   stopVideoPolling()
-  const tick = async () => {
+    const tick = async () => {
     try {
       const st = await getVideoStatus(id)
       videoStatus.value = st.status
+      // 回填后端真实时间节点
+      if (st.createdAt) videoCreatedAtMs.value = new Date(st.createdAt).getTime()
+      if (st.startedAt) videoStartedAtMs.value = st.startedAt
+      if (st.durationMs) videoDurationMs.value = st.durationMs
       if (st.status === 'completed' || st.status === 'succeeded') {
+        // 真实完成, 进度拉满
+        videoStageIndex.value = 3
         resultVideo.value = st.resultUrl
         stopVideoPolling()
-        videoGenerating.value = false
+        stopVideoProgress()
         // 刷新历史并定位到刚生成的视频
         if (currentProjectId.value) await loadProjectImages(currentProjectId.value, [st.id])
+      } else if (st.status === 'processing') {
+        // 后端真实回写: 已拿到线程, 进入渲染阶段(②)
+        if (videoStageIndex.value < 1) {
+          videoStageIndex.value = 1
+          videoStageStartTs.value = videoNow.value
+        }
+      } else if (st.status === 'pending') {
+        // 后端真实状态: 仍在队列中排队(①), 保底置阶段 0
+        videoStageIndex.value = 0
+        videoStageStartTs.value = videoStartTs.value
       } else if (st.status === 'failed') {
         ElMessage.error(st.error || '视频生成失败')
         stopVideoPolling()
-        videoGenerating.value = false
+        stopVideoProgress()
       }
     } catch (e) {
-      ElMessage.error(e?.message || '查询视频状态失败')
-      stopVideoPolling()
-      videoGenerating.value = false
+      // 单次查询失败仅提示, 不清进度 ticker, 也不停轮询(下次重试)
+      ElMessage.warning(e?.message || '查询视频状态失败，将自动重试')
     }
   }
   tick()
   videoPollTimer = setInterval(tick, 3000)
+}
+function startVideoProgressTicker() {
+  stopVideoProgressTicker()
+  // 仅刷新响应式时钟 videoNow(驱动进度%/已等待时长重算)
+  // 阶段(排队/渲染/收尾)完全由轮询返回的 status 决定, 不再用前端计时伪造推进
+  videoRafTimer = setInterval(() => {
+    videoNow.value = Date.now()
+    // 安全上限: 超过 10 分钟仍无结果, 停止估算并提示(避免无限卡)
+    if ((videoNow.value - videoStartTs.value) / 1000 > 600) {
+      stopVideoProgress()
+      ElMessage.error('视频生成超时（>10 分钟），请稍后在历史中查看或重试')
+    }
+  }, 1000)
+}
+function stopVideoProgressTicker() {
+  if (videoRafTimer) { clearInterval(videoRafTimer); videoRafTimer = null }
+}
+// 统一收尾: 仅清理进度 ticker 与状态(由生成成功/失败调用, 不被轮询错误误杀)
+function stopVideoProgress() {
+  stopVideoProgressTicker()
+  videoGenerating.value = false
 }
 function stopVideoPolling() {
   if (videoPollTimer) { clearInterval(videoPollTimer); videoPollTimer = null }
@@ -935,6 +1052,41 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 
 .gen-progress { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; }
 .progress-head { width: 100%; max-width: 420px; color: var(--text); font-size: 14px; margin-bottom: 10px; font-weight: 500; }
+
+/* ===== 视频阶段式进度 ===== */
+.video-progress {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; width: 100%; max-width: 420px; padding: 24px;
+}
+.vp-stage-icon { font-size: 46px; animation: vp-bob 2.2s ease-in-out infinite; }
+@keyframes vp-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+.vp-status { font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
+.vp-bar {
+  width: 100%; height: 8px; border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.08); overflow: hidden; border: 1px solid var(--border);
+}
+.vp-bar > i {
+  display: block; height: 100%; border-radius: var(--radius-pill);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--success));
+  background-size: 200% 100%;
+  transition: width 0.5s var(--ease);
+  animation: vp-flow 1.6s linear infinite;
+}
+@keyframes vp-flow { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; } }
+.vp-metrics { display: flex; gap: 10px; margin-top: 4px; }
+.vp-metric { flex: 1; background: rgba(125,108,240,0.06); border: 1px solid var(--border-1); border-radius: 8px; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; }
+.vp-metric-label { font-size: 11px; color: var(--text-2); }
+.vp-metric-value { font-size: 14px; font-weight: 600; color: var(--primary); font-variant-numeric: tabular-nums; }
+.vp-stage-track { display: flex; gap: 10px; margin-top: 4px; }
+.vp-stage {
+  font-size: 12px; padding: 4px 12px; border-radius: var(--radius-pill);
+  background: var(--surface); border: 1px solid var(--border); color: var(--text-3);
+  transition: all 0.3s var(--ease);
+}
+.vp-stage.active { color: var(--accent); border-color: var(--accent); background: var(--accent-glow); }
+.vp-stage.done { color: var(--success); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.12); }
+.vp-tip { font-size: 11px; color: var(--text-3); margin: 0; text-align: center; }
+
 
 .history {
   position: absolute; right: 18px; top: 18px;
