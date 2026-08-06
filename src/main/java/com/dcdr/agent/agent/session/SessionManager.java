@@ -18,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 会话管理器 (对话模式) - 管理会话的创建、切换、删除
@@ -31,6 +32,9 @@ public class SessionManager {
 
     /** 默认会话标题，首个用户问题到达时会被替换 */
     private static final String DEFAULT_TITLE = "新对话";
+
+    /** 会话级 system prompt 字符上限(超过抛异常而非静默截断) */
+    public static final int MAX_SYSTEM_PROMPT_LEN = 8000;
 
     private final SessionRepository sessionRepository;
     private final MessageRepository messageRepository;
@@ -46,6 +50,10 @@ public class SessionManager {
         entity.setTitle(title != null ? title : DEFAULT_TITLE);
         entity.setTitleAuto(true);
         entity.setModel(model);
+        if (systemPrompt != null && systemPrompt.length() > MAX_SYSTEM_PROMPT_LEN) {
+            throw new IllegalArgumentException(
+                    "systemPrompt 过长(上限 " + MAX_SYSTEM_PROMPT_LEN + " 字符), 当前 " + systemPrompt.length());
+        }
         entity.setSystemPrompt(systemPrompt);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
@@ -99,6 +107,7 @@ public class SessionManager {
                 dto.setSeq(msg.getSeq());
                 dto.setError(msg.getError());
                 dto.setImages(msg.getImages());
+                dto.setSources(msg.getSources());
                 dto.setCreatedAt(LocalDateTime.now());
                 dtos.add(dto);
             }
@@ -120,6 +129,63 @@ public class SessionManager {
             s.setUpdatedAt(LocalDateTime.now());
             sessionRepository.save(s);
         });
+    }
+
+    /**
+     * 更新会话级 system prompt，并保证「落库字段」与「消息历史中的 system 消息」两份数据一致。
+     * <p>
+     * 修复项：原先仅在创建会话时写入一次，之后无入口更新，导致修改不生效。
+     * 本方法同时更新 {@code sessions.system_prompt} 字段与 {@code messages} 表中该会话首条
+     * role=system 的消息内容；新值为空/空白时删除该 system 消息(不再注入)。
+     *
+     * @param sessionId    会话 ID
+     * @param systemPrompt 新的 system prompt(可为空, 表示清除)
+     * @throws IllegalArgumentException 会话不存在或超长时抛出
+     */
+    @Transactional
+    public void updateSystemPrompt(String sessionId, String systemPrompt) {
+        SessionEntity entity = sessionRepository.findById(sessionId)
+                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+        if (systemPrompt != null && systemPrompt.length() > MAX_SYSTEM_PROMPT_LEN) {
+            throw new IllegalArgumentException(
+                    "systemPrompt 过长(上限 " + MAX_SYSTEM_PROMPT_LEN + " 字符), 当前 " + systemPrompt.length());
+        }
+
+        String trimmed = (systemPrompt == null || systemPrompt.isBlank()) ? null : systemPrompt;
+        entity.setSystemPrompt(trimmed);
+        entity.setUpdatedAt(LocalDateTime.now());
+        sessionRepository.save(entity);
+
+        // 同步更新/删除消息历史中的 system 消息(保证两份数据一致)
+        List<MessageEntity> sysList = messageRepository.findBySessionIdOrderBySeqAsc(sessionId).stream()
+                .filter(m -> "system".equals(m.getRole()))
+                .toList();
+        if (trimmed == null) {
+            // 清除: 删除所有 system 消息
+            sysList.forEach(messageRepository::delete);
+            log.info("会话 {} 已清除 system prompt", sessionId);
+        } else if (!sysList.isEmpty()) {
+            // 更新首条 system 消息(后续多余的 system 消息一并清理, 保持唯一)
+            MessageEntity sys = sysList.get(0);
+            sys.setContent(trimmed);
+            messageRepository.save(sys);
+            for (int i = 1; i < sysList.size(); i++) {
+                messageRepository.delete(sysList.get(i));
+            }
+            log.info("会话 {} 更新 system prompt", sessionId);
+        } else {
+            // 原本没有 system 消息: 补写一条(使用最小 seq, 确保位于历史最前)
+            MessageEntity sys = new MessageEntity();
+            sys.setSessionId(sessionId);
+            sys.setSeq(messageRepository.findTopBySessionIdOrderBySeqDesc(sessionId)
+                    .map(MessageEntity::getSeq).orElse(-1) + 1);
+            sys.setRole("system");
+            sys.setType("text");
+            sys.setContent(trimmed);
+            sys.setCreatedAt(LocalDateTime.now());
+            messageRepository.save(sys);
+            log.info("会话 {} 新增 system prompt", sessionId);
+        }
     }
 
     /** 以首个用户问题作为会话标题（仅在标题仍为自动默认时生效，避免覆盖用户自定义标题） */
@@ -178,6 +244,15 @@ public class SessionManager {
         }
     }
 
+    private static List<Map<String, Object>> parseSources(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     static MessageDTO toMessageDTO(MessageEntity m) {
         MessageDTO dto = new MessageDTO();
         dto.setId(m.getSessionId() + "_" + m.getSeq());
@@ -187,6 +262,7 @@ public class SessionManager {
         dto.setContent(m.getContent());
         dto.setReasoningContent(m.getReasoningContent());
         dto.setImages(parseImages(m.getImages()));
+        dto.setSources(parseSources(m.getSources()));
         dto.setModel(m.getModel());
         dto.setToolsUsed(m.getToolsUsed());
         dto.setTokenUsage(m.getTokenUsage());

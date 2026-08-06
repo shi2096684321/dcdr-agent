@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 消息 DTO
@@ -47,6 +48,9 @@ public class MessageDTO {
     /** 使用的工具(JSON) */
     @Schema(description = "使用的工具（JSON 字符串）")
     private String toolsUsed;
+    /** 引用来源(联网搜索等结果) */
+    @Schema(description = "引用来源（联网搜索等结果，含 title/url/content）")
+    private List<Map<String, Object>> sources;
     /** Token消耗 */
     @Schema(description = "Token 消耗")
     private Integer tokenUsage;

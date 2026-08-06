@@ -105,6 +105,16 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
      * 构建请求体
      */
     protected String buildRequestBody(ChatRequest request, List<Message> history, boolean stream) {
+        return buildRequestBody(request, history, stream, true);
+    }
+
+    /**
+     * 构建请求体(重载)。
+     *
+     * @param includeCurrentUser 是否把 request.getMessage() 作为当前 user 消息追加。
+     *                           工具循环回灌轮须传 false(当前 user 消息已在 history 中), 避免重复追加。
+     */
+    protected String buildRequestBody(ChatRequest request, List<Message> history, boolean stream, boolean includeCurrentUser) {
         ObjectNode body = mapper.createObjectNode();
         body.put("model", model);
         body.put("stream", stream);
@@ -115,11 +125,36 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         ArrayNode messages = body.putArray("messages");
         if (history != null) {
             for (Message msg : history) {
-                if (msg.getContent() == null || msg.getContent().isBlank()) continue;
                 ObjectNode mNode = messages.addObject();
-                mNode.put("role", msg.getRole());
+                String role = msg.getRole();
+                mNode.put("role", role);
+                // 助手消息携带 tool_calls: 序列化 function calling 往返(此时 content 可为 null)
+                List<Map<String, Object>> tcs = msg.getToolCalls();
+                if (tcs != null && !tcs.isEmpty()) {
+                    ArrayNode tcsNode = mNode.putArray("tool_calls");
+                    for (Map<String, Object> tc : tcs) {
+                        ObjectNode tcNode = tcsNode.addObject();
+                        tcNode.put("id", String.valueOf(tc.get("id")));
+                        tcNode.put("type", "function");
+                        ObjectNode fnNode = tcNode.putObject("function");
+                        fnNode.put("name", String.valueOf(tc.get("name")));
+                        fnNode.put("arguments", String.valueOf(tc.get("arguments") == null ? "" : tc.get("arguments")));
+                    }
+                    // tool_calls 场景下 content 置空串(OpenAI 要求 assistant 不能带 content 同时 tool_calls 时 content=null)
+                    mNode.put("content", (msg.getContent() == null) ? "" : msg.getContent());
+                    continue;
+                }
+                // 工具结果消息(role=tool): 需携带 tool_call_id 与 name 配对
+                if ("tool".equals(role)) {
+                    mNode.put("tool_call_id", msg.getToolCallId());
+                    if (msg.getName() != null) mNode.put("name", msg.getName());
+                    mNode.put("content", msg.getContent() == null ? "" : msg.getContent());
+                    continue;
+                }
+                // 普通消息: 跳过空内容
+                if (msg.getContent() == null || msg.getContent().isBlank()) continue;
                 List<String> imgs = msg.getImages();
-                if (imgs != null && !imgs.isEmpty() && supportsVision() && "user".equals(msg.getRole())) {
+                if (imgs != null && !imgs.isEmpty() && supportsVision() && "user".equals(role)) {
                     ArrayNode content = mNode.putArray("content");
                     content.addObject().put("type", "text").put("text", msg.getContent());
                     for (String img : imgs) {
@@ -131,22 +166,24 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                 }
             }
         }
-        // 当前用户消息
-        ObjectNode userMsg = messages.addObject();
-        userMsg.put("role", "user");
-        List<String> images = request.getImages();
-        if (images != null && !images.isEmpty() && supportsVision()) {
-            ArrayNode content = userMsg.putArray("content");
-            content.addObject().put("type", "text").put("text", request.getMessage());
-            for (String img : images) {
-                content.addObject().put("type", "image_url")
-                        .putObject("image_url").put("url", img);
+        // 当前用户消息(可关闭以适配工具循环回灌)
+        if (includeCurrentUser) {
+            ObjectNode userMsg = messages.addObject();
+            userMsg.put("role", "user");
+            List<String> images = request.getImages();
+            if (images != null && !images.isEmpty() && supportsVision()) {
+                ArrayNode content = userMsg.putArray("content");
+                content.addObject().put("type", "text").put("text", request.getMessage());
+                for (String img : images) {
+                    content.addObject().put("type", "image_url")
+                            .putObject("image_url").put("url", img);
+                }
+            } else {
+                if (images != null && !images.isEmpty() && !supportsVision()) {
+                    log.warn("[{}] 当前模型不支持视觉能力, 已忽略 {} 张上传图片", name, images.size());
+                }
+                userMsg.put("content", request.getMessage());
             }
-        } else {
-            if (images != null && !images.isEmpty() && !supportsVision()) {
-                log.warn("[{}] 当前模型不支持视觉能力, 已忽略 {} 张上传图片", name, images.size());
-            }
-            userMsg.put("content", request.getMessage());
         }
         // 函数调用工具(仅支持 function calling 的模型生效, OpenAI 格式)
         List<Map<String, Object>> tools = request.getTools();
@@ -183,7 +220,17 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
 
     @Override
     public Flux<ChatChunk> stream(ChatRequest request, List<Message> history) {
-        String json = buildRequestBody(request, history, true);
+        return stream(request, history, true);
+    }
+
+    /**
+     * 流式调用(重载)。
+     *
+     * @param includeCurrentUser 是否把 request.getMessage() 作为当前 user 消息追加。
+     *                           工具循环回灌轮须传 false(user 消息已在 history 中), 避免重复发送用户输入。
+     */
+    public Flux<ChatChunk> stream(ChatRequest request, List<Message> history, boolean includeCurrentUser) {
+        String json = buildRequestBody(request, history, true, includeCurrentUser);
         AtomicLong rawLines = new AtomicLong();
         AtomicLong dataLines = new AtomicLong();
         AtomicLong produced = new AtomicLong();
@@ -238,6 +285,10 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                                 ToolCallState st = toolCallMap.get(idx);
                                 if (st == null) {
                                     st = new ToolCallState();
+                                    // 生成稳定 id: 优先用服务端返回的 id, 否则用 call_<index>
+                                    JsonNode idNode = tc.path("id");
+                                    st.id = (idNode.isMissingNode() || idNode.isNull() || idNode.asText().isEmpty())
+                                            ? ("call_" + idx) : idNode.asText();
                                     toolCallMap.put(idx, st);
                                     toolCalls.add(st);
                                 }
@@ -276,7 +327,7 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                     log.info("{} 检测到函数调用: {}", name, toolCalls.stream().map(t -> t.name).toList());
                     List<ChatChunk> chunks = new ArrayList<>(toolCalls.size());
                     for (ToolCallState st : toolCalls) {
-                        chunks.add(ChatChunk.toolCall(st.name, st.arguments.toString()));
+                        chunks.add(ChatChunk.toolCall(st.id, st.name, st.arguments.toString()));
                     }
                     return Flux.fromIterable(chunks);
                 }))
@@ -290,6 +341,7 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
 
     /** 函数调用累积状态(跨 SSE chunk 拼接 name/arguments) */
     private static final class ToolCallState {
+        String id;
         String name;
         StringBuilder arguments = new StringBuilder();
     }

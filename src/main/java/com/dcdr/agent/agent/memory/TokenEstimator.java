@@ -1,14 +1,17 @@
 package com.dcdr.agent.agent.memory;
 
 import com.dcdr.agent.config.AgentProperties;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 启发式 token 估算器 (无真实分词器)
  * <p>
- * - CJK 字符(中日韩)约 1.5 token
+ * - CJK 字符(中日韩)约 1.0 token
  * - 其他字符(英文/数字/标点)约 0.3 token
  * <p>
  * 用于判断会话上下文是否接近模型窗口上限, 触发「建议开启新对话」提示。
@@ -16,6 +19,8 @@ import java.util.List;
  */
 @Component
 public class TokenEstimator {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final int contextTokenLimit;
     private final double contextWarnRatio;
@@ -25,7 +30,7 @@ public class TokenEstimator {
         this.contextWarnRatio = properties.getMemory().getContextWarnRatio();
     }
 
-    /** 估算一组消息的总 token 数(含推理内容) */
+    /** 估算一组消息的总 token 数(含推理内容、工具调用往返) */
     public int estimate(List<Message> messages) {
         int tokens = 0;
         for (Message m : messages) {
@@ -33,6 +38,16 @@ public class TokenEstimator {
             if (m.getReasoningContent() != null) {
                 tokens += estimate(m.getReasoningContent());
             }
+            // 工具往返: assistant 的 tool_calls 结构化字段与 tool 角色的名称/调用 id 也都占 token
+            if (m.getToolCalls() != null && !m.getToolCalls().isEmpty()) {
+                try {
+                    tokens += estimate(MAPPER.writeValueAsString(m.getToolCalls()));
+                } catch (Exception ignored) {
+                    tokens += estimate(m.getToolCalls().toString());
+                }
+            }
+            if (m.getToolCallId() != null) tokens += estimate(m.getToolCallId());
+            if (m.getName() != null) tokens += estimate(m.getName());
         }
         return tokens;
     }
@@ -42,7 +57,7 @@ public class TokenEstimator {
         if (text == null || text.isEmpty()) return 0;
         double tokens = 0;
         for (int i = 0; i < text.length(); i++) {
-            tokens += isCjk(text.charAt(i)) ? 1.5 : 0.3;
+            tokens += isCjk(text.charAt(i)) ? 1.0 : 0.3;
         }
         return (int) Math.ceil(tokens);
     }

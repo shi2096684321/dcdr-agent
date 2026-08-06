@@ -3,6 +3,7 @@ package com.dcdr.agent.agent;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
@@ -12,6 +13,7 @@ import com.dcdr.agent.agent.image.ChatImageService;
 import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.model.provider.ChatModelProvider;
 import com.dcdr.agent.tool.ToolRegistry;
+import com.dcdr.agent.tool.ToolInfo;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -24,10 +26,15 @@ import reactor.core.scheduler.Schedulers;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.regex.Pattern;
 
 /**
  * Agent 编排器 - 协调模型路由、记忆管理、流式输出
@@ -47,12 +54,32 @@ public class AgentOrchestrator {
     private final ImageResolver imageResolver;
     private final ChatImageService chatImageService;
     private final ToolRegistry toolRegistry;
+    private final SystemPromptResolver systemPromptResolver;
     private final ObjectMapper mapper = new ObjectMapper();
+
+    /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
+    private static final int EXTRACT_TOP_N = 3;
+
+    // 预编译所有正则表达式为静态常量
+    private static final java.util.regex.Pattern P_ARTICLE_KEYWORD =
+            java.util.regex.Pattern.compile(".*/(news|article|articles|story|stories|blog|post|posts|p|read|detail|item)/.*");
+    private static final java.util.regex.Pattern P_DATE_PATH =
+            java.util.regex.Pattern.compile(".*/(19|20)\\d{2}(/\\d{1,2}(/\\d{1,2})?)?.*");
+    private static final java.util.regex.Pattern P_DATE_STR =
+            java.util.regex.Pattern.compile(".*(19|20)\\d{2}[-_]\\d{2}[-_]\\d{2}.*");
+    private static final java.util.regex.Pattern P_NUM_ID =
+            java.util.regex.Pattern.compile(".*/\\d{4,}.*");
+    private static final java.util.regex.Pattern P_QUERY_ID =
+            java.util.regex.Pattern.compile(".*[?&](id|article_id|aid)=\\d+.*");
+    private static final java.util.regex.Pattern P_SLUG =
+            java.util.regex.Pattern.compile(".*/[a-z0-9\\-]{15,}.*");
+    private static final java.util.regex.Pattern P_AGGREGATE =
+            java.util.regex.Pattern.compile(".*/(section|sections|category|categories|topic|topics|tag|tags|channel|list|search|c/).*");
 
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
-                             ToolRegistry toolRegistry) {
+                             ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -62,6 +89,7 @@ public class AgentOrchestrator {
         this.imageResolver = imageResolver;
         this.chatImageService = chatImageService;
         this.toolRegistry = toolRegistry;
+        this.systemPromptResolver = systemPromptResolver;
     }
 
     /**
@@ -159,52 +187,100 @@ public class AgentOrchestrator {
                         final ChatResponse.TokenUsage[] usageHolder = new ChatResponse.TokenUsage[1];
                         final String[] finishReasonHolder = new String[1];
                         // 收集模型发起的工具调用(自动文生图)与生成结果
-                        final List<ChatChunk> toolCalls = new ArrayList<>();
+                        // 用 holder 以支持工具循环: 每轮重置换新列表, 首轮快照供落库陈述句使用
+                        final List<ChatChunk>[] toolCallsHolder = new List[1];
+                        toolCallsHolder[0] = new ArrayList<>();
+                        final List<ChatChunk> firstToolCalls = toolCallsHolder[0];
                         final List<String> generatedUrls = new ArrayList<>();
                         // 本轮实际生图的内容摘要(prompt), 供落库陈述句使用, 让下一轮模型明确"这些图片已生成过"
                         final List<String> generatedPrompts = new ArrayList<>();
                         final String[] toolError = new String[1];
                         // 非图片工具(如 calculator/weather)的执行结果, 供落库时并入助手消息, 保证可见且可持久化
                         final List<String> toolResults = new ArrayList<>();
+                        // 本轮联网搜索等工具产生的来源(引用), 供 done 块下发与落库
+                        final List<Map<String, Object>> collectedSources = new ArrayList<>();
 
                         // 主链路: 转发模型流式分块并采集 usage / 文本 / 工具调用
-                        Flux<ChatChunk> upstream = provider.stream(request, history)
-                                .doOnNext(chunk -> {
-                                    if ("usage".equals(chunk.getType()) && chunk.getTokenUsage() != null) {
-                                        usageHolder[0] = chunk.getTokenUsage();
-                                        if (chunk.getFinishReason() != null) {
-                                            finishReasonHolder[0] = chunk.getFinishReason();
-                                        }
-                                        return;
-                                    }
-                                    if ("tool_call".equals(chunk.getType())) {
-                                        toolCalls.add(chunk);
-                                        return;
-                                    }
-                                    if ("chunk".equals(chunk.getType())) {
-                                        if (chunk.getContent() != null) {
-                                            accumulated.append(chunk.getContent());
-                                        }
-                                        if (chunk.getReasoningContent() != null) {
-                                            reasoningAccumulated.append(chunk.getReasoningContent());
-                                        }
-                                    }
-                                });
+                        // 采集逻辑(每一轮模型流复用同一 collector, 写入 toolCallsHolder[0])
+                        Consumer<ChatChunk> collector = chunk -> {
+                            if ("usage".equals(chunk.getType()) && chunk.getTokenUsage() != null) {
+                                usageHolder[0] = chunk.getTokenUsage();
+                                if (chunk.getFinishReason() != null) {
+                                    finishReasonHolder[0] = chunk.getFinishReason();
+                                }
+                                return;
+                            }
+                            if ("tool_call".equals(chunk.getType())) {
+                                toolCallsHolder[0].add(chunk);
+                                return;
+                            }
+                            if ("chunk".equals(chunk.getType())) {
+                                if (chunk.getContent() != null) {
+                                    accumulated.append(chunk.getContent());
+                                }
+                                if (chunk.getReasoningContent() != null) {
+                                    reasoningAccumulated.append(chunk.getReasoningContent());
+                                }
+                            }
+                        };
 
-                        // 工具执行阶段(文生图, 含阻塞 IO, 走弹性线程)
+                        // 首轮模型流(provider 自动追加当前 user 消息)
+                        Flux<ChatChunk> upstream = provider.stream(request, history).doOnNext(collector);
+
+                        // 工具执行阶段(仅首轮执行, 含阻塞 IO, 走弹性线程)
                         Flux<ChatChunk> toolFlux = Flux
-                                .defer(() -> executeTools(toolCalls, accumulated.toString(),
-                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults))
+                                .defer(() -> executeTools(firstToolCalls, accumulated.toString(),
+                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage()))
                                 .subscribeOn(Schedulers.boundedElastic());
 
-                        // 收尾阶段: 保存助手消息(含图片)并下发 done + 结束原因提示
-                        Flux<ChatChunk> finalizeFlux = Flux.defer(() -> finalizeAssistant(sessId, provider,
-                                accumulated, reasoningAccumulated, toolCalls, generatedUrls, generatedPrompts, toolError, toolResults,
-                                usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
+                        // 工具循环尾部: 若模型发起工具调用, 将首轮工具结果回填 history 后再发起下一轮生成;
+                        // 否则收尾。回灌轮复用首轮结果, 不重复抓取/重复展示, 避免副作用。
+                        final int[] toolRound = {0};
+                        AtomicReference<Flux<ChatChunk>> tailRef = new AtomicReference<>();
+                        Flux<ChatChunk> tailFlux = Flux.defer(() -> {
+                            boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !toolCallsHolder[0].isEmpty();
+                            if (needTool && toolRound[0] < MAX_TOOL_ROUNDS) {
+                                toolRound[0]++;
+                                // 把首轮工具结果回填 history: user + assistant(tool_calls) + 各 tool 结果
+                                history.add(Message.user(request.getMessage()));
+                                List<Map<String, Object>> tcs = new ArrayList<>();
+                                for (ChatChunk tc : firstToolCalls) {
+                                    Map<String, Object> m = new LinkedHashMap<>();
+                                    m.put("id", tc.getId());
+                                    m.put("name", tc.getTool());
+                                    m.put("arguments", tc.getArgs() == null ? "" : tc.getArgs());
+                                    tcs.add(m);
+                                }
+                                Message assistMsg = new Message();
+                                assistMsg.setRole("assistant");
+                                assistMsg.setToolCalls(tcs);
+                                history.add(assistMsg);
+                                for (int i = 0; i < firstToolCalls.size(); i++) {
+                                    ChatChunk tc = firstToolCalls.get(i);
+                                    String res = i < toolResults.size() ? toolResults.get(i) : "";
+                                    Message toolMsg = new Message();
+                                    toolMsg.setRole("tool");
+                                    toolMsg.setToolCallId(tc.getId());
+                                    toolMsg.setName(tc.getTool());
+                                    toolMsg.setContent(res);
+                                    history.add(toolMsg);
+                                }
+                                // 换新列表采集下一轮(避免污染首轮快照 firstToolCalls)
+                                toolCallsHolder[0] = new ArrayList<>();
+                                // 下一轮: 不再追加当前 user 消息(user 已在 history)
+                                Flux<ChatChunk> next = provider.stream(request, history, false).doOnNext(collector);
+                                return next.concatWith(tailRef.get());
+                            }
+                            // 无需工具(或已达上限): 收尾并保存
+                            return Flux.defer(() -> finalizeAssistant(sessId, provider,
+                                    accumulated, reasoningAccumulated, firstToolCalls, generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
+                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
+                        });
+                        tailRef.set(tailFlux);
 
                         Disposable upstreamSub = upstream
                                 .concatWith(toolFlux)
-                                .concatWith(finalizeFlux)
+                                .concatWith(tailFlux)
                                 .subscribe(
                                         sink::next,
                                         e -> {
@@ -378,12 +454,32 @@ public class AgentOrchestrator {
      */
     private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
                                         List<String> outUrls, List<String> outPrompts, String[] outError,
-                                        List<String> outToolResults) {
+                                        List<String> outToolResults, List<Map<String, Object>> collectedSources,
+                                        String userQuery) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
+
+        // LLM 工具调用去重拦截: 同一轮中参数完全相同的调用只执行第一个，其余拦截
+        // 以 "工具名 + 参数JSON" 作为唯一指纹（避免 web_search 等被模型重复发起相同查询）
+        List<ChatChunk> originalCalls = toolCalls;
+        final List<ChatChunk> effectiveCalls = new ArrayList<>(originalCalls.size());
+        Set<String> seenFingerprints = new HashSet<>();
+        for (ChatChunk tc : originalCalls) {
+            String fingerprint = tc.getTool() + (tc.getArgs() != null && !tc.getArgs().isBlank()
+                    ? tc.getArgs() : "{}");
+            if (seenFingerprints.add(fingerprint)) {
+                effectiveCalls.add(tc);
+            } else {
+                log.warn("检测到 LLM 重复的工具调用，已拦截: 工具={}, 指纹={}", tc.getTool(), fingerprint);
+            }
+        }
+        if (effectiveCalls.isEmpty()) {
+            return Flux.empty();
+        }
+
         // 仅当本轮确有生图调用时, 才下发"正在生成"等待提示(避免普通对话误发)
-        boolean hasImageCall = toolCalls.stream()
+        boolean hasImageCall = effectiveCalls.stream()
                 .anyMatch(tc -> "image_generation".equals(tc.getTool()));
         Flux<ChatChunk> head = hasImageCall
                 ? Flux.just(ChatChunk.status("正在生成图片，请稍候…"))
@@ -391,7 +487,7 @@ public class AgentOrchestrator {
         return Flux.concat(head, Flux.defer(() -> {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
-            for (ChatChunk tc : toolCalls) {
+            for (ChatChunk tc : effectiveCalls) {
                 String name = tc.getTool();
                 Map<String, Object> params = new LinkedHashMap<>();
                 try {
@@ -408,14 +504,16 @@ public class AgentOrchestrator {
                         params.put("prompt", accumulatedText);
                     }
                 }
-                String result;
+                ToolInfo toolInfo;
                 try {
-                    result = toolRegistry.execute(name, params);   // 统一经 ToolRegistry 分发
+                    // 统一经 ToolRegistry 分发; executeInfo 保留来源等扩展信息(如联网搜索)
+                    toolInfo = toolRegistry.executeInfo(name, params);
                 } catch (Exception e) {
                     outError[0] = e.getMessage();
                     log.error("工具 {} 执行失败", name, e);
                     return Flux.just(ChatChunk.error("工具执行失败: " + e.getMessage(), "TOOL_ERROR"));
                 }
+                String result = toolInfo.getContent();
                 if ("image_generation".equals(name)) {
                     callCount++;
                     try {
@@ -443,8 +541,42 @@ public class AgentOrchestrator {
                         return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
                     }
                 } else {
+                    List<Map<String, Object>> srcs = toolInfo.getSources();
+                    ExtractStat ext = new ExtractStat(0, 0, 0);
+                    if ("web_search".equals(name)) {
+                        // —— 智能流水线 STEP 1: 搜索与抓取 ——
+                        chunks.add(ChatChunk.status("🔍 正在实时检索多个资讯源，并抓取相关页面…"));
+                        // —— 串联提取: 对 top-N 具体文章链接抓取完整正文, 提升检索完整性 ——
+                        ext = enrichWithExtract(srcs, userQuery);
+                        // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)
+                        result = rebuildCompact(srcs);
+                    }
                     outToolResults.add(result);
-                    chunks.add(ChatChunk.toolResult(name, result));
+                    chunks.add(ChatChunk.toolResult(name, result, srcs));
+                    if (srcs != null && !srcs.isEmpty()) {
+                        // 全局兜底: 搜索结果自带 content="undefined" 的条目(部分 Tavily 版本),
+                        // 在累计落库前清除, 避免 "undefined" 字符串透传到数据库与模型。
+                        for (Map<String, Object> s : srcs) {
+                            Object c = s.get("content");
+                            if (c != null && "undefined".equalsIgnoreCase(c.toString().trim())) {
+                                s.remove("content");
+                            }
+                        }
+                        collectedSources.addAll(srcs);   // 累计联网搜索等来源, 供落库与前端引用
+                        if ("web_search".equals(name)) {
+                            // —— 智能流水线 STEP 2 + STEP 3 ——
+                            StringBuilder step2 = new StringBuilder("🧹 已抓取 ").append(srcs.size())
+                                    .append(" 个页面，其中 ");
+                            if (ext.candidates() > 0) {
+                                step2.append("成功提取 ").append(ext.ok()).append(" 篇完整正文")
+                                     .append(ext.failed() > 0 ? ("（" + ext.failed() + " 篇提取失败，已用搜索摘要）") : "");
+                            } else {
+                                step2.append("暂无可提取的具体文章，已用搜索摘要");
+                            }
+                            step2.append("，正在剔除广告/导航噪音、合并去重，并重新编排…");
+                            chunks.add(ChatChunk.status(step2.toString()));
+                        }
+                    }
                 }
             }
             if (callCount > 1) {
@@ -455,6 +587,395 @@ public class AgentOrchestrator {
         }));
     }
 
+    /** 串联提取统计: 候选文章数 / 成功抓取完整正文数 / 失败数 */
+    private record ExtractStat(int candidates, int ok, int failed) {}
+
+    // ===== 通用正文清洗（基于 Markdown 结构特征，非关键词硬匹配） =====
+
+    /** HTML 标签残留块: script / style / nav / footer / header 及其内容 */
+    private static final Pattern HTML_BLOCK = Pattern.compile(
+            "<(script|style|nav|footer|header)\\b[^>]*>.*?</\\1>",
+            Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+    /** 任意裸露 HTML 标签（块级已去除后，清理剩余的 span/div/br 等） */
+    private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
+
+    /** 导航链接块判定: 连续 N 行以上均为 * [xxx](url) 或 - [xxx](url) 格式 */
+    private static final Pattern NAV_LINK_LINE = Pattern.compile("^\\s*[*\\-]\\s*\\[[^]]*]\\([^)]*\\)\\s*$");
+    private static final int NAV_CONSECUTIVE_THRESHOLD = 3;
+
+    /** 纯图片行: 仅含 ![alt](url) 且无其他实质文字 */
+    private static final Pattern IMAGE_ONLY_LINE = Pattern.compile("^\\s*!\\[[^]]*]\\([^)]*\\)\\s*$");
+
+    /** 行内图片语法: 任意位置的 ![alt](url)，用于剥离正文中的图片链接（#2） */
+    private static final Pattern INLINE_IMAGE = Pattern.compile("!\\[[^]]*]\\([^)]*\\)");
+
+    /** 链接标题行: ## [标题](url) 形式，常与下方 ### 标题重复（#1） */
+    private static final Pattern LINK_TITLE_LINE = Pattern.compile("^\\s*#{1,6}\\s*\\[[^]]*]\\([^)]*\\)\\s*$");
+
+    /** 栏目聚合块行: 形如 ## [栏目名](栏目/分类链接) 的整行链接（#3） */
+    private static final Pattern SECTION_LINK_LINE = Pattern.compile("^\\s*#{1,6}\\s*\\[[^]]*]\\([^)]*(category|section|cate|channel|topic|tag)[^)]*\\)\\s*$",
+            Pattern.CASE_INSENSITIVE);
+
+    /** SPA 动态占位/加载提示（#5） */
+    private static final Pattern PLACEHOLDER_LINE = Pattern.compile(
+            "^\\s*(加载中|加载更多|点击加载更多|正在加载|Loading\\.{0,3}|暂无相关内容|没有更多了|view more|load more|show more)\\s*$",
+            Pattern.CASE_INSENSITIVE);
+
+    /** 页脚特征关键词（截断或删行依据） */
+    private static final Pattern FOOTER_KEYWORD = Pattern.compile(
+            "\\b(©|Copyright|All rights reserved|Privacy Policy|Terms of Service|Cookie Policy|Subscribe|Newsletter|Follow us)\\b",
+            Pattern.CASE_INSENSITIVE);
+
+    /** 正文最大长度（清洗后，超出截断） */
+    private static final int MAX_CONTENT_LENGTH = 4000;
+
+    /** 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮 */
+    private static final int MAX_TOOL_ROUNDS = 4;
+
+    /**
+     * 基于 Markdown 结构特征的通用正文清洗。
+     * <p>
+     * 规则：
+     * <ol>
+     *   <li>去除 HTML 残留块（script/style/nav/footer/header 及其内容），再清裸标签</li>
+     *   <li>去噪连续导航链接块（连续 &ge;3 行均为 {@code * [xxx](url)} / {@code - [xxx](url)}）</li>
+     *   <li>去除仅含图片语法的行</li>
+     *   <li>去除重复的链接标题行（{@code ## [标题](链接)} 与下方 {@code ### 标题} 重复）</li>
+     *   <li>去除栏目聚合块行（{@code ## [栏目名](栏目/分类链接)}）</li>
+     *   <li>去除 SPA 动态占位行（加载中/点击加载更多/暂无相关内容 等）</li>
+     *   <li>剥离行内图片语法 {@code ![alt](url)}（保留正文文字）</li>
+     *   <li>页脚特征截断（命中 {@code FOOTER_KEYWORD} 即从该行起全部截断）</li>
+     *   <li>空行压缩（连续多空行合并为一个）</li>
+     *   <li>长度截断（超出 {@value #MAX_CONTENT_LENGTH} 字符后追加提示）</li>
+     * </ol>
+     *
+     * @param text 原始 Markdown/HTML 混杂文本
+     * @return 清洗后的纯正文
+     */
+    static String cleanMarkdownContent(String text) {
+        if (text == null || text.isBlank()) return "";
+
+        // 1) 去除 HTML 残留块，再清裸标签
+        text = HTML_BLOCK.matcher(text).replaceAll("");
+        text = HTML_TAG.matcher(text).replaceAll("");
+
+        // 2) 按行处理：连续导航链接块、纯图片行、页脚
+        String[] lines = text.split("\\R", -1);
+        int n = lines.length;
+        if (n == 0) return "";
+
+        // 标记哪些行需要剔除
+        boolean[] remove = new boolean[n];
+
+        // 2a) 连续导航链接块检测（滑动窗口，标记连续 NAV 段）
+        int navStart = -1;
+        for (int i = 0; i <= n; i++) {
+            boolean isNav = i < n && NAV_LINK_LINE.matcher(lines[i]).matches();
+            if (isNav) {
+                if (navStart < 0) navStart = i;
+            } else {
+                if (navStart >= 0) {
+                    int navLen = i - navStart;
+                    if (navLen >= NAV_CONSECUTIVE_THRESHOLD) {
+                        for (int j = navStart; j < i; j++) remove[j] = true;
+                    }
+                    navStart = -1;
+                }
+            }
+        }
+
+        // 2b) 纯图片行
+        for (int i = 0; i < n; i++) {
+            if (IMAGE_ONLY_LINE.matcher(lines[i]).matches()) {
+                remove[i] = true;
+            }
+        }
+        // 2c) 链接标题行（#1）：## [标题](链接) 与下方 ### 标题 重复，删此行
+        // 2d) 栏目聚合块行（#3）：## [栏目名](栏目/分类链接)
+        // 2e) SPA 动态占位行（#5）：加载中/点击加载更多/暂无相关内容 等
+        for (int i = 0; i < n; i++) {
+            String line = lines[i];
+            if (LINK_TITLE_LINE.matcher(line).matches()
+                    || SECTION_LINK_LINE.matcher(line).matches()
+                    || PLACEHOLDER_LINE.matcher(line).matches()) {
+                remove[i] = true;
+            }
+        }
+
+        // 3) 页脚特征处理（#4：放宽阈值，命中即截断，不再局限于后 30%）
+        int footerLine = -1;
+        for (int i = 0; i < n; i++) {
+            if (FOOTER_KEYWORD.matcher(lines[i]).find()) {
+                footerLine = i;
+                break; // 只处理第一个命中的行
+            }
+        }
+        if (footerLine >= 0) {
+            double ratio = (double) footerLine / Math.max(1, n);
+            if (ratio >= 0.7) {
+                // 在后 30% 区域: 从此行起全部截断
+                for (int i = footerLine; i < n; i++) remove[i] = true;
+            } else {
+                // 前/中区域: 命中即从此行起截断（页脚/订阅块通常在文末但亦可能提前出现）
+                for (int i = footerLine; i < n; i++) remove[i] = true;
+            }
+        }
+
+        // 4) 按标记重建文本
+        StringBuilder sb = new StringBuilder(text.length());
+        int emptyCount = 0;
+        for (int i = 0; i < n; i++) {
+            if (remove[i]) continue;
+            String line = lines[i];
+            // 空行压缩: 连续空行只保留一个
+            if (line.isBlank()) {
+                if (++emptyCount <= 1) sb.append('\n');
+            } else {
+                emptyCount = 0;
+                // #2 剥离行内图片语法 ![alt](url)
+                sb.append(INLINE_IMAGE.matcher(line).replaceAll("")).append('\n');
+            }
+        }
+
+        String result = sb.toString().strip();
+
+        // 5) 长度截断
+        if (result.length() > MAX_CONTENT_LENGTH) {
+            result = result.substring(0, MAX_CONTENT_LENGTH) + "\n...(内容过长已截断)";
+        }
+
+        return result;
+    }
+
+    /**
+     * 串联提取: 对搜索结果里 top-N 个「具体文章链接」(含路径、非站点首页)调用 web_extract
+     * 抓取完整正文, 写回对应 source 的 {@code content}(全文) 与 {@code snippet}(截断展示),
+     * 使最终喂给模型的检索内容更接近 deepseek 的「抓取页面 → 提取正文」完整度。
+     */
+    private ExtractStat enrichWithExtract(List<Map<String, Object>> srcs, String userQuery) {
+        if (srcs == null || srcs.isEmpty()) return new ExtractStat(0, 0, 0);
+        // 候选评分: 优先选择「具体文章链接」而非站点首页/栏目聚合页。
+        // 评分维度: 含文章特征路径(news/article/story/blog/post…) > 含日期/数字 id > 仅含子路径 > 仅域名根。
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Map<String, Object> s : srcs) {
+            Object u = s.get("url");
+            if (u == null) continue;
+            String url = u.toString().trim();
+            if (isSpecificArticleUrl(url) && seen.add(url)) candidates.add(s);
+        }
+        // 按文章可能性打分降序, 优先抓取最像单篇文章的链接
+        List<Map<String, Object>> articles = candidates.stream()
+                .sorted((a, b) -> Integer.compare(
+                        articleScore(b.get("url")), articleScore(a.get("url"))))
+                .limit(EXTRACT_TOP_N)
+                .toList();
+        log.info("[enrichWithExtract] 候选具体文章数={}, 优先抓取序(打分)={}",
+                candidates.size(), articles.stream()
+                        .map(s -> articleScore(s.get("url")) + ":" + s.get("url")).toList());
+        if (articles.isEmpty()) {
+            log.warn("[enrichWithExtract] 无可用具体文章候选(搜索结果可能全为聚合/首页链接), 跳过 extract。原始URL示例={}",
+                    srcs.stream().limit(5).map(s -> String.valueOf(s.get("url"))).toList());
+        }
+        int ok = 0, failed = 0;
+        for (Map<String, Object> s : articles) {
+            // 兜底: 搜索阶段可能已自带 content="undefined"(Tavily 部分版本),
+            // 若有则移除, 避免该字符串透传到落库字段; 后续 extract 失败时会走 snippet 降级。
+            Object pre = s.get("content");
+            if (pre != null && "undefined".equalsIgnoreCase(pre.toString().trim())) {
+                s.remove("content");
+            }
+            String url = s.get("url").toString().trim();
+            try {
+                Map<String, Object> params = new LinkedHashMap<>();
+                params.put("urls", java.util.Collections.singletonList(url));
+                // 把用户原始问题作为 extract 的 query: 按相关性对页面块重排序, 正文更聚焦、token 更省(官方最佳实践)
+                if (userQuery != null && !userQuery.isBlank()) {
+                    params.put("query", userQuery);
+                }
+                ToolInfo ext = toolRegistry.executeInfo("web_extract", params);
+                List<Map<String, Object>> exSrcs = ext.getSources();
+                if (exSrcs != null && !exSrcs.isEmpty()) {
+                    Object full = exSrcs.get(0).get("content");
+                    // Tavily 抽取失败时常把 content 序列化为字符串 "undefined", 需显式判空,
+                    // 否则会被当作有效正文塞给模型(日志里见到的 "Content: undefined" 即此情况)
+                    if (full != null && !full.toString().isBlank() && !"undefined".equalsIgnoreCase(full.toString().trim())) {
+                        String text = full.toString();
+                        text = cleanMarkdownContent(text); // 通用结构清洗（去导航/页脚/HTML 等噪音）
+                        s.put("content", text);
+                        // snippet 展示正文前若干字(比搜索摘要更完整)
+                        s.put("snippet", clip(text, 600));
+                        ok++;
+                        // 仅打印最终实际使用到的正文(清洗后、截断2000), 去掉中间过程日志
+                        log.info("===== WEB EXTRACT CONTENT BEGIN [{}] =====\nURL: {}\n原文长度: {}\n---\n{}\n===== WEB EXTRACT CONTENT END [{}] =====",
+                                ok, url, text.length(), clip(text, 2000), ok);
+                        continue;
+                    } else {
+                        log.warn("[enrichWithExtract] web_extract 返回 content 为空, URL={}, 返回文本预览={}",
+                                url, ext.getContent() != null ? clip(ext.getContent(), 300) : "null");
+                    }
+                }
+                failed++;
+            } catch (Exception e) {
+                failed++;
+                log.warn("web_extract 抓取失败(忽略, 保留搜索摘要): {}", url, e);
+            }
+        }
+        return new ExtractStat(articles.size(), ok, failed);
+    }
+
+    /** 判断 URL 是否为具体文章(而非站点首页/聚合页): 含路径段且非仅域名根, 且不是已知的聚合首页 */
+    private static boolean isSpecificArticleUrl(String url) {
+        if (url == null || !looksLikeHttp(url)) return false;
+        try {
+            String path = java.net.URI.create(url).getPath();
+            if (path == null || path.length() <= 1) return false;   // 仅域名根不算
+            if (isAggregateHomepage(url, path)) return false;        // 聚合/导航首页不算
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 已知聚合/导航首页黑名单: 这些 URL 永远无法提取出单篇新闻正文, 必须剔除 */
+    private static boolean isAggregateHomepage(String url, String path) {
+        String u = url.toLowerCase();
+        String host;
+        try {
+            host = java.net.URI.create(url).getHost();
+        } catch (Exception e) {
+            host = u;
+        }
+        if (host == null) host = u;
+        // 路径本身就是顶层聚合页(/home、/news、/topics、/latest 等)
+// 补充 category, tag, search, section 等常见聚合栏目
+        if (path.matches("^/(home|news|topics|topic|latest|trending|world|china|cn|headlines|category|tag|search|section)/?$")) return true;
+        // 聚合新闻门户首页(整站根/栏目, 而非具体文章)
+        if (host.contains("news.google.com")) return true;
+        if (host.contains("google.com") && path.startsWith("/home")) return true;
+        if (host.contains("news.yahoo.com") && (path.equals("/") || path.startsWith("/home"))) return true;
+        if (host.contains("bing.com") && path.startsWith("/news")) return true;
+        // 路径本身就是顶层聚合页(/home、/news、/topics、/latest 等)
+        if (path.matches("^/(home|news|topics|topic|latest|trending|world|china|cn|headlines)/?$")) return true;
+        // 含 hl=/ceid=/gl= 等聚合门户参数且无具体文章 slug 的, 基本是首页变体
+        if (u.contains("ceid=") && !u.matches(".*/[a-z0-9\\-]{15,}.*")) return true;
+        return false;
+    }
+
+    /**
+     * 文章可能性打分: 越大越像是「单篇具体文章」(而非站点首页/栏目聚合页)。
+     * 用于在多个候选里优先抓取正文价值更高的链接。
+     */
+    private static int articleScore(Object urlObj) {
+        if (urlObj == null) return -1;
+        String url = urlObj.toString().toLowerCase();
+        if (!looksLikeHttp(url)) return -1;
+
+        String path;
+        try {
+            path = java.net.URI.create(url).getPath();
+        } catch (Exception e) {
+            return -1;
+        }
+        if (path == null) return -1;
+
+        if (isAggregateHomepage(url, path)) return -1000;
+
+        // 防御：过滤静态资源文件
+        if (path.matches(".*\\.(jpg|jpeg|png|gif|js|css|svg|pdf|zip|mp4)$")) return -500;
+
+        int score = 0;
+        // 文章特征路径(高权重) - 使用预编译
+        if (P_ARTICLE_KEYWORD.matcher(path).matches()) score += 40;
+
+        // html 后缀
+        if (path.endsWith(".html") || path.endsWith(".htm")) score += 15;
+
+        // 含年份/日期路径
+        if (P_DATE_PATH.matcher(path).matches() || P_DATE_STR.matcher(path).matches()) score += 25;
+
+        // 含数字 id
+        if (P_NUM_ID.matcher(path).matches() || P_QUERY_ID.matcher(url).matches()) score += 20;
+
+        // 含 slug 风格长尾
+        if (P_SLUG.matcher(path).matches()) score += 15;
+
+        // 聚合/栏目页特征(降权)
+        if (P_AGGREGATE.matcher(path).matches()) score -= 20;
+
+        // 路径深度加分 (修正空指针隐患)
+        long segs = path.split("/").length - 1;
+        score += Math.min(segs, 5) * 3;
+
+        return score;
+    }
+
+    private static boolean looksLikeHttp(String s) {
+        return s.startsWith("http://") || s.startsWith("https://");
+    }
+
+    /** 把补全后的 sources 拼成喂给模型的精简内容(每个来源带更完整的正文摘要) */
+    private static String rebuildCompact(List<Map<String, Object>> srcs) {
+        if (srcs == null || srcs.isEmpty()) return "（联网搜索未返回可用结果）";
+        // 剔除聚合/首页类 URL(如 Google News 首页变体): 它们无法提取正文, 塞给模型只会产生导航噪音
+        List<Map<String, Object>> usable = srcs.stream()
+                .filter(s -> {
+                    Object u = s.get("url");
+                    if (u == null) return true;
+                    String url = u.toString();
+                    String path = safePath(url);
+                    if (isAggregateHomepage(url, path)) return false;
+                    // 剔除 content 与 snippet 均为空的低价值来源(title+url 无信息量,
+                    // 只占 [[n]] 序号、撑大 sources 落库、前端渲染空卡片), 视为结构化噪音
+                    Object c = s.get("content");
+                    Object sn = s.get("snippet");
+                    boolean hasContent = c != null && !c.toString().isBlank()
+                            && !"undefined".equalsIgnoreCase(c.toString().trim());
+                    boolean hasSnippet = sn != null && !sn.toString().isBlank();
+                    return hasContent || hasSnippet;
+                })
+                .toList();
+        if (usable.isEmpty()) {
+            return "（联网搜索返回的结果均为新闻聚合首页/导航页，未能提取到具体文章正文；"
+                    + "请勿编造细节，可基于已知信息简要说明，并提示用户结果可能不完整）";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("以下是联网检索到的 ").append(usable.size())
+          .append(" 条资料（部分已抓取完整正文），请在回答中通过 [[n]] 标注引用来源（n 为下方序号），并在结尾列出引用：\n\n");
+        int i = 1;
+        for (Map<String, Object> s : usable) {
+            sb.append("[[").append(i).append("]] ").append(s.get("title"));
+            Object url = s.get("url");
+            if (url != null && !url.toString().isBlank()) sb.append("  (").append(url).append(")");
+            Object content = s.get("content");
+            boolean hasContent = content != null && !content.toString().isBlank()
+                    && !"undefined".equalsIgnoreCase(content.toString().trim());
+            String body = hasContent
+                    ? clip(content.toString(), 1000)          // 完整正文截断, 比搜索摘要更充分
+                    : (s.get("snippet") != null ? s.get("snippet").toString() : "");
+            if (!body.isBlank()) sb.append("\n    ").append(body);
+            else sb.append("\n    （该来源未能提取到正文，仅作链接参考）");
+            sb.append("\n");
+            i++;
+        }
+        return sb.toString();
+    }
+
+    private static String safePath(String url) {
+        try {
+            String p = java.net.URI.create(url).getPath();
+            return p == null ? "" : p;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private static String clip(String s, int max) {
+        if (s == null) return "";
+        s = s.replaceAll("\\s+", " ").trim();
+        return s.length() <= max ? s : s.substring(0, max) + "…";
+    }
+
     /**
      * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
      * 并下发 done 分块与 finish_reason 相关提示。
@@ -462,7 +983,7 @@ public class AgentOrchestrator {
     private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
                                              StringBuilder accumulated, StringBuilder reasoning,
                                              List<ChatChunk> toolCalls, List<String> urls, List<String> prompts, String[] toolError,
-                                             List<String> toolResults,
+                                             List<String> toolResults, List<Map<String, Object>> collectedSources,
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
                                              AtomicBoolean assistantSaved) {
@@ -527,6 +1048,10 @@ public class AgentOrchestrator {
         // 落库与会话时间戳更新改为异步尽力而为, 不阻塞 SSE 结束信号;
         // 否则 DB 锁/慢查询会卡住 SSE 关闭, 前端一直收不到 done、发送按钮卡在"取消"
         if (assistantMessage != null) {
+            // 附加本轮联网搜索等来源(引用), 供前端渲染引用卡片并随会话持久化
+            if (collectedSources != null && !collectedSources.isEmpty()) {
+                assistantMessage.setSources(new ArrayList<>(collectedSources));
+            }
             Message toSave = assistantMessage;
             Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
                     .subscribeOn(Schedulers.boundedElastic())
@@ -579,18 +1104,29 @@ public class AgentOrchestrator {
         ChatModelProvider provider = router.route(request, history);
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
 
-        // 3.1 平台级生图约束(仅当本轮会注入生图工具时前置为 system 消息, 不落库):
-        //     与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险,
-        //     从源头降低模型因历史图片而重复调用 image_generation。
-        if (provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
-            boolean hasPolicy = history.stream()
-                    .anyMatch(m -> "system".equals(m.getRole()) && IMAGE_GENERATION_POLICY.equals(m.getContent()));
-            if (!hasPolicy) {
-                List<Message> withPolicy = new ArrayList<>(history);
-                withPolicy.add(0, Message.system(IMAGE_GENERATION_POLICY));
-                history = withPolicy;
+        // 3.1 分层 system prompt 注入(L1 全局 + L2/chat 场景级):
+        //     - 会话级 systemPrompt(创建会话时已落库为 history 中一条 system 消息)优先级最高,
+        //       若已存在则只补 L1 全局(避免与场景级重复); 否则注入 L1+L2/chat 合并文本。
+        //     - 仅临时注入本次请求, 不落库(与生图策略一致), 避免污染会话记忆。
+        String resolvedChatPrompt = systemPromptResolver.resolveChat();
+        if (resolvedChatPrompt != null) {
+            boolean sessionHasSystem = history.stream()
+                    .anyMatch(m -> "system".equals(m.getRole())
+                            && !IMAGE_GENERATION_POLICY.equals(m.getContent()));
+            // 会话级已有 system: 仅补 L1 全局(会话级覆盖场景级); 否则注入完整 L1+L2/chat
+            String toInject = sessionHasSystem
+                    ? systemPromptResolver.resolveDefaultOnly()
+                    : resolvedChatPrompt;
+            if (toInject != null && history.stream().noneMatch(m ->
+                    "system".equals(m.getRole()) && toInject.equals(m.getContent()))) {
+                List<Message> withSys = new ArrayList<>(history);
+                withSys.add(0, Message.system(toInject));
+                history = withSys;
             }
         }
+
+        // 3.2 平台级运行时约束(生图策略 + 联网搜索引导), 与同步 chatSync 路径共用, 保证两条链路注入一致
+        history = injectRuntimeSystemPrompts(history, provider, request);
 
         // 4.1 图片自动路由(必须先执行: 会 mutate request —— 解析 base64 / 决定最终回答模型)
         //      —— 必须在保存用户消息之前完成, 以便把路由元信息(模型/状态)一并落库
@@ -638,11 +1174,32 @@ public class AgentOrchestrator {
         List<Message> history = memory.load(sessionId);
         ChatModelProvider provider = router.route(request, history);
 
+        // 分层 system prompt 注入(与流式 chat 路径保持一致)
+        String resolvedChatPromptSync = systemPromptResolver.resolveChat();
+        if (resolvedChatPromptSync != null) {
+            boolean sessionHasSystem = history.stream()
+                    .anyMatch(m -> "system".equals(m.getRole())
+                            && !IMAGE_GENERATION_POLICY.equals(m.getContent()));
+            String toInject = sessionHasSystem
+                    ? systemPromptResolver.resolveDefaultOnly()
+                    : resolvedChatPromptSync;
+            if (toInject != null && history.stream().noneMatch(m ->
+                    "system".equals(m.getRole()) && toInject.equals(m.getContent()))) {
+                List<Message> withSys = new ArrayList<>(history);
+                withSys.add(0, Message.system(toInject));
+                history = withSys;
+            }
+        }
+
         // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)
         String userOriginal = request.getMessage();
         List<String> originalImages = request.getImages();  // 捕获原始图片(相对路径/url), 单独用于落库; 模型侧统一用解析后的 base64
         ImagePrep prepSync = prepareImagesForModel(request, history, provider);
         String imageFallbackWarning = prepSync.fallbackWarning();
+
+        // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导),
+        // 与流式 chat 路径完全一致
+        history = injectRuntimeSystemPrompts(history, provider, request);
 
         boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
         Message userMsg = Message.user(userOriginal, originalImages);
@@ -674,6 +1231,70 @@ public class AgentOrchestrator {
         sessionManager.touch(sessionId);
 
         return response;
+    }
+
+    /**
+     * 注入平台级运行时 system 约束(生图策略 + 联网搜索引导)。
+     * <p>
+     * 抽出为独立方法, 供流式 {@code chat} 与同步 {@code chatSync} 两条路径共用, 保证注入完全一致。
+     * 仅临时注入本次请求, 不落库(避免污染会话记忆); 通过「是否已存在相同内容」去重, 幂等可重复调用。
+     *
+     * @param history  当前对话历史(会被复制后在头部插入约束, 不修改原列表)
+     * @param provider 路由后的回答模型(用于判断是否支持函数调用)
+     * @param request  聊天请求(用于判断 webSearch 开关)
+     * @return 注入约束后的新历史列表
+     */
+    private List<Message> injectRuntimeSystemPrompts(List<Message> history, ChatModelProvider provider,
+                                                     ChatRequest request) {
+        List<Message> result = new ArrayList<>(history);
+
+        // 1) 生图策略约束: 仅当本轮会注入生图工具时前置为 system 消息
+        //    与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险
+        if (provider != null && provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
+            boolean hasPolicy = result.stream()
+                    .anyMatch(m -> "system".equals(m.getRole()) && IMAGE_GENERATION_POLICY.equals(m.getContent()));
+            if (!hasPolicy) {
+                result.add(0, Message.system(IMAGE_GENERATION_POLICY));
+            }
+        }
+
+        // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索
+        if (request != null && request.isWebSearch() && toolRegistry.getTool("web_search") != null) {
+            boolean hasWs = result.stream().anyMatch(m ->
+                    "system".equals(m.getRole()) && m.getContent() != null && m.getContent().contains("联网搜索"));
+            if (!hasWs) {
+                result.add(Message.system(
+                        "用户已开启「联网搜索」。对于时效性信息(如最新新闻、实时数据、股价/天气)、"
+                                + "需要引用外部来源、或你的知识可能过时的提问, 请优先调用 web_search 工具检索, "
+                                + "并基于检索结果作答、标注信息来源。\n"
+                                + "引用规范: 在正文中事实后紧跟 [[n]] 标记(n 为检索结果末尾资料序号), "
+                                + "同一事实多个来源可并列 [[n]][[m]]。\n"
+                                + "排版规范(必须使用 Markdown 语法, 不要输出纯文本):\n"
+                                + "1. 用 ### 三级标题按主题分组(如「### 国际动态」「### 宏观经济与政策」);\n"
+                                + "2. 每个主题下用无序列表(-)组织要点, 一条要点一行;\n"
+                                + "3. 要点名用 **加粗**, 冒号后跟事实描述, 事实后紧跟 [[n]] 引用;\n"
+                                + "4. 不同主题之间用空行分隔, 同一主题内要点之间换行。\n"
+                                + "示例:\n"
+                                + "### 国际动态\n\n"
+                                + "- **俄乌冲突持续**: 乌克兰首都基辅拉响防空警报[[1]]。\n\n"
+                                + "- **中东局势**: 胡塞武装袭击沙特油轮[[2]]。油价下跌超5%[[3]][[4]]。\n\n"
+                                + "### 宏观经济与政策\n\n"
+                                + "- **国内经济数据**: 上半年服务贸易同比增长8.3%[[5]]。\n"
+                                + "结尾用「### 参考来源」列出所有 [[n]] 对应的标题与链接。\n"
+                                + "优先保证信息准确与可读性, 不要堆砌来源清单原文。\n\n"
+                                + "【工具使用规范】：\n"
+                                + "1. **按需选择搜索类型**：调用 web_search 时，如果查询意图是时事、新闻、热点，"
+                                + "请设置 topic: \"news\"；如果是技术问题、知识科普、历史事件等，"
+                                + "请保持 topic: \"general\"（默认）。\n"
+                                + "2. **智能过滤低效源**：如果查询目的是获取文字解答，"
+                                + "可以在 exclude_domains 中考虑排除 [\"instagram.com\", \"youtube.com\", \"tiktok.com\"] "
+                                + "等以音视频为主的社交媒体域名，因为它们无法提供有效的文本正文。\n"
+                                + "3. **拒绝冗余调用**：绝对不要在同一轮对话中使用完全相同的参数重复调用同一个工具。"
+                                + "如果需要搜索多个方面，请使用不同的 query 参数。"));
+            }
+        }
+
+        return result;
     }
 
     /**

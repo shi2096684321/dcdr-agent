@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 基于 JPA 持久化的对话记忆
@@ -50,6 +51,24 @@ public class InMemoryChatMemory implements ChatMemory {
         }
     }
 
+    private static List<Map<String, Object>> parseSources(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String toJsonSources(List<Map<String, Object>> sources) {
+        if (sources == null || sources.isEmpty()) return null;
+        try {
+            return MAPPER.writeValueAsString(sources);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     @Override
     public List<Message> load(String sessionId) {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
@@ -61,6 +80,7 @@ public class InMemoryChatMemory implements ChatMemory {
             m.setInterrupted(e.getInterrupted());
             m.setSeq(e.getSeq());
             m.setImages(parseImages(e.getImages()));
+            m.setSources(parseSources(e.getSources()));
             m.setType(e.getType());
             m.setVisionModel(e.getVisionModel());
             m.setImageStatus(e.getImageStatus());
@@ -97,6 +117,7 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setError(message.getError());
         entity.setInterrupted(message.getInterrupted());
         entity.setImages(toJson(message.getImages()));
+        entity.setSources(toJsonSources(message.getSources()));
         entity.setVisionModel(message.getVisionModel());
         entity.setImageStatus(message.getImageStatus());
         entity.setImageCaption(message.getImageCaption());

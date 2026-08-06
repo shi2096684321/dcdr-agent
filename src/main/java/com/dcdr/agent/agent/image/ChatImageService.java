@@ -2,6 +2,7 @@ package com.dcdr.agent.agent.image;
 
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.common.util.GeneratedImageStorage;
+import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.dto.ImageRequest;
 import com.dcdr.agent.dto.ImageResponse;
 import com.dcdr.agent.model.provider.ImageModelProvider;
@@ -26,11 +27,14 @@ public class ChatImageService {
 
     private final ModelRegistry registry;
     private final GeneratedImageStorage storage;
+    private final SystemPromptResolver systemPromptResolver;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public ChatImageService(ModelRegistry registry, GeneratedImageStorage storage) {
+    public ChatImageService(ModelRegistry registry, GeneratedImageStorage storage,
+                            SystemPromptResolver systemPromptResolver) {
         this.registry = registry;
         this.storage = storage;
+        this.systemPromptResolver = systemPromptResolver;
     }
 
     /** 生成图片, 返回本地可长期访问的 URL 列表 */
@@ -42,9 +46,12 @@ public class ChatImageService {
         if (provider == null) {
             throw new BusinessException(500, "未配置图片生成模型, 无法使用文生图", "NO_IMAGE_MODEL");
         }
+        // 分层 system prompt(文生图场景): 作为前置增强拼到用户 prompt 前
+        String enhanced = systemPromptResolver.enhanceImagePrompt(
+                systemPromptResolver.resolveTextToImage(), prompt);
         ImageRequest ir = new ImageRequest();
         ir.setModel(provider.getName());
-        ir.setPrompt(prompt);
+        ir.setPrompt(enhanced);
         if (size != null && !size.isBlank()) {
             ir.setSize(size);
         }

@@ -36,15 +36,15 @@ public class MessageEntity {
     @Column(nullable = false, length = 16)
     private String type;
 
-    @Column(length = 8000)
+    @Column(columnDefinition = "TEXT")
     private String content;
 
 
-    @Column(length = 8000)
+    @Column(columnDefinition = "TEXT")
     private String reasoningContent;
 
     /** 用户上传的图片URL列表, 以 JSON 数组字符串存储(多模态) */
-    @Column(length = 8000)
+    @Column(columnDefinition = "TEXT")
     private String images;
 
     /** 做图片识别的视觉模型名(降级场景) */
@@ -70,6 +70,10 @@ public class MessageEntity {
     /** 使用的工具(JSON 字符串) */
     @Column(length = 2000)
     private String toolsUsed;
+
+    /** 引用来源(联网搜索等结果, JSON 字符串) */
+    @Column(columnDefinition = "TEXT")
+    private String sources;
 
     private Integer tokenUsage;
 

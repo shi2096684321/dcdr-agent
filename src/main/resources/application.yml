@@ -32,6 +32,36 @@ spring:
 agent:
   name: "JavaAgent"
 
+  # 分层 System Prompt（L1 全局 < L2 场景级 < L3 会话级）
+  # 聊天场景：L1+L2 作为 system 消息插入 history；会话级 systemPrompt 非空时覆盖 L2/chat。
+  # 文生图/图生图：L1+L2 作为前置增强拼到用户 prompt 前（图像模型协议不支持 system 消息）。
+  system-prompt:
+    # L1 全局默认（所有场景兜底，可为空）
+    default-prompt: "你的名字叫：多吃点肉"
+    scenes:
+      # 聊天场景
+      chat: "你是一个专业的智能问答助手。你的任务是根据用户的提问以及提供的【联网搜索结果】，给出准确、完整、排版优美的回答。
+            【规则要求】：
+            1. **信息整合**：仔细阅读【联网搜索结果】，提取与用户问题高度相关的信息。不要遗漏关键细节。
+            2. **拒绝幻觉**：严格基于【联网搜索结果】回答，如果搜索结果中没有相关信息，请明确告知用户“根据目前的搜索结果，暂时无法回答该问题”，绝对不要自己编造。
+            3. **结构完整**：回答要有逻辑，包含开头（直接回答核心问题）、正文（详细展开）、结论（总结或建议）。
+            4. **排版优美**：必须使用 Markdown 格式进行排版，要求：
+               - 使用 `###` 作为主标题。
+               - 使用无序列表 `-` 或有序列表 `1.` 来展示要点或步骤。
+               - 对于关键数据、专有名词，使用 `**加粗**` 突出显示。
+               - 如果内容较多，请分点/分段说明，避免一大段文字挤在一起。
+            5. **附带来源**：在回答的末尾，列出你引用的信息来源（仅列出实际用到的）。
+            
+            【输入信息】：
+            - 用户问题：{user_question}
+            - 联网搜索结果：{search_context}
+            
+            请根据以上信息，生成高质量回答："
+      # 文生图场景增强（拼到用户 prompt 前）
+      text-to-image: ""
+      # 图生图场景增强（通常强调保持参考图主体）
+      image-to-image: ""
+
   # 记忆配置
   memory:
     max-messages: 20
@@ -55,7 +85,7 @@ agent:
 
     chat:
       - name: "openai-chat"
-        enabled: true
+        enabled: false
         provider: "openai"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
         base-url: "https://api.openai.com"
@@ -74,7 +104,7 @@ agent:
         model: "glm-4-plus"
         temperature: 0.7
         capabilities:
-#          - function_calling
+          - function_calling
 
       - name: "qwen-chat"
         enabled: true
@@ -168,6 +198,27 @@ agent-tools:
     enabled: true
   time:
     enabled: true
+
+# ===== MCP Server 连接配置 (本应用作为 Host, 连接外部 MCP Server) =====
+# 只需写 Client 去访问别人提供的 MCP Server, 不需要自己起 Server。
+# 下面为示例(默认注释): 启用时去掉注释, 并把 command 换成你实际可用的 MCP Server 启动命令。
+# 注意: command 为 stdio 启动命令, 系统需能执行 npx/python 等。
+mcp:
+  servers:
+    - name: web-search
+      # Tavily 官方 MCP Server (stdio, 由 npx 拉起)
+      # 需设置环境变量 TAVILY_API_KEY(如下), 否则 Server 启动后调用会报错:
+      #   Windows(PowerShell):  $env:TAVILY_API_KEY='tvly-xxx'
+      #   Linux/macOS:          export TAVILY_API_KEY='tvly-xxx'
+      # 注: npx 拉起的子进程会继承本应用的环境变量, 故在启动 java-agent 前设置即可
+      command: ["D:\\app\\nodejs\\npx.cmd", "-y", "tavily-mcp@0.2.1"]
+      # 该 Server 暴露的工具名, 允许在流式对话中被调用
+      streaming-tools: ["tavily-search", "tavily-extract"]
+      # 把第三方工具名对齐到本项目约定: tavily-search -> web_search
+      # 这样 AgentOrchestrator / 前端开关(都按 web_search 判断)无需改动
+      aliases:
+        tavily-search: web_search
+        tavily-extract: web_extract
 
 # SpringDoc OpenAPI 配置
 springdoc:

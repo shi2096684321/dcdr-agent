@@ -74,6 +74,25 @@ public class SessionController {
         return Result.success();
     }
 
+    @Operation(summary = "更新会话级 System Prompt",
+            description = "更新后同时同步落库字段与消息历史中的 system 消息，保证后续对话立即生效。传空字符串可清除。")
+    @ApiResponse(responseCode = "200", description = "更新成功")
+    @ApiResponse(responseCode = "400", description = "systemPrompt 过长")
+    @ApiResponse(responseCode = "404", description = "会话不存在")
+    @PatchMapping("/{id}/system-prompt")
+    public Result<Void> updateSystemPrompt(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
+                                           @RequestBody Map<String, String> body) {
+        if (sessionManager.getSession(id) == null) {
+            return Result.error(404, "会话不存在");
+        }
+        try {
+            sessionManager.updateSystemPrompt(id, body.get("systemPrompt"));
+        } catch (IllegalArgumentException e) {
+            return Result.error(400, e.getMessage());
+        }
+        return Result.success();
+    }
+
     @Operation(summary = "获取会话消息历史", description = "返回指定会话的全部消息记录")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = MessageDTO.class)))
     @GetMapping("/{id}/messages")

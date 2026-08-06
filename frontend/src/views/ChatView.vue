@@ -82,11 +82,32 @@
                      @click="previewImage(img)" loading="lazy" />
               </div>
             </div>
-            <div v-if="statusHint" class="msg-status">
+            <div v-if="pipeline" class="search-pipeline">
+              <div class="pipeline-head">
+                <span class="pipeline-icon">🌐</span>
+                <span class="pipeline-title">联网搜索流水线</span>
+                <span v-if="pipeline.done" class="pipeline-done">完成</span>
+              </div>
+              <div class="pipeline-steps">
+                <div class="pstep" :class="{ active: pipeline.stage >= 1, done: pipeline.stage > 1 }">
+                  <span class="pstep-no">1</span>
+                  <span class="pstep-text"><b>搜索与抓取</b><i>实时检索多个资讯源并抓取页面</i></span>
+                </div>
+                <div class="pstep" :class="{ active: pipeline.stage >= 2, done: pipeline.stage > 2 }">
+                  <span class="pstep-no">2</span>
+                  <span class="pstep-text"><b>内容筛选与提取</b><i>提取正文、剔除广告噪音、合并去重</i></span>
+                </div>
+                <div class="pstep" :class="{ active: pipeline.stage >= 3, done: pipeline.stage >= 3 && pipeline.done }">
+                  <span class="pstep-no">3</span>
+                  <span class="pstep-text"><b>多源整合与生成</b><i>按主题重新编排，生成结构化回答</i></span>
+                </div>
+              </div>
+            </div>
+            <div v-else-if="statusHint" class="msg-status">
               <span class="status-dot"></span>{{ statusHint }}
             </div>
-            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming">{{ streamContent }}<span class="cursor">|</span></div>
-            <div v-else-if="!statusHint" class="msg-bubble streaming"><span class="cursor">|</span></div>
+            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)"></div>
+            <div v-else-if="!statusHint && !pipeline" class="msg-bubble streaming"><span class="cursor">|</span></div>
           </div>
         </div>
       </div>
@@ -110,6 +131,9 @@
             <!-- 文生图按钮 -->
             <button class="action-btn" title="文生图（AI 绘图）：请先在输入框填写图片描述" @click="sendImage"
                     :disabled="streaming">🎨</button>
+            <!-- 联网搜索开关 -->
+            <button class="action-btn" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
+                    @click="$emit('update:webSearch', !webSearch)" :disabled="streaming">🌐</button>
             <!-- 图片上传按钮 -->
             <label class="action-btn" title="上传图片/视频">
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
@@ -146,9 +170,11 @@ import MessageBubble from '@/components/MessageBubble.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
 
-const { renderMarkdown } = useMarkdown()
+const { renderMarkdown, renderBubbleHtml } = useMarkdown()
+// 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
+const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
 const vFocus = { mounted: (el) => el.focus() }
-const props = defineProps({ currentModel: String })
+const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false } })
 
 const sessions = ref([])
 const currentSessionId = ref(null)
@@ -160,6 +186,9 @@ const streamContent = ref('')
 const reasoningContent = ref('')
 const streamImages = ref([])
 const statusHint = ref('')
+// 联网搜索三步流水线状态: null 表示非搜索; {stage:1|2|3, done:bool}
+const pipeline = ref(null)
+const streamSources = ref([])
 const msgBox = ref(null)
 const editingId = ref(null)
 const editText = ref('')
@@ -323,7 +352,9 @@ async function send(opts = {}) {
   streamContent.value = ''
   reasoningContent.value = ''
   streamImages.value = []
+  streamSources.value = []
   statusHint.value = ''
+  pipeline.value = null
   interruptedRef.value = false
   scrollBottom()
 
@@ -332,25 +363,54 @@ async function send(opts = {}) {
       sessionId: currentSessionId.value,
       message: text,
       model: props.currentModel,
-      images: (userMsg.images || []).map(i => i.url)
+      images: (userMsg.images || []).map(i => i.url),
+      webSearch: props.webSearch
     },
     (chunk) => {
-      if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
-      if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
-      if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
+      if (chunk.type === 'status') {
+        if (pipeline.value) {
+          // 三步流水线: STEP1 检索 → STEP2 提取整理 → STEP3 整合生成
+          if (chunk.message.includes('抓取相关页面')) pipeline.value.stage = 1
+          else if (chunk.message.includes('合并去重')) pipeline.value.stage = 2
+        } else {
+          statusHint.value = chunk.message || ''
+        }
+        scrollBottom(); return
+      }
+      if (chunk.type === 'error') { statusHint.value = ''; pipeline.value = null; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
+      if (chunk.type === 'interrupted') { statusHint.value = ''; pipeline.value = null; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
       if (chunk.type === 'tool_call') {
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在调用工具生成图片…'
+        } else if (chunk.tool === 'web_search') {
+          pipeline.value = { stage: 0, done: false }
         } else {
           statusHint.value = `正在调用工具：${chunk.tool || ''}…`
         }
         scrollBottom(); return
       }
-      if (chunk.type === 'tool_result') { statusHint.value = ''; streamContent.value += `\n${chunk.result || ''}\n`; scrollBottom(); return }
+      if (chunk.type === 'tool_result') {
+        statusHint.value = ''
+        if (chunk.tool === 'web_search') {
+          pipeline.value = pipeline.value || { stage: 0, done: false }
+          pipeline.value.stage = 3
+        }
+        // 联网搜索等工具回传引用来源, 累计到本次会话
+        // 注意: chunk.result 是喂给模型的检索上下文(含 [[n]] 标记的来源清单),
+        // 不应拼进用户可见的正文 —— 来源已通过 sources 卡片单独渲染, 重复展示会一团乱
+        if (chunk.sources && chunk.sources.length) {
+          streamSources.value = streamSources.value.concat(chunk.sources)
+          if (chunk.tool === 'web_search' && pipeline.value) pipeline.value.done = true
+        }
+        scrollBottom(); return
+      }
       if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
       if (chunk.type === 'done') {
         statusHint.value = ''
+        pipeline.value = null
+        // done 块可能携带最终的引用来源
+        if (chunk.sources && chunk.sources.length) streamSources.value = streamSources.value.concat(chunk.sources)
         lastTokenUsage.value = chunk.tokenUsage?.total ?? null
         lastDurationMs.value = chunk.durationMs ?? null
         return
@@ -369,6 +429,7 @@ async function send(opts = {}) {
           content: streamContent.value,
           reasoningContent: reasoningContent.value,
           images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
+          sources: streamSources.value.length ? streamSources.value.slice() : undefined,
           type: streamImages.value.length ? 'image' : 'text',
           interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
@@ -425,16 +486,35 @@ async function sendImage() {
   await streamChatImage(
     { sessionId: currentSessionId.value, prompt: text },
     (chunk) => {
-      if (chunk.type === 'status') { statusHint.value = chunk.message || ''; scrollBottom(); return }
+      if (chunk.type === 'status') {
+        if (pipeline.value) {
+          if (chunk.message.includes('抓取相关页面')) pipeline.value.stage = 1
+          else if (chunk.message.includes('合并去重')) pipeline.value.stage = 2
+        } else {
+          statusHint.value = chunk.message || ''
+        }
+        scrollBottom(); return
+      }
       if (chunk.type === 'tool_call') {
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在生成图片…'
+        } else if (chunk.tool === 'web_search') {
+          pipeline.value = { stage: 0, done: false }
         } else {
           statusHint.value = `正在调用工具：${chunk.tool || ''}…`
         }
         scrollBottom(); return
       }
-      if (chunk.type === 'tool_result') { statusHint.value = ''; streamContent.value += `\n${chunk.result || ''}\n`; scrollBottom(); return }
+      if (chunk.type === 'tool_result') {
+        statusHint.value = ''
+        if (chunk.tool === 'web_search') {
+          pipeline.value = pipeline.value || { stage: 0, done: false }
+          pipeline.value.stage = 3
+          if (chunk.sources && chunk.sources.length) pipeline.value.done = true
+        }
+        // 文生图场景下的 tool_result 同样不拼正文(来源已由 sources 卡片展示)
+        scrollBottom(); return
+      }
       if (chunk.type === 'error') { statusHint.value = ''; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
       if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || ''; return }
@@ -610,6 +690,21 @@ onMounted(() => { loadSessions() })
 .msg-status { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 12px; background: #667eea11; color: #667eea; font-size: 14px; }
 .msg-status .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #667eea; animation: statusPulse 1s ease-in-out infinite; }
 @keyframes statusPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
+/* 联网搜索三步流水线面板 */
+.search-pipeline { background: linear-gradient(135deg, #f5f7ff 0%, #eef1fb 100%); border: 1px solid #d9e0f7; border-radius: 14px; padding: 14px 16px; margin-bottom: 4px; }
+.pipeline-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.pipeline-icon { font-size: 16px; }
+.pipeline-title { font-weight: 700; color: #2d3a8c; font-size: 14px; }
+.pipeline-done { margin-left: auto; font-size: 11px; color: #2e9e6b; background: #2e9e6b1a; padding: 2px 10px; border-radius: 20px; font-weight: 600; }
+.pipeline-steps { display: flex; flex-direction: column; gap: 10px; }
+.pstep { display: flex; gap: 12px; align-items: flex-start; opacity: 0.45; transition: all 0.3s ease; }
+.pstep.active, .pstep.done { opacity: 1; }
+.pstep-no { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: #c7d2fe; color: #fff; font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; transition: all 0.3s; }
+.pstep.active .pstep-no { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 0 0 4px #667eea22; }
+.pstep.done .pstep-no { background: linear-gradient(135deg, #34d399 0%, #059669 100%); }
+.pstep-text { display: flex; flex-direction: column; line-height: 1.35; }
+.pstep-text b { font-size: 13.5px; color: #303133; }
+.pstep-text i { font-size: 11.5px; color: #8a90a3; font-style: normal; }
 .cursor { animation: blink 1s infinite; color: #667eea; font-weight: bold; }
 @keyframes blink { 50% { opacity: 0; } }
 
@@ -632,6 +727,7 @@ onMounted(() => { loadSessions() })
 .input-actions { display: flex; gap: 4px; padding-bottom: 4px; }
 .action-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; transition: all 0.2s; color: #606266; background: #f5f7fa; border: none; }
 .action-btn:hover { background: #667eea15; color: #667eea; }
+.action-btn.active { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); color: #667eea; box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
 .input-box textarea { flex: 1; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; max-height: 160px; font-family: inherit; padding: 4px 0; background: transparent; }
 .send-btn { width: 40px; height: 40px; border: none; border-radius: 10px; color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
 .send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 6px 18px rgba(102,126,234,0.45); }

@@ -186,6 +186,11 @@ src/main/
 
 ```bash
 # 在项目根目录
+
+# 如使用联网搜索(MCP/Tavily), 先设置 API Key(子进程会继承此环境变量):
+#   Windows (PowerShell):  $env:TAVILY_API_KEY='tvly-你的key'
+#   Linux / macOS:         export TAVILY_API_KEY='tvly-你的key'
+
 mvn spring-boot:run
 ```
 
@@ -214,6 +219,7 @@ npm run dev
       api-key: ${WEATHER_API_KEY:demo-key}
   ```
 - **数据源**：默认 H2 文件库 `./data/database/agent`，可通过 `spring.datasource` 切换为 MySQL 等。
+- **联网搜索（MCP）**：本项目作为 MCP Host，通过 `mcp.servers` 连接外部 MCP Server 获取能力，**不内置搜索实现**。示例已配 Tavily 官方 Server（`@tavily/mcp-server`），需先设置环境变量 `TAVILY_API_KEY`（见下方运行步骤）。工具名经 `aliases` 映射为 `web_search`，编排层与前端无需改动。
 
 ## 🛠 内置工具
 
@@ -223,6 +229,7 @@ npm run dev
 | `time` | 当前时间与日期查询 | 本地执行，开箱即用 |
 | `weather` | 城市天气查询 | 默认演示模式，配置 Key 后返回真实数据 |
 | `image_generation` | 文生图 | 复用对话内生图模型 |
+| `web_search` | 联网搜索（MCP） | 经 MCP 连接外部 Server，需配置 `TAVILY_API_KEY` |
 
 新增工具：实现 `Tool` 接口并标注 `@Component`，在 `ToolAutoConfiguration` 中会自动注册；如需在流式对话中暴露，重写 `supportsStreaming()` 返回 `true`。
 

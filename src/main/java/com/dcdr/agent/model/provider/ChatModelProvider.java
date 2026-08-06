@@ -40,6 +40,15 @@ public interface ChatModelProvider {
      * @param history 对话历史(不含本次用户消息), 用于构造多轮上下文 */
     Flux<ChatChunk> stream(ChatRequest request, List<Message> history);
 
+    /**
+     * 流式调用(显式控制是否追加当前 user 消息)。
+     * 工具循环回灌轮使用 includeCurrentUser=false(上下文已在 history 中)。
+     * 默认实现转调两参版本, 对新老 Provider 兼容。
+     */
+    default Flux<ChatChunk> stream(ChatRequest request, List<Message> history, boolean includeCurrentUser) {
+        return stream(request, history);
+    }
+
     /** 是否支持多模态(图片输入) */
     default boolean supportsVision() {
         return false;

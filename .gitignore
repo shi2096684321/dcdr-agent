@@ -40,4 +40,15 @@ frontend/node_modules/.vite/
 frontend/.env.local
 frontend/.env.*.local
 
+# ===== Runtime artifacts (不应入库) =====
+# H2 运行时数据库文件
+data/database/*.db
+data/database/*.db.*
+data/database/*.trace.db
+
+# 运行/测试日志与临时输出
+*.txt
+build_log.txt
+mcp_*.txt
+
 

@@ -44,6 +44,24 @@ public class ToolRegistry {
         }
     }
 
+    /**
+     * 执行工具并返回结构化结果(含来源信息, 如联网搜索的 references)。
+     * 相比 {@link #execute} 仅返回纯文本, 此方法保留 {@link ToolInfo#getSources()} 等扩展字段。
+     */
+    public ToolInfo executeInfo(String toolName, Map<String, Object> params) {
+        Tool tool = tools.get(toolName);
+        if (tool == null) {
+            return ToolInfo.text("工具不存在: " + toolName);
+        }
+        try {
+            log.debug("执行工具: {}, 参数: {}", toolName, params);
+            return tool.executeWithInfo(params);
+        } catch (Exception e) {
+            log.error("工具执行失败: {}", toolName, e);
+            return ToolInfo.text("工具执行失败: " + e.getMessage());
+        }
+    }
+
     /** 判断是否有已注册工具 */
     public boolean hasTools() {
         return !tools.isEmpty();

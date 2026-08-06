@@ -26,7 +26,7 @@ public class SessionEntity {
 
     private String model;
 
-    @Column(length = 4000)
+    @Column(columnDefinition = "TEXT")
     private String systemPrompt;
 
     @Column(nullable = false)

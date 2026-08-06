@@ -44,7 +44,49 @@
         </div>
       </div>
       <template v-else>
-        <div v-if="msg.content" class="msg-bubble" v-html="renderMarkdown(msg.content)"></div>
+        <!-- 联网搜索汇总行(正文上方): 已阅读 N 个网页 + favicon 堆叠 -->
+        <div v-if="hasSources && msg.content" class="search-summary">
+          <span class="search-icon">🔍</span>
+          <span class="search-text">已阅读 {{ msg.sources.length }} 个网页</span>
+          <div class="favicon-stack">
+            <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
+                 :style="{ zIndex: topFavicons.length - i }" loading="lazy"
+                 @error="onFaviconError" />
+          </div>
+        </div>
+
+        <div v-if="msg.content" class="msg-bubble" v-html="renderBubble(msg.content)" @click="onBubbleClick"></div>
+
+        <!-- 正文下方精简 favicon 汇总(二次强化"有来源"的感知) -->
+        <div v-if="hasSources && msg.content" class="search-summary-bottom">
+          <div class="favicon-stack">
+            <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
+                 :style="{ zIndex: topFavicons.length - i }" loading="lazy"
+                 @error="onFaviconError" />
+          </div>
+          <span class="summary-count">{{ msg.sources.length }} 个网页</span>
+          <button class="sources-toggle-mini" @click="sourcesOpen = !sourcesOpen">
+            {{ sourcesOpen ? '收起来源' : '查看来源' }}
+          </button>
+        </div>
+
+        <!-- 引用来源卡片(可展开) -->
+        <div v-if="hasSources" v-show="sourcesOpen" class="sources-list">
+          <article v-for="(s, idx) in msg.sources" :key="idx"
+                   class="source-card" :class="{ highlight: activeCite && (s.index || (idx + 1)) === activeCite }"
+                   :ref="el => registerSourceCard(el, s.index || (idx + 1))">
+            <div class="source-card-head">
+              <span class="source-index">{{ s.index || (idx + 1) }}</span>
+              <img v-if="faviconOf(s.url)" :src="faviconOf(s.url)" class="source-favicon" loading="lazy" @error="onFaviconError" />
+              <a class="source-title" :href="s.url" target="_blank" rel="noopener noreferrer"
+                 v-html="renderInline(s.title || s.url)"></a>
+              <span class="source-host">{{ hostOf(s.url) }}</span>
+            </div>
+            <div class="source-snippet" v-html="sourceBodyHtml(s, idx)"></div>
+            <button v-if="hasLongBody(s, idx)" class="source-toggle"
+                    @click="toggleSource(idx)">{{ expandedSources.has(idx) ? '收起 ▲' : '展开全文 ▼' }}</button>
+          </article>
+        </div>
 
         <div v-if="msg.interrupted" class="msg-interrupted">⚠ 已中断，以下为已生成的内容</div>
 
@@ -65,18 +107,117 @@
 </template>
 
 <script setup>
+import { ref, computed, onBeforeUpdate } from 'vue'
 import logoUrl from '@/assets/dcdr-logo.png'
 import { useMarkdown } from '@/composables/useMarkdown'
 
-defineProps({
+const props = defineProps({
   msg: { type: Object, required: true },
   streaming: { type: Boolean, default: false },
   editing: { type: Boolean, default: false },
   editBuffer: { type: String, default: '' }
 })
-defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image'])
+const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'cite-click'])
 
-const { renderMarkdown } = useMarkdown()
+const { renderMarkdown, renderBubbleHtml } = useMarkdown()
+
+const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
+// 默认收起来源卡片(正文上下两处汇总已足够展示来源存在; 用户点"查看来源"或角标时展开)
+const sourcesOpen = ref(false)
+const expandedSources = ref(new Set())
+const activeCite = ref(0)
+const sourceCards = new Map()
+function registerSourceCard(el, index) {
+  if (el) sourceCards.set(index, el)
+  else sourceCards.delete(index)
+}
+onBeforeUpdate(() => sourceCards.clear())
+
+// === favicon 工具 ===
+// 用 Google s2 favicon 服务按域名取图标(国内可访问, 比 deepseek 自建 cdn 更通用)
+function faviconOf(url) {
+  const host = hostOf(url)
+  if (!host) return ''
+  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`
+}
+// 取 URL 的 host, 失败返回空串
+function hostOf(url) {
+  if (!url) return ''
+  try {
+    const u = url.startsWith('http') ? url : 'https://' + url
+    return new URL(u).host || ''
+  } catch (e) {
+    return ''
+  }
+}
+// 正文上下汇总行用: 前 4 个不重复域名的 favicon
+const topFavicons = computed(() => {
+  if (!hasSources.value) return []
+  const seen = new Set()
+  const out = []
+  for (const s of props.msg.sources) {
+    const h = hostOf(s.url)
+    if (h && !seen.has(h)) {
+      seen.add(h)
+      out.push(faviconOf(s.url))
+    }
+    if (out.length >= 4) break
+  }
+  return out
+})
+function onFaviconError(e) {
+  // favicon 加载失败: 隐藏 img, 避免显示裂图
+  if (e.target) e.target.style.display = 'none'
+}
+
+// 把模型正文里的 [[n]] 与行内 [n] 引用标记渲染成圆形数字角标(deepseek 风格)
+// 复用 useMarkdown.renderBubbleHtml, 与流式输出保持完全一致
+function renderBubble(text) {
+  return renderBubbleHtml(text, props.msg?.sources)
+}
+
+function renderInline(text) {
+  if (!text) return ''
+  return renderMarkdown(text).replace(/^<p>/, '').replace(/<\/p>$/, '')
+}
+
+const BODY_LIMIT = 1200
+function sourceBodyHtml(s, idx) {
+  const raw = (s.content && String(s.content).trim())
+      ? String(s.content)
+      : (s.snippet || '')
+  if (!raw.trim()) return '<p class="source-empty">（该来源未能提取到正文，仅作链接参考）</p>'
+  const collapsed = idx >= 3 && !expandedSources.value.has(idx) && raw.length > BODY_LIMIT
+  const shown = collapsed ? raw.slice(0, BODY_LIMIT) + '…' : raw
+  return renderMarkdown(shown)
+}
+function hasLongBody(s, idx) {
+  const raw = (s.content && String(s.content).trim()) ? String(s.content) : (s.snippet || '')
+  return idx >= 3 && raw.length > BODY_LIMIT
+}
+function toggleSource(idx) {
+  const next = new Set(expandedSources.value)
+  if (next.has(idx)) next.delete(idx)
+  else next.add(idx)
+  expandedSources.value = next
+}
+
+// 点击正文内角标: 角标本身是 <a href> 已能跳转, 这里额外展开来源面板并高亮(便于用户回看)
+let citeTimer = null
+function onBubbleClick(e) {
+  const el = e.target.closest('.cite')
+  if (!el) return
+  const idx = Number(el.dataset.cite)
+  if (!sourcesOpen.value) sourcesOpen.value = true
+  activeCite.value = idx
+  const card = sourceCards.get(idx)
+  if (card) {
+    setTimeout(() => card.scrollIntoView({ behavior: 'smooth', block: 'center' }), 100)
+  }
+  clearTimeout(citeTimer)
+  citeTimer = setTimeout(() => { activeCite.value = 0 }, 2000)
+  emit('cite-click', idx)
+}
 </script>
 
 <style scoped>
@@ -108,6 +249,14 @@ const { renderMarkdown } = useMarkdown()
 .msg-reasoning details > div :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; }
 .msg-reasoning details > div :deep(code) { background: #fff; padding: 2px 8px; border-radius: 4px; }
 
+/* 联网搜索汇总行(正文上方) */
+.search-summary { display: flex; align-items: center; gap: 8px; padding: 6px 14px 8px 0; font-size: 13px; color: #6b7280; }
+.search-icon { font-size: 14px; }
+.search-text { font-weight: 500; }
+.favicon-stack { display: flex; }
+.favicon-stack .favicon-img { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #fff; background: #f5f7fa; object-fit: cover; margin-left: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.favicon-stack .favicon-img:first-child { margin-left: 0; }
+
 /* 消息气泡 */
 .msg-bubble { padding: 14px 18px; border-radius: 14px; background: #fff; border: 1px solid #e8ecf4; font-size: 14px; line-height: 1.8; box-shadow: 0 2px 8px rgba(0,0,0,0.04); word-break: break-word; }
 .msg-bubble.streaming { border-color: #667eea33; }
@@ -115,10 +264,49 @@ const { renderMarkdown } = useMarkdown()
 .msg-bubble :deep(code) { background: #f5f7fa; padding: 3px 8px; border-radius: 5px; font-size: 13px; color: #e83e8c; }
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+.msg-bubble :deep(h1) { font-size: 20px; font-weight: 700; margin: 16px 0 10px; color: #1f2937; border-bottom: 2px solid #eef0f5; padding-bottom: 6px; }
+.msg-bubble :deep(h2) { font-size: 17px; font-weight: 700; margin: 14px 0 8px; color: #1f2937; }
+.msg-bubble :deep(h3) { font-size: 15px; font-weight: 600; margin: 12px 0 6px; color: #374151; }
+.msg-bubble :deep(ul), .msg-bubble :deep(ol) { margin: 8px 0; padding-left: 22px; }
+.msg-bubble :deep(li) { margin: 4px 0; }
+.msg-bubble :deep(blockquote) { border-left: 3px solid #c7d2fe; background: #f8f9ff; margin: 10px 0; padding: 8px 14px; color: #475569; border-radius: 0 8px 8px 0; }
+.msg-bubble :deep(strong) { color: #1f2937; }
+.msg-bubble :deep(table) { border-collapse: collapse; margin: 10px 0; width: 100%; font-size: 13px; }
+.msg-bubble :deep(th), .msg-bubble :deep(td) { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
+.msg-bubble :deep(th) { background: #f8f9fc; font-weight: 600; }
 
-/* 元信息 */
-.msg-meta { margin-top: 8px; display: flex; gap: 10px; font-size: 12px; color: #909399; }
-.msg-meta span { background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 8px; padding: 3px 10px; }
+/* 引用角标: 圆形数字(deepseek 风格) */
+.msg-bubble :deep(.cite) { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; min-width: 18px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; font-size: 11px; font-weight: 600; text-decoration: none; margin: 0 2px; vertical-align: super; line-height: 1; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; box-shadow: 0 1px 3px rgba(102,126,234,0.3); position: relative; top: -1px; }
+.msg-bubble :deep(.cite:hover) { transform: scale(1.15); box-shadow: 0 2px 8px rgba(102,126,234,0.5); }
+.msg-bubble :deep(.cite .cite-num) { pointer-events: none; }
+
+/* 正文下方精简汇总行 */
+.search-summary-bottom { display: flex; align-items: center; gap: 8px; padding: 10px 0 4px; }
+.summary-count { font-size: 12.5px; color: #909399; }
+.sources-toggle-mini { border: 1px solid #dfe3ee; background: #f6f7fb; color: #5a6172; font-size: 12px; font-weight: 500; padding: 3px 10px; border-radius: 16px; cursor: pointer; transition: all 0.2s ease; }
+.sources-toggle-mini:hover { border-color: #667eea; color: #667eea; background: #667eea0f; }
+
+/* 引用来源卡片列表 */
+.sources-list { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.source-card { padding: 12px 14px; border: 1px solid #e8ecf4; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.04); scroll-margin: 80px; transition: all 0.2s ease; }
+.source-card.highlight { border-color: #667eea; box-shadow: 0 0 0 2px #667eea44, 0 2px 12px rgba(102,126,234,0.15); animation: citeFlash 1.2s ease; }
+@keyframes citeFlash { 0% { background: #667eea14; } 100% { background: #fff; } }
+.source-card-head { display: flex; align-items: center; gap: 8px; }
+.source-index { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.source-favicon { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; background: #f5f7fa; }
+.source-title { font-size: 14px; font-weight: 600; color: #1f2937; line-height: 1.5; text-decoration: none; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-title:hover { color: #667eea; text-decoration: underline; }
+.source-host { font-size: 11px; color: #909399; flex-shrink: 0; }
+.source-snippet { font-size: 13px; line-height: 1.7; color: #4b5563; margin-top: 8px; word-break: break-word; }
+.source-snippet :deep(p) { margin: 4px 0; }
+.source-snippet :deep(strong) { color: #1f2937; }
+.source-snippet :deep(code) { background: #f5f7fa; padding: 2px 6px; border-radius: 5px; font-size: 12.5px; color: #e83e8c; }
+.source-snippet :deep(ul), .source-snippet :deep(ol) { margin: 4px 0; padding-left: 20px; }
+.source-snippet :deep(li) { margin: 2px 0; }
+.source-snippet :deep(a) { color: #667eea; }
+.source-empty { color: #909399; font-style: italic; }
+.source-toggle { margin-top: 6px; background: none; border: none; color: #667eea; font-size: 12.5px; cursor: pointer; padding: 2px 0; }
+.source-toggle:hover { text-decoration: underline; }
 .msg-interrupted { margin-top: 6px; font-size: 12px; color: #d97706; background: rgba(217,119,6,0.1); border: 1px solid rgba(217,119,6,0.3); border-radius: 8px; padding: 4px 10px; }
 
 /* 光标动画 */
@@ -137,4 +325,8 @@ const { renderMarkdown } = useMarkdown()
 .edit-box { background: #fff; border: 1px solid #667eea44; border-radius: 14px; padding: 10px; box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
 .edit-textarea { width: 100%; min-height: 84px; resize: vertical; border: 1px solid #dcdfe6; border-radius: 8px; background: #fafbff; color: #303133; padding: 10px 12px; font-size: 14px; line-height: 1.6; outline: none; font-family: inherit; box-sizing: border-box; }
 .edit-textarea:focus { border-color: #667eea; background: #fff; }
+
+/* 元信息 */
+.msg-meta { margin-top: 8px; display: flex; gap: 10px; font-size: 12px; color: #909399; }
+.msg-meta span { background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 8px; padding: 3px 10px; }
 </style>

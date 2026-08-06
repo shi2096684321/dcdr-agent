@@ -27,6 +27,10 @@ public class ChatChunk {
     @Schema(description = "工具名（type=tool_call/tool_result 时）", example = "calculator")
     private String tool;
 
+    /** 工具调用 id(type=tool_call时, 由 provider 生成, 用于 tool_result 配对) */
+    @Schema(description = "工具调用 id（type=tool_call 时，用于 tool_result 配对）")
+    private String id;
+
     /** 工具参数(type=tool_call时, JSON字符串) */
     @Schema(description = "工具参数（type=tool_call 时，JSON 字符串）")
     private String args;
@@ -34,6 +38,10 @@ public class ChatChunk {
     /** 工具结果(type=tool_result时) */
     @Schema(description = "工具执行结果（type=tool_result 时）")
     private String result;
+
+    /** 引用来源(type=tool_result且为联网搜索时, 携带来自 web_search 的来源列表) */
+    @Schema(description = "引用来源（type=tool_result 且为联网搜索时，携带来源列表）")
+    private java.util.List<java.util.Map<String, Object>> sources;
 
     /** 图片 URL(type=image 时, 文生图内联结果) */
     @Schema(description = "图片 URL（type=image 时，文生图内联结果）")
@@ -76,8 +84,14 @@ public class ChatChunk {
     }
 
     public static ChatChunk toolCall(String tool, String args) {
+        return toolCall(null, tool, args);
+    }
+
+    /** 工具调用块(携带 id, 用于与后续 tool_result 配对回灌) */
+    public static ChatChunk toolCall(String id, String tool, String args) {
         ChatChunk c = new ChatChunk();
         c.setType("tool_call");
+        c.setId(id);
         c.setTool(tool);
         c.setArgs(args);
         return c;
@@ -88,6 +102,13 @@ public class ChatChunk {
         c.setType("tool_result");
         c.setTool(tool);
         c.setResult(result);
+        return c;
+    }
+
+    /** 工具结果块(携带来源, 如联网搜索) */
+    public static ChatChunk toolResult(String tool, String result, java.util.List<java.util.Map<String, Object>> sources) {
+        ChatChunk c = toolResult(tool, result);
+        c.setSources(sources);
         return c;
     }
 

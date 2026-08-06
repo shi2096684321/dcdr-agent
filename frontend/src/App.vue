@@ -3,10 +3,11 @@
     <AppHeader
       v-model:current-model="currentModel"
       v-model:mode="mode"
+      v-model:web-search="webSearch"
       :models="models"
     />
     <main class="app-main">
-      <ChatView v-if="mode==='chat'" :current-model="currentModel" />
+      <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" />
       <CreativeView v-else :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
     </main>
   </div>
@@ -22,6 +23,7 @@ import CreativeView from '@/views/CreativeView.vue'
 const mode = ref('chat')
 const models = ref([])
 const currentModel = ref('openai-chat')
+const webSearch = ref(false)
 const chatModels = computed(() => models.value.filter(m => m.type === 'CHAT'))
 const imageModels = computed(() => models.value.filter(m => m.type === 'IMAGE'))
 const videoModels = computed(() => models.value.filter(m => m.type === 'VIDEO'))

@@ -1,6 +1,7 @@
 package com.dcdr.agent.agent.creative;
 
 import com.dcdr.agent.agent.session.ProjectManager;
+import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.common.util.ReferImageStorage;
 import com.dcdr.agent.dto.GenerationDTO;
 import com.dcdr.agent.dto.ImageRequest;
@@ -31,18 +32,21 @@ public class CreativeEngine {
     private final VideoGenerationWorker videoGenerationWorker;
     private final ReferImageStorage referImageStorage;
     private final ObjectMapper objectMapper;
+    private final SystemPromptResolver systemPromptResolver;
 
     public CreativeEngine(ModelRegistry registry, ProjectManager projectManager,
                           ImageGenerationWorker imageGenerationWorker,
                           VideoGenerationWorker videoGenerationWorker,
                           ReferImageStorage referImageStorage,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          SystemPromptResolver systemPromptResolver) {
         this.registry = registry;
         this.projectManager = projectManager;
         this.imageGenerationWorker = imageGenerationWorker;
         this.videoGenerationWorker = videoGenerationWorker;
         this.referImageStorage = referImageStorage;
         this.objectMapper = objectMapper;
+        this.systemPromptResolver = systemPromptResolver;
     }
 
     /**
@@ -57,6 +61,14 @@ public class CreativeEngine {
         if (request.getPrompt() == null || request.getPrompt().isBlank()) {
             throw new IllegalArgumentException("提示词不能为空");
         }
+
+        // 分层 system prompt(文生图 / 图生图场景): 作为前置增强拼到用户 prompt 前。
+        // 图像模型协议不支持 system 消息, 故以"质量/风格约束前缀"形式注入。
+        boolean isImageToImage = request.getReferImage() != null && !request.getReferImage().isBlank();
+        String scenePrompt = isImageToImage
+                ? systemPromptResolver.resolveImageToImage()
+                : systemPromptResolver.resolveTextToImage();
+        request.setPrompt(systemPromptResolver.enhanceImagePrompt(scenePrompt, request.getPrompt()));
 
         String projectId = request.getProjectId();
         if (projectId == null) {

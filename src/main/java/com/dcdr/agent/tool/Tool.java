@@ -16,8 +16,16 @@ public interface Tool {
     /** 参数 JSON Schema(给 LLM 看的, 描述需要哪些参数) */
     String getParameterSchema();
 
-    /** 执行工具 */
+    /** 执行工具(返回纯文本) */
     String execute(Map<String, Object> params);
+
+    /**
+     * 执行工具并返回结构化结果(含来源等扩展信息)。
+     * 默认实现用纯文本结果包装一个 {@link ToolInfo}。
+     */
+    default ToolInfo executeWithInfo(Map<String, Object> params) {
+        return ToolInfo.text(execute(params));
+    }
 
     /**
      * 是否允许在流式对话(chat)中被模型调用, 默认 false。

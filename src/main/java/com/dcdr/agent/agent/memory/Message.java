@@ -4,6 +4,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话消息(记忆层使用)
@@ -33,6 +34,22 @@ public class Message {
     private Boolean interrupted;
     /** 用户上传的图片URL列表(多模态, 可为空) */
     private List<String> images;
+
+    /**
+     * 助手消息携带的函数调用列表(OpenAI 工具调用往返)。
+     * 形如 [{id, type:"function", function:{name, arguments}}]。
+     * 仅 role=assistant 且发起工具调用时非空。
+     */
+    private List<Map<String, Object>> toolCalls;
+
+    /** 工具结果消息对应的 tool_call id(role=tool 时), 用于匹配 assistant 的 tool_calls[].id */
+    private String toolCallId;
+
+    /** 工具名(role=tool 时填充, 便于 API 配对) */
+    private String name;
+
+    /** 引用来源(如联网搜索结果, 仅 assistant 消息), 供前端渲染引用卡片并随历史持久化 */
+    private List<Map<String, Object>> sources;
 
     /** 做图片识别的视觉模型名(降级场景, 非降级为 null) */
     private String visionModel;

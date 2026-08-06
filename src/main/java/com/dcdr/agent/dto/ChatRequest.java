@@ -41,4 +41,8 @@ public class ChatRequest {
     /** 函数调用工具定义列表(OpenAI function calling 格式), 由后端按需注入 */
     @Schema(description = "函数调用工具定义列表(OpenAI function calling 格式)", hidden = true)
     private List<Map<String, Object>> tools;
+
+    /** 是否开启联网搜索(用户意图, 影响是否提示模型优先使用 web_search) */
+    @Schema(description = "是否开启联网搜索（用户意图，影响是否优先使用 web_search 工具）", defaultValue = "false")
+    private boolean webSearch = false;
 }
