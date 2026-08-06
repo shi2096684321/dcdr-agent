@@ -94,8 +94,16 @@ public class SessionManager {
         if (!messages.isEmpty()) {
             List<MessageDTO> dtos = new java.util.ArrayList<>();
             int idx = 0;
+            // 累积被隐藏消息携带的工具调用, 挂到下一个可见消息(通常是最终 assistant)
+            java.util.List<Map<String, Object>> pendingInvocations = new java.util.ArrayList<>();
             for (Message msg : messages) {
                 if ("system".equals(msg.getRole())) continue;
+                // 抓取被隐藏工具消息里的工具调用明细(assistant(tool_calls) 携带 name+arguments)
+                if (isHiddenToolMessage(msg) && msg.getToolCalls() != null) {
+                    pendingInvocations.addAll(msg.getToolCalls());
+                }
+                // 过滤对用户无意义的工具往返中间消息(模型内部决策, 非给用户看的回答)
+                if (isHiddenToolMessage(msg)) continue;
                 MessageDTO dto = new MessageDTO();
                 dto.setId(sessionId + "_" + (++idx));
                 dto.setSessionId(sessionId);
@@ -106,18 +114,41 @@ public class SessionManager {
                 dto.setModel(msg.getModel());
                 dto.setSeq(msg.getSeq());
                 dto.setError(msg.getError());
+                dto.setTokenUsage(msg.getTokenUsage());
                 dto.setImages(msg.getImages());
                 dto.setSources(msg.getSources());
+                dto.setToolCalls(msg.getToolCalls());
+                dto.setToolCallId(msg.getToolCallId());
+                dto.setName(msg.getName());
+                // 把累积的工具调用清单挂到可见消息(回答)上, 供前端折叠展示
+                if (!pendingInvocations.isEmpty()) {
+                    dto.setToolInvocations(new java.util.ArrayList<>(pendingInvocations));
+                    pendingInvocations.clear();
+                }
                 dto.setCreatedAt(LocalDateTime.now());
                 dtos.add(dto);
             }
             return dtos;
         }
         // 回退: 直接查 messages 表
-        return messageRepository.findBySessionIdOrderBySeqAsc(sessionId).stream()
-                .filter(m -> !"system".equals(m.getRole()))
-                .map(SessionManager::toMessageDTO)
-                .toList();
+        List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
+        java.util.List<Map<String, Object>> pend = new java.util.ArrayList<>();
+        List<MessageDTO> result = new java.util.ArrayList<>();
+        for (MessageEntity m : entities) {
+            if ("system".equals(m.getRole())) continue;
+            if (isHiddenToolMessage(m) && m.getToolCallsJson() != null && !m.getToolCallsJson().isBlank()) {
+                List<Map<String, Object>> tcs = parseToolCalls(m.getToolCallsJson());
+                if (tcs != null) pend.addAll(tcs);
+            }
+            if (isHiddenToolMessage(m)) continue;
+            MessageDTO dto = toMessageDTO(m);
+            if (!pend.isEmpty()) {
+                dto.setToolInvocations(new java.util.ArrayList<>(pend));
+                pend.clear();
+            }
+            result.add(dto);
+        }
+        return result;
     }
 
     /** 更新会话标题 */
@@ -244,7 +275,46 @@ public class SessionManager {
         }
     }
 
+    /**
+     * 判断内存态消息是否应对用户隐藏(工具往返中间消息)。
+     * - role=tool: 工具结果原文, 用户无需直接看
+     * - role=assistant 且仅有 toolCalls、无正文/推理: 模型调用工具的内部决策, 非回答
+     */
+    private static boolean isHiddenToolMessage(Message m) {
+        if ("tool".equals(m.getRole())) return true;
+        if ("assistant".equals(m.getRole())
+                && m.getToolCalls() != null && !m.getToolCalls().isEmpty()
+                && (m.getContent() == null || m.getContent().isBlank())
+                && (m.getReasoningContent() == null || m.getReasoningContent().isBlank())) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 判断持久化态消息是否应对用户隐藏(同 {@link #isHiddenToolMessage(Message)}，基于 MessageEntity)。
+     */
+    private static boolean isHiddenToolMessage(MessageEntity m) {
+        if ("tool".equals(m.getRole())) return true;
+        if ("assistant".equals(m.getRole())
+                && m.getToolCallsJson() != null && !m.getToolCallsJson().isBlank()
+                && (m.getContent() == null || m.getContent().isBlank())
+                && (m.getReasoningContent() == null || m.getReasoningContent().isBlank())) {
+            return true;
+        }
+        return false;
+    }
+
     private static List<Map<String, Object>> parseSources(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<Map<String, Object>> parseToolCalls(String json) {
         if (json == null || json.isBlank()) return null;
         try {
             return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
@@ -263,6 +333,9 @@ public class SessionManager {
         dto.setReasoningContent(m.getReasoningContent());
         dto.setImages(parseImages(m.getImages()));
         dto.setSources(parseSources(m.getSources()));
+        dto.setToolCalls(parseToolCalls(m.getToolCallsJson()));
+        dto.setToolCallId(m.getToolCallId());
+        dto.setName(m.getToolName());
         dto.setModel(m.getModel());
         dto.setToolsUsed(m.getToolsUsed());
         dto.setTokenUsage(m.getTokenUsage());

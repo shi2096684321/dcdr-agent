@@ -71,6 +71,18 @@ public class MessageEntity {
     @Column(length = 2000)
     private String toolsUsed;
 
+    /** 工具调用明细(JSON 数组: id/name/arguments), 用于持久化 agentic 工具往返 */
+    @Column(columnDefinition = "TEXT")
+    private String toolCallsJson;
+
+    /** tool 角色消息对应的 tool_call id */
+    @Column(length = 64)
+    private String toolCallId;
+
+    /** tool 角色消息对应的工具名称 */
+    @Column(length = 64)
+    private String toolName;
+
     /** 引用来源(联网搜索等结果, JSON 字符串) */
     @Column(columnDefinition = "TEXT")
     private String sources;

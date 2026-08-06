@@ -34,6 +34,7 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -187,10 +188,12 @@ public class AgentOrchestrator {
                         final ChatResponse.TokenUsage[] usageHolder = new ChatResponse.TokenUsage[1];
                         final String[] finishReasonHolder = new String[1];
                         // 收集模型发起的工具调用(自动文生图)与生成结果
-                        // 用 holder 以支持工具循环: 每轮重置换新列表, 首轮快照供落库陈述句使用
+                        // 用 holder 以支持工具循环: 每轮重置换新列表, 快照供该轮回灌使用
                         final List<ChatChunk>[] toolCallsHolder = new List[1];
                         toolCallsHolder[0] = new ArrayList<>();
-                        final List<ChatChunk> firstToolCalls = toolCallsHolder[0];
+                        // 当前正在执行的这一轮工具调用的快照(用于回灌 history + 落库)
+                        final List<ChatChunk>[] roundToolCalls = new List[1];
+                        roundToolCalls[0] = new ArrayList<>();
                         final List<String> generatedUrls = new ArrayList<>();
                         // 本轮实际生图的内容摘要(prompt), 供落库陈述句使用, 让下一轮模型明确"这些图片已生成过"
                         final List<String> generatedPrompts = new ArrayList<>();
@@ -205,13 +208,16 @@ public class AgentOrchestrator {
                         Consumer<ChatChunk> collector = chunk -> {
                             if ("usage".equals(chunk.getType()) && chunk.getTokenUsage() != null) {
                                 usageHolder[0] = chunk.getTokenUsage();
-                                if (chunk.getFinishReason() != null) {
+                                // 仅在模型明确给出非工具结束原因时覆盖(工具调用优先级最高)
+                                if (chunk.getFinishReason() != null && !"tool_calls".equals(chunk.getFinishReason())) {
                                     finishReasonHolder[0] = chunk.getFinishReason();
                                 }
                                 return;
                             }
                             if ("tool_call".equals(chunk.getType())) {
+                                // 收到工具调用即标记需要工具, 不依赖 usage 块到达(避免 usage 缺失导致回灌被跳过)
                                 toolCallsHolder[0].add(chunk);
+                                finishReasonHolder[0] = "tool_calls";
                                 return;
                             }
                             if ("chunk".equals(chunk.getType())) {
@@ -227,24 +233,28 @@ public class AgentOrchestrator {
                         // 首轮模型流(provider 自动追加当前 user 消息)
                         Flux<ChatChunk> upstream = provider.stream(request, history).doOnNext(collector);
 
-                        // 工具执行阶段(仅首轮执行, 含阻塞 IO, 走弹性线程)
+                        // 工具执行阶段(首轮, 含阻塞 IO, 走弹性线程)
+                        // 进入前捕获本轮工具调用快照(回灌与落库用)
+                        roundToolCalls[0] = new ArrayList<>(toolCallsHolder[0]);
                         Flux<ChatChunk> toolFlux = Flux
-                                .defer(() -> executeTools(firstToolCalls, accumulated.toString(),
+                                .defer(() -> executeTools(roundToolCalls[0], accumulated.toString(),
                                         reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage()))
                                 .subscribeOn(Schedulers.boundedElastic());
 
-                        // 工具循环尾部: 若模型发起工具调用, 将首轮工具结果回填 history 后再发起下一轮生成;
-                        // 否则收尾。回灌轮复用首轮结果, 不重复抓取/重复展示, 避免副作用。
+                        // 工具循环尾部: 若模型发起工具调用, 将本轮工具结果回填 history 后再发起下一轮生成;
+                        // 否则收尾。每一轮回灌的是该轮自己的工具调用与结果(支持 agentic 多步),
+                        // 回灌内容经截断控制 token 开销。
                         final int[] toolRound = {0};
                         AtomicReference<Flux<ChatChunk>> tailRef = new AtomicReference<>();
                         Flux<ChatChunk> tailFlux = Flux.defer(() -> {
-                            boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !toolCallsHolder[0].isEmpty();
+                            // 回灌轮需重新捕获本轮新产生的工具调用(多步: 模型在第 2 轮可能又发起工具)
+                            List<ChatChunk> currentRound = new ArrayList<>(toolCallsHolder[0]);
+                            boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !currentRound.isEmpty();
                             if (needTool && toolRound[0] < MAX_TOOL_ROUNDS) {
                                 toolRound[0]++;
-                                // 把首轮工具结果回填 history: user + assistant(tool_calls) + 各 tool 结果
-                                history.add(Message.user(request.getMessage()));
+                                // 把本轮工具结果回填 history: assistant(tool_calls) + 各 tool 结果
                                 List<Map<String, Object>> tcs = new ArrayList<>();
-                                for (ChatChunk tc : firstToolCalls) {
+                                for (ChatChunk tc : currentRound) {
                                     Map<String, Object> m = new LinkedHashMap<>();
                                     m.put("id", tc.getId());
                                     m.put("name", tc.getTool());
@@ -255,25 +265,44 @@ public class AgentOrchestrator {
                                 assistMsg.setRole("assistant");
                                 assistMsg.setToolCalls(tcs);
                                 history.add(assistMsg);
-                                for (int i = 0; i < firstToolCalls.size(); i++) {
-                                    ChatChunk tc = firstToolCalls.get(i);
-                                    String res = i < toolResults.size() ? toolResults.get(i) : "";
+                                List<Message> roundMsgs = new ArrayList<>();
+                                roundMsgs.add(assistMsg);
+                                for (int i = 0; i < currentRound.size(); i++) {
+                                    ChatChunk tc = currentRound.get(i);
+                                    String raw = i < toolResults.size() ? toolResults.get(i) : "";
+                                    // 回灌内容截断, 控制 token 开销
+                                    String res = truncate(raw, TOOL_RESULT_MAX_LEN);
                                     Message toolMsg = new Message();
                                     toolMsg.setRole("tool");
                                     toolMsg.setToolCallId(tc.getId());
                                     toolMsg.setName(tc.getTool());
                                     toolMsg.setContent(res);
                                     history.add(toolMsg);
+                                    roundMsgs.add(toolMsg);
                                 }
-                                // 换新列表采集下一轮(避免污染首轮快照 firstToolCalls)
+                                // 异步持久化本轮工具往返(assistant(tool_calls) + tool 结果),
+                                // 刷新后可恢复完整 agentic 上下文
+                                final String sessForSave = sessId;
+                                Mono.fromCallable(() -> {
+                                    for (Message m : roundMsgs) {
+                                        memory.save(sessForSave, m);
+                                    }
+                                    return null;
+                                }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+                                // 换新列表采集下一轮工具调用(避免污染本轮快照)
                                 toolCallsHolder[0] = new ArrayList<>();
-                                // 下一轮: 不再追加当前 user 消息(user 已在 history)
-                                Flux<ChatChunk> next = provider.stream(request, history, false).doOnNext(collector);
+                                // 下一轮执行本轮新工具(多步 agentic), 再回灌
+                                Flux<ChatChunk> nextTool = Flux
+                                        .defer(() -> executeTools(currentRound, accumulated.toString(),
+                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage()))
+                                        .subscribeOn(Schedulers.boundedElastic());
+                                // 下一轮: 不再追加当前 user 消息(上下文已在 history)
+                                Flux<ChatChunk> next = nextTool.thenMany(provider.stream(request, history, false).doOnNext(collector));
                                 return next.concatWith(tailRef.get());
                             }
                             // 无需工具(或已达上限): 收尾并保存
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
-                                    accumulated, reasoningAccumulated, firstToolCalls, generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
+                                    accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
                                     usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
                         });
                         tailRef.set(tailFlux);
@@ -599,6 +628,9 @@ public class AgentOrchestrator {
     /** 任意裸露 HTML 标签（块级已去除后，清理剩余的 span/div/br 等） */
     private static final Pattern HTML_TAG = Pattern.compile("<[^>]+>");
 
+    /** HTML 数字实体: &#123; 或 &#x1F; 等 */
+    private static final Pattern HTML_NUM_ENTITY = Pattern.compile("&#(x?[0-9A-Fa-f]+);");
+
     /** 导航链接块判定: 连续 N 行以上均为 * [xxx](url) 或 - [xxx](url) 格式 */
     private static final Pattern NAV_LINK_LINE = Pattern.compile("^\\s*[*\\-]\\s*\\[[^]]*]\\([^)]*\\)\\s*$");
     private static final int NAV_CONSECUTIVE_THRESHOLD = 3;
@@ -632,12 +664,16 @@ public class AgentOrchestrator {
     /** 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮 */
     private static final int MAX_TOOL_ROUNDS = 4;
 
+    /** 工具结果回灌到模型上下文时的最大长度(字符), 超长截断以控制 token 开销 */
+    private static final int TOOL_RESULT_MAX_LEN = 6000;
+
     /**
      * 基于 Markdown 结构特征的通用正文清洗。
      * <p>
      * 规则：
      * <ol>
      *   <li>去除 HTML 残留块（script/style/nav/footer/header 及其内容），再清裸标签</li>
+     *   <li>解码 HTML 实体（&amp; &quot; &#39; &#x27; &nbsp; 及数字实体 &#123;/&#x1F;），去除工具/搜索结果常见噪音</li>
      *   <li>去噪连续导航链接块（连续 &ge;3 行均为 {@code * [xxx](url)} / {@code - [xxx](url)}）</li>
      *   <li>去除仅含图片语法的行</li>
      *   <li>去除重复的链接标题行（{@code ## [标题](链接)} 与下方 {@code ### 标题} 重复）</li>
@@ -658,6 +694,8 @@ public class AgentOrchestrator {
         // 1) 去除 HTML 残留块，再清裸标签
         text = HTML_BLOCK.matcher(text).replaceAll("");
         text = HTML_TAG.matcher(text).replaceAll("");
+        // 1b) 解码 HTML 实体(&amp; &quot; &#39; &nbsp; 等), 工具/搜索结果常见噪音
+        text = decodeHtmlEntities(text);
 
         // 2) 按行处理：连续导航链接块、纯图片行、页脚
         String[] lines = text.split("\\R", -1);
@@ -745,6 +783,51 @@ public class AgentOrchestrator {
         }
 
         return result;
+    }
+
+    /**
+     * 通用截断: 超出 maxLen 字符时截断并追加提示。null/空原样返回。
+     */
+    private static String truncate(String text, int maxLen) {
+        if (text == null) return "";
+        if (text.length() <= maxLen) return text;
+        return text.substring(0, maxLen) + "\n...(工具结果过长已截断)";
+    }
+
+    /**
+     * 解码常见 HTML 实体: &amp; &lt; &gt; &quot; &#39; &#x27; &nbsp; 以及数字实体(&#123; / &#x1F 等)。
+     * 工具/搜索结果常携带这些转义字符, 直接喂给模型会引入噪音。
+     */
+    private static String decodeHtmlEntities(String text) {
+        if (text == null || text.indexOf('&') < 0) return text;
+        // 命名实体
+        text = text.replace("&amp;", "&")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replace("&#39;", "'")
+                .replace("&#x27;", "'")
+                .replace("&nbsp;", " ");
+        // 数字实体 &#NN; / &#xHH;
+        Matcher m = HTML_NUM_ENTITY.matcher(text);
+        StringBuilder sb = new StringBuilder(text.length());
+        while (m.find()) {
+            try {
+                int codePoint;
+                String g = m.group(1);
+                if (g.startsWith("x") || g.startsWith("X")) {
+                    codePoint = Integer.parseInt(g.substring(1), 16);
+                } else {
+                    codePoint = Integer.parseInt(g);
+                }
+                m.appendReplacement(sb, Matcher.quoteReplacement(new String(new int[]{codePoint}, 0, 1)));
+            } catch (NumberFormatException ignored) {
+                m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+            }
+        }
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /**

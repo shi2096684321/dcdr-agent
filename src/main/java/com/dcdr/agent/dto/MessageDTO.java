@@ -48,6 +48,18 @@ public class MessageDTO {
     /** 使用的工具(JSON) */
     @Schema(description = "使用的工具（JSON 字符串）")
     private String toolsUsed;
+    /** 工具调用明细(JSON 数组: id/name/arguments), 用于还原 agentic 工具往返 */
+    @Schema(description = "工具调用明细（agentic 工具往返，role=assistant 时）")
+    private List<Map<String, Object>> toolCalls;
+    /** 本轮对话中模型调用的工具清单(聚合自被隐藏的工具往返, 供前端在回答下方折叠展示) */
+    @Schema(description = "本轮调用的工具清单（name/arguments），供前端折叠展示")
+    private List<Map<String, Object>> toolInvocations;
+    /** tool 角色消息对应的 tool_call id */
+    @Schema(description = "工具调用 id（role=tool 时，配对 assistant 的 tool_calls[].id）")
+    private String toolCallId;
+    /** tool 角色消息对应的工具名称 */
+    @Schema(description = "工具名称（role=tool 时）")
+    private String name;
     /** 引用来源(联网搜索等结果) */
     @Schema(description = "引用来源（联网搜索等结果，含 title/url/content）")
     private List<Map<String, Object>> sources;

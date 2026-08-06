@@ -125,7 +125,7 @@ public class McpTool implements Tool {
                 return ToolInfo.text("[" + spec.name + "] 执行出错: " + result.text);
             }
             // === 便于排查解析错位: 始终打印一次检索的原始 result.text 全文 ===
-            log.info("===== MCP RAW RESULT BEGIN [{}] =====\n{}\n===== MCP RAW RESULT END [{}] =====",
+            log.debug("===== MCP RAW RESULT BEGIN [{}] =====\n{}\n===== MCP RAW RESULT END [{}] =====",
                     spec.name, result.text, spec.name);
             if (log.isDebugEnabled()) {
                 log.debug("MCP structured blocks: {}", result.structured);

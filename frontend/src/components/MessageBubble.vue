@@ -1,5 +1,5 @@
 <template>
-  <div class="msg-item" :class="'msg-' + msg.role">
+  <div v-if="!isHidden" class="msg-item" :class="'msg-' + msg.role">
     <div class="msg-avatar" :class="{ 'gradient-bg': msg.role === 'user' }">
       <img v-if="msg.role !== 'user'" :src="logoUrl" class="avatar-img" alt="DCDR" />
       <template v-else>U</template>
@@ -88,6 +88,24 @@
           </article>
         </div>
 
+        <!-- 工具调用过程(折叠): 本轮模型调用的工具清单 -->
+        <div v-if="toolList.length" class="tool-invoke">
+          <button class="tool-invoke-toggle" @click="toolOpen = !toolOpen">
+            <span class="tool-icon">🔧</span>
+            <span>已调用 {{ toolList.length }} 个工具</span>
+            <span class="tool-caret">{{ toolOpen ? '▲' : '▼' }}</span>
+          </button>
+          <div v-if="toolOpen" class="tool-invoke-list">
+            <div v-for="(t, i) in toolList" :key="i" class="tool-item">
+              <div class="tool-item-head">
+                <span class="tool-badge">{{ t.name || 'tool' }}</span>
+                <span v-if="t.id" class="tool-id">{{ t.id }}</span>
+              </div>
+              <pre v-if="t.args" class="tool-args">{{ t.args }}</pre>
+            </div>
+          </div>
+        </div>
+
         <div v-if="msg.interrupted" class="msg-interrupted">⚠ 已中断，以下为已生成的内容</div>
 
         <!-- 元信息 -->
@@ -122,6 +140,30 @@ const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cance
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 
 const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
+// 对用户隐藏的工具往返中间消息: role=tool, 或 role=assistant 仅有 toolCalls 无正文的空壳
+// (后端 getMessages 已过滤, 此处为兜底, 避免前端本地流式态出现空气泡)
+const isHidden = computed(() => {
+  const m = props.msg
+  if (!m) return true
+  if (m.role === 'tool') return true
+  if (m.role === 'assistant'
+      && m.toolCalls && m.toolCalls.length
+      && !m.content && !m.reasoningContent) {
+    return true
+  }
+  return false
+})
+// 工具调用清单(本轮模型调用的工具), 折叠展示在回答下方
+const toolOpen = ref(false)
+const toolList = computed(() => {
+  const inv = props.msg?.toolInvocations
+  if (!inv || !inv.length) return []
+  return inv.map(t => {
+    const raw = t.arguments != null ? String(t.arguments) : ''
+    const args = raw.length > 800 ? raw.slice(0, 800) + '\n…(参数过长已截断)' : raw
+    return { name: t.name, id: t.id, args }
+  })
+})
 // 默认收起来源卡片(正文上下两处汇总已足够展示来源存在; 用户点"查看来源"或角标时展开)
 const sourcesOpen = ref(false)
 const expandedSources = ref(new Set())
@@ -308,6 +350,19 @@ function onBubbleClick(e) {
 .source-toggle { margin-top: 6px; background: none; border: none; color: #667eea; font-size: 12.5px; cursor: pointer; padding: 2px 0; }
 .source-toggle:hover { text-decoration: underline; }
 .msg-interrupted { margin-top: 6px; font-size: 12px; color: #d97706; background: rgba(217,119,6,0.1); border: 1px solid rgba(217,119,6,0.3); border-radius: 8px; padding: 4px 10px; }
+
+/* 工具调用折叠提示 */
+.tool-invoke { margin-top: 8px; border: 1px solid #e8ecf4; border-radius: 10px; background: #f7f9fc; overflow: hidden; }
+.tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: #5a6b8c; text-align: left; }
+.tool-invoke-toggle:hover { background: #eef2f9; }
+.tool-icon { font-size: 13px; }
+.tool-caret { margin-left: auto; color: #9aa7c2; }
+.tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+.tool-item { border: 1px solid #e3e8f2; border-radius: 8px; background: #fff; padding: 8px 10px; }
+.tool-item-head { display: flex; align-items: center; gap: 8px; }
+.tool-badge { font-size: 12px; font-weight: 600; color: #2563eb; background: #e8f0ff; border-radius: 6px; padding: 2px 8px; }
+.tool-id { font-size: 11px; color: #9aa7c2; font-family: monospace; }
+.tool-args { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: #4a5568; background: #f6f8fb; border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 
 /* 光标动画 */
 .cursor { animation: blink 1s infinite; color: #667eea; font-weight: bold; }

@@ -69,6 +69,24 @@ public class InMemoryChatMemory implements ChatMemory {
         }
     }
 
+    private static List<Map<String, Object>> parseToolCalls(String json) {
+        if (json == null || json.isBlank()) return null;
+        try {
+            return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String toJsonToolCalls(List<Map<String, Object>> toolCalls) {
+        if (toolCalls == null || toolCalls.isEmpty()) return null;
+        try {
+            return MAPPER.writeValueAsString(toolCalls);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     @Override
     public List<Message> load(String sessionId) {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
@@ -82,6 +100,9 @@ public class InMemoryChatMemory implements ChatMemory {
             m.setImages(parseImages(e.getImages()));
             m.setSources(parseSources(e.getSources()));
             m.setType(e.getType());
+            m.setToolCalls(parseToolCalls(e.getToolCallsJson()));
+            m.setToolCallId(e.getToolCallId());
+            m.setName(e.getToolName());
             m.setVisionModel(e.getVisionModel());
             m.setImageStatus(e.getImageStatus());
             m.setImageCaption(e.getImageCaption());
@@ -118,6 +139,9 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setInterrupted(message.getInterrupted());
         entity.setImages(toJson(message.getImages()));
         entity.setSources(toJsonSources(message.getSources()));
+        entity.setToolCallsJson(toJsonToolCalls(message.getToolCalls()));
+        entity.setToolCallId(message.getToolCallId());
+        entity.setToolName(message.getName());
         entity.setVisionModel(message.getVisionModel());
         entity.setImageStatus(message.getImageStatus());
         entity.setImageCaption(message.getImageCaption());
