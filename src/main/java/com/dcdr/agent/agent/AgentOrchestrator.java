@@ -1377,6 +1377,24 @@ public class AgentOrchestrator {
             }
         }
 
+        // 3) 多轮对话约束: 要求模型只回答用户「当前」提问, 历史仅作参考, 避免重复历史答案
+        //    —— 当会话已有历史(user/assistant 轮次)时注入; 通过内容关键字去重, 幂等可重复调用。
+        boolean hasHistory = result.stream().anyMatch(m ->
+                "user".equals(m.getRole()) || "assistant".equals(m.getRole()));
+        if (hasHistory) {
+            boolean hasMultiTurn = result.stream().anyMatch(m ->
+                    "system".equals(m.getRole()) && m.getContent() != null && m.getContent().contains("多轮对话"));
+            if (!hasMultiTurn) {
+                result.add(Message.system(
+                        "【多轮对话规范】：本会话包含多轮对话。请严格遵守以下要求：\n"
+                                + "1. 你只需针对用户「当前最后一条」提问作答，不要复述或重复历史对话中已经给出过的回答。\n"
+                                + "2. 历史消息（之前的用户提问与你的回答）仅作为背景上下文参考，帮助你理解当前问题的语境，绝不作为本轮需要重新输出的内容。\n"
+                                + "3. 如果用户提出了与历史相关的新问题或追问，请基于上下文补充新信息，而不是把旧回答原样再来一遍。\n"
+                                + "4. 如果用户的问题与历史无关，请直接回答新问题，忽略历史内容。\n"
+                                + "5. 不要使用「如上所述」「如我之前提到的」这类暗示重复输出整段历史的话术；如需引用，只引用最小必要的片段。"));
+            }
+        }
+
         return result;
     }
 
