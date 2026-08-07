@@ -78,6 +78,18 @@ public class Message {
         return new Message("system", content, null);
     }
 
+    /**
+     * 带去重键的 system 消息: name 用于平台级运行时约束的注入幂等判断(按 name 去重, 而非内容比较)。
+     *
+     * @param name    去重键(如 "runtime:image-policy")，可为 null
+     * @param content 消息内容
+     */
+    public static Message system(String name, String content) {
+        Message m = new Message("system", content, null);
+        m.setName(name);
+        return m;
+    }
+
     public static Message user(String content) {
         return new Message("user", content, null);
     }

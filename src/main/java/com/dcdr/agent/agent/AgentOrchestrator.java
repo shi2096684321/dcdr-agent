@@ -3,7 +3,9 @@ package com.dcdr.agent.agent;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
+import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
@@ -56,6 +58,7 @@ public class AgentOrchestrator {
     private final ChatImageService chatImageService;
     private final ToolRegistry toolRegistry;
     private final SystemPromptResolver systemPromptResolver;
+    private final RuntimePromptProvider runtimePromptProvider;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -80,7 +83,8 @@ public class AgentOrchestrator {
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
-                             ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver) {
+                             ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
+                             RuntimePromptProvider runtimePromptProvider) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -91,6 +95,7 @@ public class AgentOrchestrator {
         this.chatImageService = chatImageService;
         this.toolRegistry = toolRegistry;
         this.systemPromptResolver = systemPromptResolver;
+        this.runtimePromptProvider = runtimePromptProvider;
     }
 
     /**
@@ -467,14 +472,6 @@ public class AgentOrchestrator {
                         })
         );
     }
-
-    /**
-     * 平台级生图约束(不持久化, 仅在向模型发起请求时注入为 system 消息):
-     * 约束模型只生成本轮新请求的图片, 不为历史已完成的图片重复生图(根治历史诱导重画)。
-     */
-    private static final String IMAGE_GENERATION_POLICY =
-            "文生图策略：只生成用户本轮明确新请求的图片。历史对话中已生成过的图片视为已完成, "
-            + "不要重复生成; 若用户本轮要求对历史图片进行修改, 应明确说明修改意图后再生成。";
 
     /**
      * 执行对话内的工具调用: 经通用 ToolRegistry 分发到对应 Tool.execute。
@@ -1195,7 +1192,7 @@ public class AgentOrchestrator {
         if (resolvedChatPrompt != null) {
             boolean sessionHasSystem = history.stream()
                     .anyMatch(m -> "system".equals(m.getRole())
-                            && !IMAGE_GENERATION_POLICY.equals(m.getContent()));
+                            && (m.getName() == null || !m.getName().startsWith("runtime:")));
             // 会话级已有 system: 仅补 L1 全局(会话级覆盖场景级); 否则注入完整 L1+L2/chat
             String toInject = sessionHasSystem
                     ? systemPromptResolver.resolveDefaultOnly()
@@ -1262,7 +1259,7 @@ public class AgentOrchestrator {
         if (resolvedChatPromptSync != null) {
             boolean sessionHasSystem = history.stream()
                     .anyMatch(m -> "system".equals(m.getRole())
-                            && !IMAGE_GENERATION_POLICY.equals(m.getContent()));
+                            && (m.getName() == null || !m.getName().startsWith("runtime:")));
             String toInject = sessionHasSystem
                     ? systemPromptResolver.resolveDefaultOnly()
                     : resolvedChatPromptSync;
@@ -1331,71 +1328,62 @@ public class AgentOrchestrator {
                                                      ChatRequest request) {
         List<Message> result = new ArrayList<>(history);
 
+        // 统一按「name 去重键」判断：history 中已存在同 name 的 system 消息则跳过（幂等）。
+        // 所有运行时约束文本均来自 RuntimePromptProvider（配置优先 + 默认回退），不在本方法硬编码。
+
         // 1) 生图策略约束: 仅当本轮会注入生图工具时前置为 system 消息
         //    与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险
         if (provider != null && provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
-            boolean hasPolicy = result.stream()
-                    .anyMatch(m -> "system".equals(m.getRole()) && IMAGE_GENERATION_POLICY.equals(m.getContent()));
-            if (!hasPolicy) {
-                result.add(0, Message.system(IMAGE_GENERATION_POLICY));
-            }
+            injectIfAbsent(result, runtimePromptProvider.imagePolicy());
         }
 
         // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索
         if (request != null && request.isWebSearch() && toolRegistry.getTool("web_search") != null) {
-            boolean hasWs = result.stream().anyMatch(m ->
-                    "system".equals(m.getRole()) && m.getContent() != null && m.getContent().contains("联网搜索"));
-            if (!hasWs) {
-                result.add(Message.system(
-                        "用户已开启「联网搜索」。对于时效性信息(如最新新闻、实时数据、股价/天气)、"
-                                + "需要引用外部来源、或你的知识可能过时的提问, 请优先调用 web_search 工具检索, "
-                                + "并基于检索结果作答、标注信息来源。\n"
-                                + "引用规范: 在正文中事实后紧跟 [[n]] 标记(n 为检索结果末尾资料序号), "
-                                + "同一事实多个来源可并列 [[n]][[m]]。\n"
-                                + "排版规范(必须使用 Markdown 语法, 不要输出纯文本):\n"
-                                + "1. 用 ### 三级标题按主题分组(如「### 国际动态」「### 宏观经济与政策」);\n"
-                                + "2. 每个主题下用无序列表(-)组织要点, 一条要点一行;\n"
-                                + "3. 要点名用 **加粗**, 冒号后跟事实描述, 事实后紧跟 [[n]] 引用;\n"
-                                + "4. 不同主题之间用空行分隔, 同一主题内要点之间换行。\n"
-                                + "示例:\n"
-                                + "### 国际动态\n\n"
-                                + "- **俄乌冲突持续**: 乌克兰首都基辅拉响防空警报[[1]]。\n\n"
-                                + "- **中东局势**: 胡塞武装袭击沙特油轮[[2]]。油价下跌超5%[[3]][[4]]。\n\n"
-                                + "### 宏观经济与政策\n\n"
-                                + "- **国内经济数据**: 上半年服务贸易同比增长8.3%[[5]]。\n"
-                                + "结尾用「### 参考来源」列出所有 [[n]] 对应的标题与链接。\n"
-                                + "优先保证信息准确与可读性, 不要堆砌来源清单原文。\n\n"
-                                + "【工具使用规范】：\n"
-                                + "1. **按需选择搜索类型**：调用 web_search 时，如果查询意图是时事、新闻、热点，"
-                                + "请设置 topic: \"news\"；如果是技术问题、知识科普、历史事件等，"
-                                + "请保持 topic: \"general\"（默认）。\n"
-                                + "2. **智能过滤低效源**：如果查询目的是获取文字解答，"
-                                + "可以在 exclude_domains 中考虑排除 [\"instagram.com\", \"youtube.com\", \"tiktok.com\"] "
-                                + "等以音视频为主的社交媒体域名，因为它们无法提供有效的文本正文。\n"
-                                + "3. **拒绝冗余调用**：绝对不要在同一轮对话中使用完全相同的参数重复调用同一个工具。"
-                                + "如果需要搜索多个方面，请使用不同的 query 参数。"));
-            }
+            injectIfAbsent(result, runtimePromptProvider.webSearch());
         }
 
         // 3) 多轮对话约束: 要求模型只回答用户「当前」提问, 历史仅作参考, 避免重复历史答案
-        //    —— 当会话已有历史(user/assistant 轮次)时注入; 通过内容关键字去重, 幂等可重复调用。
+        //    —— 当会话已有历史(user/assistant 轮次)时注入
         boolean hasHistory = result.stream().anyMatch(m ->
                 "user".equals(m.getRole()) || "assistant".equals(m.getRole()));
         if (hasHistory) {
-            boolean hasMultiTurn = result.stream().anyMatch(m ->
-                    "system".equals(m.getRole()) && m.getContent() != null && m.getContent().contains("多轮对话"));
-            if (!hasMultiTurn) {
-                result.add(Message.system(
-                        "【多轮对话规范】：本会话包含多轮对话。请严格遵守以下要求：\n"
-                                + "1. 你只需针对用户「当前最后一条」提问作答，不要复述或重复历史对话中已经给出过的回答。\n"
-                                + "2. 历史消息（之前的用户提问与你的回答）仅作为背景上下文参考，帮助你理解当前问题的语境，绝不作为本轮需要重新输出的内容。\n"
-                                + "3. 如果用户提出了与历史相关的新问题或追问，请基于上下文补充新信息，而不是把旧回答原样再来一遍。\n"
-                                + "4. 如果用户的问题与历史无关，请直接回答新问题，忽略历史内容。\n"
-                                + "5. 不要使用「如上所述」「如我之前提到的」这类暗示重复输出整段历史的话术；如需引用，只引用最小必要的片段。"));
-            }
+            injectIfAbsent(result, runtimePromptProvider.multiTurn());
         }
 
+        // 4) 当前真实时间: 每轮动态注入(不幂等缓存), 保证时间是「当下」。
+        //    根因修复: tool_choice=auto 下模型常不调用 time 工具而用训练知识臆造日期(差数月),
+        //    此处直接把准确时间写进 system prompt, 模型无需调用工具也能拿到正确时间。
+        //    时间必须每轮刷新: 用 injectOrReplace 而非 injectIfAbsent, 避免历史中旧时间被复用。
+        injectOrReplace(result, runtimePromptProvider.currentTime());
+
         return result;
+    }
+
+    /**
+     * 按 name 去重键注入一条运行时约束：history 中已存在同 name 的 system 消息则跳过（幂等可重复调用）。
+     * fragment 为 null 或 text 为空时直接跳过。
+     */
+    private void injectIfAbsent(List<Message> history, SystemPromptProperties.PromptFragment fragment) {
+        if (fragment == null || fragment.getText() == null || fragment.getText().isBlank()) {
+            return;
+        }
+        boolean exists = history.stream().anyMatch(m ->
+                "system".equals(m.getRole()) && fragment.getName().equals(m.getName()));
+        if (!exists) {
+            history.add(Message.system(fragment.getName(), fragment.getText()));
+        }
+    }
+
+    /**
+     * 按 name 去重键注入/替换一条运行时约束：已存在同 name 的 system 消息则先移除再添加（强制刷新）。
+     * 用于内容随每轮变化的约束（如当前时间），避免历史旧值被复用。
+     */
+    private void injectOrReplace(List<Message> history, SystemPromptProperties.PromptFragment fragment) {
+        if (fragment == null || fragment.getText() == null || fragment.getText().isBlank()) {
+            return;
+        }
+        history.removeIf(m -> "system".equals(m.getRole()) && fragment.getName().equals(m.getName()));
+        history.add(Message.system(fragment.getName(), fragment.getText()));
     }
 
     /**

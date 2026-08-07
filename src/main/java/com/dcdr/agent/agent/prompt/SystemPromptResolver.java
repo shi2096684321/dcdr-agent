@@ -5,10 +5,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
- * 分层 System Prompt 统一解析器。
+ * 维度一（Base System Prompt）统一解析器。
  * <p>
  * 负责把「全局默认 + 场景级 + 会话级」三层 prompt 合并为最终注入文本，
- * 屏蔽各场景调用方对层级细节的感知。
+ * 屏蔽各场景调用方对层级细节的感知。长文本优先取自 classpath 文件
+ * （{@code scenes.chatLocation} 等），内联字段（{@code scenes.chat} 等）优先于文件。
  * <p>
  * 合并规则：
  * <ul>
@@ -24,9 +25,11 @@ import org.springframework.stereotype.Component;
 public class SystemPromptResolver {
 
     private final SystemPromptProperties properties;
+    private final PromptTemplateLoader templateLoader;
 
-    public SystemPromptResolver(SystemPromptProperties properties) {
+    public SystemPromptResolver(SystemPromptProperties properties, PromptTemplateLoader templateLoader) {
         this.properties = properties;
+        this.templateLoader = templateLoader;
     }
 
     /**
@@ -39,7 +42,9 @@ public class SystemPromptResolver {
      */
     public String resolveChat() {
         return merge(properties.getDefaultPrompt(),
-                properties.getScenes() != null ? properties.getScenes().getChat() : null);
+                resolveScene(properties.getScenes() != null ? properties.getScenes().getChat() : null,
+                        properties.getScenes() != null ? properties.getScenes().getChatLocation() : null,
+                        "classpath:prompts/chat.md"));
     }
 
     /**
@@ -59,7 +64,8 @@ public class SystemPromptResolver {
      */
     public String resolveTextToImage() {
         return merge(properties.getDefaultPrompt(),
-                properties.getScenes() != null ? properties.getScenes().getTextToImage() : null);
+                resolveScene(properties.getScenes() != null ? properties.getScenes().getTextToImage() : null,
+                        null, "classpath:prompts/text-to-image.md"));
     }
 
     /**
@@ -69,7 +75,19 @@ public class SystemPromptResolver {
      */
     public String resolveImageToImage() {
         return merge(properties.getDefaultPrompt(),
-                properties.getScenes() != null ? properties.getScenes().getImageToImage() : null);
+                resolveScene(properties.getScenes() != null ? properties.getScenes().getImageToImage() : null,
+                        null, "classpath:prompts/image-to-image.md"));
+    }
+
+    /**
+     * 解析单条场景级 prompt：内联文本优先，否则从 {@code location} 文件读取；文件缺省回退到内置默认位置。
+     */
+    private String resolveScene(String inline, String location, String defaultLocation) {
+        if (inline != null && !inline.isBlank()) {
+            return inline;
+        }
+        String text = templateLoader.load(location != null ? location : defaultLocation);
+        return text != null ? text.strip() : null;
     }
 
     /**
