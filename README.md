@@ -2,7 +2,9 @@
 
 基于 Spring Boot + Vue 3 的开源智能体（Agent）平台，支持流式对话、文生图创作，以及对多厂商大模型的统一编排与工具调用（Function Calling）。
 
-当前版本：**v1.0.0**（发行说明见 [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)）。
+当前版本：**v1.1.0**（发行说明见 [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)）。
+
+> 版本说明：v1.1.0 新增文生视频、联网搜索（web_search）；语音 STT/TTS 为未来可扩展项，详见 [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md)。
 
 ## ✨ 特性
 
@@ -10,7 +12,9 @@
 - **上下文保护**：上下文长度估算与超长提醒，避免超出模型上下文窗口。
 - **多模态**：对话内文生图（ChatImageService）、图片识别与视觉模型自动路由问答。
 - **创作模式**：文生图项目化管理、异步生成任务、批量生成与参数套用。
-- **工具调用（Function Calling）**：内置 `calculator` / `time` / `weather` / `image_generation`，统一工具框架，结果流式回传并落库。
+- **文生视频**：创作模式下的视频子模式，异步任务编排与状态轮询。
+- **联网搜索**：内置 `web_search` 工具（经 MCP 连接外部 Server），本轮对话内对重复调用做去重拦截。
+- **工具调用（Function Calling）**：内置 `calculator` / `time` / `weather` / `image_generation` / `web_search`，统一工具框架，结果流式回传并落库。
 - **多模型适配**：SPI 风格 Provider 抽象，已内置 OpenAI 兼容系、通义千问、DeepSeek、智谱（Zhipu），按 UI 模式 / 模型类型自动路由。
 
 ## 🧱 软件架构
@@ -78,8 +82,9 @@ src/main/
 │   │   ├── ModelRouter.java        #   模型路由: 按 uiMode/type 选择 provider
 │   │   ├── ImageResolver.java      #   图片 URL → 可访问地址 解析
 │   │   ├── creative/               #   创作模式引擎
-│   │   │   ├── CreativeEngine.java #     异步图片生成编排(线程池 + 任务状态)
-│   │   │   └── ImageGenerationWorker.java  # 单张图片生成 worker
+│   │   │   ├── CreativeEngine.java #     异步图片/视频生成编排(线程池 + 任务状态)
+│   │   │   ├── ImageGenerationWorker.java  # 单张图片生成 worker
+│   │   │   └── VideoGenerationWorker.java  # 视频生成 worker
 │   │   ├── image/
 │   │   │   └── ChatImageService.java  # 对话内文生图(走 SSE)
 │   │   ├── memory/                 #   上下文记忆
@@ -116,6 +121,7 @@ src/main/
 │   │   ├── ProjectController.java  #   /api/projects
 │   │   ├── GenerationController.java   # /api/generations
 │   │   ├── ImageController.java    #   /api/images/generate
+│   │   ├── VideoController.java     #   /api/videos/generate (文生视频异步任务)
 │   │   ├── FileController.java     #   /api/files/upload
 │   │   ├── ModelController.java    #   /api/models
 │   │   └── SystemController.java   #   /api/system/thread-pool
@@ -229,7 +235,8 @@ npm run dev
 | `time` | 当前时间与日期查询 | 本地执行，开箱即用 |
 | `weather` | 城市天气查询 | 默认演示模式，配置 Key 后返回真实数据 |
 | `image_generation` | 文生图 | 复用对话内生图模型 |
-| `web_search` | 联网搜索（MCP） | 经 MCP 连接外部 Server，需配置 `TAVILY_API_KEY` |
+| `video_generation` | 文生视频 | 创作模式视频子模式，异步任务编排 |
+| `web_search` | 联网搜索（MCP） | 经 MCP 连接外部 Server，需配置 `TAVILY_API_KEY`；本轮对话内对重复调用做去重拦截 |
 
 新增工具：实现 `Tool` 接口并标注 `@Component`，在 `ToolAutoConfiguration` 中会自动注册；如需在流式对话中暴露，重写 `supportsStreaming()` 返回 `true`。
 
@@ -239,7 +246,10 @@ npm run dev
 - [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
 - [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md)（知识库 / 认证 / 多 Agent）
 - [`docs/04-V1.1规划文档.md`](docs/04-V1.1规划文档.md)（语音 STT/TTS / 视频生成）
+- [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md)（纯对话交互 / 语音，未来扩展）
+- [`docs/06-V1.1发布说明（Release Notes）.md`](docs/06-V1.1发布说明（Release Notes）.md)
 - [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)
+- [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)
 
 ## 🤝 参与贡献
 

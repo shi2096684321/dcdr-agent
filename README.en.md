@@ -1,36 +1,263 @@
 # dcdr-agent
 
-#### Description
-{**When you're done, you can delete the content in this README and update the file with details for others getting started with your repository**}
+An open-source intelligent agent (Agent) platform based on Spring Boot + Vue 3, supporting streaming conversation, text-to-image creation, and unified orchestration and tool calling (Function Calling) for multi-vendor large models.
 
-#### Software Architecture
-Software architecture description
+Current version: **v1.1.0** (Release Notes: [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)).
 
-#### Installation
+> Version note: v1.1.0 adds text-to-video and web search (`web_search`); voice STT/TTS is a future extensibility item — see [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md).
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## ✨ Features
 
-#### Instructions
+- **Streaming conversation**: SSE real-time output, reasoning (CoT) content displayed separately; supports message editing / retry / truncation and conversation interruption (stop).
+- **Context protection**: context length estimation and over-length alerts to avoid exceeding the model context window.
+- **Multimodal**: in-conversation text-to-image (ChatImageService), image recognition and visual model auto-routing Q&A.
+- **Creation mode**: text-to-image project management, async generation tasks, batch generation and parameter reuse.
+- **Text-to-video**: video sub-mode in creation mode, with async task orchestration and status polling.
+- **Web search**: built-in `web_search` tool (connected via MCP to an external Server), with de-duplication interception of repeated calls within the same conversation turn.
+- **Tool calling (Function Calling)**: built-in `calculator` / `time` / `weather` / `image_generation` / `web_search`, unified tool framework, streaming result return and persistence.
+- **Multi-model adaptation**: SPI-style Provider abstraction, with built-in OpenAI-compatible, Qwen, DeepSeek, Zhipu; auto-routed by UI mode / model type.
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+## 🧱 Software Architecture
 
-#### Contribution
+The project adopts a front-end / back-end separation architecture: the back-end is Java (Spring Boot), and the front-end is Vue 3 + Vite + Element Plus.
 
-1.  Fork the repository
-2.  Create Feat_xxx branch
-3.  Commit your code
-4.  Create Pull Request
+##### Front-end directory structure
 
+The front-end source code is located in the `frontend/` directory, organized following the layering of "views / components / logic / interfaces", with the `@` alias pointing to `frontend/src`.
 
-#### Gitee Feature
+```
+frontend/
+├── public/                      # static assets (not bundled, output as-is by Vite)
+│   └── dcdr-logo.png            # favicon referenced directly by index.html
+├── src/
+│   ├── api/                     # backend interface encapsulation layer
+│   │   ├── http.js              #   axios instance + response unwrap utility
+│   │   ├── stream.js            #   SSE streaming read + AbortController + idle timeout + stopChat
+│   │   ├── chat.js              #   conversation: session/message CRUD, streamChat, streamChatImage
+│   │   ├── image.js             #   creation: project CRUD, image task submit/poll/history
+│   │   ├── system.js            #   system: model list, thread pool status, file upload
+│   │   └── index.js             #   barrel aggregation export
+│   ├── assets/                  # static assets requiring import bundling
+│   │   └── dcdr-logo.png        # logo referenced by <img :src="..."> in components
+│   ├── components/              # pure presentational / reusable components (no business state)
+│   │   ├── AppHeader.vue        #   top bar: logo + mode switch + model select
+│   │   ├── MessageBubble.vue    #   single message bubble: image/video/reasoning/edit/actions
+│   │   ├── ImagePreviewModal.vue#   image fullscreen preview modal (v-model:url)
+│   │   └── GenerationDetailDialog.vue  # creation image detail dialog (with param reuse)
+│   ├── composables/             # Vue composables (reusable logic)
+│   │   └── useMarkdown.js        #   shared markdown-it instance + renderMarkdown
+│   ├── stores/                  # Pinia state management (registered, reserved)
+│   ├── styles/                  # global styles
+│   │   ├── base.css              #   base reset
+│   │   ├── gradients.css        #   .gradient-bg/green/orange utility classes
+│   │   └── index.css            #   entry, imported by main.js
+│   ├── utils/                    # general utilities
+│   │   └── format.js             #   formatDuration / formatDate / styleLabel
+│   ├── views/                   # page-level components (one mode/route each)
+│   │   ├── ChatView.vue          #   chat mode: sidebar + message list + streaming + input
+│   │   └── CreativeView.vue      #   creation mode: project sidebar + control panel + preview
+│   ├── App.vue                   # root component: layout + <AppHeader> + view orchestration
+│   └── main.js                   # entry: register Pinia / ElementPlus, import styles
+├── index.html
+├── vite.config.js               # Vite config (with @ alias and /api proxy to 8080)
+└── package.json
+```
 
-1.  You can use Readme\_XXX.md to support different languages, such as Readme\_en.md, Readme\_zh.md
-2.  Gitee blog [blog.gitee.com](https://blog.gitee.com)
-3.  Explore open source project [https://gitee.com/explore](https://gitee.com/explore)
-4.  The most valuable open source project [GVP](https://gitee.com/gvp)
-5.  The manual of Gitee [https://gitee.com/help](https://gitee.com/help)
-6.  The most popular members  [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+Layering conventions:
+- `views/` holds page-level components with business state and orchestration; `components/` holds pure presentational components without business logic.
+- `api/` is split by business domain (chat/image/system); common capabilities (http/stream) are extracted separately, and `index.js` aggregates exports for backward compatibility.
+- Global reusable styles go in `styles/`; component-specific styles use `<style scoped>` isolation.
+
+##### Back-end directory structure
+
+The back-end source code is under `src/main/`, with package root `com.dcdr.agent`, using the layering "controller → orchestration/service → model & tools → repository".
+
+```
+src/main/
+├── java/com/dcdr/agent/
+│   ├── JavaAgentApplication.java   # Spring Boot bootstrap class
+│   ├── agent/                      # agent core layer
+│   │   ├── AgentOrchestrator.java  #   orchestrator: conversation flow / tool calling / SSE streaming
+│   │   ├── ActiveChatRegistry.java #   active session registry, supports stop signal dispatch
+│   │   ├── ModelRouter.java        #   model router: select provider by uiMode/type
+│   │   ├── ImageResolver.java      #   image URL → accessible address resolution
+│   │   ├── creative/               #   creation mode engine
+│   │   │   ├── CreativeEngine.java #     async image/video generation orchestration (thread pool + task state)
+│   │   │   ├── ImageGenerationWorker.java  # single image generation worker
+│   │   │   └── VideoGenerationWorker.java  # video generation worker
+│   │   ├── image/
+│   │   │   └── ChatImageService.java  # in-conversation text-to-image (via SSE)
+│   │   ├── memory/                 # context memory
+│   │   │   ├── ChatMemory.java        #     memory interface
+│   │   │   ├── InMemoryChatMemory.java #  in-memory implementation
+│   │   │   ├── Message.java           #     message carrier
+│   │   │   └── TokenEstimator.java    #     token estimation (context alert)
+│   │   └── session/                # session/project management
+│   │       ├── SessionManager.java
+│   │       └── ProjectManager.java
+│   ├── common/                     # common components
+│   │   ├── Result.java             #   unified response wrapper (code/data/message)
+│   │   ├── constant/               # enum constants
+│   │   │   ├── MessageType.java
+│   │   │   ├── ModelType.java      #     CHAT / IMAGE / VIDEO
+│   │   │   └── UIMode.java         #     chat / creative
+│   │   ├── exception/              # exception handling
+│   │   │   ├── BusinessException.java
+│   │   │   └── GlobalExceptionHandler.java  # global exception → Result
+│   │   └── util/                   # storage utilities
+│   │       ├── GeneratedImageStorage.java   # generated image persistence
+│   │       └── ReferImageStorage.java       # reference image storage
+│   ├── config/                     # Spring config
+│   │   ├── AgentProperties.java    #   agent config items
+│   │   ├── AsyncConfig.java        #   async thread pool (image generation)
+│   │   ├── CorsConfig.java         #   CORS
+│   │   ├── ModelAutoConfiguration.java    # model provider assembly
+│   │   ├── OpenApiConfig.java      #   OpenAPI/Swagger docs
+│   │   ├── ToolAutoConfiguration.java     # tool assembly
+│   │   └── ToolsProperties.java    #   tool switch config
+│   ├── controller/                 # REST controllers (for frontend /api/*)
+│   │   ├── ChatController.java     #   /api/chat/* (streaming conversation / text-to-image / stop)
+│   │   ├── SessionController.java  #   /api/sessions + /api/sessions/{id}/messages
+│   │   ├── ProjectController.java  #   /api/projects
+│   │   ├── GenerationController.java   # /api/generations
+│   │   ├── ImageController.java    #   /api/images/generate
+│   │   ├── VideoController.java     #   /api/videos/generate (async text-to-video task)
+│   │   ├── FileController.java     #   /api/files/upload
+│   │   ├── ModelController.java    #   /api/models
+│   │   └── SystemController.java   #   /api/system/thread-pool
+│   ├── dto/                        # data transfer objects (request/response)
+│   │   ├── ChatRequest.java / ChatResponse.java / ChatChunk.java  # conversation
+│   │   ├── ChatImageRequest.java   #   in-conversation text-to-image request
+│   │   ├── ImageRequest.java / ImageResponse.java / VideoRequest.java
+│   │   ├── SessionDTO.java / MessageDTO.java / ProjectDTO.java / GenerationDTO.java
+│   │   ├── ModelInfo.java          #   model info (for frontend selector)
+│   │   └── ThreadPoolStatsDTO.java
+│   ├── entity/                     # JPA persistent entities
+│   │   ├── SessionEntity.java      #   session
+│   │   ├── MessageEntity.java      #   message (with seq, supports edit/retry truncation)
+│   │   ├── ProjectEntity.java      #   creation project
+│   │   └── GenerationEntity.java   #   image generation record
+│   ├── model/                      # model Provider (SPI style)
+│   │   ├── provider/               #   interface definitions
+│   │   │   ├── ChatModelProvider.java
+│   │   │   ├── ImageModelProvider.java
+│   │   │   └── VideoModelProvider.java
+│   │   ├── registry/
+│   │   │   └── ModelRegistry.java  #   query provider by name
+│   │   ├── openai/                 #   OpenAI-compatible
+│   │   │   ├── OpenAiChatProvider.java
+│   │   │   ├── OpenAiCompatibleChatProvider.java  # third-party compat
+│   │   │   └── OpenAiImageProvider.java
+│   │   ├── qwen/                   #   Qwen
+│   │   │   ├── QwenChatProvider.java
+│   │   │   └── QwenImageProvider.java
+│   │   ├── deepseek/
+│   │   │   └── DeepseekChatProvider.java
+│   │   └── zhipu/                  #   Zhipu
+│   │       ├── ZhipuChatProvider.java
+│   │       └── ZhipuImageProvider.java
+│   ├── repository/                 # Spring Data JPA repositories
+│   │   ├── SessionRepository.java
+│   │   ├── MessageRepository.java
+│   │   ├── ProjectRepository.java
+│   │   └── GenerationRepository.java
+│   └── tool/                       # tools callable by the model (Function Calling)
+│       ├── Tool.java               #   tool interface
+│       ├── AbstractTool.java       #   abstract base class
+│       ├── ToolRegistry.java       #   registry + enable-by-LLM selection
+│       ├── CalculatorTool.java
+│       ├── ImageGenerationTool.java#   text-to-image (creation/in-conversation)
+│       ├── TimeTool.java
+│       └── WeatherTool.java
+└── resources/
+    ├── application.yml             # main config (model key, datasource, port, etc.)
+    └── application-dev.yml        # dev environment overrides
+```
+
+Layering conventions:
+- `controller/` only does parameter validation and protocol conversion; business orchestration sinks into `agent/`.
+- `model/provider/` defines SPI; vendor implementations live in independent sub-packages, uniformly registered by `ModelRegistry`; adding a model only requires a new sub-package + assembly config.
+- `entity/` and `dto/` are separated: entities target the database, DTOs target the frontend protocol, avoiding bidirectional coupling.
+- `tool/` implements pluggability via interface + abstract class + registry; the LLM calls selectively via function calling.
+
+## 🚀 Installation & Running
+
+### Requirements
+
+- JDK 17
+- Maven 3.9+
+- Node.js 18+ (front-end build)
+
+### Back-end
+
+```bash
+# in project root
+
+# if using web search (MCP/Tavily), set the API Key first (child process inherits this env var):
+#   Windows (PowerShell):  $env:TAVILY_API_KEY='tvly-your-key'
+#   Linux / macOS:         export TAVILY_API_KEY='tvly-your-key'
+
+mvn spring-boot:run
+```
+
+The back-end listens on `http://localhost:8080` by default; Swagger docs at `http://localhost:8080/swagger-ui.html`.
+
+### Front-end
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+The front-end dev server proxies `/api` to the back-end 8080 port via Vite.
+
+## ⚙️ Configuration
+
+Main configuration is in `src/main/resources/application.yml`:
+
+- **Model Key**: configure `api-key` for each chat / image / video provider under `agent.models`; supports environment variables (e.g. `OPENAI_API_KEY`, `ZHIPU_API_KEY`, `DASHSCOPE_API_KEY`).
+- **Weather tool**: `agent-tools.weather` defaults to demo mode (returns simulated data when `api-key` is `demo-key`). Configure a real Amap key:
+  ```yaml
+  agent-tools:
+    weather:
+      enabled: true
+      api-key: ${WEATHER_API_KEY:demo-key}
+  ```
+- **Datasource**: defaults to H2 file DB `./data/database/agent`; switchable to MySQL etc. via `spring.datasource`.
+- **Web search (MCP)**: this project acts as an MCP Host, connecting to an external MCP Server via `mcp.servers` for capability — **no built-in search implementation**. The sample configures the official Tavily Server (`@tavily/mcp-server`), requiring env var `TAVILY_API_KEY` first (see run steps above). The tool name is mapped to `web_search` via `aliases`; the orchestration layer and front-end need no changes.
+
+## 🛠 Built-in Tools
+
+| Tool | Description | Notes |
+|---|---|---|
+| `calculator` | mathematical expression evaluation (arithmetic) | local execution, out-of-the-box |
+| `time` | current time and date query | local execution, out-of-the-box |
+| `weather` | city weather query | demo mode by default, returns real data after key configured |
+| `image_generation` | text-to-image | reuses in-conversation image model |
+| `video_generation` | text-to-video | creation mode video sub-mode, async task orchestration |
+| `web_search` | web search (MCP) | via MCP to external Server, requires `TAVILY_API_KEY`; de-dup interception of repeated calls within the same conversation turn |
+
+Adding a tool: implement the `Tool` interface and annotate with `@Component`; it auto-registers in `ToolAutoConfiguration`. To expose it in streaming conversation, override `supportsStreaming()` to return `true`.
+
+## 📚 Documentation
+
+- [`docs/01-需求文档.md`](docs/01-需求文档.md)
+- [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
+- [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md) (knowledge base / auth / multi-agent)
+- [`docs/04-V1.1规划文档.md`](docs/04-V1.1规划文档.md) (voice STT/TTS / video generation)
+- [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md) (pure conversation / voice, future)
+- [`docs/06-V1.1发布说明（Release Notes）.md`](docs/06-V1.1发布说明（Release Notes）.md)
+- [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)
+- [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a `feat_xxx` branch
+3. Commit your code (Conventional Commits recommended)
+4. Create a Pull Request
+
+## 📄 License
+
+See the repository LICENSE file (if any) for project license.
