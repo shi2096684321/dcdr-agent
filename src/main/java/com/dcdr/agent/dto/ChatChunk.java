@@ -136,6 +136,14 @@ public class ChatChunk {
         return c;
     }
 
+    /** 完成块: 携带 token 统计 + 服务端耗时 + 引用来源(如 RAG 知识库检索片段) */
+    public static ChatChunk done(int prompt, int completion, int total, long durationMs,
+                                 java.util.List<java.util.Map<String, Object>> sources) {
+        ChatChunk c = done(prompt, completion, total, durationMs);
+        c.setSources(sources);
+        return c;
+    }
+
     public static ChatChunk error(String message, String code) {
         ChatChunk c = new ChatChunk();
         c.setType("error");

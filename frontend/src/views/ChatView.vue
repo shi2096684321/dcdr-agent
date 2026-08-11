@@ -14,6 +14,15 @@
           <template v-else>
             <span class="session-title">{{ s.title }}</span>
             <button class="rename-btn" @click.stop="startRename(s)" title="重命名">✎</button>
+            <el-dropdown class="export-dropdown" trigger="click" @command="fmt => exportSession(s, fmt)" @click.stop>
+              <button class="export-btn" @click.stop title="导出对话">⬇</button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="markdown">Markdown (.md)</el-dropdown-item>
+                  <el-dropdown-item command="json">JSON (.json)</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
             <button class="delete-btn" @click.stop="removeSession(s)" title="删除">🗑</button>
           </template>
         </div>
@@ -139,6 +148,15 @@
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
               📎
             </label>
+            <!-- 知识库选择(RAG 检索增强): 多选, 选中后对话会从知识库检索相关片段注入上下文 -->
+            <el-select v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
+                       :max-collapse-tags="1" placeholder="知识库" size="small"
+                       class="kb-select" :class="{active: selectedKbIds.length > 0}"
+                       :disabled="streaming" :loading="kbLoading"
+                       title="选择知识库后, 对话会从知识库检索相关片段增强回答"
+                       @visible-change="onKbDropdownOpen">
+              <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
+            </el-select>
           </div>
           <textarea v-model="input" placeholder="输入消息，Enter发送，Shift+Enter换行"
                     @keydown.enter.exact.prevent="send" rows="1"
@@ -162,7 +180,8 @@ import { ref, onMounted, nextTick } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
-  renameSession, deleteSession, uploadFile
+  renameSession, deleteSession, uploadFile,
+  buildExportUrl, getKnowledgeBases
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
@@ -204,6 +223,27 @@ const editBuffer = ref('')
 const selectedFiles = ref([])
 const previewImageUrl = ref(null)
 const sidebarCollapsed = ref(false)
+
+// 知识库选择(RAG 检索增强)
+const knowledgeBases = ref([])
+const selectedKbIds = ref([])
+const kbLoading = ref(false)
+
+async function loadKnowledgeBases() {
+  kbLoading.value = true
+  try {
+    knowledgeBases.value = await getKnowledgeBases()
+  } catch (e) {
+    console.error('加载知识库列表失败', e)
+  } finally {
+    kbLoading.value = false
+  }
+}
+
+// 下拉首次展开时懒加载知识库列表
+function onKbDropdownOpen(open) {
+  if (open && knowledgeBases.value.length === 0) loadKnowledgeBases()
+}
 
 function isImage(file) {
   return file.file.type.startsWith('image/')
@@ -364,7 +404,8 @@ async function send(opts = {}) {
       message: text,
       model: props.currentModel,
       images: (userMsg.images || []).map(i => i.url),
-      webSearch: props.webSearch
+      webSearch: props.webSearch,
+      knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined
     },
     (chunk) => {
       if (chunk.type === 'status') {
@@ -573,6 +614,19 @@ function stop() {
   stopChat(currentSessionId.value)
 }
 
+/** 导出对话 (F-27): 直接触发浏览器下载, 后端返回 Content-Disposition: attachment */
+function exportSession(s, format) {
+  const url = buildExportUrl(s.id, format)
+  // 用 a 标签触发下载(比 window.open 更可靠, 不会开新标签页)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  ElMessage.success(`正在导出「${s.title}」为 ${format.toUpperCase()}`)
+}
+
 /** 进入编辑态 */
 function startEdit(msg) {
   editingSeq.value = msg.seq
@@ -641,10 +695,12 @@ onMounted(() => { loadSessions() })
 .session-item:hover { background: #f5f7fa; }
 .session-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%); color: #667eea; font-weight: 500; border: 1px solid rgba(102,126,234,0.15); }
 .session-title { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rename-btn, .delete-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
-.session-item:hover .rename-btn, .session-item:hover .delete-btn { opacity: 1; }
+.rename-btn, .delete-btn, .export-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn { opacity: 1; }
 .rename-btn:hover { color: #667eea; background: rgba(102,126,234,0.1); }
+.export-btn:hover { color: #67c23a; background: rgba(103,194,58,0.1); }
 .delete-btn:hover { color: #f56c6c; background: rgba(245,108,108,0.1); }
+.export-dropdown { flex-shrink: 0; }
 .rename-input { flex: 1; font-size: 13px; border: 2px solid #667eea; border-radius: 8px; padding: 6px 10px; outline: none; min-width: 0; }
 
 /* 聊天区域 */
@@ -728,6 +784,13 @@ onMounted(() => { loadSessions() })
 .action-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; transition: all 0.2s; color: #606266; background: #f5f7fa; border: none; }
 .action-btn:hover { background: #667eea15; color: #667eea; }
 .action-btn.active { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); color: #667eea; box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+/* 知识库多选下拉: 与 action-btn 同高, 选中时高亮 */
+.kb-select { width: 130px; flex-shrink: 0; }
+.kb-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: #f5f7fa; box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
+.kb-select :deep(.el-select__wrapper:hover) { background: #667eea15; }
+.kb-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.kb-select :deep(.el-select__placeholder) { font-size: 13px; color: #606266; }
+.kb-select :deep(.el-select__tags-text) { font-size: 12px; }
 .input-box textarea { flex: 1; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; max-height: 160px; font-family: inherit; padding: 4px 0; background: transparent; }
 .send-btn { width: 40px; height: 40px; border: none; border-radius: 10px; color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
 .send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 6px 18px rgba(102,126,234,0.45); }

@@ -12,7 +12,9 @@ public enum ModelType {
     /** 视频生成模型 */
     VIDEO("视频"),
     /** 语音模型 */
-    AUDIO("语音");
+    AUDIO("语音"),
+    /** Embedding 向量化模型 (V2.1 RAG) */
+    EMBEDDING("向量");
 
     private final String label;
 

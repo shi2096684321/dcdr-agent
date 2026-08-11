@@ -32,10 +32,14 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     chunk_overlap    INT          NOT NULL DEFAULT 200,
     doc_count        INT          NOT NULL DEFAULT 0,
     status           VARCHAR(16)  NOT NULL DEFAULT 'ready',
+    visibility       VARCHAR(16)  NOT NULL DEFAULT 'USER',
     created_at       TIMESTAMP    NOT NULL DEFAULT now(),
     updated_at       TIMESTAMP    NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_kb_user ON knowledge_bases(user_id);
+CREATE INDEX IF NOT EXISTS idx_kb_visibility ON knowledge_bases(visibility);
+-- 已有部署升级: 补 visibility 列(PG 9.6+ 支持 IF NOT EXISTS)
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS visibility VARCHAR(16) NOT NULL DEFAULT 'USER';
 
 -- 4. V2.0 新增: 文档表
 CREATE TABLE IF NOT EXISTS documents (

@@ -5,6 +5,8 @@ import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.MessageDTO;
 import com.dcdr.agent.dto.SessionDTO;
+import com.dcdr.agent.service.ConversationExportService;
+import com.dcdr.agent.service.ConversationExportService.Format;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -12,8 +14,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
@@ -28,6 +34,7 @@ public class SessionController {
 
     private final SessionManager sessionManager;
     private final ChatMemory memory;
+    private final ConversationExportService exportService;
 
     @Operation(summary = "获取会话列表", description = "返回当前所有会话（不含消息内容）")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
@@ -110,5 +117,22 @@ public class SessionController {
         }
         memory.deleteFrom(id, fromSeq);
         return Result.success();
+    }
+
+    @Operation(summary = "导出对话", description = "导出会话为 Markdown 或 JSON 文件下载; V2.1 F-27")
+    @ApiResponse(responseCode = "200", description = "返回文件流, Content-Disposition 触发浏览器下载")
+    @ApiResponse(responseCode = "404", description = "会话不存在")
+    @GetMapping("/{id}/export")
+    public ResponseEntity<byte[]> export(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @Parameter(description = "导出格式: markdown | json (默认 markdown)") @RequestParam(defaultValue = "markdown") String format) {
+        Format fmt = Format.from(format);
+        ConversationExportService.ExportResult result = exportService.export(id, fmt);
+        String disposition = "attachment; filename=\"" + result.filename()
+                + "\"; filename*=UTF-8''" + java.net.URLEncoder.encode(result.filename(), StandardCharsets.UTF_8);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, result.contentType() + "; charset=UTF-8")
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition)
+                .body(result.content());
     }
 }

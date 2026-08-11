@@ -1,0 +1,43 @@
+# 构建上下文排除清单 (减小镜像构建上下文体积, 加速 docker build)
+# 排除项不会被 COPY/RADD 拷入 builder 阶段
+
+# ===== 构建产物 / 依赖 =====
+target/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ===== 运行时数据 (容器内由卷挂载, 不打包) =====
+data/
+pgdata/
+postgres-data/
+
+# ===== IDE / 编辑器 =====
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# ===== Git =====
+.git/
+.gitignore
+
+# ===== 文档 (镜像内不需要) =====
+docs/
+*.md
+README*.md
+TODO.md
+
+# ===== Docker 自身 =====
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# ===== 日志 / 临时文件 =====
+*.log
+*.txt
+hs_err_pid*
+
+# ===== 前端原型 (不入镜像) =====
+ui-prototype.html

@@ -3,8 +3,11 @@ package com.dcdr.agent.agent.prompt;
 import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.config.SystemPromptProperties.PromptFragment;
 import com.dcdr.agent.config.SystemPromptProperties.RuntimePrompts;
+import com.dcdr.agent.rag.dto.RetrievalResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
  * 平台级运行时约束 Prompt 的集中提供方（统一渲染层）。
@@ -82,6 +85,46 @@ public class RuntimePromptProvider {
         PromptFragment f = new PromptFragment();
         f.setName("runtime:current-time");
         f.setText(text);
+        return f;
+    }
+
+    /**
+     * 构造 RAG 知识库检索增强约束（name + text）。
+     * <p>引导规范来自配置（{@code agent.system-prompt.runtime.rag-context}，内联 text > 文件 text-location > 内置默认），
+     * 检索到的文档片段由调用方传入，按 [[n]] 序号拼接到引导规范末尾，作为本轮 system prompt 注入。
+     * <p>仅当 {@code results} 非空时才返回有效 PromptFragment；空列表返回 null（不注入）。
+     *
+     * @param results 知识库检索命中的片段列表（已按相似度降序）
+     * @return 拼接好的 PromptFragment；results 为空返回 null
+     */
+    public PromptFragment ragContext(List<RetrievalResult> results) {
+        if (results == null || results.isEmpty()) {
+            return null;
+        }
+        // 引导规范部分: 配置优先(内联 > 文件), 否则内置默认
+        PromptFragment base = resolve(runtime.getRagContext(),
+                "runtime:rag-context",
+                "classpath:prompts/runtime-rag-context.md",
+                "用户已选择知识库进行检索增强。下方是依据用户当前问题从知识库中检索到的相关文档片段，请严格基于这些片段作答。\n"
+                        + "【作答规范】：\n"
+                        + "1. 优先使用检索片段中的信息回答用户问题；若片段不足以回答，可结合自身知识补充，但必须明确区分。\n"
+                        + "2. 严禁编造知识库中不存在的事实、数据或引用。\n"
+                        + "3. 引用片段时在事实后用 [[n]] 标注序号（n 为下方片段序号），多片段可并列 [[n]][[m]]。\n"
+                        + "4. 回答末尾用「### 参考来源」列出所有 [[n]] 对应的文件名与片段序号。");
+        StringBuilder text = new StringBuilder(base.getText());
+        text.append("\n\n----- 检索到的知识库片段 -----\n");
+        int i = 1;
+        for (RetrievalResult r : results) {
+            String filename = r.getFilename() != null ? r.getFilename() : "未知文件";
+            text.append("[[").append(i).append("]] 文件: ").append(filename)
+                    .append("（片段 #").append(r.getChunkIndex()).append("）\n")
+                    .append(r.getContent() != null ? r.getContent() : "")
+                    .append("\n\n");
+            i++;
+        }
+        PromptFragment f = new PromptFragment();
+        f.setName(base.getName());
+        f.setText(text.toString().strip());
         return f;
     }
 

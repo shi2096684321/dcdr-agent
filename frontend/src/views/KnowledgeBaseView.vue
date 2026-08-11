@@ -1,0 +1,482 @@
+<template>
+  <div class="kb-mode">
+    <!-- 左侧: 知识库列表 -->
+    <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
+      <div class="sidebar-header">
+        <button class="new-btn gradient-bg" @click="openCreateDialog">+ 新建知识库</button>
+        <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起">«</button>
+      </div>
+      <div class="kb-list">
+        <div v-for="kb in knowledgeBases" :key="kb.id"
+             class="kb-item" :class="{active: kb.id === currentKbId}"
+             @click="selectKb(kb.id)">
+          <div class="kb-icon">{{ kb.visibility === 'PLATFORM' ? '🏛️' : '📚' }}</div>
+          <div class="kb-info">
+            <div class="kb-name">
+              {{ kb.name }}
+              <el-tag size="small" :type="kb.visibility === 'PLATFORM' ? 'warning' : 'info'" class="kb-vis-tag">
+                {{ kb.visibility === 'PLATFORM' ? '平台级' : '用户级' }}
+              </el-tag>
+            </div>
+            <div class="kb-meta">
+              <span>{{ kb.docCount || 0 }} 文档</span>
+              <span>·</span>
+              <span>{{ kb.embeddingModel || '默认' }}</span>
+            </div>
+          </div>
+          <button class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除">🗑</button>
+        </div>
+        <div v-if="!knowledgeBases.length && !loading" class="empty-tip">
+          暂无知识库<br/>点击上方按钮创建
+        </div>
+      </div>
+    </aside>
+    <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false">»</button>
+
+    <!-- 右侧: 文档管理 + 检索测试 -->
+    <div class="kb-main">
+      <template v-if="currentKb">
+        <div class="kb-toolbar">
+          <div class="kb-toolbar-left">
+            <h2 class="kb-title">{{ currentKb.name }}</h2>
+            <el-tag size="small" :type="currentKb.visibility === 'PLATFORM' ? 'warning' : 'info'">
+              {{ currentKb.visibility === 'PLATFORM' ? '平台级' : '用户级' }}
+            </el-tag>
+            <el-tag size="small" type="info">{{ currentKb.docCount || 0 }} 文档</el-tag>
+            <el-tag size="small">{{ currentKb.chunkSize || 1000 }} / {{ currentKb.chunkOverlap || 200 }}</el-tag>
+          </div>
+          <div class="kb-toolbar-right">
+            <label class="upload-btn gradient-bg" :class="{disabled: uploading}">
+              <input type="file" ref="fileInput" @change="handleUpload" accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm" hidden :disabled="uploading" />
+              <span v-if="!uploading">📎 上传文档</span>
+              <span v-else>上传中…</span>
+            </label>
+          </div>
+        </div>
+
+        <el-tabs v-model="activeTab" class="kb-tabs">
+          <!-- 文档管理 -->
+          <el-tab-pane label="文档管理" name="documents">
+            <div class="doc-list">
+              <div v-for="doc in documents" :key="doc.id" class="doc-item">
+                <div class="doc-icon">{{ fileIcon(doc.fileType) }}</div>
+                <div class="doc-info">
+                  <div class="doc-name">{{ doc.filename }}</div>
+                  <div class="doc-meta">
+                    <span>{{ formatSize(doc.fileSize) }}</span>
+                    <span>·</span>
+                    <span>{{ doc.chunkCount || 0 }} 块</span>
+                    <span>·</span>
+                    <span>{{ formatDate(doc.createdAt) }}</span>
+                  </div>
+                </div>
+                <div class="doc-status">
+                  <el-tag :type="statusTagType(doc.status)" size="small">
+                    {{ statusLabel(doc.status) }}
+                  </el-tag>
+                  <el-tooltip v-if="doc.errorMsg" :content="doc.errorMsg" placement="top">
+                    <span class="error-hint">⚠</span>
+                  </el-tooltip>
+                </div>
+                <div class="doc-actions">
+                  <button class="doc-action-btn" @click="reprocessDoc(doc)" title="重新入库"
+                          :disabled="doc.status === 'indexing'">↻</button>
+                  <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">🗑</button>
+                </div>
+              </div>
+              <div v-if="!documents.length && !docsLoading" class="empty-docs">
+                <div class="empty-icon">📄</div>
+                <p>暂无文档</p>
+                <span>支持 PDF / Word / TXT / Markdown / HTML</span>
+              </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- 检索测试 -->
+          <el-tab-pane label="检索测试" name="search">
+            <div class="search-panel">
+              <div class="search-form">
+                <el-input v-model="searchQuery" type="textarea" :rows="2"
+                          placeholder="输入测试问题，查看检索到的文档片段及相似度分数"
+                          @keydown.ctrl.enter="runSearch" />
+                <div class="search-options">
+                  <span class="opt-label">Top-K:</span>
+                  <el-input-number v-model="searchTopK" :min="1" :max="20" :step="1" size="small" />
+                  <button class="search-btn gradient-bg" @click="runSearch" :disabled="searching || !searchQuery.trim()">
+                    <span v-if="!searching">🔍 检索</span>
+                    <span v-else>检索中…</span>
+                  </button>
+                </div>
+              </div>
+
+              <div class="search-results">
+                <div v-for="(r, idx) in searchResults" :key="r.chunkId" class="result-item">
+                  <div class="result-header">
+                    <span class="result-rank">#{{ idx + 1 }}</span>
+                    <span class="result-score" :style="{color: scoreColor(r.score)}">
+                      相似度 {{ (r.score * 100).toFixed(1) }}%
+                    </span>
+                    <el-tag size="small" type="info">{{ r.filename || r.documentId }}</el-tag>
+                    <span class="result-chunk">块 #{{ r.chunkIndex }}</span>
+                  </div>
+                  <div class="result-content">{{ r.content }}</div>
+                </div>
+                <div v-if="!searchResults.length && searchDone" class="empty-results">
+                  未检索到相关片段（可调低相似度阈值或换问题重试）
+                </div>
+                <div v-if="!searchResults.length && !searchDone" class="empty-results">
+                  输入问题并点击检索，查看 RAG 检索效果
+                </div>
+              </div>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </template>
+
+      <div v-else class="kb-empty">
+        <div class="empty-icon large">📚</div>
+        <h2>知识库管理</h2>
+        <p>选择左侧知识库或新建一个，开始管理文档与检索测试</p>
+        <button class="new-here-btn gradient-bg" @click="openCreateDialog">+ 新建知识库</button>
+      </div>
+    </div>
+
+    <!-- 创建知识库弹窗 -->
+    <el-dialog v-model="createDialogVisible" title="新建知识库" width="480px">
+      <el-form :model="createForm" label-width="80px">
+        <el-form-item label="名称" required>
+          <el-input v-model="createForm.name" placeholder="如：产品手册" maxlength="50" show-word-limit />
+        </el-form-item>
+        <el-form-item label="描述">
+          <el-input v-model="createForm.description" type="textarea" :rows="3"
+                    placeholder="可选，知识库用途说明" maxlength="500" show-word-limit />
+        </el-form-item>
+        <el-form-item label="可见性" required>
+          <el-radio-group v-model="createForm.visibility">
+            <el-radio value="USER">用户级</el-radio>
+            <el-radio value="PLATFORM">平台级</el-radio>
+          </el-radio-group>
+          <div class="vis-tip">
+            <span v-if="createForm.visibility === 'PLATFORM'">平台级：由管理员维护，对所有对话无感注入 RAG 检索范围（用户不可见）</span>
+            <span v-else>用户级：用户私有，需在对话时手动选择才会参与 RAG 检索</span>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmCreate" :loading="creating">创建</el-button>
+      </template>
+    </el-dialog>
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  getKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase,
+  listDocuments, uploadDocument, deleteDocument, reprocessDocument,
+  searchKnowledgeBase
+} from '@/api'
+
+const knowledgeBases = ref([])
+const currentKbId = ref(null)
+const currentKb = computed(() => knowledgeBases.value.find(k => k.id === currentKbId.value))
+const documents = ref([])
+const loading = ref(false)
+const docsLoading = ref(false)
+const uploading = ref(false)
+const sidebarCollapsed = ref(false)
+const fileInput = ref(null)
+const activeTab = ref('documents')
+
+// 创建弹窗
+const createDialogVisible = ref(false)
+const createForm = ref({ name: '', description: '', visibility: 'USER' })
+const creating = ref(false)
+
+// 检索测试
+const searchQuery = ref('')
+const searchTopK = ref(5)
+const searchResults = ref([])
+const searching = ref(false)
+const searchDone = ref(false)
+
+async function loadKnowledgeBases() {
+  loading.value = true
+  try {
+    knowledgeBases.value = await getKnowledgeBases()
+    if (knowledgeBases.value.length && !currentKbId.value) {
+      selectKb(knowledgeBases.value[0].id)
+    }
+  } catch (e) {
+    ElMessage.error('加载知识库列表失败：' + (e?.message || '未知错误'))
+  } finally {
+    loading.value = false
+  }
+}
+
+async function selectKb(id) {
+  if (currentKbId.value === id) return
+  currentKbId.value = id
+  searchResults.value = []
+  searchDone.value = false
+  await loadDocuments()
+}
+
+async function loadDocuments() {
+  if (!currentKbId.value) return
+  docsLoading.value = true
+  try {
+    documents.value = await listDocuments(currentKbId.value)
+  } catch (e) {
+    ElMessage.error('加载文档列表失败：' + (e?.message || '未知错误'))
+    documents.value = []
+  } finally {
+    docsLoading.value = false
+  }
+}
+
+function openCreateDialog() {
+  createForm.value = { name: '', description: '', visibility: 'USER' }
+  createDialogVisible.value = true
+}
+
+async function confirmCreate() {
+  if (!createForm.value.name.trim()) {
+    ElMessage.warning('请输入知识库名称')
+    return
+  }
+  creating.value = true
+  try {
+    const kb = await createKnowledgeBase({
+      name: createForm.value.name.trim(),
+      description: createForm.value.description || null,
+      visibility: createForm.value.visibility || 'USER'
+    })
+    knowledgeBases.value.unshift(kb)
+    createDialogVisible.value = false
+    ElMessage.success('知识库已创建')
+    selectKb(kb.id)
+  } catch (e) {
+    ElMessage.error('创建失败：' + (e?.message || '未知错误'))
+  } finally {
+    creating.value = false
+  }
+}
+
+async function removeKb(kb) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除知识库「${kb.name}」吗？所有文档与向量将一并删除，不可恢复。`,
+      '删除知识库',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' }
+    )
+  } catch { return }
+  try {
+    await deleteKnowledgeBase(kb.id)
+    knowledgeBases.value = knowledgeBases.value.filter(k => k.id !== kb.id)
+    if (currentKbId.value === kb.id) {
+      currentKbId.value = null
+      documents.value = []
+    }
+    ElMessage.success('已删除')
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e?.message || '未知错误'))
+  }
+}
+
+// ===== 文档上传 =====
+async function handleUpload(e) {
+  const file = e.target.files?.[0]
+  if (!file || !currentKbId.value) return
+  uploading.value = true
+  try {
+    await uploadDocument(currentKbId.value, file)
+    ElMessage.success(`${file.name} 上传成功，正在异步入库`)
+    await loadDocuments()
+    // 同步刷新 KB 列表的 docCount
+    const kb = knowledgeBases.value.find(k => k.id === currentKbId.value)
+    if (kb) kb.docCount = (kb.docCount || 0) + 1
+  } catch (err) {
+    ElMessage.error('上传失败：' + (err?.response?.data?.message || err?.message || '未知错误'))
+  } finally {
+    uploading.value = false
+    if (fileInput.value) fileInput.value.value = ''
+  }
+}
+
+async function removeDoc(doc) {
+  try {
+    await ElMessageBox.confirm(`确定删除文档「${doc.filename}」吗？`, '删除文档',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' })
+  } catch { return }
+  try {
+    await deleteDocument(currentKbId.value, doc.id)
+    documents.value = documents.value.filter(d => d.id !== doc.id)
+    const kb = knowledgeBases.value.find(k => k.id === currentKbId.value)
+    if (kb) kb.docCount = Math.max(0, (kb.docCount || 0) - 1)
+    ElMessage.success('已删除')
+  } catch (e) {
+    ElMessage.error('删除失败：' + (e?.message || '未知错误'))
+  }
+}
+
+async function reprocessDoc(doc) {
+  try {
+    await reprocessDocument(currentKbId.value, doc.id)
+    doc.status = 'pending'
+    ElMessage.success(`文档「${doc.filename}」已触发重新入库`)
+    // 轮询状态(简单实现, 2 秒后查一次)
+    setTimeout(() => loadDocuments(), 2000)
+  } catch (e) {
+    ElMessage.error('重新入库失败：' + (e?.message || '未知错误'))
+  }
+}
+
+// ===== 检索测试 =====
+async function runSearch() {
+  if (!searchQuery.value.trim() || !currentKbId.value) return
+  searching.value = true
+  searchDone.value = false
+  searchResults.value = []
+  try {
+    searchResults.value = await searchKnowledgeBase(currentKbId.value, searchQuery.value.trim(), searchTopK.value)
+    searchDone.value = true
+  } catch (e) {
+    ElMessage.error('检索失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+  } finally {
+    searching.value = false
+  }
+}
+
+// ===== 工具方法 =====
+function fileIcon(type) {
+  const map = { pdf: '📕', docx: '📘', doc: '📘', txt: '📄', md: '📝', markdown: '📝', html: '🌐', htm: '🌐' }
+  return map[type] || '📄'
+}
+
+function formatSize(bytes) {
+  if (!bytes) return '-'
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+function formatDate(t) {
+  if (!t) return '-'
+  return String(t).replace('T', ' ').slice(0, 16)
+}
+
+function statusLabel(s) {
+  return { pending: '待解析', indexing: '解析中', completed: '已就绪', failed: '失败' }[s] || s
+}
+
+function statusTagType(s) {
+  return { pending: 'info', indexing: 'warning', completed: 'success', failed: 'danger' }[s] || 'info'
+}
+
+function scoreColor(s) {
+  if (s >= 0.7) return '#67c23a'
+  if (s >= 0.5) return '#e6a23c'
+  return '#909399'
+}
+
+onMounted(() => { loadKnowledgeBases() })
+</script>
+
+<style scoped>
+.kb-mode { flex: 1; display: flex; overflow: hidden; height: 100%; position: relative; }
+
+/* 侧边栏 */
+.sidebar { width: 280px; background: linear-gradient(180deg, #ffffff 0%, #f8f9fc 100%); border-right: 1px solid #e8ecf4; display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(0,0,0,0.03); transition: width 0.25s ease; }
+.sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
+.sidebar-header { padding: 20px 16px; border-bottom: 1px solid #f0f2f7; position: relative; }
+.collapse-btn { position: absolute; right: 10px; top: 22px; width: 26px; height: 26px; border: none; border-radius: 6px; background: #f0f2f7; color: #999; cursor: pointer; font-size: 16px; line-height: 1; }
+.collapse-btn:hover { background: rgba(102,126,234,0.12); color: #667eea; }
+.sidebar-expand { position: absolute; left: 0; top: 14px; z-index: 50; width: 26px; height: 36px; border: none; border-radius: 0 8px 8px 0; background: #667eea; color: #fff; cursor: pointer; font-size: 16px; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
+.new-btn { width: 100%; height: 44px; color: #fff; border: none; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.35); }
+.new-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102, 126, 234, 0.45); }
+
+.kb-list { flex: 1; overflow-y: auto; padding: 12px 10px; }
+.kb-list::-webkit-scrollbar { width: 4px; }
+.kb-list::-webkit-scrollbar-thumb { background: #dcdfe6; border-radius: 4px; }
+.kb-item { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; transition: all 0.2s ease; }
+.kb-item:hover { background: #f5f7fa; }
+.kb-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%); border: 1px solid rgba(102,126,234,0.15); }
+.kb-icon { font-size: 20px; flex-shrink: 0; }
+.kb-info { flex: 1; min-width: 0; }
+.kb-name { font-size: 14px; color: #303133; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+.kb-name .kb-vis-tag { transform: scale(0.85); transform-origin: left center; flex-shrink: 0; }
+.kb-item.active .kb-name { color: #667eea; }
+.kb-meta { font-size: 11px; color: #909399; margin-top: 2px; display: flex; gap: 4px; }
+.kb-delete-btn { border: none; background: transparent; cursor: pointer; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; font-size: 13px; flex-shrink: 0; transition: all 0.2s; }
+.kb-item:hover .kb-delete-btn { opacity: 1; }
+.kb-delete-btn:hover { color: #f56c6c; background: rgba(245,108,108,0.1); }
+.empty-tip { text-align: center; color: #c0c4cc; font-size: 13px; line-height: 1.8; padding: 40px 10px; }
+
+/* 主区域 */
+.kb-main { flex: 1; display: flex; flex-direction: column; background: #fafbfc; overflow: hidden; }
+.kb-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; background: #fff; border-bottom: 1px solid #e8ecf4; gap: 12px; }
+.kb-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.kb-title { font-size: 18px; font-weight: 600; color: #1a1a2e; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
+.upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(102,126,234,0.4); }
+.upload-btn.disabled { opacity: 0.5; cursor: not-allowed; }
+
+.kb-tabs { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 0 24px; }
+.kb-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
+.kb-tabs :deep(.el-tabs__content) { flex: 1; overflow-y: auto; padding-top: 12px; }
+.kb-tabs :deep(.el-tab-pane) { height: 100%; }
+
+/* 文档列表 */
+.doc-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 24px; }
+.doc-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: #fff; border: 1px solid #e8ecf4; border-radius: 10px; transition: all 0.2s; }
+.doc-item:hover { border-color: #667eea44; box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.doc-icon { font-size: 24px; flex-shrink: 0; }
+.doc-info { flex: 1; min-width: 0; }
+.doc-name { font-size: 14px; color: #303133; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-meta { font-size: 11px; color: #909399; margin-top: 4px; display: flex; gap: 4px; }
+.doc-status { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.error-hint { color: #f56c6c; cursor: help; }
+.doc-actions { display: flex; gap: 4px; flex-shrink: 0; }
+.doc-action-btn { border: none; background: #f5f7fa; cursor: pointer; font-size: 14px; width: 30px; height: 30px; border-radius: 8px; color: #606266; transition: all 0.2s; }
+.doc-action-btn:hover { background: #667eea15; color: #667eea; }
+.doc-action-btn.danger:hover { background: #f56c6c15; color: #f56c6c; }
+.doc-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.empty-docs { text-align: center; padding: 80px 20px; color: #c0c4cc; }
+.empty-icon { font-size: 48px; margin-bottom: 12px; }
+.empty-docs p { font-size: 15px; margin: 0 0 6px; color: #909399; }
+.empty-docs span { font-size: 12px; }
+
+/* 检索测试 */
+.search-panel { display: flex; flex-direction: column; gap: 16px; padding-bottom: 24px; }
+.search-form { background: #fff; border: 1px solid #e8ecf4; border-radius: 12px; padding: 16px; }
+.search-options { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.opt-label { font-size: 13px; color: #606266; }
+.search-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 18px; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; margin-left: auto; transition: all 0.2s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
+.search-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.search-results { display: flex; flex-direction: column; gap: 10px; }
+.result-item { background: #fff; border: 1px solid #e8ecf4; border-radius: 10px; padding: 14px 16px; transition: all 0.2s; }
+.result-item:hover { border-color: #667eea44; box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.result-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+.result-rank { font-size: 13px; font-weight: 700; color: #667eea; background: #667eea15; padding: 2px 10px; border-radius: 12px; }
+.result-score { font-size: 13px; font-weight: 600; }
+.result-chunk { font-size: 11px; color: #c0c4cc; margin-left: auto; }
+.result-content { font-size: 13px; line-height: 1.7; color: #303133; background: #f8f9fc; padding: 10px 12px; border-radius: 8px; border-left: 3px solid #667eea33; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; }
+
+.empty-results { text-align: center; padding: 60px 20px; color: #c0c4cc; font-size: 13px; }
+
+/* 空状态 */
+.kb-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: #909399; }
+.kb-empty .empty-icon.large { font-size: 72px; margin-bottom: 16px; }
+.kb-empty h2 { font-size: 22px; color: #303133; margin: 0 0 8px; }
+.kb-empty p { font-size: 14px; margin: 0 0 24px; }
+.new-here-btn { height: 40px; padding: 0 24px; border: none; border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 4px 15px rgba(102,126,234,0.35); }
+
+/* 可见性提示 */
+.vis-tip { margin-top: 6px; font-size: 12px; color: #909399; line-height: 1.5; }
+</style>

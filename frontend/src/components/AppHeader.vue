@@ -8,6 +8,7 @@
       <div class="mode-switch">
         <div class="mode-tab" :class="{active: mode==='chat'}" @click="$emit('update:mode', 'chat')">对话</div>
         <div class="mode-tab" :class="{active: mode==='creative'}" @click="$emit('update:mode', 'creative')">创作</div>
+        <div class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
       </div>
       <button class="web-search-toggle" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
               @click="emit('update:webSearch', !webSearch)">

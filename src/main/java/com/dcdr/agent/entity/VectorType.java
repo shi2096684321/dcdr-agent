@@ -65,16 +65,33 @@ public class VectorType implements UserType<float[]> {
         if (value == null) {
             st.setNull(index, Types.OTHER);
         } else {
-            StringBuilder sb = new StringBuilder("[");
-            for (int i = 0; i < value.length; i++) {
-                if (i > 0) {
-                    sb.append(',');
-                }
-                sb.append(value[i]);
-            }
-            sb.append(']');
-            st.setObject(index, sb.toString(), Types.OTHER);
+            st.setObject(index, toVectorString(value), Types.OTHER);
         }
+    }
+
+    /**
+     * 将 float[] 序列化为 PgVector 文本格式 (如 {@code [0.1,0.2,0.3]})。
+     * <p>
+     * 供 Repository 原生 SQL 检索时构造 {@code CAST(:queryVec AS vector)} 参数使用,
+     * 与 {@link #nullSafeGet} 反向互转, 保持格式一致。
+     *
+     * @param value 向量, null 返回 null
+     * @return PgVector 文本格式字符串
+     */
+    public static String toVectorString(float[] value) {
+        if (value == null) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder(value.length + 2);
+        sb.append('[');
+        for (int i = 0; i < value.length; i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(value[i]);
+        }
+        sb.append(']');
+        return sb.toString();
     }
 
     @Override

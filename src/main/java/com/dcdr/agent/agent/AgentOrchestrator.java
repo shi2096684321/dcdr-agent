@@ -14,6 +14,8 @@ import com.dcdr.agent.dto.SessionDTO;
 import com.dcdr.agent.agent.image.ChatImageService;
 import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.model.provider.ChatModelProvider;
+import com.dcdr.agent.rag.config.RagProperties;
+import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.ToolInfo;
 import com.dcdr.agent.model.registry.ModelRegistry;
@@ -59,6 +61,7 @@ public class AgentOrchestrator {
     private final ToolRegistry toolRegistry;
     private final SystemPromptResolver systemPromptResolver;
     private final RuntimePromptProvider runtimePromptProvider;
+    private final RagProperties ragProperties;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -84,7 +87,8 @@ public class AgentOrchestrator {
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
                              ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
-                             RuntimePromptProvider runtimePromptProvider) {
+                             RuntimePromptProvider runtimePromptProvider,
+                             RagProperties ragProperties) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -96,6 +100,7 @@ public class AgentOrchestrator {
         this.toolRegistry = toolRegistry;
         this.systemPromptResolver = systemPromptResolver;
         this.runtimePromptProvider = runtimePromptProvider;
+        this.ragProperties = ragProperties;
     }
 
     /**
@@ -205,8 +210,11 @@ public class AgentOrchestrator {
                         final String[] toolError = new String[1];
                         // 非图片工具(如 calculator/weather)的执行结果, 供落库时并入助手消息, 保证可见且可持久化
                         final List<String> toolResults = new ArrayList<>();
-                        // 本轮联网搜索等工具产生的来源(引用), 供 done 块下发与落库
+                        // 本轮联网搜索/知识库检索等工具产生的来源(引用), 供 done 块下发与落库
                         final List<Map<String, Object>> collectedSources = new ArrayList<>();
+                        // Agentic RAG: 合并用户选的知识库 + 平台级配置的知识库 ID,
+                        // 通过 ThreadLocal 传给 KnowledgeSearchTool(AgentOrchestrator → executeTools → toolRegistry → tool)
+                        final List<String> effectiveKbIds = buildEffectiveKbIds(request);
 
                         // 主链路: 转发模型流式分块并采集 usage / 文本 / 工具调用
                         // 采集逻辑(每一轮模型流复用同一 collector, 写入 toolCallsHolder[0])
@@ -243,7 +251,7 @@ public class AgentOrchestrator {
                         roundToolCalls[0] = new ArrayList<>(toolCallsHolder[0]);
                         Flux<ChatChunk> toolFlux = Flux
                                 .defer(() -> executeTools(roundToolCalls[0], accumulated.toString(),
-                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage()))
+                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds))
                                 .subscribeOn(Schedulers.boundedElastic());
 
                         // 工具循环尾部: 若模型发起工具调用, 将本轮工具结果回填 history 后再发起下一轮生成;
@@ -299,7 +307,7 @@ public class AgentOrchestrator {
                                 // 下一轮执行本轮新工具(多步 agentic), 再回灌
                                 Flux<ChatChunk> nextTool = Flux
                                         .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage()))
+                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds))
                                         .subscribeOn(Schedulers.boundedElastic());
                                 // 下一轮: 不再追加当前 user 消息(上下文已在 history)
                                 Flux<ChatChunk> next = nextTool.thenMany(provider.stream(request, history, false).doOnNext(collector));
@@ -481,7 +489,7 @@ public class AgentOrchestrator {
     private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
                                         List<String> outUrls, List<String> outPrompts, String[] outError,
                                         List<String> outToolResults, List<Map<String, Object>> collectedSources,
-                                        String userQuery) {
+                                        String userQuery, List<String> knowledgeBaseIds) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
@@ -511,6 +519,10 @@ public class AgentOrchestrator {
                 ? Flux.just(ChatChunk.status("正在生成图片，请稍候…"))
                 : Flux.empty();
         return Flux.concat(head, Flux.defer(() -> {
+            // Agentic RAG: 在 Flux 订阅时(boundedElastic 线程)注入知识库 ID,
+            // 与工具执行在同一线程, finally 清除防止线程复用泄漏
+            KnowledgeSearchContextHolder.set(knowledgeBaseIds);
+            try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
             for (ChatChunk tc : effectiveCalls) {
@@ -610,6 +622,10 @@ public class AgentOrchestrator {
                 log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
             }
             return Flux.fromIterable(chunks);
+            } finally {
+                // 清除 ThreadLocal, 防止线程池线程复用导致知识库 ID 泄漏到下一轮无关对话
+                KnowledgeSearchContextHolder.clear();
+            }
         }));
     }
 
@@ -1150,7 +1166,13 @@ public class AgentOrchestrator {
         if (appendedStatement[0] != null) {
             tail.add(ChatChunk.chunk(appendedStatement[0]));
         }
-        tail.add(ChatChunk.done(p, c, t, durationMs));
+        // done 块: collectedSources 含联网搜索/知识库检索的引用来源(Agentic RAG 模式下由工具返回),
+        // 随 done 下发给前端渲染引用卡片
+        if (collectedSources != null && !collectedSources.isEmpty()) {
+            tail.add(ChatChunk.done(p, c, t, durationMs, collectedSources));
+        } else {
+            tail.add(ChatChunk.done(p, c, t, durationMs));
+        }
         if ("length".equals(fr)) {
             tail.add(ChatChunk.contextWarning("回答已达长度上限(max_tokens)被截断，可尝试简化问题或开启新对话。"));
         } else if ("insufficient_system_resource".equals(fr)) {
@@ -1208,6 +1230,11 @@ public class AgentOrchestrator {
         // 3.2 平台级运行时约束(生图策略 + 联网搜索引导), 与同步 chatSync 路径共用, 保证两条链路注入一致
         history = injectRuntimeSystemPrompts(history, provider, request);
 
+        // 3.3 RAG 知识库检索增强: 已改为 Agentic 模式(混合式)。
+        //     用户选的知识库 + 平台级配置的知识库, 通过 ThreadLocal 传给 KnowledgeSearchTool,
+        //     由 LLM 自主决定是否调用 knowledge_base_search 工具检索。
+        //     不再在此处强制检索 + system prompt 注入。
+
         // 4.1 图片自动路由(必须先执行: 会 mutate request —— 解析 base64 / 决定最终回答模型)
         //      —— 必须在保存用户消息之前完成, 以便把路由元信息(模型/状态)一并落库
         String userOriginal = request.getMessage();   // 捕获用户原话(模型路由前)
@@ -1238,6 +1265,28 @@ public class AgentOrchestrator {
         return new ChatContext(sessId, history, provider, imageFallbackWarning, imageUnrecognizedError,
                 prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
                 contextForEstimate, nearLimit, est);
+    }
+
+    /**
+     * 合并用户选的知识库 ID + 平台级配置的知识库 ID, 供 Agentic RAG 工具使用。
+     * <p>平台级知识库(visibility=PLATFORM)对所有对话无感可用, 通过 agent.rag.platform-kb-ids 配置;
+     * 用户级知识库由前端选择, 通过 ChatRequest.knowledgeBaseIds 传入。
+     */
+    private List<String> buildEffectiveKbIds(ChatRequest request) {
+        List<String> ids = new ArrayList<>();
+        // 平台级知识库(无感注入)
+        if (ragProperties.getPlatformKbIds() != null) {
+            ids.addAll(ragProperties.getPlatformKbIds());
+        }
+        // 用户选的知识库
+        if (request.getKnowledgeBaseIds() != null) {
+            for (String kbId : request.getKnowledgeBaseIds()) {
+                if (!ids.contains(kbId)) {
+                    ids.add(kbId);
+                }
+            }
+        }
+        return ids;
     }
 
     /**
@@ -1280,6 +1329,10 @@ public class AgentOrchestrator {
         // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导),
         // 与流式 chat 路径完全一致
         history = injectRuntimeSystemPrompts(history, provider, request);
+
+        // RAG 已改为 Agentic 模式(混合式): chatSync 路径同样由 LLM 决定是否调用 knowledge_base_search 工具,
+        // 不再在此处强制检索。同步路径暂不支持工具循环(chatSync 为简化路径, 仅 agent 模式才走工具),
+        // 若需 Agentic RAG 请使用流式 /api/chat/stream 端点。
 
         boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
         Message userMsg = Message.user(userOriginal, originalImages);

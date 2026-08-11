@@ -75,5 +75,7 @@ public class SystemPromptProperties {
         private PromptFragment webSearch = new PromptFragment();
         /** 多轮对话规范：只回答当前提问、历史仅作参考，避免重复历史答案 */
         private PromptFragment multiTurn = new PromptFragment();
+        /** RAG 知识库检索增强引导：用户选择知识库后, 指导模型基于检索片段作答与引用规范 */
+        private PromptFragment ragContext = new PromptFragment();
     }
 }

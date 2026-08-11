@@ -45,4 +45,12 @@ public class ChatRequest {
     /** 是否开启联网搜索(用户意图, 影响是否提示模型优先使用 web_search) */
     @Schema(description = "是否开启联网搜索（用户意图，影响是否优先使用 web_search 工具）", defaultValue = "false")
     private boolean webSearch = false;
+
+    /**
+     * 知识库 ID 列表(RAG 检索增强, 可选)。
+     * <p>非空时, 后端在调用模型前会从这些知识库检索与用户问题相关的文档片段,
+     * 拼装为 system prompt 上下文注入, 使模型基于知识库内容作答。
+     */
+    @Schema(description = "知识库 ID 列表（RAG 检索增强，可选；非空时从对应知识库检索相关片段注入上下文）")
+    private List<String> knowledgeBaseIds;
 }

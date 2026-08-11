@@ -2,6 +2,7 @@ package com.dcdr.agent.agent.session;
 
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
+import com.dcdr.agent.config.AgentProperties;
 import com.dcdr.agent.dto.MessageDTO;
 import com.dcdr.agent.dto.SessionDTO;
 import com.dcdr.agent.entity.MessageEntity;
@@ -39,6 +40,7 @@ public class SessionManager {
     private final SessionRepository sessionRepository;
     private final MessageRepository messageRepository;
     private final ChatMemory memory;
+    private final AgentProperties properties;
 
     /** 创建新会话 */
     @Transactional
@@ -49,7 +51,7 @@ public class SessionManager {
         entity.setId(id);
         entity.setTitle(title != null ? title : DEFAULT_TITLE);
         entity.setTitleAuto(true);
-        entity.setModel(model);
+        entity.setModel(model != null ? model : properties.getModels().getDefaultChat());
         if (systemPrompt != null && systemPrompt.length() > MAX_SYSTEM_PROMPT_LEN) {
             throw new IllegalArgumentException(
                     "systemPrompt 过长(上限 " + MAX_SYSTEM_PROMPT_LEN + " 字符), 当前 " + systemPrompt.length());

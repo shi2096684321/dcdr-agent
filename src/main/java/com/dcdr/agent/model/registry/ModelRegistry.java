@@ -131,14 +131,18 @@ public class ModelRegistry {
      */
     public List<ModelInfo> listModels() {
         List<ModelInfo> list = new ArrayList<>();
-        chatProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
-        imageProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
-        videoProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), p.capabilities())));
-        audioProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null)));
+        chatProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null, isDefaultChat(p.getName()))));
+        imageProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null, false)));
+        videoProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), p.capabilities(), false)));
+        audioProviders.values().forEach(p -> list.add(toModelInfo(p.getName(), p.getType(), p.getProvider(), p.getLabel(), null, false)));
         return list;
     }
 
-    private ModelInfo toModelInfo(String name, ModelType type, String provider, String label, List<String> capabilities) {
+    private boolean isDefaultChat(String name) {
+        return defaultChatProvider != null && defaultChatProvider.equals(name);
+    }
+
+    private ModelInfo toModelInfo(String name, ModelType type, String provider, String label, List<String> capabilities, boolean isDefault) {
         ModelInfo info = new ModelInfo();
         info.setName(name);
         info.setType(type);
@@ -147,6 +151,7 @@ public class ModelRegistry {
         info.setCapabilities(capabilities != null ? capabilities : Collections.emptyList());
         info.setEnabled(true);
         info.setUiMode(UIMode.fromModelType(type).getValue());
+        info.setDefault(isDefault);
         return info;
     }
 

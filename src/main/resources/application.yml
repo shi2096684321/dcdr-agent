@@ -48,7 +48,7 @@ agent:
   # 文生图/图生图：维度一作为前置增强拼到用户 prompt 前（图像模型不支持 system 消息）。
   system-prompt:
     # L1 全局默认（所有场景兜底，可为空）
-    default-prompt: "你的名字叫：多吃点肉"
+    default-prompt: "你的名字叫：多吃点肉(dcdr-agent)，你的作者是：石准。作者详情可以查询内部文档"
     scenes:
       # 聊天场景：长文本外置到文件，改 prompt 只改 prompts/chat.txt 即可
       chat-location: "classpath:prompts/chat.md"
@@ -72,6 +72,10 @@ agent:
       multi-turn:
         name: "runtime:multi-turn"
         text-location: "classpath:prompts/runtime-multi-turn.md"
+      # RAG 知识库检索增强引导(用户选择知识库时注入, 检索片段由代码动态拼接)
+      rag-context:
+        name: "runtime:rag-context"
+        text-location: "classpath:prompts/runtime-rag-context.md"
 
   # 记忆配置
   memory:
@@ -80,6 +84,62 @@ agent:
     # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
     context-token-limit: 8000
     context-warn-ratio: 0.8
+
+  # ===== V2.1 RAG 知识库配置 =====
+  # 仅在 pg profile 下生效真实向量检索; H2 默认 profile 不支持 pgvector,
+  # 上传/检索会因 VectorType 列无法识别而失败, 请切换 --spring.profiles.active=pg
+  rag:
+    enabled: true
+    # 平台级知识库 ID 列表(visibility=PLATFORM): 对所有对话无感可用, 用户无需选择
+    # 管理员将知识库 visibility 设为 PLATFORM 后, 把 ID 填入此处即可全局生效
+    platform-kb-ids: ["kb_1786443109991fff8909"]
+    storage-dir: ./data/kb
+    document:
+      max-file-size: 20MB
+      supported-formats: [pdf, docx, txt, md, markdown, html, htm]
+      max-docs-per-kb: 100
+    splitter:
+      strategy: recursive
+      chunk-size: 1000
+      chunk-overlap: 200
+    embedding:
+      # 默认 Embedding provider; 维度必须 = 1536 (与 document_chunks.embedding VECTOR(1536) 一致)
+      default-provider: qwen-embedding
+      providers:
+        # 通义 DashScope text-embedding-v4 (Qwen3-Embedding, 支持 1536 维, 与 schema VECTOR(1536) 对齐)
+        # 注: v3 仅支持 1024/768/512 维, 传 1536 会 400; v4 是推荐模型, 支持 1536 且多语种更强
+        - name: qwen-embedding
+          enabled: true
+          provider: qwen
+          api-key: ${DASHSCOPE_API_KEY:demo-key}
+          base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+          model: qwen3.7-text-embedding
+          dimensions: 1536
+          # v4 单次请求最大 10 条(官方限制), v3 为 25; 此处按 v4 限制
+          batch-size: 10
+        # OpenAI text-embedding-3-small (1536 维); 配置有效 OPENAI_API_KEY 后启用
+        - name: openai-embedding
+          enabled: false
+          provider: openai
+          api-key: ${OPENAI_API_KEY:sk-demo-key}
+          base-url: https://api.openai.com
+          model: text-embedding-3-small
+          dimensions: 1536
+          batch-size: 100
+        # 智谱 embedding-2 (1024 维, 与 schema VECTOR(1536) 不匹配, 启用前需同步改 schema 维度)
+        - name: zhipu-embedding
+          enabled: false
+          provider: zhipu
+          api-key: ${ZHIPU_API_KEY:demo-key}
+          base-url: https://open.bigmodel.cn/api/paas/v4
+          model: embedding-2
+          dimensions: 1024
+          batch-size: 64
+    vector-store:
+      type: pgvector
+    retrieval:
+      top-k: 5
+      min-score: 0.3
 
   # 文件存储配置
   storage:
@@ -246,7 +306,7 @@ springdoc:
 # 日志
 logging:
   level:
-    com.dcdr.agent: DEBUG
-    org.springframework.ai: DEBUG
+    com.dcdr.agent: info
+    org.springframework.ai: info
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

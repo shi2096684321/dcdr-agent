@@ -41,4 +41,7 @@ public class ModelInfo {
     /** 对应的UI模式: chat / creative */
     @Schema(description = "对应的 UI 模式", allowableValues = {"chat", "creative"}, example = "chat")
     private String uiMode;
+    /** 是否为默认对话模型(后端配置 model.default-chat) */
+    @Schema(description = "是否为默认对话模型", example = "false")
+    private boolean isDefault;
 }

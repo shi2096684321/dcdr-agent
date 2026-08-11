@@ -10,4 +10,10 @@ import java.util.List;
 public interface KnowledgeBaseRepository extends JpaRepository<KnowledgeBaseEntity, String> {
 
     List<KnowledgeBaseEntity> findByUserIdOrderByUpdatedAtDesc(String userId);
+
+    /** 查询用户级知识库(visibility=USER), 按更新时间倒序 */
+    List<KnowledgeBaseEntity> findByVisibilityAndUserIdOrderByUpdatedAtDesc(String visibility, String userId);
+
+    /** 查询平台级知识库(visibility=PLATFORM), 按更新时间倒序 */
+    List<KnowledgeBaseEntity> findByVisibilityOrderByUpdatedAtDesc(String visibility);
 }

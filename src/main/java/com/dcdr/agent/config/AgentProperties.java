@@ -39,7 +39,7 @@ public class AgentProperties {
 
     @Data
     public static class ModelsConfig {
-        private String defaultChat;
+        private String defaultChat = "qwen-chat";
         private List<ModelConfig> chat = new ArrayList<>();
         private List<ModelConfig> image = new ArrayList<>();
         private List<ModelConfig> video = new ArrayList<>();

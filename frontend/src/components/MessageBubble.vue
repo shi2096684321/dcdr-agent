@@ -44,11 +44,11 @@
         </div>
       </div>
       <template v-else>
-        <!-- 联网搜索汇总行(正文上方): 已阅读 N 个网页 + favicon 堆叠 -->
+        <!-- 引用来源汇总行(正文上方): 联网搜索显示网页 favicon, 知识库片段显示📚 -->
         <div v-if="hasSources && msg.content" class="search-summary">
-          <span class="search-icon">🔍</span>
-          <span class="search-text">已阅读 {{ msg.sources.length }} 个网页</span>
-          <div class="favicon-stack">
+          <span class="search-icon">{{ allKbSources ? '📚' : '🔍' }}</span>
+          <span class="search-text">{{ allKbSources ? `已参考 ${msg.sources.length} 个知识库片段` : `已阅读 ${msg.sources.length } 个网页` }}</span>
+          <div v-if="!allKbSources" class="favicon-stack">
             <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
                  :style="{ zIndex: topFavicons.length - i }" loading="lazy"
                  @error="onFaviconError" />
@@ -59,12 +59,12 @@
 
         <!-- 正文下方精简 favicon 汇总(二次强化"有来源"的感知) -->
         <div v-if="hasSources && msg.content" class="search-summary-bottom">
-          <div class="favicon-stack">
+          <div v-if="!allKbSources" class="favicon-stack">
             <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
                  :style="{ zIndex: topFavicons.length - i }" loading="lazy"
                  @error="onFaviconError" />
           </div>
-          <span class="summary-count">{{ msg.sources.length }} 个网页</span>
+          <span class="summary-count">{{ allKbSources ? `${msg.sources.length} 个知识库片段` : `${msg.sources.length} 个网页` }}</span>
           <button class="sources-toggle-mini" @click="sourcesOpen = !sourcesOpen">
             {{ sourcesOpen ? '收起来源' : '查看来源' }}
           </button>
@@ -78,8 +78,9 @@
             <div class="source-card-head">
               <span class="source-index">{{ s.index || (idx + 1) }}</span>
               <img v-if="faviconOf(s.url)" :src="faviconOf(s.url)" class="source-favicon" loading="lazy" @error="onFaviconError" />
-              <a class="source-title" :href="s.url" target="_blank" rel="noopener noreferrer"
+              <a v-if="s.url" class="source-title" :href="s.url" target="_blank" rel="noopener noreferrer"
                  v-html="renderInline(s.title || s.url)"></a>
+              <span v-else class="source-title source-title-plain" v-html="renderInline(s.title || '知识库片段')"></span>
               <span class="source-host">{{ hostOf(s.url) }}</span>
             </div>
             <div class="source-snippet" v-html="sourceBodyHtml(s, idx)"></div>
@@ -140,6 +141,9 @@ const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cance
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 
 const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
+// 是否全部为知识库片段来源(RAG): 决定汇总行文案与是否显示网页 favicon
+const allKbSources = computed(() => hasSources.value
+  && props.msg.sources.every(s => s.source === 'knowledge_base'))
 // 对用户隐藏的工具往返中间消息: role=tool, 或 role=assistant 仅有 toolCalls 无正文的空壳
 // (后端 getMessages 已过滤, 此处为兜底, 避免前端本地流式态出现空气泡)
 const isHidden = computed(() => {
@@ -338,6 +342,8 @@ function onBubbleClick(e) {
 .source-favicon { width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; background: #f5f7fa; }
 .source-title { font-size: 14px; font-weight: 600; color: #1f2937; line-height: 1.5; text-decoration: none; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-title:hover { color: #667eea; text-decoration: underline; }
+.source-title-plain { cursor: default; }
+.source-title-plain:hover { color: #1f2937; text-decoration: none; }
 .source-host { font-size: 11px; color: #909399; flex-shrink: 0; }
 .source-snippet { font-size: 13px; line-height: 1.7; color: #4b5563; margin-top: 8px; word-break: break-word; }
 .source-snippet :deep(p) { margin: 4px 0; }
