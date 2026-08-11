@@ -1,0 +1,165 @@
+# 本地数据库部署方案（Docker）
+
+本项目 V2.0 采用 **PostgreSQL 16 + PgVector** 作为生产级向量库（支撑 V2.1 RAG 检索、V2.2 用户隔离），并配套 **Redis**（缓存 / 会话）。
+
+> 开发默认仍走 H2（`application.yml`），需要真实向量检索时再切换 `pg` profile。
+
+---
+
+## 一、前置条件
+
+- 已安装 **Docker Desktop**（Windows / macOS）或 **Docker Engine + docker-compose**（Linux）
+- 验证安装：
+  ```bash
+  docker --version
+  docker compose version
+  ```
+- 端口未被占用：`5432`（PostgreSQL）、`6379`（Redis）
+
+---
+
+## 二、一键启动（推荐）
+
+仓库根目录已提供 `docker-compose.yml`，在**项目根目录**执行：
+
+```bash
+# 后台启动 PostgreSQL + Redis，并自动执行建库脚本
+docker compose up -d
+```
+
+启动后自动完成：
+1. 拉取 `pgvector/pgvector:pg16` 与 `redis:7-alpine` 镜像
+2. 创建数据库 `java_agent`、用户/密码 `java_agent` / `java_agent`
+3. 挂载 `docs/sql/v2.0_schema.sql` 到初始化目录，**自动建表（含 pgvector 扩展）**
+4. 数据持久化到名为 `pgdata` 的 Docker 卷
+
+### 查看状态与日志
+
+```bash
+docker compose ps
+docker compose logs -f postgres
+```
+
+### 健康检查
+
+```bash
+docker compose ps          # STATUS 显示 healthy 即就绪
+# 或手动探活
+docker exec dcdr-agent-pg pg_isready -U java_agent -d java_agent
+docker exec dcdr-agent-redis redis-cli ping   # 预期返回 PONG
+```
+
+---
+
+## 三、连接信息
+
+| 项目 | 值 |
+|------|-----|
+| JDBC URL | `jdbc:postgresql://localhost:5432/java_agent` |
+| 用户名 | `java_agent` |
+| 密码 | `java_agent` |
+| PostgreSQL 端口 | `5432` |
+| Redis 端口 | `6379` |
+
+应用侧对应配置在 `src/main/resources/application-pg.yml`。
+
+---
+
+## 四、手动验证数据库
+
+### 连 PostgreSQL 执行 SQL
+```bash
+docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "\dt"
+```
+应能看到：`users` `knowledge_bases` `documents` `document_chunks` `agent_definitions` `audit_logs` `sessions`（含 `user_id` 列）。
+
+### 确认 pgvector 扩展与向量表
+```bash
+docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "\d document_chunks"
+```
+
+### 连 Redis
+```bash
+docker exec -it dcdr-agent-redis redis-cli ping
+```
+
+---
+
+## 五、启动应用（pg profile）
+
+```bash
+mvn spring-boot:run -Dspring-boot.run.profiles=pg
+# 或打包后：
+java -jar target/dcdr-agent-1.0.0.jar --spring.profiles.active=pg
+```
+
+> `application-pg.yml` 中 `ddl-auto: validate`：表结构由 `v2.0_schema.sql` 管理，JPA 仅做校验，不会自动改表。
+
+---
+
+## 六、重新初始化 / 重置数据
+
+```bash
+# 停止并删除容器与数据卷（会清空所有数据！）
+docker compose down -v
+# 重新拉起（会重新执行建库脚本）
+docker compose up -d
+```
+
+仅重建容器保留数据：
+```bash
+docker compose down        # 不加 -v，pgdata 卷保留
+docker compose up -d
+```
+
+---
+
+## 七、修改配置（常见调整）
+
+编辑根目录 `docker-compose.yml`：
+
+- **改密码**：同时修改 `POSTGRES_PASSWORD` 与 `application-pg.yml` 的 `spring.datasource.password`
+- **改库名**：修改 `POSTGRES_DB`，并同步 `application-pg.yml` 的 URL
+- **仅本机访问**：端口映射 `"5432:5432"` 已限定本机；如需局域网访问保持不变即可
+- **修改 schema**：编辑 `docs/sql/v2.0_schema.sql` 后执行 `docker compose down -v && docker compose up -d` 重新建库
+
+---
+
+## 八、常见问题
+
+**1. 端口被占用**
+```bash
+# Windows 查看占用 5432 的进程
+netstat -ano | findstr :5432
+```
+修改 `docker-compose.yml` 的端口映射（如 `"5433:5432"`），并同步应用配置。
+
+**2. 镜像拉取慢 / 失败**
+配置国内镜像源（Docker Desktop → Settings → Docker Engine 添加 registry-mirrors），或手动 `docker pull pgvector/pgvector:pg16`。
+
+**3. 容器一直 unhealthy**
+查看日志 `docker compose logs postgres`。常见原因：数据卷来自旧版本导致扩展冲突，执行 `docker compose down -v && docker compose up -d` 重置。
+
+**4. WSL2 磁盘空间不足**
+`docker system prune -a` 清理无用镜像，或迁移 Docker 数据到非系统盘。
+
+---
+
+## 九、无 Docker 的备选方案（Windows 本地安装）
+
+若环境无法使用 Docker，可手动安装：
+
+1. 安装 PostgreSQL 16：https://www.postgresql.org/download/windows/
+2. 安装 pgvector 扩展：
+   - 用已编译的 Windows 包：https://github.com/pgvector/pgvector/releases
+   - 将 `vector.dll` 放到 `PostgreSQL\16\lib`，`vector.control` / `vector--*sql` 放到 `PostgreSQL\16\share\extension`
+3. 建库并授权：
+   ```sql
+   CREATE DATABASE java_agent;
+   \c java_agent
+   CREATE USER java_agent WITH PASSWORD 'java_agent';
+   GRANT ALL PRIVILEGES ON DATABASE java_agent TO java_agent;
+   ```
+4. 执行 schema：`psql -U java_agent -d java_agent -f docs/sql/v2.0_schema.sql`
+5. Redis 可用 Windows 版或 WSL 内 `apt install redis-server` 启动。

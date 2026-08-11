@@ -3,8 +3,12 @@ server:
 
 spring:
   application:
-    name: java-agent
+    name: dcdr-agent
 
+  # 默认不激活额外 profile (走 application.yml 的 H2); 设置 SPRING_PROFILES_ACTIVE=pg 即切 PostgreSQL
+  profiles:
+    active: pg
+  #    active: ${SPRING_PROFILES_ACTIVE:default}
   # H2 数据库配置(开发期)
   datasource:
     url: jdbc:h2:file:./data/database/agent;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
@@ -215,7 +219,7 @@ mcp:
       # 需设置环境变量 TAVILY_API_KEY(如下), 否则 Server 启动后调用会报错:
       #   Windows(PowerShell):  $env:TAVILY_API_KEY='tvly-xxx'
       #   Linux/macOS:          export TAVILY_API_KEY='tvly-xxx'
-      # 注: npx 拉起的子进程会继承本应用的环境变量, 故在启动 java-agent 前设置即可
+      # 注: npx 拉起的子进程会继承本应用的环境变量, 故在启动 dcdr-agent 前设置即可
       command: ["D:\\app\\nodejs\\npx.cmd", "-y", "tavily-mcp@0.2.1"]
       # 该 Server 暴露的工具名, 允许在流式对话中被调用
       streaming-tools: ["tavily-search", "tavily-extract"]
@@ -242,7 +246,7 @@ springdoc:
 # 日志
 logging:
   level:
-    com.example.agent: DEBUG
+    com.dcdr.agent: DEBUG
     org.springframework.ai: DEBUG
   pattern:
     console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

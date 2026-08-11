@@ -1,0 +1,30 @@
+# V2.0 / V2.1 PostgreSQL + PgVector profile
+# 启用方式: --spring.profiles.active=pg  (默认 dev 仍走 H2, 见 application.yml)
+# 需先建库并执行 docs/sql/v2.0_schema.sql (含 pgvector 扩展)
+spring:
+  config:
+    activate:
+      on-profile: pg
+  datasource:
+    url: jdbc:postgresql://localhost:5432/dcdr_agent?currentSchema=public
+    driver-class-name: org.postgresql.Driver
+    username: dcdr_agent
+    password: dcdr_agent
+  jpa:
+    # 表结构已由 v2.0_schema.sql 显式管理; JPA 仅做校验, 不自动改表
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+    open-in-view: false
+
+# PgVector 向量检索相关配置 (V2.0 RAG 向量库)
+agent:
+  vector-store:
+    provider: pgvector
+    # 嵌入维度, 需与 v2.0_schema.sql 中 document_chunks.embedding 维度一致
+    embedding-dim: 1536
+    # 相似度检索返回条数
+    top-k: 5

@@ -12,9 +12,9 @@
     </parent>
 
     <groupId>com.dcdr</groupId>
-    <artifactId>java-agent</artifactId>
+    <artifactId>dcdr-agent</artifactId>
     <version>1.0.0</version>
-    <name>java-agent</name>
+    <name>dcdr-agent</name>
     <description>Java AI Agent - 多模态智能对话助手</description>
 
     <properties>
@@ -42,6 +42,14 @@
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- PostgreSQL: V2.0/V2.1 生产级 RAG 向量检索, 通过 pg profile 启用。
+             向量类型用项目内置的 VectorType (Hibernate UserType) 实现, 零第三方 jar 依赖。 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
 

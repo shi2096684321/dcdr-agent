@@ -30,7 +30,7 @@ public class OpenApiConfig {
                         .version("1.0.0")
                         .contact(new Contact()
                                 .name("JavaAgent")
-                                .url("https://github.com/example/java-agent"))
+                                .url("https://github.com/example/dcdr-agent"))
                         .license(new License()
                                 .name("MIT")
                                 .url("https://opensource.org/licenses/MIT")));

@@ -46,6 +46,11 @@ data/database/*.db
 data/database/*.db.*
 data/database/*.trace.db
 
+# PostgreSQL 运行时数据 (Docker 卷或本地挂载, 不入库)
+pgdata/
+postgres-data/
+*.sql.gz
+
 # 运行/测试日志与临时输出
 *.txt
 build_log.txt

@@ -46,7 +46,7 @@ public class McpClient implements AutoCloseable {
         params.put("protocolVersion", "2024-11-05");
         params.put("capabilities", new LinkedHashMap<>());
         Map<String, Object> clientInfo = new LinkedHashMap<>();
-        clientInfo.put("name", "java-agent");
+        clientInfo.put("name", "dcdr-agent");
         clientInfo.put("version", "1.1");
         params.put("clientInfo", clientInfo);
 

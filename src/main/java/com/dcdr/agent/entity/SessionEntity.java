@@ -29,6 +29,10 @@ public class SessionEntity {
     @Column(columnDefinition = "TEXT")
     private String systemPrompt;
 
+    /** 所属用户 ID (V2.0 新增, V2.2 用户认证隔离使用; 暂为可空以兼容存量数据) */
+    @Column(length = 64)
+    private String userId;
+
     @Column(nullable = false)
     private LocalDateTime createdAt;
 

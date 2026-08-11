@@ -1,0 +1,52 @@
+# dcdr-agent V2.0 本地数据库编排 (PostgreSQL 16 + PgVector 预装 + Redis)
+# 用法: 在项目根目录执行 `docker compose up -d`
+# 使用 pgvector/pgvector:pg16 镜像(已预装 pgvector 扩展), 通过 CREATE EXTENSION vector 激活
+# 数据使用命名卷 pgdata, 物理存于 Docker VM 虚拟磁盘 E:\appdata\docker\DockerDesktop\DockerDesktop.vhdx
+# (Docker Desktop dataFolder 已配置到 E 盘, 命名卷数据随之落在 E 盘, 不占 C 盘空间)
+# 无 Docker 环境请参考 docs/sql/README.md 末尾的"无 Docker 备选方案"。
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: dcdr-agent-pg
+    # Docker 20.10.8 旧 seccomp profile 不兼容 Bookworm glibc 的 clone3 系统调用,
+    # 导致 initdb popen fork 时 ENOMEM. seccomp=unconfined 绕过此限制.
+    security_opt:
+      - seccomp=unconfined
+    # Hyper-V 后端 Docker VM 仅 4GB 内存, 本地 pgvector 开发用 256m shm + 1g 内存足够
+    shm_size: 256m
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    environment:
+      POSTGRES_DB: dcdr_agent
+      POSTGRES_USER: dcdr_agent
+      POSTGRES_PASSWORD: dcdr_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dcdr_agent -d dcdr_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: dcdr-agent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - E:/appdata/docker/redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+    driver: local

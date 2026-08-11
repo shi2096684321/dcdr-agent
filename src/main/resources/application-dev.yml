@@ -5,6 +5,6 @@ spring:
 
 logging:
   level:
-    com.example.agent: DEBUG
+    com.dcdr.agent: DEBUG
     org.springframework.web: DEBUG
     org.springframework.ai: DEBUG
