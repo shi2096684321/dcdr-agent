@@ -41,4 +41,18 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /** V2.2 审计日志专用线程池(轻量任务, 队列大; 与生成任务隔离避免互相阻塞) */
+    @Bean("auditExecutor")
+    public ThreadPoolTaskExecutor auditExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(500);
+        executor.setThreadNamePrefix("audit-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(10);
+        executor.initialize();
+        return executor;
+    }
 }

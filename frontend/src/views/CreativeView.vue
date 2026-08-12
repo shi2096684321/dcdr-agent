@@ -747,7 +747,7 @@ async function generate() {
     else if (timedOut && doneCount.value === 0) ElMessage.warning('生成超时，请稍后在项目历史中查看')
   } catch (e) {
     console.error(e)
-    const msg = e?.response?.data?.message || e?.message || e
+    const msg = extractMessage(e) || e
     ElMessage.error('提交生成任务失败：' + msg)
   } finally {
     // 关键: 无论成功/失败/刷新异常, 都必须复位 generating, 否则按钮会卡死, 之后点击被静默忽略

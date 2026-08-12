@@ -1,7 +1,9 @@
 package com.dcdr.agent.rag.config;
 
+import com.dcdr.agent.rag.ocr.QwenOcrClient;
 import com.dcdr.agent.rag.reader.DocumentReaderRegistry;
 import com.dcdr.agent.rag.reader.HtmlReader;
+import com.dcdr.agent.rag.reader.OcrPdfReader;
 import com.dcdr.agent.rag.reader.PdfReader;
 import com.dcdr.agent.rag.reader.PlainTextReader;
 import com.dcdr.agent.rag.reader.WordReader;
@@ -10,6 +12,7 @@ import com.dcdr.agent.rag.splitter.TextSplitter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.CommandLineRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
@@ -30,18 +33,54 @@ public class RagAutoConfiguration {
     private final RagProperties properties;
 
     /**
-     * 注册所有内置文档解析器: PlainText / PDF / Word / HTML。
-     * Reader 是无状态简单对象, 直接 new 即可, 无需走 Spring 容器。
+     * QwenOcrClient Bean: 仅在 {@code agent.rag.ocr.enabled=true} 时装配。
+     * <p>
+     * 装配后供 {@link OcrPdfReader} 使用, 关闭时不创建, PdfReader 走原逻辑。
      */
     @Bean
-    public CommandLineRunner ragReaderRegistrar(DocumentReaderRegistry registry) {
+    @ConditionalOnProperty(prefix = "agent.rag.ocr", name = "enabled", havingValue = "true")
+    public QwenOcrClient qwenOcrClient() {
+        return new QwenOcrClient(properties.getOcr());
+    }
+
+    /**
+     * 注册所有内置文档解析器: PlainText / PDF / Word / HTML。
+     * <p>
+     * PDF 解析器按 OCR 开关二选一:
+     * <ul>
+     *   <li>OCR 开启: 注册 {@link OcrPdfReader}, 扫描版自动降级调 qwen3.5-ocr</li>
+     *   <li>OCR 关闭: 注册原 {@link PdfReader}, 扫描版得到空文本(由上层标 failed)</li>
+     * </ul>
+     * Reader 是无状态简单对象, 直接 new 即可, 无需走 Spring 容器;
+     * 唯一例外是 OcrPdfReader 依赖 QwenOcrClient, 通过参数注入。
+     */
+    @Bean
+    public CommandLineRunner ragReaderRegistrar(DocumentReaderRegistry registry,
+                                                 org.springframework.beans.factory.ObjectProvider<QwenOcrClient> ocrClientProvider) {
         return args -> {
             if (!properties.isEnabled()) {
                 log.info("RAG 已禁用, 跳过文档解析器注册");
                 return;
             }
             registry.register(new PlainTextReader());
-            registry.register(new PdfReader());
+
+            RagProperties.OcrConfig ocrCfg = properties.getOcr();
+            if (ocrCfg != null && ocrCfg.isEnabled()) {
+                QwenOcrClient client = ocrClientProvider.getIfAvailable();
+                if (client == null) {
+                    log.warn("OCR 已开启但 QwenOcrClient 未装配, PDF 回退到 PdfReader");
+                    registry.register(new PdfReader());
+                } else {
+                    registry.register(new OcrPdfReader(client,
+                            ocrCfg.getThresholdCharsPerPage(), ocrCfg.getMaxPages()));
+                    log.info("PDF 解析器: OcrPdfReader (阈值 {} 字符/页, 模型 {})",
+                            ocrCfg.getThresholdCharsPerPage(), ocrCfg.getModel());
+                }
+            } else {
+                registry.register(new PdfReader());
+                log.debug("OCR 未启用, PDF 解析器: PdfReader (扫描版不降级)");
+            }
+
             registry.register(new WordReader());
             registry.register(new HtmlReader());
             log.info("RAG 文档解析器注册完成: {}", registry.supportedExtensions());

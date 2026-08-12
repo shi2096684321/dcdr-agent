@@ -45,6 +45,12 @@ public class SessionManager {
     /** 创建新会话 */
     @Transactional
     public SessionDTO createSession(String title, String model, String systemPrompt) {
+        return createSession(title, model, systemPrompt, null);
+    }
+
+    /** 创建新会话(带 userId, V2.2 数据隔离) */
+    @Transactional
+    public SessionDTO createSession(String title, String model, String systemPrompt, String userId) {
         String id = "sess_" + System.currentTimeMillis();
         LocalDateTime now = LocalDateTime.now();
         SessionEntity entity = new SessionEntity();
@@ -57,6 +63,7 @@ public class SessionManager {
                     "systemPrompt 过长(上限 " + MAX_SYSTEM_PROMPT_LEN + " 字符), 当前 " + systemPrompt.length());
         }
         entity.setSystemPrompt(systemPrompt);
+        entity.setUserId(userId);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         sessionRepository.save(entity);
@@ -64,7 +71,7 @@ public class SessionManager {
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             memory.save(id, Message.system(systemPrompt));
         }
-        log.info("创建会话: {} ({})", id, entity.getTitle());
+        log.info("创建会话: {} (user={}, title={})", id, userId, entity.getTitle());
         return toDTO(entity);
     }
 
@@ -73,9 +80,23 @@ public class SessionManager {
         return sessionRepository.findById(id).map(SessionManager::toDTO).orElse(null);
     }
 
+    /** 获取会话(按 userId 隔离, V2.2) */
+    public SessionDTO getSession(String id, String userId) {
+        if (userId == null) return getSession(id);
+        return sessionRepository.findByIdAndUserId(id, userId).map(SessionManager::toDTO).orElse(null);
+    }
+
     /** 获取所有会话列表 */
     public List<SessionDTO> listSessions() {
         return sessionRepository.findAllByOrderByUpdatedAtDesc().stream()
+                .map(SessionManager::toDTO)
+                .toList();
+    }
+
+    /** 获取当前用户的会话列表(V2.2 数据隔离) */
+    public List<SessionDTO> listSessions(String userId) {
+        if (userId == null) return listSessions();
+        return sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
                 .map(SessionManager::toDTO)
                 .toList();
     }

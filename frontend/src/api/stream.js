@@ -27,9 +27,13 @@ export async function readSseStream(endpoint, request, onChunk, onDone, onError)
   }
   resetIdle()
   try {
+    // V2.2: SSE 请求同样需注入 Authorization 头(后端 JwtAuthenticationFilter 会校验)
+    const token = localStorage.getItem('dcdr_access_token')
+    const headers = { 'Content-Type': 'application/json' }
+    if (token) headers.Authorization = `Bearer ${token}`
     const resp = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
       signal: controller.signal
     })

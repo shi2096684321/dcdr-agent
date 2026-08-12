@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -75,16 +76,16 @@ public class KnowledgeBaseService {
         // 仅返回用户级(visibility=USER)知识库, 平台级(PLATFORM)不暴露给普通用户
         if (userId == null) {
             // userId 为 null 时返回全部用户级(单用户兜底)
-            return kbRepository.findAll().stream()
+            return new ArrayList<>(kbRepository.findAll().stream()
                     .filter(kb -> "USER".equals(kb.getVisibility()))
-                    .toList();
+                    .toList());
         }
         List<KnowledgeBaseEntity> list = kbRepository.findByVisibilityAndUserIdOrderByUpdatedAtDesc("USER", userId);
         // 兜底: userId 维度查不到时退化为全部用户级(V2.1 单用户场景)
         if (list.isEmpty()) {
-            list = kbRepository.findAll().stream()
+            list = new ArrayList<>(kbRepository.findAll().stream()
                     .filter(kb -> "USER".equals(kb.getVisibility()))
-                    .toList();
+                    .toList());
         }
         return list;
     }

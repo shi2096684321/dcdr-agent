@@ -23,6 +23,7 @@
               <span>·</span>
               <span>{{ kb.embeddingModel || '默认' }}</span>
             </div>
+            <div class="kb-desc" v-if="kb.description" :title="kb.description">{{ kb.description }}</div>
           </div>
           <button class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除">🗑</button>
         </div>
@@ -44,6 +45,7 @@
             </el-tag>
             <el-tag size="small" type="info">{{ currentKb.docCount || 0 }} 文档</el-tag>
             <el-tag size="small">{{ currentKb.chunkSize || 1000 }} / {{ currentKb.chunkOverlap || 200 }}</el-tag>
+            <span class="kb-desc-full" v-if="currentKb.description" :title="currentKb.description">{{ currentKb.description }}</span>
           </div>
           <div class="kb-toolbar-right">
             <label class="upload-btn gradient-bg" :class="{disabled: uploading}">
@@ -299,7 +301,7 @@ async function handleUpload(e) {
     const kb = knowledgeBases.value.find(k => k.id === currentKbId.value)
     if (kb) kb.docCount = (kb.docCount || 0) + 1
   } catch (err) {
-    ElMessage.error('上传失败：' + (err?.response?.data?.message || err?.message || '未知错误'))
+    ElMessage.error('上传失败：' + (extractMessage(err) || '未知错误'))
   } finally {
     uploading.value = false
     if (fileInput.value) fileInput.value.value = ''
@@ -344,7 +346,7 @@ async function runSearch() {
     searchResults.value = await searchKnowledgeBase(currentKbId.value, searchQuery.value.trim(), searchTopK.value)
     searchDone.value = true
   } catch (e) {
-    ElMessage.error('检索失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+    ElMessage.error('检索失败：' + (extractMessage(e) || '未知错误'))
   } finally {
     searching.value = false
   }
@@ -410,6 +412,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-name .kb-vis-tag { transform: scale(0.85); transform-origin: left center; flex-shrink: 0; }
 .kb-item.active .kb-name { color: #667eea; }
 .kb-meta { font-size: 11px; color: #909399; margin-top: 2px; display: flex; gap: 4px; }
+.kb-desc { font-size: 12px; color: #606266; margin-top: 4px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .kb-delete-btn { border: none; background: transparent; cursor: pointer; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; font-size: 13px; flex-shrink: 0; transition: all 0.2s; }
 .kb-item:hover .kb-delete-btn { opacity: 1; }
 .kb-delete-btn:hover { color: #f56c6c; background: rgba(245,108,108,0.1); }
@@ -420,6 +423,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; background: #fff; border-bottom: 1px solid #e8ecf4; gap: 12px; }
 .kb-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .kb-title { font-size: 18px; font-weight: 600; color: #1a1a2e; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.kb-desc-full { flex: 1; min-width: 0; font-size: 12px; color: #909399; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
 .upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(102,126,234,0.4); }
 .upload-btn.disabled { opacity: 0.5; cursor: not-allowed; }

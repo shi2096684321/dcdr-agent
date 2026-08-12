@@ -10,4 +10,12 @@ import java.util.Optional;
 public interface UserRepository extends JpaRepository<UserEntity, String> {
 
     Optional<UserEntity> findByUsername(String username);
+
+    boolean existsByEmail(String email);
+
+    /** V2.2 管理后台: 按状态统计用户数 */
+    long countByStatus(String status);
+
+    /** V2.2 管理后台: 按角色统计用户数 */
+    long countByRole(String role);
 }

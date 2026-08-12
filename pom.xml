@@ -53,6 +53,32 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- V2.2 用户认证与权限管理: Spring Security + JWT (文档 §8 技术选型)
+             WebFlux 环境下自动启用 Reactive 版本 (SecurityWebFilterChain) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- V2.2 JWT: jjwt 0.12.x (api + impl + jackson 序列化) -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>0.12.6</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>0.12.6</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- V2.1 RAG 文档解析: PDF (PDFBox) / Word (POI) / HTML (Jsoup) -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>

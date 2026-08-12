@@ -34,6 +34,8 @@ public class RagProperties {
     private EmbeddingConfig embedding = new EmbeddingConfig();
     private VectorStoreConfig vectorStore = new VectorStoreConfig();
     private RetrievalConfig retrieval = new RetrievalConfig();
+    /** 扫描版 PDF / 图片 OCR 配置(V2.1): 关闭时扫描版 PDF 直接报错不降级 */
+    private OcrConfig ocr = new OcrConfig();
 
     @Data
     public static class DocumentConfig {
@@ -89,5 +91,37 @@ public class RagProperties {
         private int topK = 5;
         /** 最小余弦相似度, 低于此值的片段过滤掉 */
         private double minScore = 0.3;
+    }
+
+    /**
+     * OCR 配置(V2.1)。
+     * <p>
+     * 用于扫描版 PDF / 图片型文档的文本提取, 当前接入 DashScope {@code qwen3.5-ocr}。
+     * 走 OpenAI 兼容协议 {@code /chat/completions}, 复用 DASHSCOPE_API_KEY。
+     * <p>
+     * 触发策略: PDFBox 文字版抽取后若每页平均字符数 &lt; {@link #thresholdCharsPerPage},
+     * 判定为扫描版, 自动降级调 OCR; 文字版 PDF 不会触发, 避免无谓成本。
+     */
+    @Data
+    public static class OcrConfig {
+        /** OCR 总开关: 关闭时 OcrPdfReader 不注册, 扫描版 PDF 沿用原 PdfReader 报错行为 */
+        private boolean enabled = false;
+        /** API Key, 由 application.yml 用 ${DASHSCOPE_API_KEY} 注入, 默认复用 DashScope 主 Key */
+        private String apiKey;
+        /** OpenAI 兼容 baseUrl, 默认华北2(北京) DashScope 域名 */
+        private String baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+        /** 模型名: qwen3.5-ocr (Qwen3.5 架构, 支持多轮+PDF) | qwen-vl-ocr | qwen-vl-ocr-latest */
+        private String model = "qwen3.5-ocr";
+        /**
+         * 扫描版判定阈值: PDFBox 抽取的"每页平均字符数"低于此值时触发 OCR。
+         * 默认 50, 纯图片型 PDF 通常每页 0~10 字符, 文字版 PDF 一般每页 500+ 字符。
+         */
+        private int thresholdCharsPerPage = 50;
+        /** 单文档最多 OCR 页数, 兜底防止大文档烧钱(整 PDF 直传时仅作日志告警, 不强制截断) */
+        private int maxPages = 50;
+        /** 单次 OCR 请求超时(秒), qwen3.5-ocr 处理大 PDF 较慢, 默认 300s */
+        private int timeoutSeconds = 300;
+        /** 自定义 prompt; 为空时用模型默认("只输出图像中的文本内容, 不附加描述或格式") */
+        private String prompt = "";
     }
 }

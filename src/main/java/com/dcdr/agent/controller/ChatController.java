@@ -2,6 +2,7 @@ package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.ActiveChatRegistry;
 import com.dcdr.agent.agent.AgentOrchestrator;
+import com.dcdr.agent.auth.SecurityContext;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatImageRequest;
@@ -17,6 +18,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 
 /**
@@ -53,9 +55,10 @@ public class ChatController {
             }
     )
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<ChatChunk>> chatStream(@RequestBody ChatRequest request) {
+    public Flux<ServerSentEvent<ChatChunk>> chatStream(@RequestBody ChatRequest request,
+                                                       ServerWebExchange exchange) {
         log.info("流式对话: session={}", request.getSessionId());
-        return orchestrator.chat(request)
+        return orchestrator.chat(request, SecurityContext.getUserId(exchange))
                 .map(chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build());
     }
 
@@ -79,9 +82,10 @@ public class ChatController {
             }
     )
     @PostMapping(value = "/image", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<ChatChunk>> chatImage(@RequestBody ChatImageRequest request) {
+    public Flux<ServerSentEvent<ChatChunk>> chatImage(@RequestBody ChatImageRequest request,
+                                                      ServerWebExchange exchange) {
         log.info("对话内文生图: session={}, prompt={}", request.getSessionId(), request.getPrompt());
-        return orchestrator.generateImageInChat(request)
+        return orchestrator.generateImageInChat(request, SecurityContext.getUserId(exchange))
                 .map(chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build());
     }
 
@@ -97,9 +101,10 @@ public class ChatController {
             }
     )
     @PostMapping
-    public Result<ChatResponse> chat(@RequestBody ChatRequest request) {
+    public Result<ChatResponse> chat(@RequestBody ChatRequest request,
+                                     ServerWebExchange exchange) {
         log.info("同步对话: session={}", request.getSessionId());
-        return Result.success(orchestrator.chatSync(request));
+        return Result.success(orchestrator.chatSync(request, SecurityContext.getUserId(exchange)));
     }
 
     /**

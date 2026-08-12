@@ -7,6 +7,7 @@ import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.audit.AuditService;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
@@ -62,6 +63,7 @@ public class AgentOrchestrator {
     private final SystemPromptResolver systemPromptResolver;
     private final RuntimePromptProvider runtimePromptProvider;
     private final RagProperties ragProperties;
+    private final AuditService auditService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -88,7 +90,7 @@ public class AgentOrchestrator {
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
                              ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
                              RuntimePromptProvider runtimePromptProvider,
-                             RagProperties ragProperties) {
+                             RagProperties ragProperties, AuditService auditService) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -101,6 +103,7 @@ public class AgentOrchestrator {
         this.systemPromptResolver = systemPromptResolver;
         this.runtimePromptProvider = runtimePromptProvider;
         this.ragProperties = ragProperties;
+        this.auditService = auditService;
     }
 
     /**
@@ -139,12 +142,13 @@ public class AgentOrchestrator {
      * 设计: 阻塞的准备阶段(会话/记忆/路由/图片识别)放在 boundedElastic 线程执行;
      * 流式主链路通过 flatMapMany 回到 parallel 线程, 不再占用弹性线程(弹性线程仅被占用"识别那几秒")。
      */
-    public Flux<ChatChunk> chat(ChatRequest request) {
+    public Flux<ChatChunk> chat(ChatRequest request, String currentUserId) {
         // 带图片时, 准备阶段可能需要视觉模型识别图片(耗时数秒), 期间前端收不到任何数据会显得"卡住";
         // 先立即下发一个状态提示, 让用户知道后台正在处理。
         boolean hasImages = request.getImages() != null && !request.getImages().isEmpty();
+        // V2.2: userId 由 Controller 在同步段从 exchange 取出后传入, 跨线程可见
 
-        Flux<ChatChunk> pipeline = Mono.fromCallable(() -> prepareForChat(request))
+        Flux<ChatChunk> pipeline = Mono.fromCallable(() -> prepareForChat(request, currentUserId))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(ctx -> Flux.<ChatChunk>create(sink -> {
                     try {
@@ -316,7 +320,7 @@ public class AgentOrchestrator {
                             // 无需工具(或已达上限): 收尾并保存
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
                                     accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
-                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved));
+                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, currentUserId, request));
                         });
                         tailRef.set(tailFlux);
 
@@ -390,6 +394,12 @@ public class AgentOrchestrator {
                             sink.next(ChatChunk.done(estP, estC, estT, durationMs));
                             sink.complete();
                             activeChatRegistry.unregister(sessId);
+                            // 审计日志: 中断场景 (F-28)
+                            auditService.record("chat", "session", sessId,
+                                    buildChatAuditDetail(provider.getName(), estP, estC, estT, durationMs,
+                                            request.isWebSearch(), buildEffectiveKbIds(request),
+                                            roundToolCalls[0], true, null),
+                                    currentUserId);
                             log.info("会话 {} 手动中断, 已保留部分生成内容", sessId);
                         });
                         handleHolder[0] = handle;
@@ -419,10 +429,11 @@ public class AgentOrchestrator {
     /**
      * 对话内文生图(按钮触发): 即时流式返回生成的图片, 并落库用户消息与助手图片消息
      */
-    public Flux<ChatChunk> generateImageInChat(ChatImageRequest req) {
+    public Flux<ChatChunk> generateImageInChat(ChatImageRequest req, String currentUserId) {
+        // V2.2: userId 由 Controller 从 exchange 取出后传入, 用于会话绑定
         String sessionId = req.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
-            SessionDTO session = sessionManager.createSession("新对话", null, null);
+            SessionDTO session = sessionManager.createSession("新对话", null, null, currentUserId);
             sessionId = session.getId();
             req.setSessionId(sessionId);
         }
@@ -469,6 +480,11 @@ public class AgentOrchestrator {
                                 Message m = Message.assistantImage(urls, imgContent, modelName);
                                 memory.save(sessId, m);
                                 sessionManager.touch(sessId);
+                                // 审计日志: 文生图 (F-28)
+                                Map<String, Object> imgDetail = new LinkedHashMap<>();
+                                imgDetail.put("model", modelName);
+                                imgDetail.put("imageCount", urls.size());
+                                auditService.record("chat_image", "session", sessId, imgDetail, currentUserId);
                                 return Flux.just(ChatChunk.done(0, 0, 0, 0));
                             }));
                         })
@@ -476,6 +492,11 @@ public class AgentOrchestrator {
                             Message err = Message.assistant("图片生成失败: " + e.getMessage(), null, modelName, null);
                             err.setError(true);
                             memory.save(sessId, err);
+                            // 审计日志: 文生图失败 (F-28)
+                            Map<String, Object> errDetail = new LinkedHashMap<>();
+                            errDetail.put("model", modelName);
+                            errDetail.put("error", e.getMessage());
+                            auditService.record("chat_image", "session", sessId, errDetail, currentUserId);
                             return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
                         })
         );
@@ -1082,7 +1103,7 @@ public class AgentOrchestrator {
                                              List<String> toolResults, List<Map<String, Object>> collectedSources,
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
-                                             AtomicBoolean assistantSaved) {
+                                             AtomicBoolean assistantSaved, String userId, ChatRequest request) {
         ChatResponse.TokenUsage u = usageHolder[0];
         int p = u != null ? u.getPrompt() : tokenEstimator.estimate(contextForEstimate);
         int c = u != null ? u.getCompletion()
@@ -1180,6 +1201,11 @@ public class AgentOrchestrator {
         } else if ("content_filter".equals(fr)) {
             tail.add(ChatChunk.contextWarning("回答触发安全策略过滤。"));
         }
+        // 审计日志: 记录对话元数据(token/耗时/工具), 不记录消息内容 (F-28)
+        auditService.record("chat", "session", sessId,
+                buildChatAuditDetail(provider.getName(), p, c, t, durationMs, request.isWebSearch(),
+                        buildEffectiveKbIds(request), toolCalls, false, fr),
+                userId);
         return Flux.fromIterable(tail);
     }
 
@@ -1188,11 +1214,11 @@ public class AgentOrchestrator {
      * 确保会话、加载记忆、路由决策、保存用户消息、图片自动路由(不支持视觉时直接切换视觉模型回答)、上下文上限估算。
      * 结果封装为 ChatContext 交给流式主链路(此时 request 中的图片已被解析为 base64, 最终回答模型已确定)。
      */
-    private ChatContext prepareForChat(ChatRequest request) {
+    private ChatContext prepareForChat(ChatRequest request, String userId) {
         // 1. 确保有会话
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
-            SessionDTO session = sessionManager.createSession("新对话", request.getModel(), null);
+            SessionDTO session = sessionManager.createSession("新对话", request.getModel(), null, userId);
             sessionId = session.getId();
             request.setSessionId(sessionId);
         }
@@ -1290,12 +1316,45 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 构建对话审计日志的元数据 (不记录消息内容, 仅记录 token/耗时/工具等技术指标)。
+     * 用于成本统计、异常排查和使用分析 (F-28)。
+     */
+    private Map<String, Object> buildChatAuditDetail(String model, Integer promptTokens, Integer completionTokens,
+                                                     Integer totalTokens, Long durationMs, Boolean webSearch,
+                                                     List<String> kbIds, List<ChatChunk> toolCalls,
+                                                     boolean interrupted, String finishReason) {
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("model", model);
+        if (totalTokens != null) {
+            Map<String, Integer> usage = new LinkedHashMap<>();
+            if (promptTokens != null) usage.put("prompt", promptTokens);
+            if (completionTokens != null) usage.put("completion", completionTokens);
+            usage.put("total", totalTokens);
+            detail.put("tokenUsage", usage);
+        }
+        if (durationMs != null) detail.put("durationMs", durationMs);
+        if (webSearch != null) detail.put("webSearch", webSearch);
+        if (kbIds != null && !kbIds.isEmpty()) detail.put("knowledgeBaseIds", kbIds);
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            List<String> tools = new ArrayList<>();
+            for (ChatChunk tc : toolCalls) {
+                if (tc.getTool() != null && !tools.contains(tc.getTool())) tools.add(tc.getTool());
+            }
+            if (!tools.isEmpty()) detail.put("tools", tools);
+        }
+        if (interrupted) detail.put("interrupted", true);
+        if (finishReason != null) detail.put("finishReason", finishReason);
+        return detail;
+    }
+
+    /**
      * 同步对话
      */
-    public ChatResponse chatSync(ChatRequest request) {
+    public ChatResponse chatSync(ChatRequest request, String currentUserId) {
+        // V2.2: userId 由 Controller 从 exchange 取出后传入, 用于会话绑定
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
-            SessionDTO session = sessionManager.createSession("新对话", request.getModel(), null);
+            SessionDTO session = sessionManager.createSession("新对话", request.getModel(), null, currentUserId);
             sessionId = session.getId();
             request.setSessionId(sessionId);
         }
@@ -1362,6 +1421,17 @@ public class AgentOrchestrator {
         memory.save(sessionId, Message.assistant(response.getContent(), null, prepSync.answerProvider().getName(), usage));
 
         sessionManager.touch(sessionId);
+
+        // 审计日志: 同步对话元数据 (F-28)
+        ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
+        auditService.record("chat_sync", "session", sessionId,
+                buildChatAuditDetail(prepSync.answerProvider().getName(),
+                        syncUsage != null ? syncUsage.getPrompt() : null,
+                        syncUsage != null ? syncUsage.getCompletion() : null,
+                        syncUsage != null ? syncUsage.getTotal() : null,
+                        null, request.isWebSearch(), buildEffectiveKbIds(request),
+                        null, false, null),
+                currentUserId);
 
         return response;
     }

@@ -148,8 +148,8 @@
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
               📎
             </label>
-            <!-- 知识库选择(RAG 检索增强): 多选, 选中后对话会从知识库检索相关片段注入上下文 -->
-            <el-select v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
+            <!-- 知识库选择(RAG 检索增强): 仅 admin 可见, 普通用户通过 PLATFORM 级 RAG 自动受益 -->
+            <el-select v-if="authStore.isAdmin" v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
                        :max-collapse-tags="1" placeholder="知识库" size="small"
                        class="kb-select" :class="{active: selectedKbIds.length > 0}"
                        :disabled="streaming" :loading="kbLoading"
@@ -188,12 +188,14 @@ import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
+import { useAuthStore } from '@/stores/auth'
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
 const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
 const vFocus = { mounted: (el) => el.focus() }
 const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false } })
+const authStore = useAuthStore()
 
 const sessions = ref([])
 const currentSessionId = ref(null)

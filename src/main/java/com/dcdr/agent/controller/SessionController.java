@@ -2,6 +2,7 @@ package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.auth.SecurityContext;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.MessageDTO;
 import com.dcdr.agent.dto.SessionDTO;
@@ -18,13 +19,20 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 会话接口 (对话模式)
+ * 会话接口 (对话模式)。
+ * <p>
+ * V2.2: 接入用户认证后, 所有查询/操作按 {@link SecurityContext#getUserId()} 隔离,
+ * 未登录用户(auth.enabled=false 或白名单)退化为全局可见(V2.1 兼容)。
+ * <p>
+ * V2.2 权限: 读操作(list/get/messages/export)需 {@code session:read},
+ * 写操作(create/delete/rename/update/deleteMessages)需 {@code session:write}。
  */
 @RestController
 @RequestMapping("/api/sessions")
@@ -36,29 +44,31 @@ public class SessionController {
     private final ChatMemory memory;
     private final ConversationExportService exportService;
 
-    @Operation(summary = "获取会话列表", description = "返回当前所有会话（不含消息内容）")
+    @Operation(summary = "获取会话列表", description = "返回当前用户的所有会话(认证启用时按 userId 隔离; 未登录返回全部)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
     @GetMapping
-    public Result<List<SessionDTO>> list() {
-        return Result.success(sessionManager.listSessions());
+    public Result<List<SessionDTO>> list(ServerWebExchange exchange) {
+        return Result.success(sessionManager.listSessions(SecurityContext.getUserId(exchange)));
     }
 
-    @Operation(summary = "创建会话", description = "创建新的对话会话")
+    @Operation(summary = "创建会话", description = "创建新的对话会话; V2.2 关联当前登录用户")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
     @PostMapping
-    public Result<SessionDTO> create(@RequestBody Map<String, String> body) {
+    public Result<SessionDTO> create(@RequestBody Map<String, String> body,
+                                     ServerWebExchange exchange) {
         String title = body.get("title");
         String model = body.get("model");
         String systemPrompt = body.get("systemPrompt");
-        return Result.success(sessionManager.createSession(title, model, systemPrompt));
+        return Result.success(sessionManager.createSession(title, model, systemPrompt, SecurityContext.getUserId(exchange)));
     }
 
     @Operation(summary = "获取会话详情")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
     @ApiResponse(responseCode = "404", description = "会话不存在")
     @GetMapping("/{id}")
-    public Result<SessionDTO> get(@Parameter(description = "会话 ID", required = true) @PathVariable String id) {
-        SessionDTO session = sessionManager.getSession(id);
+    public Result<SessionDTO> get(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
+                                  ServerWebExchange exchange) {
+        SessionDTO session = sessionManager.getSession(id, SecurityContext.getUserId(exchange));
         if (session == null) return Result.error(404, "会话不存在");
         return Result.success(session);
     }

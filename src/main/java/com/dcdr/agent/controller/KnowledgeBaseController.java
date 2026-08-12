@@ -1,5 +1,6 @@
 package com.dcdr.agent.controller;
 
+import com.dcdr.agent.auth.SecurityContext;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.entity.DocumentEntity;
 import com.dcdr.agent.entity.KnowledgeBaseEntity;
@@ -18,14 +19,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * 知识库管理接口 (V2.1, 对应 F-21-001/002/003)。
+ * 知识库管理接口 (V2.1, 对应 F-21-001/002/003; V2.2 接入用户隔离)。
  * <p>
  * 端点清单(与 V2.0 规划文档 §10.1 对齐):
  * <ul>
@@ -41,8 +44,8 @@ import java.util.Map;
  *   <li>POST   /api/knowledge-bases/{id}/search              检索测试</li>
  * </ul>
  * <p>
- * <b>userId 来源</b>: V2.1 尚未接入认证(V2.2 才做), 当前所有操作以单用户视角执行,
- * userId 暂传 null; 表结构与 Service 已预留 user_id, V2.2 接入后无需改本 Controller。
+ * <b>userId 来源</b>: V2.2 从 {@link SecurityContext} 取当前登录用户 ID;
+ * 未登录(auth.enabled=false 或匿名访问)时退化为 null, 行为与 V2.1 单用户一致。
  */
 @Slf4j
 @RestController
@@ -57,23 +60,45 @@ public class KnowledgeBaseController {
 
     // ===== 知识库 CRUD (F-21-001) =====
 
-    @Operation(summary = "知识库列表", description = "返回全部知识库(管理界面, 不区分 visibility)")
+    @Operation(summary = "知识库列表",
+            description = "管理员返回全部(含 PLATFORM); 普通用户仅返回自己 USER 级 + 全部 PLATFORM; 未登录退化为全部 USER 级")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = KnowledgeBaseEntity.class)))
     @GetMapping
-    public Result<List<KnowledgeBaseEntity>> list() {
-        return Result.success(knowledgeBaseService.listAll());
+    public Result<List<KnowledgeBaseEntity>> list(ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        if (isAdmin) {
+            return Result.success(knowledgeBaseService.listAll());
+        }
+        // 普通用户: 自己的 USER 级 + 所有 PLATFORM 级(平台级对全体可见, 但前端选择器由 RagProperties 控制是否可见)
+        List<KnowledgeBaseEntity> userKbs = new ArrayList<>(knowledgeBaseService.list(userId));
+        List<KnowledgeBaseEntity> platformKbs = knowledgeBaseService.listPlatform();
+        if (userKbs.isEmpty()){
+            userKbs = new ArrayList<>();
+        }
+        if (platformKbs!=null && !platformKbs.isEmpty()) {
+            userKbs.addAll(platformKbs);
+        }
+        return Result.success(userKbs);
     }
 
-    @Operation(summary = "创建知识库", description = "创建一个新的空知识库, 复用全局 embedding/分块配置; visibility: USER(用户级) 或 PLATFORM(平台级)")
+    @Operation(summary = "创建知识库", description = "创建一个新的空知识库, 复用全局 embedding/分块配置; visibility: USER(用户级) 或 PLATFORM(平台级, 仅 admin)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = KnowledgeBaseEntity.class)))
     @ApiResponse(responseCode = "400", description = "名称为空")
+    @ApiResponse(responseCode = "403", description = "非管理员不能创建 PLATFORM 知识库")
     @ApiResponse(responseCode = "503", description = "RAG 未启用")
     @PostMapping
-    public Result<KnowledgeBaseEntity> create(@RequestBody Map<String, String> body) {
+    public Result<KnowledgeBaseEntity> create(@RequestBody Map<String, String> body,
+                                              ServerWebExchange exchange) {
         String name = body.get("name");
         String description = body.get("description");
         String visibility = body.get("visibility");
-        return Result.success(knowledgeBaseService.create(name, description, null, visibility));
+        String userId = SecurityContext.getUserId(exchange);
+        // PLATFORM 知识库仅管理员可创建
+        if ("PLATFORM".equalsIgnoreCase(visibility) && !SecurityContext.isAdmin(exchange)) {
+            return Result.error(403, "仅管理员可创建平台级知识库", "FORBIDDEN");
+        }
+        return Result.success(knowledgeBaseService.create(name, description, userId, visibility));
     }
 
     @Operation(summary = "知识库详情")
@@ -100,7 +125,7 @@ public class KnowledgeBaseController {
 
     // ===== 文档管理 (F-21-002) =====
 
-    @Operation(summary = "上传文档", description = "上传文档到指定知识库; 同步落盘落库(pending)后异步入库(解析+分块+向量化)")
+    @Operation(summary = "上传文档", description = "上传文档到指定知识库; 同步落盘落库(pending)后异步入库(解析+分块+向量化); V2.2 关联当前登录用户")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = DocumentEntity.class)))
     @ApiResponse(responseCode = "400", description = "格式不支持/超大小/超数量上限")
     @PostMapping(value = "/{id}/documents", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -108,8 +133,11 @@ public class KnowledgeBaseController {
             @Parameter(description = "知识库 ID", required = true) @PathVariable String id,
             @Parameter(description = "上传的文件", required = true,
                     schema = @Schema(type = "string", format = "binary"))
-            @RequestPart("file") FilePart file) {
-        return documentService.upload(id, file, null)
+            @RequestPart("file") FilePart file,
+            ServerWebExchange exchange) {
+        // 从 exchange 同步段读取 userId, 再传入异步链路
+        String userId = SecurityContext.getUserId(exchange);
+        return documentService.upload(id, file, userId)
                 .map(Result::success);
     }
 
