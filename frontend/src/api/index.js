@@ -6,3 +6,7 @@ export * from './image'
 export * from './system'
 export * from './knowledgeBase'
 export * from './auth'
+// V2.3
+export * from './agents'
+export * from './workflows'
+export * from './scheduledTasks'

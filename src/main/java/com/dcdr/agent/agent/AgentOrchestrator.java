@@ -5,6 +5,7 @@ import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
+import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.audit.AuditService;
@@ -19,6 +20,7 @@ import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.ToolInfo;
+import com.dcdr.agent.entity.AgentDefinitionEntity;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -28,6 +30,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -64,6 +67,7 @@ public class AgentOrchestrator {
     private final RuntimePromptProvider runtimePromptProvider;
     private final RagProperties ragProperties;
     private final AuditService auditService;
+    private final AgentDefinitionService agentDefinitionService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -90,7 +94,8 @@ public class AgentOrchestrator {
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
                              ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
                              RuntimePromptProvider runtimePromptProvider,
-                             RagProperties ragProperties, AuditService auditService) {
+                             RagProperties ragProperties, AuditService auditService,
+                             AgentDefinitionService agentDefinitionService) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -104,6 +109,7 @@ public class AgentOrchestrator {
         this.runtimePromptProvider = runtimePromptProvider;
         this.ragProperties = ragProperties;
         this.auditService = auditService;
+        this.agentDefinitionService = agentDefinitionService;
     }
 
     /**
@@ -122,7 +128,8 @@ public class AgentOrchestrator {
             String imageTokenUsage,
             List<Message> contextForEstimate,
             boolean nearLimit,
-            int estTokens
+            int estTokens,
+            List<String> agentAllowedTools
     ) {}
 
     /** 图片预处理结果(含路由元信息, 用于落库与前端提示) */
@@ -186,7 +193,9 @@ public class AgentOrchestrator {
 
                         // 若模型支持函数调用, 注入标记 supportsStreaming 的工具定义(默认仅 image_generation;
                         // Weather/Calculator 等不会暴露给流式对话)
-                        List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitions();
+                        // V2.3: 若指定了自定义 Agent, 仅注入 Agent 工具白名单中的工具
+                        List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitionsFiltered(
+                                ctx.agentAllowedTools());
                         if (provider.supportsFunctionCalling() && !toolDefs.isEmpty()) {
                             request.setTools(toolDefs);
                         }
@@ -1215,6 +1224,10 @@ public class AgentOrchestrator {
      * 结果封装为 ChatContext 交给流式主链路(此时 request 中的图片已被解析为 base64, 最终回答模型已确定)。
      */
     private ChatContext prepareForChat(ChatRequest request, String userId) {
+        // 0. V2.3 自定义 Agent: 加载并应用 Agent 配置 (model/temperature/kb_ids/tools/systemPrompt)
+        //    必须在路由前完成, 因 Agent.model 会覆盖 request.model 影响路由决策
+        AgentOverride agentOverride = applyAgentDefinition(request);
+
         // 1. 确保有会话
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
@@ -1251,6 +1264,16 @@ public class AgentOrchestrator {
                 withSys.add(0, Message.system(toInject));
                 history = withSys;
             }
+        }
+
+        // 3.1.1 V2.3 自定义 Agent 角色提示词注入: 作为会话级 system 消息, 优先级高于 L2/chat 场景级
+        //       (与 sessionHasSystem 的会话级 system 同级), 模型据此扮演指定角色。
+        //       仅临时注入本次请求, 不落库; 用 name="agent:role" 标识便于排查。
+        if (agentOverride != null && agentOverride.systemPrompt() != null
+                && !agentOverride.systemPrompt().isBlank()) {
+            List<Message> withAgent = new ArrayList<>(history);
+            withAgent.add(0, Message.system("agent:role", agentOverride.systemPrompt()));
+            history = withAgent;
         }
 
         // 3.2 平台级运行时约束(生图策略 + 联网搜索引导), 与同步 chatSync 路径共用, 保证两条链路注入一致
@@ -1290,7 +1313,59 @@ public class AgentOrchestrator {
 
         return new ChatContext(sessId, history, provider, imageFallbackWarning, imageUnrecognizedError,
                 prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
-                contextForEstimate, nearLimit, est);
+                contextForEstimate, nearLimit, est,
+                agentOverride != null ? agentOverride.allowedTools() : null);
+    }
+
+    /**
+     * V2.3 自定义 Agent 上下文: 加载并应用 Agent 配置到请求, 返回 Agent 角色提示词与工具白名单。
+     * <p>应用项: model (覆盖) / temperature (覆盖) / kbIds (合并到 request.knowledgeBaseIds) /
+     * tools (返回白名单供流式工具定义过滤) / systemPrompt (返回供 system 消息注入)。
+     */
+    private record AgentOverride(String systemPrompt, List<String> allowedTools) {}
+
+    private AgentOverride applyAgentDefinition(ChatRequest request) {
+        if (request.getAgentId() == null || request.getAgentId().isBlank()) return null;
+        try {
+            AgentDefinitionEntity agent = agentDefinitionService.loadEntity(request.getAgentId());
+            // 1. model override (Agent 配置的模型优先于请求模型)
+            if (agent.getModel() != null && !agent.getModel().isBlank()) {
+                request.setModel(agent.getModel());
+            }
+            // 2. temperature override
+            if (agent.getTemperature() != null) {
+                request.setTemperature(agent.getTemperature().doubleValue());
+            }
+            // 3. kb_ids merge (Agent 关联的知识库 + 用户选的知识库, 去重合并)
+            List<String> agentKbIds = parseStrList(agent.getKbIds());
+            if (!agentKbIds.isEmpty()) {
+                List<String> merged = new ArrayList<>(agentKbIds);
+                if (request.getKnowledgeBaseIds() != null) {
+                    for (String kbId : request.getKnowledgeBaseIds()) {
+                        if (!merged.contains(kbId)) merged.add(kbId);
+                    }
+                }
+                request.setKnowledgeBaseIds(merged);
+            }
+            // 4. tools whitelist (空列表表示不限制; null 表示无 Agent)
+            List<String> allowedTools = parseStrList(agent.getTools());
+            log.info("应用自定义 Agent: id={}, name={}, model={}, tools={}, kbIds={}",
+                    agent.getId(), agent.getName(), agent.getModel(), allowedTools, agentKbIds);
+            return new AgentOverride(agent.getSystemPrompt(), allowedTools);
+        } catch (Exception e) {
+            log.warn("加载 Agent 定义失败 agentId={}, 忽略 Agent 配置: {}", request.getAgentId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** 反序列化 JSON 数组字符串为 List<String> */
+    private List<String> parseStrList(String json) {
+        if (json == null || json.isBlank()) return Collections.emptyList();
+        try {
+            return mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<List<String>>() {});
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
     }
 
     /**
@@ -1351,6 +1426,9 @@ public class AgentOrchestrator {
      * 同步对话
      */
     public ChatResponse chatSync(ChatRequest request, String currentUserId) {
+        // V2.3: 自定义 Agent 应用 (model/temperature/kb_ids/systemPrompt 覆盖)
+        AgentOverride agentOverride = applyAgentDefinition(request);
+
         // V2.2: userId 由 Controller 从 exchange 取出后传入, 用于会话绑定
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
@@ -1377,6 +1455,14 @@ public class AgentOrchestrator {
                 withSys.add(0, Message.system(toInject));
                 history = withSys;
             }
+        }
+
+        // V2.3 自定义 Agent 角色提示词注入 (与流式路径保持一致)
+        if (agentOverride != null && agentOverride.systemPrompt() != null
+                && !agentOverride.systemPrompt().isBlank()) {
+            List<Message> withAgent = new ArrayList<>(history);
+            withAgent.add(0, Message.system("agent:role", agentOverride.systemPrompt()));
+            history = withAgent;
         }
 
         // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)

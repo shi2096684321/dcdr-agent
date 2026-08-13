@@ -100,6 +100,16 @@ public class    SecurityConfig {
                         .pathMatchers(HttpMethod.POST, "/api/knowledge-bases/**").hasAuthority(Permission.KB_WRITE)
                         .pathMatchers(HttpMethod.PUT, "/api/knowledge-bases/**").hasAuthority(Permission.KB_WRITE)
                         .pathMatchers(HttpMethod.DELETE, "/api/knowledge-bases/**").hasAuthority(Permission.KB_WRITE)
+                        // V2.3 自定义 Agent 读取 (GET): agent:read
+                        .pathMatchers(HttpMethod.GET, "/api/agents/**").hasAuthority(Permission.AGENT_READ)
+                        // V2.3 自定义 Agent 写入 (POST/PUT/DELETE): agent:write
+                        .pathMatchers(HttpMethod.POST, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
+                        .pathMatchers(HttpMethod.PUT, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
+                        .pathMatchers(HttpMethod.DELETE, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
+                        // V2.3 工作流编排 (CRUD + 执行): workflow:execute
+                        .pathMatchers("/api/workflows/**").hasAuthority(Permission.WORKFLOW_EXECUTE)
+                        // V2.3 定时任务管理 (CRUD + 触发): schedule:manage
+                        .pathMatchers("/api/scheduled-tasks/**").hasAuthority(Permission.SCHEDULE_MANAGE)
                         // 管理后台: user:manage
                         .pathMatchers("/api/admin/**").hasAuthority(Permission.USER_MANAGE)
                         // 其余 /api/** 端点: 仅需登录

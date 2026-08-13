@@ -16,12 +16,16 @@ import java.util.Set;
  * <pre>
  * 角色权限映射 (文档 §4.3 F-23):
  *   admin  → 全部权限 + ROLE_ADMIN (含知识库管理)
- *   user   → chat:chat, session:read, session:write, agent:create + ROLE_USER (无知识库管理权限)
+ *   user   → chat:chat, session:read, session:write, agent:create,
+ *             agent:read, agent:write, workflow:execute, schedule:manage + ROLE_USER (无知识库管理权限)
  *   guest  → chat:chat + ROLE_GUEST
  * </pre>
  * <p>
  * 知识库管理(kb:read/kb:write)仅 admin 拥有; 普通用户在对话中自动受益于 PLATFORM 级 RAG,
  * 无需也无法手动管理知识库。
+ * <p>
+ * V2.3 新增权限: agent:read / agent:write (自定义 Agent CRUD),
+ * workflow:execute (工作流编排), schedule:manage (定时任务管理); user 与 admin 均可使用。
  */
 public final class Permission {
 
@@ -38,8 +42,16 @@ public final class Permission {
     public static final String KB_READ = "kb:read";
     /** 知识库写入 (创建/更新/删除/上传文档) */
     public static final String KB_WRITE = "kb:write";
-    /** 创建自定义 Agent */
+    /** 创建自定义 Agent (V2.2 保留兼容) */
     public static final String AGENT_CREATE = "agent:create";
+    /** 读取自定义 Agent 列表/详情/模板 (V2.3) */
+    public static final String AGENT_READ = "agent:read";
+    /** 创建/更新/删除/克隆自定义 Agent (V2.3) */
+    public static final String AGENT_WRITE = "agent:write";
+    /** 工作流编排: 定义/执行/管理 (V2.3, F-25) */
+    public static final String WORKFLOW_EXECUTE = "workflow:execute";
+    /** 定时任务管理: CRUD/触发 (V2.3, F-26) */
+    public static final String SCHEDULE_MANAGE = "schedule:manage";
     /** 模型管理 */
     public static final String MODEL_MANAGE = "model:manage";
     /** 用户管理 (管理后台) */
@@ -53,13 +65,16 @@ public final class Permission {
     /** 全部权限列表 (admin 拥有) */
     private static final List<String> ALL_PERMISSIONS = List.of(
             CHAT_CHAT, SESSION_READ, SESSION_WRITE,
-            KB_READ, KB_WRITE, AGENT_CREATE, MODEL_MANAGE, USER_MANAGE
+            KB_READ, KB_WRITE, AGENT_CREATE, AGENT_READ, AGENT_WRITE,
+            WORKFLOW_EXECUTE, SCHEDULE_MANAGE, MODEL_MANAGE, USER_MANAGE
     );
 
     /** 角色 → 权限集合映射 */
     private static final Map<String, Set<String>> ROLE_PERMISSIONS = Map.of(
             ROLE_ADMIN, Set.copyOf(ALL_PERMISSIONS),
-            ROLE_USER, Set.of(CHAT_CHAT, SESSION_READ, SESSION_WRITE, AGENT_CREATE),
+            ROLE_USER, Set.of(CHAT_CHAT, SESSION_READ, SESSION_WRITE,
+                    AGENT_CREATE, AGENT_READ, AGENT_WRITE,
+                    WORKFLOW_EXECUTE, SCHEDULE_MANAGE),
             ROLE_GUEST, Set.of(CHAT_CHAT)
     );
 

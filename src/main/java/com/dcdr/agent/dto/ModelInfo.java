@@ -1,6 +1,7 @@
 package com.dcdr.agent.dto;
 
 import com.dcdr.agent.common.constant.ModelType;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -43,5 +44,6 @@ public class ModelInfo {
     private String uiMode;
     /** 是否为默认对话模型(后端配置 model.default-chat) */
     @Schema(description = "是否为默认对话模型", example = "false")
+    @JsonProperty("isDefault")
     private boolean isDefault;
 }

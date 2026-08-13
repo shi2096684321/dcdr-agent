@@ -76,21 +76,63 @@ CREATE INDEX IF NOT EXISTS idx_chunk_kb    ON document_chunks(kb_id);
 CREATE INDEX IF NOT EXISTS idx_chunk_embedding
     ON document_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
--- 6. V2.0 新增: 智能体定义表 (V2.2 自定义 Agent)
+-- 6. V2.0 新增: 智能体定义表 (V2.2 自定义 Agent; V2.3 增加 temperature/avatar/is_template)
 CREATE TABLE IF NOT EXISTS agent_definitions (
     id               VARCHAR(64)  PRIMARY KEY,
     user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
     name             VARCHAR(255) NOT NULL,
     description      TEXT,
+    avatar           VARCHAR(512),
     system_prompt    TEXT,
     model            VARCHAR(128),
     tools            TEXT,
     kb_ids           TEXT,
+    temperature      DECIMAL(3,2),
     is_public        BOOLEAN      NOT NULL DEFAULT false,
+    is_template      BOOLEAN      NOT NULL DEFAULT false,
     created_at       TIMESTAMP    NOT NULL DEFAULT now(),
     updated_at       TIMESTAMP    NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_agent_user ON agent_definitions(user_id);
+CREATE INDEX IF NOT EXISTS idx_agent_template ON agent_definitions(is_template);
+-- 已有部署升级: 补 V2.3 新增列
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS avatar      VARCHAR(512);
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS temperature DECIMAL(3,2);
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS is_template BOOLEAN NOT NULL DEFAULT false;
+
+-- 6.1 V2.3 新增: 工作流定义表 (F-25 多 Agent 协作编排)
+CREATE TABLE IF NOT EXISTS workflow_definitions (
+    id               VARCHAR(64)  PRIMARY KEY,
+    user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
+    name             VARCHAR(255) NOT NULL,
+    description      TEXT,
+    mode             VARCHAR(16)  NOT NULL DEFAULT 'sequential',  -- sequential / parallel / conditional
+    steps_json       TEXT         NOT NULL,                        -- 步骤定义数组(JSON)
+    enabled          BOOLEAN      NOT NULL DEFAULT true,
+    created_at       TIMESTAMP    NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMP    NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_user ON workflow_definitions(user_id);
+
+-- 6.2 V2.3 新增: 定时任务表 (F-26 定时触发 Agent)
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id               VARCHAR(64)  PRIMARY KEY,
+    user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
+    name             VARCHAR(255) NOT NULL,
+    agent_id         VARCHAR(64)  REFERENCES agent_definitions(id) ON DELETE CASCADE,
+    cron             VARCHAR(64)  NOT NULL,                        -- Spring CronExpression 格式
+    input_message    TEXT,                                          -- 触发时喂给 Agent 的输入
+    enabled          BOOLEAN      NOT NULL DEFAULT true,
+    last_run_at      TIMESTAMP,
+    last_status      VARCHAR(16),                                   -- success / failed / running
+    last_error       TEXT,
+    next_run_at      TIMESTAMP,
+    created_at       TIMESTAMP    NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMP    NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_sched_user    ON scheduled_tasks(user_id);
+CREATE INDEX IF NOT EXISTS idx_sched_enabled ON scheduled_tasks(enabled);
+CREATE INDEX IF NOT EXISTS idx_sched_next    ON scheduled_tasks(next_run_at);
 
 -- 7. V2.0 新增: 审计日志表
 CREATE TABLE IF NOT EXISTS audit_logs (

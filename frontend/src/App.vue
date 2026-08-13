@@ -16,9 +16,12 @@
         @show-auth="showAuth = true"
       />
       <main class="app-main">
-        <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" />
+        <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" :models="models" />
         <CreativeView v-else-if="mode==='creative'" :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
+        <AgentView v-else-if="mode==='agent'" />
+        <WorkflowView v-else-if="mode==='workflow'" />
+        <ScheduledTaskView v-else-if="mode==='schedule'" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
     </template>
@@ -28,18 +31,22 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getModels } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useModelStore } from '@/stores/model'
 import AppHeader from '@/components/AppHeader.vue'
 import ChatView from '@/views/ChatView.vue'
 import CreativeView from '@/views/CreativeView.vue'
 import KnowledgeBaseView from '@/views/KnowledgeBaseView.vue'
+import AgentView from '@/views/AgentView.vue'
+import WorkflowView from '@/views/WorkflowView.vue'
+import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'
 
 const authStore = useAuthStore()
+const modelStore = useModelStore()
 const mode = ref('chat')
-const models = ref([])
+const models = computed(() => modelStore.models)
 const currentModel = ref('')
 const webSearch = ref(false)
 // 控制 AuthView 显示: 启动时若已有 Token 则尝试拉取用户, 失败时再显示登录页
@@ -47,14 +54,13 @@ const showAuth = ref(false)
 // V2.2: 认证状态确认标志, false 时显示加载占位, 阻止子组件 onMounted 发起 API 请求
 const authReady = ref(false)
 
-const chatModels = computed(() => models.value.filter(m => m.type === 'CHAT'))
-const imageModels = computed(() => models.value.filter(m => m.type === 'IMAGE'))
-const videoModels = computed(() => models.value.filter(m => m.type === 'VIDEO'))
+const imageModels = computed(() => modelStore.imageModels)
+const videoModels = computed(() => modelStore.videoModels)
 
 async function loadModels() {
   try {
-    models.value = await getModels()
-    const def = models.value.find(m => m.type === 'CHAT' && m.isDefault) || chatModels.value[0]
+    await modelStore.loadModels()
+    const def = modelStore.defaultChatModelName()
     currentModel.value = def ? def.name : ''
   } catch (e) {
     // 失败也需可见, 否则表现为"登录后没加载模型"

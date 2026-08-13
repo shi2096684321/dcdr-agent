@@ -102,12 +102,23 @@ public class ToolRegistry {
      * 避免把 Weather / Calculator 等仅适用于其它场景的工具暴露给流式对话。
      */
     public List<Map<String, Object>> getStreamingToolDefinitions() {
+        return getStreamingToolDefinitionsFiltered(null);
+    }
+
+    /**
+     * V2.3 自定义 Agent 工具白名单过滤版本。
+     * <p>
+     * 当 {@code allowedToolNames} 为 null/空时, 返回全部 streaming 工具定义 (与
+     * {@link #getStreamingToolDefinitions()} 等价); 否则仅返回名称在白名单中的工具。
+     * 用于让自定义 Agent 仅暴露其配置中启用的工具子集。
+     */
+    public List<Map<String, Object>> getStreamingToolDefinitionsFiltered(java.util.List<String> allowedToolNames) {
+        boolean filter = allowedToolNames != null && !allowedToolNames.isEmpty();
         List<Map<String, Object>> defs = new ArrayList<>();
         ObjectMapper mapper = new ObjectMapper();
         for (Tool tool : tools.values()) {
-            if (!tool.supportsStreaming()) {
-                continue;
-            }
+            if (!tool.supportsStreaming()) continue;
+            if (filter && !allowedToolNames.contains(tool.getName())) continue;
             try {
                 defs.add(toDefinition(tool, mapper));
             } catch (Exception e) {

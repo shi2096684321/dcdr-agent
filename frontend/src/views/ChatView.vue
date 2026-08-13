@@ -157,6 +157,15 @@
                        @visible-change="onKbDropdownOpen">
               <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
             </el-select>
+            <!-- V2.3 Agent 选择: 登录用户可见, 选择后对话使用该 Agent 的角色/模型/工具配置 -->
+            <el-select v-if="authStore.isLoggedIn" v-model="selectedAgentId" clearable
+                       placeholder="Agent" size="small"
+                       class="agent-select" :class="{active: !!selectedAgentId}"
+                       :disabled="streaming" :loading="agentLoading"
+                       title="选择自定义 Agent 后, 对话将使用其角色设定/模型/工具/知识库配置"
+                       @visible-change="onAgentDropdownOpen">
+              <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
+            </el-select>
           </div>
           <textarea v-model="input" placeholder="输入消息，Enter发送，Shift+Enter换行"
                     @keydown.enter.exact.prevent="send" rows="1"
@@ -181,7 +190,7 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, deleteSession, uploadFile,
-  buildExportUrl, getKnowledgeBases
+  buildExportUrl, getKnowledgeBases, getAgents
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
@@ -245,6 +254,26 @@ async function loadKnowledgeBases() {
 // 下拉首次展开时懒加载知识库列表
 function onKbDropdownOpen(open) {
   if (open && knowledgeBases.value.length === 0) loadKnowledgeBases()
+}
+
+// V2.3 自定义 Agent 选择
+const agents = ref([])
+const selectedAgentId = ref('')
+const agentLoading = ref(false)
+
+async function loadAgents() {
+  agentLoading.value = true
+  try {
+    agents.value = await getAgents()
+  } catch (e) {
+    console.error('加载 Agent 列表失败', e)
+  } finally {
+    agentLoading.value = false
+  }
+}
+
+function onAgentDropdownOpen(open) {
+  if (open && agents.value.length === 0) loadAgents()
 }
 
 function isImage(file) {
@@ -407,7 +436,8 @@ async function send(opts = {}) {
       model: props.currentModel,
       images: (userMsg.images || []).map(i => i.url),
       webSearch: props.webSearch,
-      knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined
+      knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined,
+      agentId: selectedAgentId.value || undefined
     },
     (chunk) => {
       if (chunk.type === 'status') {
@@ -793,6 +823,12 @@ onMounted(() => { loadSessions() })
 .kb-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
 .kb-select :deep(.el-select__placeholder) { font-size: 13px; color: #606266; }
 .kb-select :deep(.el-select__tags-text) { font-size: 12px; }
+/* V2.3 Agent 选择下拉: 复用 kb-select 样式 */
+.agent-select { width: 120px; flex-shrink: 0; }
+.agent-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: #f5f7fa; box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
+.agent-select :deep(.el-select__wrapper:hover) { background: #667eea15; }
+.agent-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.agent-select :deep(.el-select__placeholder) { font-size: 13px; color: #606266; }
 .input-box textarea { flex: 1; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; max-height: 160px; font-family: inherit; padding: 4px 0; background: transparent; }
 .send-btn { width: 40px; height: 40px; border: none; border-radius: 10px; color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
 .send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 6px 18px rgba(102,126,234,0.45); }

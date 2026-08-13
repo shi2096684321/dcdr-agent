@@ -53,4 +53,12 @@ public class ChatRequest {
      */
     @Schema(description = "知识库 ID 列表（RAG 检索增强，可选；非空时从对应知识库检索相关片段注入上下文）")
     private List<String> knowledgeBaseIds;
+
+    /**
+     * V2.3 自定义 Agent ID (可选)。
+     * <p>非空时, 后端会加载该 Agent 定义, 把其 systemPrompt / model / tools / kbIds / temperature
+     * 应用到本次对话(覆盖请求中对应字段), 实现角色化对话体验。
+     */
+    @Schema(description = "自定义 Agent ID（V2.3, 可选；指定后应用该 Agent 的角色设定/模型/工具/知识库）")
+    private String agentId;
 }
