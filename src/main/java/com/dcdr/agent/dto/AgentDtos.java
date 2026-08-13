@@ -38,6 +38,9 @@ public class AgentDtos {
         @Schema(description = "是否公开 (公开可被其他用户使用)")
         @JsonProperty("isPublic")
         private Boolean isPublic;
+        @Schema(description = "是否为预设模板 (仅 admin 可设置; 模板对所有用户可见, 普通用户仅可克隆)")
+        @JsonProperty("isTemplate")
+        private Boolean isTemplate;
     }
 
     /** Agent 列表项 / 详情视图 */

@@ -66,60 +66,112 @@ public class WorkflowEngine {
 
     // ===== 工作流 CRUD =====
 
+    /** 列出当前用户可见的工作流: 自己创建的 + 全部预设模板 */
     public List<WorkflowDtos.WorkflowView> list(String userId) {
-        List<WorkflowDefinitionEntity> entities = workflowRepository.findByUserIdOrderByUpdatedAtDesc(userId);
+        List<WorkflowDefinitionEntity> entities = workflowRepository.findVisible(userId);
         List<WorkflowDtos.WorkflowView> views = new ArrayList<>(entities.size());
-        for (WorkflowDefinitionEntity e : entities) views.add(toView(e));
+        for (WorkflowDefinitionEntity e : entities) views.add(toView(e, userId));
+        return views;
+    }
+
+    /** 仅预设模板 (模板库) */
+    public List<WorkflowDtos.WorkflowView> listTemplates() {
+        List<WorkflowDefinitionEntity> entities = workflowRepository.findByIsTemplateTrueOrderByCreatedAtDesc();
+        List<WorkflowDtos.WorkflowView> views = new ArrayList<>(entities.size());
+        for (WorkflowDefinitionEntity e : entities) views.add(toView(e, null));
         return views;
     }
 
     public WorkflowDtos.WorkflowView get(String id, String userId) {
         WorkflowDefinitionEntity e = workflowRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
+        if (!isVisible(e, userId)) {
             throw new BusinessException(403, "无权访问该工作流", "FORBIDDEN");
         }
-        return toView(e);
+        return toView(e, userId);
+    }
+
+    /** 内部加载实体 (供调度器/执行器调用, 不做可见性校验) */
+    public WorkflowDefinitionEntity loadEntity(String id) {
+        return workflowRepository.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
     }
 
     @Transactional
-    public WorkflowDtos.WorkflowView create(WorkflowDtos.SaveWorkflowRequest req, String userId) {
+    public WorkflowDtos.WorkflowView create(WorkflowDtos.SaveWorkflowRequest req, String userId, boolean isAdmin) {
         validate(req);
+        // 仅管理员可创建模板
+        boolean asTemplate = Boolean.TRUE.equals(req.getIsTemplate());
+        if (asTemplate && !isAdmin) {
+            throw new BusinessException(403, "仅管理员可创建预设模板", "FORBIDDEN");
+        }
         WorkflowDefinitionEntity e = new WorkflowDefinitionEntity();
         e.setId("wf_" + UUID.randomUUID().toString().replace("-", ""));
         e.setUserId(userId);
         applyRequest(e, req);
+        e.setTemplate(asTemplate);
         LocalDateTime now = LocalDateTime.now();
         e.setCreatedAt(now);
         e.setUpdatedAt(now);
         workflowRepository.save(e);
-        log.info("创建工作流: {} (name={}, mode={}, steps={})", e.getId(), e.getName(), e.getMode(),
-                req.getSteps() != null ? req.getSteps().size() : 0);
-        return toView(e);
+        log.info("创建工作流: {} (name={}, mode={}, steps={}, template={})", e.getId(), e.getName(), e.getMode(),
+                req.getSteps() != null ? req.getSteps().size() : 0, asTemplate);
+        return toView(e, userId);
     }
 
     @Transactional
-    public WorkflowDtos.WorkflowView update(String id, WorkflowDtos.SaveWorkflowRequest req, String userId) {
+    public WorkflowDtos.WorkflowView update(String id, WorkflowDtos.SaveWorkflowRequest req, String userId, boolean isAdmin) {
         WorkflowDefinitionEntity e = workflowRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
+        // 模板: 仅管理员可改; 普通工作流: 仅创建者可改
+        if (e.isTemplate() && !isAdmin) {
+            throw new BusinessException(403, "预设模板仅管理员可修改, 普通用户请克隆后再编辑", "FORBIDDEN");
+        }
+        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
             throw new BusinessException(403, "无权修改该工作流", "FORBIDDEN");
         }
         validate(req);
         applyRequest(e, req);
+        // 管理员可在更新时切换模板标记
+        if (isAdmin && req.getIsTemplate() != null) {
+            e.setTemplate(req.getIsTemplate());
+        }
         e.setUpdatedAt(LocalDateTime.now());
         workflowRepository.save(e);
-        return toView(e);
+        log.info("更新工作流: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
+        return toView(e, userId);
     }
 
     @Transactional
-    public void delete(String id, String userId) {
+    public void delete(String id, String userId, boolean isAdmin) {
         WorkflowDefinitionEntity e = workflowRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
+        if (e.isTemplate() && !isAdmin) {
+            throw new BusinessException(403, "预设模板仅管理员可删除", "FORBIDDEN");
+        }
+        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
             throw new BusinessException(403, "无权删除该工作流", "FORBIDDEN");
         }
         workflowRepository.delete(e);
+        log.info("删除工作流: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
+    }
+
+    /** 克隆模板或他人公开工作流为自己的副本 */
+    @Transactional
+    public WorkflowDtos.WorkflowView clone(String id, String userId) {
+        WorkflowDefinitionEntity src = workflowRepository.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
+        if (!isVisible(src, userId)) {
+            throw new BusinessException(403, "无权克隆该工作流", "FORBIDDEN");
+        }
+        WorkflowDtos.SaveWorkflowRequest req = new WorkflowDtos.SaveWorkflowRequest();
+        req.setName(src.getName() + " (副本)");
+        req.setDescription(src.getDescription());
+        req.setMode(src.getMode());
+        req.setSteps(parseSteps(src.getStepsJson()));
+        req.setEnabled(src.isEnabled());
+        req.setIsTemplate(false); // 克隆出来的始终是普通工作流
+        return create(req, userId, false);
     }
 
     // ===== 工作流执行 =====
@@ -431,7 +483,7 @@ public class WorkflowEngine {
         }
     }
 
-    private WorkflowDtos.WorkflowView toView(WorkflowDefinitionEntity e) {
+    private WorkflowDtos.WorkflowView toView(WorkflowDefinitionEntity e, String currentUserId) {
         WorkflowDtos.WorkflowView v = new WorkflowDtos.WorkflowView();
         v.setId(e.getId());
         v.setUserId(e.getUserId());
@@ -440,8 +492,16 @@ public class WorkflowEngine {
         v.setMode(e.getMode());
         v.setSteps(parseSteps(e.getStepsJson()));
         v.setEnabled(e.isEnabled());
+        v.setTemplate(e.isTemplate());
+        // 可编辑: 创建者本人 且 非模板
+        v.setEditable(currentUserId != null && currentUserId.equals(e.getUserId()) && !e.isTemplate());
         v.setCreatedAt(e.getCreatedAt());
         v.setUpdatedAt(e.getUpdatedAt());
         return v;
+    }
+
+    /** 可见性: 模板对所有人可见, 或为创建者本人 */
+    private boolean isVisible(WorkflowDefinitionEntity e, String userId) {
+        return e.isTemplate() || (userId != null && userId.equals(e.getUserId()));
     }
 }

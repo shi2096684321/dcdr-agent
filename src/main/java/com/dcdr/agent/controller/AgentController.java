@@ -63,26 +63,36 @@ public class AgentController {
         return Result.success(agentService.get(id, SecurityContext.getUserId(exchange)));
     }
 
-    @Operation(summary = "创建 Agent", description = "创建自定义 Agent (配置 Prompt/模型/工具/知识库/温度)")
+    @Operation(summary = "创建 Agent",
+            description = "创建自定义 Agent (配置 Prompt/模型/工具/知识库/温度)。"
+                    + "管理员可在请求中设置 isTemplate=true 创建预设模板。")
     @PostMapping
     public Result<AgentDtos.AgentView> create(@RequestBody AgentDtos.SaveAgentRequest req,
                                               ServerWebExchange exchange) {
-        return Result.success(agentService.create(req, SecurityContext.getUserId(exchange)));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(agentService.create(req, userId, isAdmin));
     }
 
-    @Operation(summary = "更新 Agent", description = "更新自己的 Agent 配置 (模板和他人 Agent 不可改)")
+    @Operation(summary = "更新 Agent",
+            description = "更新 Agent 配置。普通用户仅能改自己的 Agent; 管理员可修改预设模板。")
     @PutMapping("/{id}")
     public Result<AgentDtos.AgentView> update(@Parameter(description = "Agent ID", required = true) @PathVariable String id,
                                               @RequestBody AgentDtos.SaveAgentRequest req,
                                               ServerWebExchange exchange) {
-        return Result.success(agentService.update(id, req, SecurityContext.getUserId(exchange)));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(agentService.update(id, req, userId, isAdmin));
     }
 
-    @Operation(summary = "删除 Agent", description = "删除自己的 Agent (模板不可删)")
+    @Operation(summary = "删除 Agent",
+            description = "删除 Agent。普通用户仅能删自己的 Agent; 管理员可删除预设模板。")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@Parameter(description = "Agent ID", required = true) @PathVariable String id,
                                ServerWebExchange exchange) {
-        agentService.delete(id, SecurityContext.getUserId(exchange));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        agentService.delete(id, userId, isAdmin);
         return Result.success();
     }
 

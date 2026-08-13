@@ -75,53 +75,62 @@ public class AgentDefinitionService {
     }
 
     @Transactional
-    public AgentDtos.AgentView create(AgentDtos.SaveAgentRequest req, String userId) {
+    public AgentDtos.AgentView create(AgentDtos.SaveAgentRequest req, String userId, boolean isAdmin) {
         validateName(req.getName());
+        // 仅管理员可创建模板
+        boolean asTemplate = Boolean.TRUE.equals(req.getIsTemplate());
+        if (asTemplate && !isAdmin) {
+            throw new BusinessException(403, "仅管理员可创建预设模板", "FORBIDDEN");
+        }
         AgentDefinitionEntity e = new AgentDefinitionEntity();
         e.setId("agent_" + UUID.randomUUID().toString().replace("-", ""));
         e.setUserId(userId);
         applyRequest(e, req);
-        // 普通用户创建的不是模板
-        e.setTemplate(false);
+        e.setTemplate(asTemplate);
         LocalDateTime now = LocalDateTime.now();
         e.setCreatedAt(now);
         e.setUpdatedAt(now);
         repository.save(e);
-        log.info("创建 Agent: {} (name={}, user={})", e.getId(), e.getName(), userId);
+        log.info("创建 Agent: {} (name={}, user={}, template={})", e.getId(), e.getName(), userId, asTemplate);
         return toView(e, userId);
     }
 
     @Transactional
-    public AgentDtos.AgentView update(String id, AgentDtos.SaveAgentRequest req, String userId) {
+    public AgentDtos.AgentView update(String id, AgentDtos.SaveAgentRequest req, String userId, boolean isAdmin) {
         AgentDefinitionEntity e = repository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        // 模板不允许直接修改 (避免破坏全局一致的角色定义)
-        if (e.isTemplate()) {
-            throw new BusinessException(403, "预设模板不可修改, 请克隆后再编辑", "FORBIDDEN");
+        // 模板: 仅管理员可修改; 普通 Agent: 仅创建者可改
+        if (e.isTemplate() && !isAdmin) {
+            throw new BusinessException(403, "预设模板仅管理员可修改, 普通用户请克隆后再编辑", "FORBIDDEN");
         }
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
+        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
             throw new BusinessException(403, "无权修改他人创建的 Agent", "FORBIDDEN");
         }
         validateName(req.getName());
         applyRequest(e, req);
+        // 管理员可在更新时切换模板标记 (普通用户不允许, 上面已拦截)
+        if (isAdmin && req.getIsTemplate() != null) {
+            e.setTemplate(req.getIsTemplate());
+        }
         e.setUpdatedAt(LocalDateTime.now());
         repository.save(e);
-        log.info("更新 Agent: {} (name={})", e.getId(), e.getName());
+        log.info("更新 Agent: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
         return toView(e, userId);
     }
 
     @Transactional
-    public void delete(String id, String userId) {
+    public void delete(String id, String userId, boolean isAdmin) {
         AgentDefinitionEntity e = repository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        if (e.isTemplate()) {
-            throw new BusinessException(403, "预设模板不可删除", "FORBIDDEN");
+        // 模板: 仅管理员可删; 普通 Agent: 仅创建者可删
+        if (e.isTemplate() && !isAdmin) {
+            throw new BusinessException(403, "预设模板仅管理员可删除", "FORBIDDEN");
         }
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
+        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
             throw new BusinessException(403, "无权删除他人创建的 Agent", "FORBIDDEN");
         }
         repository.delete(e);
-        log.info("删除 Agent: {} (name={})", e.getId(), e.getName());
+        log.info("删除 Agent: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
     }
 
     /**
@@ -144,7 +153,8 @@ public class AgentDefinitionService {
         req.setKbIds(parseStrList(src.getKbIds()));
         req.setTemperature(src.getTemperature());
         req.setIsPublic(false);
-        return create(req, userId);
+        req.setIsTemplate(false); // 克隆出来的始终是普通 Agent
+        return create(req, userId, false);
     }
 
     // ===== 内部辅助 =====
@@ -215,14 +225,29 @@ public class AgentDefinitionService {
         }
     }
 
-    /** 反序列化 JSON 数组字符串为 List<String> */
-    private List<String> parseStrList(String json) {
-        if (json == null || json.isBlank()) return Collections.emptyList();
-        try {
-            return mapper.readValue(json, new TypeReference<List<String>>() {});
-        } catch (Exception e) {
-            log.warn("解析列表 JSON 失败: {}", json, e);
-            return Collections.emptyList();
+    /** 反序列化列表字符串为 List<String>。
+     *  兼容三种存储形态以兼容历史脏数据:
+     *   1. 标准 JSON 数组:   ["a", "b"]
+     *   2. 裸字符串 (单值):  a
+     *   3. 逗号分隔列表:      a, b, c
+     */
+    private List<String> parseStrList(String raw) {
+        if (raw == null || raw.isBlank()) return Collections.emptyList();
+        String json = raw.trim();
+        // 已是 JSON 数组/对象形态, 走标准反序列化
+        if (json.startsWith("[") || json.startsWith("{")) {
+            try {
+                return mapper.readValue(json, new TypeReference<List<String>>() {});
+            } catch (Exception e) {
+                log.warn("解析列表 JSON 失败, 尝试按逗号分隔兜底: {}", raw, e);
+            }
         }
+        // 兜底: 裸字符串按单个元素, 或逗号分隔多元素 (兼容历史脏数据)
+        List<String> result = new ArrayList<>();
+        for (String part : json.split(",")) {
+            String trimmed = part.trim();
+            if (!trimmed.isEmpty()) result.add(trimmed);
+        }
+        return result;
     }
 }

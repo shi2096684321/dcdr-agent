@@ -55,6 +55,10 @@ public class WorkflowDefinitionEntity {
     @Column(nullable = false)
     private boolean enabled = true;
 
+    @Schema(description = "是否为预设模板 (V2.3, 模板对所有用户可见且不可删除, 仅可克隆)")
+    @Column(nullable = false)
+    private boolean isTemplate = false;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

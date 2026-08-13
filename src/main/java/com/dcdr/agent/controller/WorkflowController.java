@@ -24,15 +24,17 @@ import java.util.List;
  * <p>
  * 端点清单:
  * <ul>
- *   <li>GET    /api/workflows                工作流列表(当前用户)</li>
+ *   <li>GET    /api/workflows                工作流列表(自己 + 预设模板)</li>
+ *   <li>GET    /api/workflows/templates      预设模板库</li>
  *   <li>GET    /api/workflows/{id}           工作流详情(含 steps)</li>
- *   <li>POST   /api/workflows                创建工作流</li>
- *   <li>PUT    /api/workflows/{id}           更新工作流</li>
- *   <li>DELETE /api/workflows/{id}           删除工作流</li>
+ *   <li>POST   /api/workflows                创建工作流(管理员可设 isTemplate=true 创建模板)</li>
+ *   <li>PUT    /api/workflows/{id}           更新工作流(模板仅管理员可改)</li>
+ *   <li>DELETE /api/workflows/{id}           删除工作流(模板仅管理员可删)</li>
+ *   <li>POST   /api/workflows/{id}/clone     克隆模板为自己的副本</li>
  *   <li>POST   /api/workflows/execute        执行工作流(同步返回各步结果)</li>
  * </ul>
  * <p>
- * 权限: workflow:execute (创建/修改/删除/执行); 仅创建者可操作自己的工作流。
+ * 权限: workflow:execute (创建/修改/删除/执行); 模板增删改仅管理员。
  * <p>
  * <b>线程模型</b>: execute 端点会同步调用多个 Agent (LLM 阻塞), 必须切到 boundedElastic
  * 线程池, 避免阻塞 reactor-http-nio (项目硬约束)。
@@ -46,12 +48,18 @@ public class WorkflowController {
 
     private final WorkflowEngine workflowEngine;
 
-    @Operation(summary = "工作流列表", description = "返回当前用户创建的工作流")
+    @Operation(summary = "工作流列表", description = "返回当前用户可见的工作流: 自己创建的 + 全部预设模板")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkflowDtos.WorkflowView.class)))
     @GetMapping
     public Result<List<WorkflowDtos.WorkflowView>> list(ServerWebExchange exchange) {
         String userId = SecurityContext.getUserId(exchange);
         return Result.success(workflowEngine.list(userId));
+    }
+
+    @Operation(summary = "预设模板库", description = "返回全部预设工作流模板 (isTemplate=true), 任何用户可见可克隆")
+    @GetMapping("/templates")
+    public Result<List<WorkflowDtos.WorkflowView>> templates() {
+        return Result.success(workflowEngine.listTemplates());
     }
 
     @Operation(summary = "工作流详情", description = "返回工作流定义 (含 steps 数组)")
@@ -62,29 +70,47 @@ public class WorkflowController {
         return Result.success(workflowEngine.get(id, SecurityContext.getUserId(exchange)));
     }
 
-    @Operation(summary = "创建工作流", description = "定义工作流: 名称/模式(sequential/parallel/conditional)/步骤数组")
+    @Operation(summary = "创建工作流",
+            description = "定义工作流: 名称/模式(sequential/parallel/conditional)/步骤数组。"
+                    + "管理员可在请求中设置 isTemplate=true 创建预设模板。")
     @PostMapping
     public Result<WorkflowDtos.WorkflowView> create(@RequestBody WorkflowDtos.SaveWorkflowRequest req,
                                                     ServerWebExchange exchange) {
-        return Result.success(workflowEngine.create(req, SecurityContext.getUserId(exchange)));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(workflowEngine.create(req, userId, isAdmin));
     }
 
-    @Operation(summary = "更新工作流", description = "更新工作流定义 (仅创建者可改)")
+    @Operation(summary = "更新工作流",
+            description = "更新工作流定义。普通用户仅能改自己的工作流; 管理员可修改预设模板。")
     @PutMapping("/{id}")
     public Result<WorkflowDtos.WorkflowView> update(@Parameter(description = "工作流 ID", required = true)
                                                     @PathVariable String id,
                                                     @RequestBody WorkflowDtos.SaveWorkflowRequest req,
                                                     ServerWebExchange exchange) {
-        return Result.success(workflowEngine.update(id, req, SecurityContext.getUserId(exchange)));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(workflowEngine.update(id, req, userId, isAdmin));
     }
 
-    @Operation(summary = "删除工作流", description = "删除工作流定义 (仅创建者可删)")
+    @Operation(summary = "删除工作流",
+            description = "删除工作流。普通用户仅能删自己的工作流; 管理员可删除预设模板。")
     @DeleteMapping("/{id}")
     public Result<Void> delete(@Parameter(description = "工作流 ID", required = true)
                                @PathVariable String id,
                                ServerWebExchange exchange) {
-        workflowEngine.delete(id, SecurityContext.getUserId(exchange));
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        workflowEngine.delete(id, userId, isAdmin);
         return Result.success();
+    }
+
+    @Operation(summary = "克隆工作流", description = "克隆预设模板或自己的工作流为副本 (预设模板不可直接修改, 需克隆)")
+    @PostMapping("/{id}/clone")
+    public Result<WorkflowDtos.WorkflowView> clone(@Parameter(description = "源工作流 ID", required = true)
+                                                   @PathVariable String id,
+                                                   ServerWebExchange exchange) {
+        return Result.success(workflowEngine.clone(id, SecurityContext.getUserId(exchange)));
     }
 
     @Operation(summary = "执行工作流",
