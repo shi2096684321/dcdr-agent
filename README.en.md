@@ -2,9 +2,9 @@
 
 An open-source intelligent agent (Agent) platform based on Spring Boot + Vue 3, supporting streaming conversation, text-to-image creation, and unified orchestration and tool calling (Function Calling) for multi-vendor large models.
 
-Current version: **v1.1.0** (Release Notes: [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)).
+Current version: **v2.3.0** (Release Notes: [`docs/RELEASE-v2.3.0.md`](docs/RELEASE-v2.3.0.md)).
 
-> Version note: v1.1.0 adds text-to-video and web search (`web_search`); voice STT/TTS is a future extensibility item — see [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md).
+> Version note: v2.3.0 unifies V2.0 (Knowledge Base / Auth / Multi-Agent) through V2.3 (Custom Agent / Workflow / Scheduled Task / Streaming Image). See [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md).
 
 ## ✨ Features
 
