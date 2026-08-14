@@ -106,8 +106,12 @@ public class    SecurityConfig {
                         .pathMatchers(HttpMethod.POST, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
                         .pathMatchers(HttpMethod.PUT, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
                         .pathMatchers(HttpMethod.DELETE, "/api/agents/**").hasAuthority(Permission.AGENT_WRITE)
-                        // V2.3 工作流编排 (CRUD + 执行): workflow:execute
+                        // V2.3 工作流编排 (CRUD + 执行 + V3.0 执行容错): workflow:execute
                         .pathMatchers("/api/workflows/**").hasAuthority(Permission.WORKFLOW_EXECUTE)
+                        // V3.0 F-31 Webhook 触发端点 (公开, 靠 token 鉴权; 必须在管理规则之前)
+                        .pathMatchers(HttpMethod.POST, "/api/webhooks/trigger/**").permitAll()
+                        // V3.0 F-31 Webhook 管理 (CRUD): workflow:execute
+                        .pathMatchers("/api/webhooks/**").hasAuthority(Permission.WORKFLOW_EXECUTE)
                         // V2.3 定时任务管理 (CRUD + 触发): schedule:manage
                         .pathMatchers("/api/scheduled-tasks/**").hasAuthority(Permission.SCHEDULE_MANAGE)
                         // 管理后台: user:manage

@@ -46,7 +46,7 @@
           </div>
         </div>
 
-        <el-tabs v-model="activeTab" class="wf-tabs">
+        <el-tabs v-model="activeTab" class="wf-tabs" @tab-change="onTabChange">
           <!-- 步骤可视化 -->
           <el-tab-pane label="步骤定义" name="steps">
             <div class="steps-viz">
@@ -57,6 +57,10 @@
                     <span class="step-name">{{ step.name }}</span>
                     <el-tag size="small" type="info">{{ agentName(step.agentId) }}</el-tag>
                     <el-tag v-if="step.condition" size="small" type="warning">条件: {{ step.condition }}</el-tag>
+                    <el-tag v-if="step.approval" size="small" type="danger">人工审批</el-tag>
+                    <el-tag v-if="step.retry" size="small" type="success">
+                      重试×{{ step.retry.maxAttempts || '默认' }}
+                    </el-tag>
                   </div>
                   <div class="step-input">{{ step.input || '(无输入)' }}</div>
                 </div>
@@ -105,6 +109,72 @@
                   <pre>{{ executionResult.finalOutput }}</pre>
                 </div>
               </div>
+            </div>
+          </el-tab-pane>
+
+          <!-- V3.0 F-33 执行历史 (断点续跑 / 人工审批) -->
+          <el-tab-pane label="执行历史" name="history">
+            <div class="history-panel">
+              <div class="history-toolbar">
+                <el-button size="small" @click="loadExecutions" :loading="loadingExecs">刷新</el-button>
+              </div>
+              <div v-if="executions.length" class="exec-list">
+                <div v-for="ex in executions" :key="ex.id" class="exec-card">
+                  <div class="exec-head">
+                    <el-tag size="small" :type="execStatusTagType(ex.status)">{{ execStatusLabel(ex.status) }}</el-tag>
+                    <span class="exec-trigger">{{ triggerLabel(ex.triggerType) }}</span>
+                    <span class="exec-time">{{ formatTime(ex.startedAt) }}</span>
+                    <span class="exec-wf" v-if="ex.workflowName">{{ ex.workflowName }}</span>
+                  </div>
+                  <div class="exec-input" v-if="ex.input">
+                    <span class="rl">输入:</span> {{ ex.input.slice(0, 200) }}{{ ex.input.length > 200 ? '...' : '' }}
+                  </div>
+                  <div class="exec-error" v-if="ex.error">
+                    <span class="rl">错误:</span> {{ ex.error }}
+                  </div>
+                  <div class="exec-actions">
+                    <el-button v-if="ex.status === 'failed'" size="small" type="warning" :loading="ex._busy"
+                               @click="resumeExec(ex)">断点续跑</el-button>
+                    <el-button v-if="ex.status === 'paused'" size="small" type="success" :loading="ex._busy"
+                               @click="approveExec(ex)">审批通过</el-button>
+                    <el-button v-if="ex.status === 'running' || ex.status === 'paused'" size="small" type="danger"
+                               :loading="ex._busy" @click="cancelExec(ex)">取消</el-button>
+                    <el-button size="small" link @click="viewExecDetail(ex)">详情</el-button>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty-tip" style="padding: 30px;">暂无执行记录</div>
+            </div>
+          </el-tab-pane>
+
+          <!-- V3.0 F-31 Webhook 管理 -->
+          <el-tab-pane label="Webhook" name="webhook">
+            <div class="webhook-panel">
+              <div class="webhook-toolbar">
+                <el-button size="small" type="primary" @click="openWebhookDialog">+ 新建 Webhook</el-button>
+                <el-button size="small" @click="loadWebhooks">刷新</el-button>
+              </div>
+              <div v-if="webhooks.length" class="webhook-list">
+                <div v-for="wh in webhooks" :key="wh.id" class="webhook-card">
+                  <div class="webhook-head">
+                    <span class="webhook-name">{{ wh.name || '(未命名)' }}</span>
+                    <el-tag v-if="!wh.enabled" size="small" type="info">已禁用</el-tag>
+                    <el-tag v-else size="small" type="success">启用</el-tag>
+                    <span class="webhook-triggers">触发 {{ wh.triggerCount }} 次</span>
+                  </div>
+                  <div class="webhook-url-row">
+                    <span class="rl">触发 URL:</span>
+                    <code class="webhook-url">{{ wh.url }}</code>
+                  </div>
+                  <div class="webhook-meta" v-if="wh.workflowName">绑定工作流: {{ wh.workflowName }}</div>
+                  <div class="webhook-meta" v-if="wh.lastTriggered">最后触发: {{ formatTime(wh.lastTriggered) }}</div>
+                  <div class="webhook-actions">
+                    <el-button size="small" @click="editWebhook(wh)">编辑</el-button>
+                    <el-button size="small" type="danger" @click="removeWebhook(wh)">删除</el-button>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="empty-tip" style="padding: 30px;">暂无 Webhook, 点击上方按钮创建</div>
             </div>
           </el-tab-pane>
         </el-tabs>
@@ -156,6 +226,35 @@
           <el-form-item v-if="form.mode === 'conditional'" label="条件" label-width="70px">
             <el-input v-model="s.condition" placeholder='条件表达式, 如: contains(${prev}, "YES") 或 not:equals(text,"") ; 留空则无条件执行' />
           </el-form-item>
+          <!-- V3.0 F-33 人工审批节点 -->
+          <el-form-item label="审批节点" label-width="70px">
+            <el-switch v-model="s.approval" />
+            <span class="form-hint">开启后, 执行到该步会暂停等待人工审批通过再继续</span>
+          </el-form-item>
+          <!-- V3.0 F-33 步骤重试策略 -->
+          <el-collapse v-model="s._retryOpen" class="step-retry-collapse">
+            <el-collapse-item title="重试策略 (留空用默认策略)" name="retry">
+              <div class="retry-form">
+                <el-form-item label="最大次数" label-width="80px">
+                  <el-input-number v-model="s.retryMaxAttempts" :min="1" :max="10" controls-position="right" size="small" />
+                </el-form-item>
+                <el-form-item label="退避策略" label-width="80px">
+                  <el-select v-model="s.retryBackoff" size="small" style="width:140px">
+                    <el-option label="指数退避" value="exponential" />
+                    <el-option label="线性递增" value="linear" />
+                    <el-option label="固定间隔" value="fixed" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="初始延迟" label-width="80px">
+                  <el-input-number v-model="s.retryInitialDelay" :min="0" :step="500" controls-position="right" size="small" />
+                  <span class="form-hint">ms</span>
+                </el-form-item>
+                <el-form-item label="退避乘数" label-width="80px">
+                  <el-input-number v-model="s.retryMultiplier" :min="1" :step="0.5" :precision="1" controls-position="right" size="small" />
+                </el-form-item>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
         </div>
         <el-button type="primary" plain @click="addStep" class="add-step-btn">+ 添加步骤</el-button>
       </el-form>
@@ -163,6 +262,42 @@
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitForm">确定</el-button>
       </template>
+    </el-dialog>
+
+    <!-- V3.0 F-31 Webhook 创建/编辑对话框 -->
+    <el-dialog v-model="webhookDialogVisible" :title="webhookEditing ? '编辑 Webhook' : '新建 Webhook'" width="560px" :close-on-click-modal="false">
+      <el-form :model="webhookForm" label-width="100px">
+        <el-form-item label="绑定工作流" required>
+          <el-select v-model="webhookForm.workflowId" placeholder="选择工作流" filterable style="width:100%">
+            <el-option v-for="w in workflows.filter(x => !x.isTemplate)" :key="w.id" :label="w.name" :value="w.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="名称">
+          <el-input v-model="webhookForm.name" placeholder="如: 内容发布触发器" maxlength="100" />
+        </el-form-item>
+        <el-form-item label="Secret">
+          <el-input v-model="webhookForm.secret" placeholder="可选, 用于签名验证 (留空则不验证)" />
+        </el-form-item>
+        <el-form-item label="启用">
+          <el-switch v-model="webhookForm.enabled" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="webhookDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="webhookSaving" @click="submitWebhookForm">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 执行详情(可拉伸) -->
+    <el-dialog
+      v-model="execDetailVisible"
+      :title="detailTitle"
+      :width="dialogSize.width + 'px'"
+      class="exec-detail-dialog"
+      append-to-body
+    >
+      <div class="exec-detail" v-html="detailHtml"></div>
+      <span class="exec-resize-handle" @mousedown.stop="startResize" title="拖拽调整大小"></span>
     </el-dialog>
   </div>
 </template>
@@ -172,8 +307,11 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getWorkflows, createWorkflow, updateWorkflow, deleteWorkflow, executeWorkflow,
+  getWorkflowExecutions, getWorkflowExecution, resumeWorkflowExecution, approveWorkflowExecution, cancelWorkflowExecution,
+  getWebhooks, createWebhook, updateWebhook, deleteWebhook,
   getAgents, extractMessage
 } from '@/api'
+import { useMarkdown } from '@/composables/useMarkdown'
 
 const loading = ref(false)
 const workflows = ref([])
@@ -257,7 +395,7 @@ function selectWf(id) {
 function openCreateDialog() {
   editing.value = false
   resetForm()
-  form.steps = [{ name: 'step1', agentId: '', input: '${user_message}', condition: '' }]
+  form.steps = [newStep()]
   dialogVisible.value = true
 }
 
@@ -270,7 +408,7 @@ function openEditDialog() {
   form.description = w.description || ''
   form.mode = w.mode
   form.enabled = w.enabled
-  form.steps = (w.steps || []).map(s => ({ ...s }))
+  form.steps = (w.steps || []).map(stepToForm)
   dialogVisible.value = true
 }
 
@@ -284,10 +422,48 @@ function resetForm() {
 }
 
 function addStep() {
-  form.steps.push({ name: 'step' + (form.steps.length + 1), agentId: '', input: '${user_message}', condition: '' })
+  form.steps.push(newStep())
+}
+function newStep() {
+  return {
+    name: 'step' + (form.steps.length + 1),
+    agentId: '',
+    input: '${user_message}',
+    condition: '',
+    approval: false,
+    _retryOpen: [],
+    retryMaxAttempts: null,
+    retryBackoff: '',
+    retryInitialDelay: null,
+    retryMultiplier: null
+  }
+}
+// 把后端返回的步骤转为表单可编辑结构 (补齐 V3.0 字段默认值)
+function stepToForm(s) {
+  return {
+    ...s,
+    approval: !!s.approval,
+    _retryOpen: [],
+    retryMaxAttempts: s.retry ? s.retry.maxAttempts : null,
+    retryBackoff: s.retry ? (s.retry.backoff || '') : '',
+    retryInitialDelay: s.retry ? s.retry.initialDelayMs : null,
+    retryMultiplier: s.retry ? s.retry.multiplier : null
+  }
 }
 function removeStep(idx) {
   form.steps.splice(idx, 1)
+}
+// 构造 retry payload; 全部留空则返回 null (用系统默认策略)
+function buildRetry(s) {
+  if (!s.retryMaxAttempts && !s.retryBackoff && s.retryInitialDelay === null && s.retryMultiplier === null) {
+    return null
+  }
+  return {
+    maxAttempts: s.retryMaxAttempts || null,
+    backoff: s.retryBackoff || null,
+    initialDelayMs: s.retryInitialDelay !== null ? s.retryInitialDelay : null,
+    multiplier: s.retryMultiplier !== null ? s.retryMultiplier : null
+  }
 }
 
 async function submitForm() {
@@ -313,7 +489,11 @@ async function submitForm() {
         name: s.name.trim(),
         agentId: s.agentId,
         input: s.input || null,
-        condition: form.mode === 'conditional' ? (s.condition || null) : null
+        condition: form.mode === 'conditional' ? (s.condition || null) : null,
+        // V3.0 F-33: 人工审批节点
+        approval: s.approval ? true : null,
+        // V3.0 F-33: 步骤重试策略 (任一字段填写即下发)
+        retry: buildRetry(s)
       })),
       enabled: form.enabled
     }
@@ -359,6 +539,248 @@ async function runWorkflow() {
   } finally {
     running.value = false
   }
+}
+
+// ===== V3.0-alpha F-33 执行历史 (断点续跑 / 人工审批) =====
+const executions = ref([])
+const loadingExecs = ref(false)
+
+function execStatusTagType(s) {
+  if (s === 'success') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'paused') return 'warning'
+  if (s === 'cancelled') return 'info'
+  return 'primary'
+}
+function execStatusLabel(s) {
+  return ({ success: '成功', failed: '失败', paused: '待审批', cancelled: '已取消', running: '运行中' })[s] || s
+}
+function triggerLabel(t) {
+  return ({ manual: '手动', api: 'API', webhook: 'Webhook', chat: '对话', schedule: '定时', event: '事件' })[t] || t
+}
+function formatTime(t) {
+  if (!t) return ''
+  try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
+}
+
+async function loadExecutions() {
+  loadingExecs.value = true
+  try {
+    executions.value = await getWorkflowExecutions()
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载执行记录失败')
+  } finally {
+    loadingExecs.value = false
+  }
+}
+
+async function resumeExec(ex) {
+  ex._busy = true
+  try {
+    await resumeWorkflowExecution(ex.id)
+    ElMessage.success('断点续跑已触发')
+    await loadExecutions()
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '续跑失败')
+  } finally {
+    ex._busy = false
+  }
+}
+
+async function approveExec(ex) {
+  let comment = ''
+  try {
+    const r = await ElMessageBox.prompt('请输入审批意见 (可选)', '人工审批', {
+      confirmButtonText: '通过', cancelButtonText: '取消', inputType: 'textarea'
+    })
+    comment = r.value || ''
+  } catch { return }
+  ex._busy = true
+  try {
+    await approveWorkflowExecution(ex.id, comment)
+    ElMessage.success('审批已通过, 继续执行')
+    await loadExecutions()
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '审批失败')
+  } finally {
+    ex._busy = false
+  }
+}
+
+async function cancelExec(ex) {
+  try {
+    await ElMessageBox.confirm('确定取消该执行吗?', '提示', { type: 'warning' })
+    ex._busy = true
+    await cancelWorkflowExecution(ex.id)
+    ElMessage.success('已取消')
+    await loadExecutions()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(extractMessage(e) || '取消失败')
+  } finally {
+    ex._busy = false
+  }
+}
+
+// 执行详情弹框(可拉伸)
+const execDetailVisible = ref(false)
+const detailHtml = ref('')
+const detailTitle = ref('')
+const dialogSize = reactive({ width: 640, height: 70 })
+const resizing = ref(false)
+function startResize(e) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startY = e.clientY
+  const startW = dialogSize.width
+  const startH = dialogSize.height
+  resizing.value = true
+  const onMove = (ev) => {
+    dialogSize.width = Math.max(420, Math.min(1200, startW + (ev.clientX - startX)))
+    dialogSize.height = Math.max(40, Math.min(92, startH + ((ev.clientY - startY) / window.innerHeight) * 100))
+  }
+  const onUp = () => {
+    resizing.value = false
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('mouseup', onUp)
+    document.body.style.userSelect = ''
+  }
+  document.body.style.userSelect = 'none'
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('mouseup', onUp)
+}
+
+async function viewExecDetail(ex) {
+  try {
+    const detail = await getWorkflowExecution(ex.id)
+    const stepsRaw = detail.steps ?? (detail.stepsStateJson ? JSON.parse(detail.stepsStateJson) : [])
+    const { renderMarkdown } = useMarkdown()
+    const esc = (v) =>
+      String(v ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+    // 自动识别 Markdown: 含换行且命中常见语法符号时, 渲染为富文本, 否则按纯文本(保留换行)
+    const MD_HINT = /(^|\n)\s{0,3}(#{1,6}\s|[-*+]\s|>\s|\d+\.\s|```|\[.+\]\(.+\))|(\*\*|__|\b_.*_\b)|(\|.*\|.*\n\|[-: |]+\|)/
+    const looksLikeMd = (t) => t && t.includes('\n') && MD_HINT.test(t)
+    const renderField = (t) => {
+      const text = String(t ?? '')
+      if (looksLikeMd(text)) return renderMarkdown(text)
+      // 纯文本: 转义后保留换行
+      return `<div class="ed-plain">${esc(text)}</div>`
+    }
+    const statusTag = (s) => {
+      const map = { success: '#67c23a', failed: '#f56c6c', running: '#409eff', pending: '#909399', skipped: '#e6a23c' }
+      const color = map[s] || '#909399'
+      return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;color:#fff;background:${color}">${esc(s)}</span>`
+    }
+    const stepHtml = stepsRaw.length
+      ? stepsRaw
+          .map((s, i) => {
+            const agent = [s.agentName, s.agentId].filter(Boolean).join(' / ')
+            const meta = [
+              s.durationMs != null ? `耗时 ${s.durationMs}ms` : '',
+              s.attempts != null && s.attempts > 1 ? `重试 ${s.attempts} 次` : ''
+            ].filter(Boolean).join(' · ')
+            return `<div class="ed-step">
+  <div class="ed-step-head"><span class="ed-no">${i + 1}</span>
+    <span class="ed-name">${esc(s.name)}</span>${statusTag(s.status)}${s.error ? `<span class="ed-err">${esc(s.error)}</span>` : ''}</div>
+  ${agent ? `<div class="ed-agent">${esc(agent)}</div>` : ''}
+  ${meta ? `<div class="ed-meta">${esc(meta)}</div>` : ''}
+  ${s.input ? `<div class="ed-io"><span class="ed-io-label">输入</span><div class="ed-md">${renderField(s.input)}</div></div>` : ''}
+  ${s.output ? `<div class="ed-io"><span class="ed-io-label">输出</span><div class="ed-md">${renderField(s.output)}</div></div>` : ''}
+</div>`
+          })
+          .join('')
+      : '<div class="ed-empty">（无步骤详情）</div>'
+    const overview = `<div class="ed-overview">
+  <span>状态 ${statusTag(detail.status)}</span>
+  ${detail.triggerType ? `<span>触发：${esc(detail.triggerType)}</span>` : ''}
+  ${detail.startedAt ? `<span>开始：${esc(detail.startedAt)}</span>` : ''}
+  ${detail.completedAt ? `<span>完成：${esc(detail.completedAt)}</span>` : ''}
+</div>`
+    detailHtml.value = `<div class="exec-detail">${overview}<div class="ed-steps">${stepHtml}</div></div>`
+    detailTitle.value = `执行详情 · ${detail.workflowName || detail.workflowId || ''}`
+    dialogSize.width = 640
+    dialogSize.height = 70
+    execDetailVisible.value = true
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载详情失败')
+  }
+}
+
+// ===== V3.0-alpha F-31 Webhook 管理 =====
+const webhooks = ref([])
+const webhookDialogVisible = ref(false)
+const webhookEditing = ref(false)
+const webhookSaving = ref(false)
+const webhookForm = reactive({ id: '', workflowId: '', name: '', secret: '', enabled: true })
+
+async function loadWebhooks() {
+  try {
+    webhooks.value = await getWebhooks()
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载 Webhook 列表失败')
+  }
+}
+
+function openWebhookDialog() {
+  webhookEditing.value = false
+  webhookForm.id = ''
+  webhookForm.workflowId = currentWf.value ? currentWf.value.id : ''
+  webhookForm.name = ''
+  webhookForm.secret = ''
+  webhookForm.enabled = true
+  webhookDialogVisible.value = true
+}
+
+function editWebhook(wh) {
+  webhookEditing.value = true
+  webhookForm.id = wh.id
+  webhookForm.workflowId = wh.workflowId
+  webhookForm.name = wh.name || ''
+  webhookForm.secret = wh.secret || ''
+  webhookForm.enabled = wh.enabled
+  webhookDialogVisible.value = true
+}
+
+async function submitWebhookForm() {
+  if (!webhookForm.workflowId) { ElMessage.warning('请选择绑定的工作流'); return }
+  webhookSaving.value = true
+  try {
+    const payload = {
+      workflowId: webhookForm.workflowId,
+      name: webhookForm.name || null,
+      secret: webhookForm.secret || null,
+      enabled: webhookForm.enabled
+    }
+    if (webhookEditing.value) {
+      await updateWebhook(webhookForm.id, payload)
+      ElMessage.success('Webhook 已更新')
+    } else {
+      await createWebhook(payload)
+      ElMessage.success('Webhook 已创建')
+    }
+    webhookDialogVisible.value = false
+    await loadWebhooks()
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '保存失败')
+  } finally {
+    webhookSaving.value = false
+  }
+}
+
+async function removeWebhook(wh) {
+  try {
+    await ElMessageBox.confirm(`确定删除 Webhook "${wh.name || wh.id}" 吗?`, '提示', { type: 'warning' })
+    await deleteWebhook(wh.id)
+    ElMessage.success('已删除')
+    await loadWebhooks()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(extractMessage(e) || '删除失败')
+  }
+}
+
+// 切换工作流时按需加载执行历史 / Webhook
+function onTabChange(tab) {
+  if (tab === 'history' && !executions.value.length) loadExecutions()
+  if (tab === 'webhook' && !webhooks.value.length) loadWebhooks()
 }
 
 onMounted(() => {
@@ -429,4 +851,121 @@ onMounted(() => {
 .form-step-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .form-step-no { font-size: 13px; font-weight: 600; color: #667eea; }
 .add-step-btn { width: 100%; margin-top: 4px; }
+
+/* V3.0 F-33 步骤表单: 审批/重试 */
+.form-hint { font-size: 12px; color: #a0a4ab; margin-left: 8px; }
+.step-retry-collapse { margin: 8px 0 4px 70px; border: none; }
+.step-retry-collapse :deep(.el-collapse-item__header) { font-size: 13px; color: #86909c; height: 32px; line-height: 32px; background: #f7f8fa; padding-left: 10px; border-radius: 4px; }
+.step-retry-collapse :deep(.el-collapse-item__wrap) { border-bottom: none; }
+.retry-form { padding: 8px 0 0; }
+.retry-form :deep(.el-form-item) { margin-bottom: 10px; }
+
+/* V3.0 F-33 执行历史 */
+.history-panel { padding: 12px 0; }
+.history-toolbar { margin-bottom: 12px; }
+.exec-list { display: flex; flex-direction: column; gap: 10px; }
+.exec-card { background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; }
+.exec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.exec-trigger { font-size: 12px; color: #86909c; }
+.exec-time { font-size: 11px; color: #a0a4ab; }
+.exec-wf { font-size: 12px; color: #667eea; font-weight: 500; }
+.exec-input { font-size: 12px; color: #606266; line-height: 1.6; margin-top: 4px; word-break: break-word; }
+.exec-input .rl, .exec-error .rl { color: #86909c; }
+.exec-error { font-size: 12px; color: #f56c6c; margin-top: 4px; }
+.exec-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+
+/* V3.0 F-31 Webhook */
+.webhook-panel { padding: 12px 0; }
+.webhook-toolbar { display: flex; gap: 8px; margin-bottom: 12px; }
+.webhook-list { display: flex; flex-direction: column; gap: 10px; }
+.webhook-card { background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; }
+.webhook-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.webhook-name { font-size: 14px; font-weight: 500; }
+.webhook-triggers { font-size: 11px; color: #a0a4ab; margin-left: auto; }
+.webhook-url-row { font-size: 12px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.webhook-url-row .rl { color: #86909c; flex-shrink: 0; }
+.webhook-url { background: #fff; border: 1px solid #f0f2f5; border-radius: 4px; padding: 2px 8px; font-size: 11px; word-break: break-all; color: #667eea; }
+.webhook-meta { font-size: 12px; color: #86909c; margin-top: 2px; }
+.webhook-actions { display: flex; gap: 8px; margin-top: 10px; }
+</style>
+
+<!-- 非 scoped: 执行详情弹窗通过 teleport 挂到 body, 需全局样式才能生效 -->
+<style>
+/* 可拉伸弹框: body 高度跟随拖拽, 内容区滚动 */
+.exec-detail-dialog .el-dialog__body { padding: 12px 16px; overflow: hidden; }
+.exec-detail-dialog .exec-detail {
+  max-height: calc(v-bind('dialogSize.height') * 1vh - 90px);
+  overflow-y: auto;
+}
+.exec-detail-dialog .resize-handle,
+.exec-detail-dialog .exec-resize-handle {
+  position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px;
+  cursor: nwse-resize; z-index: 10;
+  background: linear-gradient(135deg, transparent 50%, #c0c4cc 50%, #c0c4cc 60%, transparent 60%, transparent 72%, #c0c4cc 72%, #c0c4cc 82%, transparent 82%);
+}
+.exec-detail-dialog .exec-resize-handle:hover { filter: brightness(0.85); }
+.exec-detail .ed-overview {
+  display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+  font-size: 12px; color: #86909c; padding-bottom: 10px; margin-bottom: 10px; border-bottom: 1px solid #f0f2f5;
+}
+.exec-detail .ed-steps { display: flex; flex-direction: column; gap: 12px; }
+.exec-detail .ed-step {
+  background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 10px; padding: 12px 14px;
+}
+.exec-detail .ed-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.exec-detail .ed-no {
+  width: 24px; height: 24px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; font-size: 12px; flex-shrink: 0;
+}
+.exec-detail .ed-name { font-size: 14px; font-weight: 500; color: #303133; }
+.exec-detail .ed-err { color: #f56c6c; font-size: 12px; }
+.exec-detail .ed-agent { font-size: 12px; color: #667eea; margin-bottom: 4px; }
+.exec-detail .ed-meta { font-size: 11px; color: #a0a4ab; margin-bottom: 6px; }
+.exec-detail .ed-io { margin-top: 6px; }
+.exec-detail .ed-io-label {
+  display: inline-block; font-size: 11px; font-weight: 600; color: #86909c; margin-bottom: 2px;
+}
+.exec-detail .ed-io pre {
+  background: #fff; border: 1px solid #f0f2f5; border-radius: 6px; padding: 8px 10px; margin: 0;
+  white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 12px; line-height: 1.6; color: #303133;
+  max-height: 220px; overflow-y: auto;
+}
+/* 自动识别的 Markdown 渲染容器 */
+.exec-detail .ed-md {
+  background: #fff; border: 1px solid #f0f2f5; border-radius: 6px; padding: 8px 12px; margin: 0;
+  font-size: 13px; line-height: 1.7; color: #303133; max-height: 320px; overflow-y: auto; word-break: break-word;
+}
+.exec-detail .ed-md > :first-child { margin-top: 0; }
+.exec-detail .ed-md > :last-child { margin-bottom: 0; }
+.exec-detail .ed-md h1, .exec-detail .ed-md h2, .exec-detail .ed-md h3,
+.exec-detail .ed-md h4, .exec-detail .ed-md h5, .exec-detail .ed-md h6 {
+  margin: 10px 0 6px; font-weight: 600; line-height: 1.4; color: #1d2129;
+}
+.exec-detail .ed-md h1 { font-size: 17px; }
+.exec-detail .ed-md h2 { font-size: 15px; }
+.exec-detail .ed-md h3 { font-size: 14px; }
+.exec-detail .ed-md h4, .exec-detail .ed-md h5, .exec-detail .ed-md h6 { font-size: 13px; }
+.exec-detail .ed-md p { margin: 6px 0; }
+.exec-detail .ed-md ul, .exec-detail .ed-md ol { margin: 6px 0; padding-left: 22px; }
+.exec-detail .ed-md li { margin: 2px 0; }
+.exec-detail .ed-md strong, .exec-detail .ed-md b { font-weight: 600; color: #1d2129; }
+.exec-detail .ed-md em { font-style: italic; }
+.exec-detail .ed-md a { color: #1677ff; text-decoration: none; }
+.exec-detail .ed-md code {
+  background: #f2f3f5; border-radius: 4px; padding: 1px 5px; font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #c7254e;
+}
+.exec-detail .ed-md pre {
+  background: #f7f8fa; border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 8px 0;
+}
+.exec-detail .ed-md pre code { background: transparent; color: #303133; padding: 0; }
+.exec-detail .ed-md blockquote {
+  margin: 8px 0; padding: 4px 12px; border-left: 3px solid #d0d5dd; color: #4e5969; background: #fafbfc;
+}
+.exec-detail .ed-md table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+.exec-detail .ed-md th, .exec-detail .ed-md td { border: 1px solid #e5e6eb; padding: 4px 8px; text-align: left; }
+.exec-detail .ed-md th { background: #f2f3f5; font-weight: 600; }
+/* 纯文本(非 markdown): 保留换行, 去掉刺眼符号感 */
+.exec-detail .ed-plain { white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.6; color: #4e5969; }
+.exec-detail .ed-empty { text-align: center; color: #a0a4ab; font-size: 13px; padding: 24px 0; }
 </style>

@@ -22,6 +22,7 @@
         <AgentView v-else-if="mode==='agent'" />
         <WorkflowView v-else-if="mode==='workflow'" />
         <ScheduledTaskView v-else-if="mode==='schedule'" />
+        <RoutingView v-else-if="mode==='routing'" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
     </template>
@@ -40,6 +41,7 @@ import KnowledgeBaseView from '@/views/KnowledgeBaseView.vue'
 import AgentView from '@/views/AgentView.vue'
 import WorkflowView from '@/views/WorkflowView.vue'
 import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
+import RoutingView from '@/views/RoutingView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'
 

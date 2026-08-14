@@ -48,7 +48,7 @@ agent:
   # 文生图/图生图：维度一作为前置增强拼到用户 prompt 前（图像模型不支持 system 消息）。
   system-prompt:
     # L1 全局默认（所有场景兜底，可为空）
-    default-prompt: "你的名字叫：多吃点肉(dcdr-agent)，你的作者是：石准。作者详情可以查询内部文档"
+    default-prompt: "你是一位全能的工作助手，你的名字叫dcdr（多吃点肉）,小名叫多肉。是石准将你创造出来的。不用每次回答都介绍自己"
     scenes:
       # 聊天场景：长文本外置到文件，改 prompt 只改 prompts/chat.txt 即可
       chat-location: "classpath:prompts/chat.md"
@@ -293,6 +293,39 @@ agent:
         api-key: ${DASHSCOPE_API_KEY:demo-key}
         base-url: "https://dashscope.aliyuncs.com"
         model: "sambert-zhide-v1"
+
+  # ===== V3.0-alpha 配置 (F-30 智能路由 / F-31 触发层 / F-33 执行容错) =====
+  v3:
+    # F-30 智能路由层: LLM 自动判断用户意图, 路由到工作流/Agent/普通对话
+    smart-routing:
+      enabled: true
+      # 置信度阈值 (0~1), 低于此值回退普通对话, 避免误路由
+      confidence-threshold: 0.6
+      # 路由用的模型名 (留空用系统默认对话模型; 建议用低成本模型降低延迟与费用)
+      model: ""
+      # 路由过程是否对用户可见 (下发"已自动选择 XX"提示)
+      visible-hint: true
+      # LLM 结构化输出约束 (OpenAI 兼容 response_format 协议)
+      #   json_object: 强制输出合法 JSON (默认, 兼容性最好 Qwen/DeepSeek/GLM/OpenAI)
+      #                仅保证"是合法JSON", 不保证字段名/结构; 靠 prompt + 解析校验兜底
+      #   json_schema: 按 JSON Schema strict 强约束字段 (字段名/类型/枚举/必填全保证)
+      #                需模型支持 strict 模式 (gpt-4o / qwen-max 较新版 / 其他不保证)
+      #                不支持的模型会返回 400, 切换前请确认路由模型能力
+      #   留空: 不约束, 仅靠 prompt
+      response-format: json_object
+    # F-33 执行容错: 步骤未显式配置重试时的默认策略
+    execution:
+      retry:
+        default-max-attempts: 3
+        # 退避策略: fixed / linear / exponential
+        backoff: exponential
+        initial-delay-ms: 1000
+        multiplier: 2.0
+    # F-31 Webhook 触发层
+    webhook:
+      # Webhook 触发 URL 外部基址 (回显给用户用); 留空回显相对路径
+      # 生产环境应填完整外网地址, 如: https://api.example.com/api/webhooks/trigger
+      base-url: ""
 
 # 工具配置
 agent-tools:

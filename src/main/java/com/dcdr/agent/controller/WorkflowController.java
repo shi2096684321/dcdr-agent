@@ -126,4 +126,65 @@ public class WorkflowController {
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(Result::success);
     }
+
+    // ===== V3.0-alpha F-33 执行容错与人工介入 =====
+
+    @Operation(summary = "执行记录列表",
+            description = "V3.0 F-33: 返回当前用户的工作流执行记录 (含状态/断点信息), 用于断点续跑与人工审批面板。")
+    @GetMapping("/executions")
+    public Result<List<WorkflowDtos.ExecutionView>> listExecutions(ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        return Result.success(workflowEngine.listExecutions(userId));
+    }
+
+    @Operation(summary = "执行详情",
+            description = "V3.0 F-33: 返回单次执行记录详情 (含各步状态/输出/错误), 用于断点续跑与审批。")
+    @GetMapping("/executions/{id}")
+    public Result<WorkflowDtos.ExecutionView> getExecution(@Parameter(description = "执行 ID", required = true)
+                                                            @PathVariable String id,
+                                                            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        return Result.success(workflowEngine.getExecution(id, userId));
+    }
+
+    @Operation(summary = "断点续跑",
+            description = "V3.0 F-33: 从 failed 状态的执行断点继续执行 (跳过已成功步骤, 重跑失败步骤)。"
+                    + "阻塞 LLM 调用, 在 boundedElastic 线程池执行。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkflowDtos.ExecutionResult.class)))
+    @PostMapping("/executions/{id}/resume")
+    public Mono<Result<WorkflowDtos.ExecutionResult>> resume(@Parameter(description = "执行 ID", required = true)
+                                                              @PathVariable String id,
+                                                              ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        return Mono.fromCallable(() -> workflowEngine.resume(id, userId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(Result::success);
+    }
+
+    @Operation(summary = "人工审批通过",
+            description = "V3.0 F-33: 对 paused 在审批节点的执行予以通过, 从下一步继续执行。"
+                    + "请求体可携带审批意见 comment。阻塞 LLM 调用, 在 boundedElastic 线程池执行。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkflowDtos.ExecutionResult.class)))
+    @PostMapping("/executions/{id}/approve")
+    public Mono<Result<WorkflowDtos.ExecutionResult>> approve(@Parameter(description = "执行 ID", required = true)
+                                                               @PathVariable String id,
+                                                               @RequestBody(required = false) WorkflowDtos.ResumeRequest req,
+                                                               ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        String comment = req == null ? null : req.getComment();
+        return Mono.fromCallable(() -> workflowEngine.approve(id, userId, comment))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(Result::success);
+    }
+
+    @Operation(summary = "取消执行",
+            description = "V3.0 F-33: 取消 running/paused 状态的执行, 标记为 cancelled。")
+    @PostMapping("/executions/{id}/cancel")
+    public Result<Void> cancel(@Parameter(description = "执行 ID", required = true)
+                                @PathVariable String id,
+                                ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        workflowEngine.cancel(id, userId);
+        return Result.success();
+    }
 }

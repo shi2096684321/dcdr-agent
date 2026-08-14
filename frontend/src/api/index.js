@@ -10,3 +10,6 @@ export * from './auth'
 export * from './agents'
 export * from './workflows'
 export * from './scheduledTasks'
+// V3.0-alpha
+export * from './webhooks'
+export * from './routing'

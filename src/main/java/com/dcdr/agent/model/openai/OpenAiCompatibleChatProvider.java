@@ -1,5 +1,6 @@
 package com.dcdr.agent.model.openai;
 
+import com.dcdr.agent.common.util.WebClientFactory;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
@@ -55,9 +56,10 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
     protected OpenAiCompatibleChatProvider(String baseUrl, String apiKey, String name,
                                            String label, String provider, String model,
                                            Double temperature, Integer maxTokens, List<String> capabilities) {
-        this.webClient = WebClient.builder().baseUrl(baseUrl)
-                .defaultHeader("Authorization", "Bearer " + apiKey)
-                .defaultHeader("Content-Type", "application/json").build();
+        // 使用带连接池淘汰策略的 WebClient, 避免复用被上游关闭的空闲连接导致 Connection reset
+        this.webClient = WebClientFactory.build(baseUrl, null, Map.of(
+                "Authorization", "Bearer " + apiKey,
+                "Content-Type", "application/json"));
         this.name = name;
         this.label = label;
         this.provider = provider;
@@ -193,6 +195,21 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                 toolsNode.addPOJO(t);
             }
             body.put("tool_choice", "auto");
+        }
+        // 结构化输出约束 (OpenAI 兼容 response_format 协议)
+        // json_object: 强制输出合法 JSON (兼容性最好); json_schema: 按 Schema 输出 (需模型支持 strict 模式)
+        String responseFormat = request.getResponseFormat();
+        if (responseFormat != null && !responseFormat.isBlank()) {
+            ObjectNode rf = body.putObject("response_format");
+            rf.put("type", responseFormat);
+            // strict 模式: 强制模型按 JSON Schema 输出 (字段名/类型/枚举/必填全保证)
+            if ("json_schema".equals(responseFormat) && request.getJsonSchema() != null) {
+                ObjectNode schemaNode = rf.putObject("json_schema");
+                schemaNode.put("name", request.getJsonSchemaName() != null
+                        ? request.getJsonSchemaName() : "response");
+                schemaNode.put("strict", true);
+                schemaNode.putPOJO("schema", request.getJsonSchema());
+            }
         }
         return body.toString();
     }
