@@ -159,10 +159,11 @@ public class IntentRouter {
             String responseFormat = v3Properties.getSmartRouting().getResponseFormat();
             if (responseFormat != null && !responseFormat.isBlank()) {
                 req.setResponseFormat(responseFormat);
-                // strict 模式: 字段级强约束, 协议层保证字段名/类型/枚举/必填
-                if ("json_schema".equals(responseFormat)) {
+                // 字段级强约束: 协议层保证字段名/类型/枚举/必填
+                if ("json_schema".equals(responseFormat) || "tool_call".equals(responseFormat)) {
                     req.setJsonSchemaName("route_result");
                     req.setJsonSchema(ROUTE_RESULT_SCHEMA);
+                    req.setJsonSchemaDescription("提交意图路由判断结果(工作流/Agent/普通对话 三选一)");
                 }
             }
             ChatResponse resp = provider.invoke(req, List.of(Message.system(SYSTEM_PROMPT)));

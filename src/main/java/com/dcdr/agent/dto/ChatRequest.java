@@ -63,35 +63,45 @@ public class ChatRequest {
     private String agentId;
 
     /**
-     * LLM 结构化输出约束 (可选, OpenAI 兼容 response_format 协议)。
+     * LLM 结构化输出约束 (可选)。
      * <p>取值:
      * <ul>
      *   <li>{@code "json_object"}: 强制模型输出合法 JSON (兼容性最好, Qwen/DeepSeek/GLM/OpenAI 均支持)</li>
      *   <li>{@code "json_schema"}: 强制模型按指定 JSON Schema 输出 (需模型支持 strict 模式, 如 gpt-4o)</li>
+     *   <li>{@code "tool_call"}: 把期望输出包装为"提交结果"工具并强制调用(tool_choice 指定函数),
+     *       从 tool_calls[].function.arguments 取符合 schema 的 JSON。schema 级保证且国产模型
+     *       (Qwen/DeepSeek/GLM) function calling 通道普遍支持, 是国产模型下结构化输出的首选路线</li>
      *   <li>{@code null}: 不约束, 模型自由输出文本</li>
      * </ul>
      * 启用 {@code json_object} 时, 须在 prompt 中说明期望的 JSON 结构。
-     * 启用 {@code json_schema} 时, 须同时设置 {@link #jsonSchemaName} 与 {@link #jsonSchema}。
+     * 启用 {@code json_schema} 或 {@code tool_call} 时, 须同时设置 {@link #jsonSchemaName} 与 {@link #jsonSchema}。
      */
-    @Schema(description = "LLM 结构化输出约束（可选）：json_object 强制输出合法JSON / json_schema 按Schema输出 / 留空不约束", hidden = true)
+    @Schema(description = "LLM 结构化输出约束（可选）：json_object / json_schema / tool_call / 留空不约束", hidden = true)
     private String responseFormat;
 
     /**
-     * JSON Schema 名称 (仅 {@code responseFormat="json_schema"} 时生效)。
-     * <p>OpenAI strict 模式要求 schema 必须命名, 用于服务端标识。
+     * JSON Schema 名称 (仅 {@code responseFormat="json_schema"} 或 {@code "tool_call"} 时生效)。
+     * <p>json_schema strict 模式要求 schema 必须命名; tool_call 模式下作为函数名。
      */
-    @Schema(description = "JSON Schema 名称（仅 responseFormat=json_schema 时生效）", hidden = true)
+    @Schema(description = "JSON Schema 名称（json_schema/tool_call 模式下生效, tool_call 模式作为函数名）", hidden = true)
     private String jsonSchemaName;
 
     /**
-     * JSON Schema 定义 (仅 {@code responseFormat="json_schema"} 时生效)。
-     * <p>标准 JSON Schema 对象, strict 模式下要求:
+     * JSON Schema 定义 (仅 {@code responseFormat="json_schema"} 或 {@code "tool_call"} 时生效)。
+     * <p>标准 JSON Schema 对象:
      * <ul>
      *   <li>所有字段声明在 {@code required} 中 (无可选字段)</li>
      *   <li>{@code additionalProperties: false}</li>
      *   <li>可空字段用 {@code "type":["string","null"]} 表示</li>
      * </ul>
      */
-    @Schema(description = "JSON Schema 定义（仅 responseFormat=json_schema 时生效）", hidden = true)
+    @Schema(description = "JSON Schema 定义（json_schema/tool_call 模式下生效）", hidden = true)
     private Map<String, Object> jsonSchema;
+
+    /**
+     * 结构化输出说明 (可选, 仅 {@code responseFormat="tool_call"} 时生效)。
+     * <p>作为包装工具的 function description, 帮助模型理解各字段语义、提升填充质量。
+     */
+    @Schema(description = "结构化输出说明（仅 tool_call 模式生效, 作为工具描述）", hidden = true)
+    private String jsonSchemaDescription;
 }

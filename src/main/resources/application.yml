@@ -305,12 +305,15 @@ agent:
       model: ""
       # 路由过程是否对用户可见 (下发"已自动选择 XX"提示)
       visible-hint: true
-      # LLM 结构化输出约束 (OpenAI 兼容 response_format 协议)
+      # LLM 结构化输出约束
       #   json_object: 强制输出合法 JSON (默认, 兼容性最好 Qwen/DeepSeek/GLM/OpenAI)
       #                仅保证"是合法JSON", 不保证字段名/结构; 靠 prompt + 解析校验兜底
       #   json_schema: 按 JSON Schema strict 强约束字段 (字段名/类型/枚举/必填全保证)
       #                需模型支持 strict 模式 (gpt-4o / qwen-max 较新版 / 其他不保证)
       #                不支持的模型会返回 400, 切换前请确认路由模型能力
+      #   tool_call:   把期望输出包装为工具并强制调用, 从 tool_calls arguments 取符合 schema 的 JSON
+      #                schema 级保证, 国产模型 function calling 普遍支持 (Qwen/DeepSeek/GLM 推荐此模式)
+      #                需模型支持 function calling
       #   留空: 不约束, 仅靠 prompt
       response-format: json_object
     # F-33 执行容错: 步骤未显式配置重试时的默认策略

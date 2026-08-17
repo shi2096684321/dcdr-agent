@@ -36,13 +36,17 @@ public class V3Properties {
         /** 路由过程是否对用户可见(下发"已自动选择 XX"提示) */
         private boolean visibleHint = true;
         /**
-         * LLM 结构化输出约束 (OpenAI 兼容 response_format 协议)。
+         * LLM 结构化输出约束。
          * <ul>
-         *   <li>{@code json_object} (默认): 强制模型输出合法 JSON, 兼容性最好 (Qwen/DeepSeek/GLM/OpenAI)</li>
-         *   <li>{@code json_schema}: 按 JSON Schema 强约束字段结构 (需模型支持 strict 模式, 如 gpt-4o)</li>
+         *   <li>{@code json_object} (默认): 强制模型输出合法 JSON, 兼容性最好 (Qwen/DeepSeek/GLM/OpenAI);
+         *       仅保证语法合法, 不保证字段名/结构, 靠 prompt + 解析校验兜底</li>
+         *   <li>{@code json_schema}: 按 JSON Schema strict 强约束字段 (需模型支持 strict 模式, 如 gpt-4o)</li>
+         *   <li>{@code tool_call}: 把期望输出包装为工具并强制调用(tool_choice 指定函数), 从 arguments
+         *       取符合 schema 的 JSON。schema 级保证且国产模型 function calling 普遍支持,
+         *       国产路由模型 (Qwen/DeepSeek/GLM) 推荐此模式</li>
          *   <li>留空: 不约束, 仅靠 prompt</li>
          * </ul>
-         * 切换到不支持的模式可能导致 400, 按路由模型能力选择。
+         * 切换到不支持的 response_format 可能 400; tool_call 需模型支持 function calling。
          */
         private String responseFormat = "json_object";
     }

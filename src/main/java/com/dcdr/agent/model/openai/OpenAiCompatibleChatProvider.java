@@ -196,10 +196,33 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
             }
             body.put("tool_choice", "auto");
         }
-        // 结构化输出约束 (OpenAI 兼容 response_format 协议)
-        // json_object: 强制输出合法 JSON (兼容性最好); json_schema: 按 Schema 输出 (需模型支持 strict 模式)
+        // 结构化输出约束:
+        // json_object: 强制输出合法 JSON (兼容性最好); json_schema: 按 Schema 输出 (需模型支持 strict 模式);
+        // tool_call: 把期望输出包装为"提交结果"工具并强制调用, 从 arguments 取符合 schema 的 JSON
+        //            (schema 级保证, 国产模型 function calling 通道普遍支持)
         String responseFormat = request.getResponseFormat();
-        if (responseFormat != null && !responseFormat.isBlank()) {
+        if ("tool_call".equals(responseFormat) && request.getJsonSchema() != null) {
+            if (supportsFunctionCalling()) {
+                String fnName = request.getJsonSchemaName() != null
+                        ? request.getJsonSchemaName() : "submit_result";
+                // 追加到 tools 数组(不存在则创建), 复用请求自带工具
+                ArrayNode toolsNode = body.has("tools")
+                        ? (ArrayNode) body.get("tools") : body.putArray("tools");
+                ObjectNode tool = toolsNode.addObject();
+                tool.put("type", "function");
+                ObjectNode fn = tool.putObject("function");
+                fn.put("name", fnName);
+                fn.put("description", request.getJsonSchemaDescription() != null
+                        ? request.getJsonSchemaDescription() : "提交处理结果");
+                fn.putPOJO("parameters", request.getJsonSchema());
+                // tool_choice 指定函数(覆盖 auto): 模型无别的输出通道, arguments 必须符合 parameters schema
+                ObjectNode choice = body.putObject("tool_choice");
+                choice.put("type", "function");
+                choice.putObject("function").put("name", fnName);
+            } else {
+                log.warn("[{}] 模型不支持 function calling, tool_call 结构化约束降级为不约束", name);
+            }
+        } else if (responseFormat != null && !responseFormat.isBlank()) {
             ObjectNode rf = body.putObject("response_format");
             rf.put("type", responseFormat);
             // strict 模式: 强制模型按 JSON Schema 输出 (字段名/类型/枚举/必填全保证)
@@ -221,7 +244,17 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         String resp = webClient.post().uri(getChatPath()).bodyValue(json)
                 .retrieve().bodyToMono(String.class).block(SYNC_TIMEOUT);
             JsonNode root = mapper.readTree(resp);
-            String content = root.path("choices").path(0).path("message").path("content").asText();
+            JsonNode message = root.path("choices").path(0).path("message");
+            String content = message.path("content").asText();
+            // tool_call 结构化模式: 结果在强制的 tool_calls[0].function.arguments 中(而非 content)
+            if ("tool_call".equals(request.getResponseFormat())) {
+                JsonNode args = message.path("tool_calls").path(0).path("function").path("arguments");
+                if (!args.isMissingNode() && !args.isNull() && !args.asText().isBlank()) {
+                    content = args.asText();
+                } else {
+                    log.warn("[{}] tool_call 模式未返回 tool_calls, 回退取 content", name);
+                }
+            }
             ChatResponse response = new ChatResponse();
             response.setContent(content);
             response.setModel(model);
