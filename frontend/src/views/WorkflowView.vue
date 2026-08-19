@@ -112,11 +112,38 @@
             </div>
           </el-tab-pane>
 
-          <!-- V3.0 F-33 执行历史 (断点续跑 / 人工审批) -->
+          <!-- V3.0 F-33 执行历史 (搜索/筛选/分页 + 断点续跑 / 人工审批) -->
           <el-tab-pane label="执行历史" name="history">
             <div class="history-panel">
+              <!-- 搜索 + 筛选工具栏 -->
               <div class="history-toolbar">
+                <el-input v-model="execFilters.keyword" placeholder="搜索输入内容/错误信息..." clearable
+                          size="small" class="exec-search" @keyup.enter="searchExecutions" @clear="searchExecutions" />
+                <el-select v-model="execFilters.status" placeholder="状态" clearable size="small"
+                           class="exec-filter" @change="searchExecutions">
+                  <el-option label="运行中" value="running" />
+                  <el-option label="待审批" value="paused" />
+                  <el-option label="成功" value="success" />
+                  <el-option label="失败" value="failed" />
+                  <el-option label="已取消" value="cancelled" />
+                </el-select>
+                <el-select v-model="execFilters.workflowId" placeholder="工作流" clearable filterable size="small"
+                           class="exec-filter-wf" @change="searchExecutions">
+                  <el-option v-for="w in workflows.filter(x => !x.isTemplate)" :key="w.id" :label="w.name" :value="w.id" />
+                </el-select>
+                <el-select v-model="execFilters.triggerType" placeholder="触发方式" clearable size="small"
+                           class="exec-filter" @change="searchExecutions">
+                  <el-option label="手动" value="manual" />
+                  <el-option label="对话" value="chat" />
+                  <el-option label="Webhook" value="webhook" />
+                  <el-option label="API" value="api" />
+                  <el-option label="定时" value="schedule" />
+                  <el-option label="事件" value="event" />
+                </el-select>
+                <el-button size="small" type="primary" @click="searchExecutions">搜索</el-button>
+                <el-button size="small" @click="resetExecFilters">重置</el-button>
                 <el-button size="small" @click="loadExecutions" :loading="loadingExecs">刷新</el-button>
+                <span v-if="execTotal > 0" class="exec-total">共 {{ execTotal }} 条</span>
               </div>
               <div v-if="executions.length" class="exec-list">
                 <div v-for="ex in executions" :key="ex.id" class="exec-card">
@@ -143,7 +170,15 @@
                   </div>
                 </div>
               </div>
-              <div v-else class="empty-tip" style="padding: 30px;">暂无执行记录</div>
+              <div v-else-if="!loadingExecs" class="empty-tip" style="padding: 30px;">
+                {{ hasExecFilters ? '没有符合筛选条件的执行记录' : '暂无执行记录' }}
+              </div>
+              <!-- 分页 -->
+              <div class="exec-pager" v-if="execTotalPages > 1">
+                <el-pagination background layout="prev, pager, next, jumper, total" :total="execTotal"
+                               :page-size="execPageSize" v-model:current-page="execPage"
+                               @current-change="loadExecutions" />
+              </div>
             </div>
           </el-tab-pane>
 
@@ -541,9 +576,18 @@ async function runWorkflow() {
   }
 }
 
-// ===== V3.0-alpha F-33 执行历史 (断点续跑 / 人工审批) =====
+// ===== V3.0-alpha F-33 执行历史 (搜索/筛选/分页 + 断点续跑 / 人工审批) =====
 const executions = ref([])
 const loadingExecs = ref(false)
+// 分页/筛选状态 (后端分页, 页码从 0 开始; el-pagination 从 1 开始, 提交时 -1)
+const execPage = ref(1)
+const execPageSize = 10
+const execTotal = ref(0)
+const execTotalPages = ref(0)
+const execFilters = reactive({ keyword: '', status: '', workflowId: '', triggerType: '' })
+const hasExecFilters = computed(() =>
+  execFilters.keyword || execFilters.status || execFilters.workflowId || execFilters.triggerType
+)
 
 function execStatusTagType(s) {
   if (s === 'success') return 'success'
@@ -566,12 +610,40 @@ function formatTime(t) {
 async function loadExecutions() {
   loadingExecs.value = true
   try {
-    executions.value = await getWorkflowExecutions()
+    const params = {
+      page: execPage.value - 1,
+      size: execPageSize
+    }
+    // 空值不下发, 避免后端把空串当筛选条件
+    if (execFilters.keyword) params.keyword = execFilters.keyword.trim()
+    if (execFilters.status) params.status = execFilters.status
+    if (execFilters.workflowId) params.workflowId = execFilters.workflowId
+    if (execFilters.triggerType) params.triggerType = execFilters.triggerType
+    const data = await getWorkflowExecutions(params)
+    // 兼容两种响应: 分页对象 {content,...} / 旧版数组
+    executions.value = Array.isArray(data) ? data : (data.content || [])
+    execTotal.value = Array.isArray(data) ? data.length : (data.totalElements || 0)
+    execTotalPages.value = Array.isArray(data) ? 0 : (data.totalPages || 0)
   } catch (e) {
     ElMessage.error(extractMessage(e) || '加载执行记录失败')
   } finally {
     loadingExecs.value = false
   }
+}
+
+/** 搜索/筛选条件变化: 回到第 1 页再查询 */
+function searchExecutions() {
+  execPage.value = 1
+  loadExecutions()
+}
+
+/** 重置全部筛选条件 */
+function resetExecFilters() {
+  execFilters.keyword = ''
+  execFilters.status = ''
+  execFilters.workflowId = ''
+  execFilters.triggerType = ''
+  searchExecutions()
 }
 
 async function resumeExec(ex) {
@@ -777,9 +849,9 @@ async function removeWebhook(wh) {
   }
 }
 
-// 切换工作流时按需加载执行历史 / Webhook
+// 切换工作流时按需加载执行历史 / Webhook (执行历史每次进入都刷新, 保证看到最新状态)
 function onTabChange(tab) {
-  if (tab === 'history' && !executions.value.length) loadExecutions()
+  if (tab === 'history') loadExecutions()
   if (tab === 'webhook' && !webhooks.value.length) loadWebhooks()
 }
 
@@ -862,7 +934,12 @@ onMounted(() => {
 
 /* V3.0 F-33 执行历史 */
 .history-panel { padding: 12px 0; }
-.history-toolbar { margin-bottom: 12px; }
+.history-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.exec-search { width: 220px; }
+.exec-filter { width: 110px; }
+.exec-filter-wf { width: 160px; }
+.exec-total { font-size: 12px; color: #a0a4ab; margin-left: auto; }
+.exec-pager { margin-top: 16px; display: flex; justify-content: center; }
 .exec-list { display: flex; flex-direction: column; gap: 10px; }
 .exec-card { background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; }
 .exec-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }

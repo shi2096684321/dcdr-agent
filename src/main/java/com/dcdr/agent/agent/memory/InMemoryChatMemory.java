@@ -88,7 +88,7 @@ public class InMemoryChatMemory implements ChatMemory {
     }
 
     @Override
-    public List<Message> load(String sessionId) {
+    public List<Message>    load(String sessionId) {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
         List<Message> messages = new ArrayList<>(entities.size());
         for (MessageEntity e : entities) {

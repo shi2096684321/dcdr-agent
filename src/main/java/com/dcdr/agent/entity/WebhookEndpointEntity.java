@@ -15,8 +15,7 @@ import java.time.LocalDateTime;
 @Entity
 @Schema(description = "V3.0 Webhook 端点 (F-31)")
 @Table(name = "webhook_endpoints", indexes = {
-        @Index(name = "idx_webhook_user", columnList = "userId"),
-        @Index(name = "idx_webhook_token", columnList = "token", unique = true)
+        @Index(name = "idx_webhook_user", columnList = "userId")
 })
 public class WebhookEndpointEntity {
 

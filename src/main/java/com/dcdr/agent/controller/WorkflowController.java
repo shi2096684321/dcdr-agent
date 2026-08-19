@@ -12,6 +12,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
@@ -129,12 +131,21 @@ public class WorkflowController {
 
     // ===== V3.0-alpha F-33 执行容错与人工介入 =====
 
-    @Operation(summary = "执行记录列表",
-            description = "V3.0 F-33: 返回当前用户的工作流执行记录 (含状态/断点信息), 用于断点续跑与人工审批面板。")
+    @Operation(summary = "执行记录列表 (分页)",
+            description = "V3.0 F-33: 分页返回当前用户的工作流执行记录, 支持关键词搜索与筛选, 用于断点续跑与人工审批面板。"
+                    + "keyword 模糊匹配输入内容/错误信息; status/workflowId/triggerType 为等值筛选; 全部可选。")
     @GetMapping("/executions")
-    public Result<List<WorkflowDtos.ExecutionView>> listExecutions(ServerWebExchange exchange) {
+    public Result<WorkflowDtos.ExecutionPageView> listExecutions(
+            @Parameter(description = "页码 (从 0 开始)") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "每页条数 (1~100)") @RequestParam(defaultValue = "10") int size,
+            @Parameter(description = "状态筛选: running / paused / success / failed / cancelled") @RequestParam(required = false) String status,
+            @Parameter(description = "工作流 ID 筛选") @RequestParam(required = false) String workflowId,
+            @Parameter(description = "触发方式筛选: manual / api / webhook / event / schedule / chat") @RequestParam(required = false) String triggerType,
+            @Parameter(description = "关键词, 模糊匹配输入内容/错误信息") @RequestParam(required = false) String keyword,
+            ServerWebExchange exchange) {
         String userId = SecurityContext.getUserId(exchange);
-        return Result.success(workflowEngine.listExecutions(userId));
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        return Result.success(workflowEngine.listExecutionsPaged(userId, status, workflowId, triggerType, keyword, pageable));
     }
 
     @Operation(summary = "执行详情",

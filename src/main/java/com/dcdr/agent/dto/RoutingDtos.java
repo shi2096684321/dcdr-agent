@@ -7,6 +7,7 @@ import lombok.Data;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * V3.0 智能路由相关 DTO (F-30)。
@@ -46,10 +47,23 @@ public class RoutingDtos {
         private String userMessage;
         private String routeType;
         private String targetId;
+        /** 目标名称 (工作流名/Agent名, 由后端回填, chat 时为空) */
+        private String targetName;
         private BigDecimal confidence;
         private String reason;
         private LocalDateTime createdAt;
         @JsonProperty("isHighConfidence")
         private boolean highConfidence;
+    }
+
+    /** 路由记录分页视图 (前端分页用) */
+    @Data
+    @Schema(description = "路由记录分页结果")
+    public static class RoutingLogPageView {
+        private List<RoutingLogView> content;
+        private int page;
+        private int size;
+        private long totalElements;
+        private int totalPages;
     }
 }

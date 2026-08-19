@@ -18,6 +18,8 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -318,6 +320,36 @@ public class WorkflowEngine {
         List<WorkflowDtos.ExecutionView> views = new ArrayList<>(entities.size());
         for (WorkflowExecutionEntity e : entities) views.add(toExecutionView(e, userId));
         return views;
+    }
+
+    /**
+     * V3.0 分页查询执行记录 (执行历史搜索/筛选/分页)。
+     *
+     * @param userId      用户 ID (必填, 数据隔离)
+     * @param status      状态筛选 (running/paused/success/failed/cancelled, 可空)
+     * @param workflowId  工作流筛选 (可空)
+     * @param triggerType 触发方式筛选 (manual/api/webhook/event/schedule/chat, 可空)
+     * @param keyword     关键词, 模糊匹配输入内容/错误信息 (可空)
+     * @param pageable    分页参数
+     */
+    public WorkflowDtos.ExecutionPageView listExecutionsPaged(String userId, String status, String workflowId,
+                                                              String triggerType, String keyword, Pageable pageable) {
+        String kw = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
+        Page<WorkflowExecutionEntity> page = executionRepository.queryByConditions(
+                userId, normalizeOrNull(status), normalizeOrNull(workflowId),
+                normalizeOrNull(triggerType), kw, pageable);
+        WorkflowDtos.ExecutionPageView v = new WorkflowDtos.ExecutionPageView();
+        v.setContent(page.getContent().stream().map(e -> toExecutionView(e, userId)).toList());
+        v.setPage(page.getNumber());
+        v.setSize(page.getSize());
+        v.setTotalElements(page.getTotalElements());
+        v.setTotalPages(page.getTotalPages());
+        return v;
+    }
+
+    /** 空串归一化为 null (查询条件用) */
+    private static String normalizeOrNull(String s) {
+        return (s == null || s.isBlank()) ? null : s.trim();
     }
 
     /** 执行详情 */

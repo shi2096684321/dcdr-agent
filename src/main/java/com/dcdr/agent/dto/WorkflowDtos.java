@@ -191,4 +191,20 @@ public class WorkflowDtos {
         @Schema(description = "覆盖原始输入 (可选, 续跑时重新替换 ${user_message})")
         private String overrideInput;
     }
+
+    /** V3.0 执行记录分页视图 (执行历史搜索/筛选/分页) */
+    @Data
+    @Schema(description = "工作流执行记录分页结果")
+    public static class ExecutionPageView {
+        @Schema(description = "当前页数据")
+        private List<ExecutionView> content;
+        @Schema(description = "页码 (从 0 开始)", example = "0")
+        private int page;
+        @Schema(description = "每页条数", example = "10")
+        private int size;
+        @Schema(description = "总条数", example = "42")
+        private long totalElements;
+        @Schema(description = "总页数", example = "5")
+        private int totalPages;
+    }
 }

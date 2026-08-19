@@ -23,8 +23,12 @@ export const executeWorkflow = (workflowId, userInput) =>
 
 // ===== V3.0-alpha F-33 执行容错与人工介入 =====
 
-// 执行记录列表 (当前用户, 含断点/审批状态)
-export const getWorkflowExecutions = () => unwrap(api.get('/api/workflows/executions'))
+// 执行记录列表 (分页; 支持关键词搜索 + 状态/工作流/触发方式筛选)
+// params: { page, size, status, workflowId, triggerType, keyword }
+export const getWorkflowExecutions = (params = {}) =>
+  unwrap(api.get('/api/workflows/executions', {
+    params: { page: 0, size: 10, ...params }
+  }))
 
 // 执行详情 (含各步状态/输出/错误)
 export const getWorkflowExecution = (id) => unwrap(api.get(`/api/workflows/executions/${id}`))

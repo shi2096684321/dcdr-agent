@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS routing_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_routing_user  ON routing_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_routing_time  ON routing_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_routing_type  ON routing_logs(route_type);
 
 -- 2. F-31 Webhook 端点配置表 (文档 §5.3)
 CREATE TABLE IF NOT EXISTS webhook_endpoints (
@@ -29,7 +30,7 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
     user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
     workflow_id      VARCHAR(64)  REFERENCES workflow_definitions(id) ON DELETE CASCADE,
     name             VARCHAR(255),
-    token            VARCHAR(128) NOT NULL UNIQUE,    -- 随机 token, 用于 URL
+    token            VARCHAR(128) NOT NULL UNIQUE,    -- 随机 token, 用于 URL (UNIQUE 自动建唯一索引)
     secret           VARCHAR(128),                    -- 可选, 用于签名验证
     enabled          BOOLEAN      NOT NULL DEFAULT true,
     last_triggered   TIMESTAMP,
@@ -37,7 +38,6 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (
     created_at       TIMESTAMP    NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_user ON webhook_endpoints(user_id);
-CREATE INDEX IF NOT EXISTS idx_webhook_token ON webhook_endpoints(token);
 
 -- 3. F-33 工作流执行记录表 (断点续跑核心, 文档 §7.3)
 CREATE TABLE IF NOT EXISTS workflow_executions (
