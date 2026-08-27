@@ -88,7 +88,7 @@ public class InMemoryChatMemory implements ChatMemory {
     }
 
     @Override
-    public List<Message>    load(String sessionId) {
+    public List<Message> load(String sessionId) {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
         List<Message> messages = new ArrayList<>(entities.size());
         for (MessageEntity e : entities) {
@@ -110,6 +110,29 @@ public class InMemoryChatMemory implements ChatMemory {
             messages.add(m);
         }
         return messages;
+    }
+
+    @Override
+    public List<Message> loadWindow(String sessionId) {
+        List<Message> all = load(sessionId);
+        // system 消息(会话级提示词/运行时约束)不占窗口配额, 始终保留
+        List<Message> systemMsgs = new ArrayList<>();
+        List<Message> others = new ArrayList<>();
+        for (Message m : all) {
+            if ("system".equals(m.getRole())) {
+                systemMsgs.add(m);
+            } else {
+                others.add(m);
+            }
+        }
+        if (others.size() <= maxMessages) {
+            return all;
+        }
+        // 仅截取视图, 不删除数据库记录(区别于旧版直接删库导致会话历史丢失的实现)
+        List<Message> windowed = new ArrayList<>(systemMsgs.size() + maxMessages);
+        windowed.addAll(systemMsgs);
+        windowed.addAll(others.subList(others.size() - maxMessages, others.size()));
+        return windowed;
     }
 
     @Override
@@ -147,21 +170,6 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setImageCaption(message.getImageCaption());
         entity.setImageTokenUsage(message.getImageTokenUsage());
         messageRepository.save(entity);
-
-        // 上下文窗口控制: 超出时截断最早的非 system 消息
-        long count = messageRepository.countBySessionId(sessionId);
-        if (count > maxMessages) {
-            List<MessageEntity> all = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
-            int toRemove = (int) (count - maxMessages);
-            for (MessageEntity e : all) {
-                if (toRemove <= 0) break;
-                // 始终保留 system 消息
-                if (!"system".equals(e.getRole())) {
-                    messageRepository.delete(e);
-                    toRemove--;
-                }
-            }
-        }
     }
 
     @Override

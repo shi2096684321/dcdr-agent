@@ -42,6 +42,11 @@ public class UserEntity {
     @Column(nullable = false, length = 16)
     private String status = "active";
 
+    /** V3.0-rc F-36: 归属租户 ID (null = 平台直属用户, 不参与租户配额) */
+    @Schema(description = "归属租户 ID (V3.0-rc F-36, 可空)")
+    @Column(name = "tenant_id", length = 64)
+    private String tenantId;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

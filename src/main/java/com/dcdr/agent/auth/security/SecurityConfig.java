@@ -114,6 +114,10 @@ public class    SecurityConfig {
                         .pathMatchers("/api/webhooks/**").hasAuthority(Permission.WORKFLOW_EXECUTE)
                         // V2.3 定时任务管理 (CRUD + 触发): schedule:manage
                         .pathMatchers("/api/scheduled-tasks/**").hasAuthority(Permission.SCHEDULE_MANAGE)
+                        // V3.0-rc F-36 租户管理: user:manage (仅管理员)
+                        .pathMatchers("/api/tenants/**").hasAuthority(Permission.USER_MANAGE)
+                        // V3.0-rc F-37 插件管理: user:manage (仅管理员)
+                        .pathMatchers("/api/plugins/**").hasAuthority(Permission.USER_MANAGE)
                         // 管理后台: user:manage
                         .pathMatchers("/api/admin/**").hasAuthority(Permission.USER_MANAGE)
                         // 其余 /api/** 端点: 仅需登录

@@ -1,5 +1,6 @@
 package com.dcdr.agent.agent.definition;
 
+import com.dcdr.agent.agent.tenant.TenantService;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.AgentDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
@@ -36,6 +37,7 @@ import java.util.UUID;
 public class AgentDefinitionService {
 
     private final AgentDefinitionRepository repository;
+    private final TenantService tenantService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 列出当前用户可见的 Agent: 自己的 + 公开的 + 预设模板 */
@@ -77,6 +79,8 @@ public class AgentDefinitionService {
     @Transactional
     public AgentDtos.AgentView create(AgentDtos.SaveAgentRequest req, String userId, boolean isAdmin) {
         validateName(req.getName());
+        // V3.0-rc F-36: 租户级 Agent 数配额检查 (未启用多租户时直通)
+        tenantService.checkResourceQuota(userId, "agent");
         // 仅管理员可创建模板
         boolean asTemplate = Boolean.TRUE.equals(req.getIsTemplate());
         if (asTemplate && !isAdmin) {

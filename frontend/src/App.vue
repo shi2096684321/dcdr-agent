@@ -21,8 +21,11 @@
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
         <AgentView v-else-if="mode==='agent'" />
         <WorkflowView v-else-if="mode==='workflow'" />
+        <DagEditorView v-else-if="mode==='dag'" />
+        <TemplateMarketView v-else-if="mode==='market'" />
         <ScheduledTaskView v-else-if="mode==='schedule'" />
         <RoutingView v-else-if="mode==='routing'" />
+        <MonitorView v-else-if="mode==='monitor'" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
     </template>
@@ -40,8 +43,11 @@ import CreativeView from '@/views/CreativeView.vue'
 import KnowledgeBaseView from '@/views/KnowledgeBaseView.vue'
 import AgentView from '@/views/AgentView.vue'
 import WorkflowView from '@/views/WorkflowView.vue'
+import DagEditorView from '@/views/DagEditorView.vue'
+import TemplateMarketView from '@/views/TemplateMarketView.vue'
 import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
 import RoutingView from '@/views/RoutingView.vue'
+import MonitorView from '@/views/MonitorView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'
 
@@ -64,8 +70,8 @@ const videoModels = computed(() => modelStore.videoModels)
 async function loadModels() {
   try {
     await modelStore.loadModels()
-    const def = modelStore.defaultChatModelName()
-    currentModel.value = def ? def.name : ''
+    // defaultChatModelName() 返回模型 name 字符串, 直接赋值
+    currentModel.value = modelStore.defaultChatModelName()
   } catch (e) {
     // 失败也需可见, 否则表现为"登录后没加载模型"
     console.error('[App] 加载模型列表失败:', e)

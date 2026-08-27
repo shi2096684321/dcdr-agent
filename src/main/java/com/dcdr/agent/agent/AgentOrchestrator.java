@@ -6,6 +6,7 @@ import com.dcdr.agent.agent.memory.TokenEstimator;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
+import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.audit.AuditService;
@@ -68,6 +69,7 @@ public class AgentOrchestrator {
     private final RagProperties ragProperties;
     private final AuditService auditService;
     private final AgentDefinitionService agentDefinitionService;
+    private final CostTracker costTracker;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -95,7 +97,7 @@ public class AgentOrchestrator {
                              ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
                              RuntimePromptProvider runtimePromptProvider,
                              RagProperties ragProperties, AuditService auditService,
-                             AgentDefinitionService agentDefinitionService) {
+                             AgentDefinitionService agentDefinitionService, CostTracker costTracker) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -110,6 +112,7 @@ public class AgentOrchestrator {
         this.ragProperties = ragProperties;
         this.auditService = auditService;
         this.agentDefinitionService = agentDefinitionService;
+        this.costTracker = costTracker;
     }
 
     /**
@@ -129,7 +132,8 @@ public class AgentOrchestrator {
             List<Message> contextForEstimate,
             boolean nearLimit,
             int estTokens,
-            List<String> agentAllowedTools
+            List<String> agentAllowedTools,
+            int memoryTrimmed     // 记忆窗口截断条数(>0 表示已丢弃早期消息, 用于超限提示)
     ) {}
 
     /** 图片预处理结果(含路由元信息, 用于落库与前端提示) */
@@ -150,6 +154,9 @@ public class AgentOrchestrator {
      * 流式主链路通过 flatMapMany 回到 parallel 线程, 不再占用弹性线程(弹性线程仅被占用"识别那几秒")。
      */
     public Flux<ChatChunk> chat(ChatRequest request, String currentUserId) {
+        // V3.0-beta F-39: 用户级 token 配额检查 (超额抛 429, 由 ChatController onErrorResume 转为错误块)
+        costTracker.checkUserQuota(currentUserId);
+
         // 带图片时, 准备阶段可能需要视觉模型识别图片(耗时数秒), 期间前端收不到任何数据会显得"卡住";
         // 先立即下发一个状态提示, 让用户知道后台正在处理。
         boolean hasImages = request.getImages() != null && !request.getImages().isEmpty();
@@ -175,6 +182,13 @@ public class AgentOrchestrator {
                             return;
                         }
 
+                        // 记忆窗口超限提示: max-messages 截断已发生, 早期消息不再参与本轮回答(完整历史仍可在会话界面查看)
+                        if (ctx.memoryTrimmed() > 0) {
+                            sink.next(ChatChunk.contextWarning(
+                                    String.format("对话已达记忆窗口上限，仅保留最近 %d 条消息参与回答（已省略最早 %d 条），完整历史仍可在会话中查看。",
+                                            ctx.history().stream().filter(m -> !"system".equals(m.getRole())).count(),
+                                            ctx.memoryTrimmed())));
+                        }
                         // 上下文接近上限提示: 用「将发送给模型的完整上下文」做估算, 在调用模型前先下发, 不阻断对话
                         if (ctx.nearLimit()) {
                             sink.next(ChatChunk.contextWarning(
@@ -1125,6 +1139,17 @@ public class AgentOrchestrator {
         long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
         String fr = finishReasonHolder[0];
 
+        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径)。
+        // 模型未返回 usage (如中断) 时用估算值兜底, 保证配额口径不漏记。
+        ChatResponse.TokenUsage recorded = u;
+        if (recorded == null) {
+            recorded = new ChatResponse.TokenUsage();
+            recorded.setPrompt(p);
+            recorded.setCompletion(c);
+            recorded.setTotal(t);
+        }
+        costTracker.record(userId, sessId, null, "chat", provider.getName(), recorded);
+
         // 仅构建待落库消息(不在此处阻塞 SSE)
         Message assistantMessage = null;
         // 生图轮给下一轮模型的陈述句(仅追加部分): 同时回传前端, 保证实时流与刷新后内容一致
@@ -1242,8 +1267,16 @@ public class AgentOrchestrator {
         final String sessId = sessionId;
 
         // 2. 加载记忆
-        List<Message> history = memory.load(sessId);
-        log.debug("会话 {} 加载记忆 {} 条", sessId, history.size());
+        //    load(): 全量历史(落库与前端展示口径); loadWindow(): 发给 LLM 的滑窗视图(system 全保留 + 最近 N 条)。
+        //    超出 max-messages 时只截取视图、不删库(旧版直接删最早消息导致会话历史丢失, 已废弃该实现)。
+        List<Message> fullHistory = memory.load(sessId);
+        List<Message> history = memory.loadWindow(sessId);
+        int memoryTrimmed = fullHistory.size() - history.size();
+        if (memoryTrimmed > 0) {
+            log.info("会话 {} 记忆窗口截断: 全量 {} 条, 发送 LLM {} 条(丢弃最早 {} 条)",
+                    sessId, fullHistory.size(), history.size(), memoryTrimmed);
+        }
+        log.debug("会话 {} 加载记忆 {} 条(窗口)", sessId, history.size());
 
         // 3. 路由决策
         ChatModelProvider provider = router.route(request, history);
@@ -1318,7 +1351,8 @@ public class AgentOrchestrator {
         return new ChatContext(sessId, history, provider, imageFallbackWarning, imageUnrecognizedError,
                 prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
                 contextForEstimate, nearLimit, est,
-                agentOverride != null ? agentOverride.allowedTools() : null);
+                agentOverride != null ? agentOverride.allowedTools() : null,
+                memoryTrimmed);
     }
 
     /**
@@ -1430,6 +1464,9 @@ public class AgentOrchestrator {
      * 同步对话
      */
     public ChatResponse chatSync(ChatRequest request, String currentUserId) {
+        // V3.0-beta F-39: 用户级 token 配额检查 (超额抛 429, 拦截本次 LLM 调用)
+        costTracker.checkUserQuota(currentUserId);
+
         // V2.3: 自定义 Agent 应用 (model/temperature/kb_ids/systemPrompt 覆盖)
         AgentOverride agentOverride = applyAgentDefinition(request);
 
@@ -1441,7 +1478,10 @@ public class AgentOrchestrator {
             request.setSessionId(sessionId);
         }
 
-        List<Message> history = memory.load(sessionId);
+        // 记忆窗口: 同步路径同样只把滑窗视图发给 LLM(system 全保留 + 最近 N 条), 超限时通过 contextWarning 提示
+        List<Message> fullHistorySync = memory.load(sessionId);
+        List<Message> history = memory.loadWindow(sessionId);
+        int memoryTrimmedSync = fullHistorySync.size() - history.size();
         ChatModelProvider provider = router.route(request, history);
 
         // 分层 system prompt 注入(与流式 chat 路径保持一致)
@@ -1507,6 +1547,12 @@ public class AgentOrchestrator {
         if (imageFallbackWarning != null) {
             response.setContextWarning(imageFallbackWarning);
         }
+        // 记忆窗口超限提示(优先级低于图片降级提示, 未被覆盖时下发)
+        if (memoryTrimmedSync > 0 && response.getContextWarning() == null) {
+            response.setContextWarning(String.format(
+                    "对话已达记忆窗口上限，仅保留最近 %d 条消息参与回答（已省略最早 %d 条），完整历史仍可在会话中查看。",
+                    history.stream().filter(m -> !"system".equals(m.getRole())).count(), memoryTrimmedSync));
+        }
         Integer usage = response.getTokenUsage() != null ? response.getTokenUsage().getTotal() : null;
         memory.save(sessionId, Message.assistant(response.getContent(), null, prepSync.answerProvider().getName(), usage));
 
@@ -1514,6 +1560,9 @@ public class AgentOrchestrator {
 
         // 审计日志: 同步对话元数据 (F-28)
         ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
+        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径)
+        costTracker.record(currentUserId, sessionId, null, "chat",
+                prepSync.answerProvider().getName(), syncUsage);
         auditService.record("chat_sync", "session", sessionId,
                 buildChatAuditDetail(prepSync.answerProvider().getName(),
                         syncUsage != null ? syncUsage.getPrompt() : null,

@@ -13,3 +13,6 @@ export * from './scheduledTasks'
 // V3.0-alpha
 export * from './webhooks'
 export * from './routing'
+// V3.0-beta
+export * from './market'
+export * from './monitor'

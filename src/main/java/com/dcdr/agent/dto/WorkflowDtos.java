@@ -6,6 +6,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * V2.3 工作流相关 DTO (F-25 多 Agent 协作编排)。
@@ -66,15 +67,75 @@ public class WorkflowDtos {
         private String name;
         @Schema(description = "描述")
         private String description;
-        @Schema(description = "编排模式: sequential / parallel / conditional", defaultValue = "sequential")
+        @Schema(description = "编排模式: sequential / parallel / conditional / dag", defaultValue = "sequential")
         private String mode;
         @Schema(description = "步骤定义数组")
         private List<WorkflowStep> steps;
+        @Schema(description = "V3.0-beta F-32 DAG 定义 (nodes/edges); 非空时优先按 DAG 执行")
+        private DagSpec dag;
+        @Schema(description = "变更说明 (V3.0-beta F-34, 更新时存入版本历史)")
+        private String changeNote;
         @Schema(description = "是否启用")
         private Boolean enabled;
         @Schema(description = "是否为预设模板 (仅 admin 可设)", defaultValue = "false")
         @JsonProperty("isTemplate")
         private Boolean isTemplate;
+    }
+
+    // ===== V3.0-beta F-32 可视化 DAG 定义 =====
+
+    /** DAG 图定义 (存入 dag_json) */
+    @Data
+    @Schema(description = "DAG 图定义 (F-32)")
+    public static class DagSpec {
+        @Schema(description = "节点列表")
+        private List<DagNode> nodes;
+        @Schema(description = "边列表")
+        private List<DagEdge> edges;
+    }
+
+    /** DAG 节点 */
+    @Data
+    @Schema(description = "DAG 节点 (F-32)")
+    public static class DagNode {
+        @Schema(description = "节点 ID (如 n1)")
+        private String id;
+        @Schema(description = "节点类型: agent / condition / approval / merge")
+        private String type;
+        @Schema(description = "画布坐标 (仅前端布局用)")
+        private Map<String, Integer> position;
+        @Schema(description = "节点配置")
+        private DagNodeData data;
+    }
+
+    /** DAG 节点配置 */
+    @Data
+    @Schema(description = "DAG 节点配置 (F-32)")
+    public static class DagNodeData {
+        @Schema(description = "节点显示名 (也用作步骤名与变量名)")
+        private String label;
+        @Schema(description = "agent 节点: 调用的 Agent ID")
+        private String agentId;
+        @Schema(description = "agent 节点: 输入模板, 支持 ${user_message} / ${n1.output} 变量")
+        private String input;
+        @Schema(description = "agent 节点: 重试策略 (可选)")
+        private RetryConfig retry;
+        @Schema(description = "condition 节点: 条件描述 (自然语言) 或表达式")
+        private String condition;
+        @Schema(description = "condition 节点判断模式: llm (自然语言, 默认) / expr (表达式)")
+        private String conditionMode;
+    }
+
+    /** DAG 边 */
+    @Data
+    @Schema(description = "DAG 边 (F-32)")
+    public static class DagEdge {
+        @Schema(description = "源节点 ID")
+        private String source;
+        @Schema(description = "目标节点 ID")
+        private String target;
+        @Schema(description = "边标签; condition 节点出边用 是/否 (true/false) 标识分支")
+        private String label;
     }
 
     /** 工作流视图 */
@@ -87,6 +148,8 @@ public class WorkflowDtos {
         private String description;
         private String mode;
         private List<WorkflowStep> steps;
+        @Schema(description = "V3.0-beta F-32 DAG 定义 (无则为 null)")
+        private DagSpec dag;
         private boolean enabled;
         @JsonProperty("isTemplate")
         private boolean template;
@@ -94,6 +157,23 @@ public class WorkflowDtos {
         private boolean editable;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
+    }
+
+    // ===== V3.0-beta F-34 版本管理视图 =====
+
+    /** 工作流版本视图 */
+    @Data
+    @Schema(description = "工作流版本历史视图 (F-34)")
+    public static class VersionView {
+        private String id;
+        private String workflowId;
+        private int version;
+        private String name;
+        private String description;
+        private String mode;
+        private String changeNote;
+        private String createdBy;
+        private LocalDateTime createdAt;
     }
 
     /** 执行工作流请求 */
@@ -130,6 +210,8 @@ public class WorkflowDtos {
         private long durationMs;
         @Schema(description = "实际尝试次数 (V3.0 F-33)")
         private int attempts;
+        @Schema(description = "本步 token 消耗 (V3.0-beta F-34 成本追踪)")
+        private Integer tokens;
     }
 
     /** 工作流执行结果 */

@@ -57,6 +57,13 @@ public class ToolRegistry {
         return tools.get(name);
     }
 
+    /** V3.0-rc F-37: 反注册工具 (插件卸载/热重载用) */
+    public void unregister(String name) {
+        tools.remove(name);
+        specifications.remove(name);
+        openAiDefinitions.remove(name);
+    }
+
     public Collection<Tool> getAllTools() {
         return tools.values();
     }

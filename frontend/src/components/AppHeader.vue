@@ -11,8 +11,11 @@
         <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='agent'}" @click="$emit('update:mode', 'agent')">Agent</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='workflow'}" @click="$emit('update:mode', 'workflow')">工作流</div>
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='dag'}" @click="$emit('update:mode', 'dag')">DAG编排</div>
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='market'}" @click="$emit('update:mode', 'market')">模板市场</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='schedule'}" @click="$emit('update:mode', 'schedule')">定时任务</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='routing'}" @click="$emit('update:mode', 'routing')">智能路由</div>
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='monitor'}" @click="$emit('update:mode', 'monitor')">监控</div>
         <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='admin'}" @click="$emit('update:mode', 'admin')">管理</div>
       </div>
       <button class="web-search-toggle" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"

@@ -25,6 +25,33 @@ public class V3Properties {
     /** F-31 Webhook 触发层配置 */
     private Webhook webhook = new Webhook();
 
+    /** F-39 成本与配额管理 (V3.0-beta) */
+    private Quota quota = new Quota();
+
+    /** F-40.3 API 限流 (V3.0-rc 生产化加固) */
+    private RateLimit rateLimit = new RateLimit();
+
+    /** F-40.4 LLM 熔断与降级 (V3.0-rc 生产化加固) */
+    private CircuitBreaker circuitBreaker = new CircuitBreaker();
+
+    /** F-37 插件系统 (V3.0-rc) */
+    private Plugin plugin = new Plugin();
+
+    /** F-36 多租户 SaaS 化 (V3.0-rc) */
+    private Tenant tenant = new Tenant();
+
+    @Data
+    public static class Quota {
+        /** 是否启用配额拦截; 关闭时不做任何限额检查 */
+        private boolean enabled = false;
+        /** 用户级: 单日 token 上限 (0 = 不限) */
+        private long dailyTokens = 100_000;
+        /** 用户级: 单月 token 上限 (0 = 不限) */
+        private long monthlyTokens = 2_000_000;
+        /** 工作流级: 单次执行 token 上限 (0 = 不限); 超出时该执行标记 failed */
+        private long workflowMaxTokensPerExecution = 50_000;
+    }
+
     @Data
     public static class SmartRouting {
         /** 是否启用智能路由; 关闭时退化为 V2.3 行为(普通对话) */
@@ -74,8 +101,53 @@ public class V3Properties {
         /**
          * Webhook 触发 URL 的外部基址 (回显给用户用)。
          * 留空时回显相对路径 {@code /api/webhooks/trigger}。
-         * 生产环境应填完整外网地址, 如 {@code https://api.example.com/api/webhooks/trigger}。
+         * 生产环境应填完整外网地址, 如: {@code https://api.example.com/api/webhooks/trigger}。
          */
         private String baseUrl = "";
+    }
+
+    /** F-40.3 API 限流: 滑动窗口计数, 用户+IP 双维度 */
+    @Data
+    public static class RateLimit {
+        /** 是否启用限流; 关闭时不拦截 */
+        private boolean enabled = false;
+        /** 登录用户请求上限 (次/分钟) */
+        private int userRequestsPerMinute = 60;
+        /** 匿名/按 IP 请求上限 (次/分钟), 主要保护未认证接口 */
+        private int ipRequestsPerMinute = 120;
+    }
+
+    /** F-40.4 熔断: 按 LLM provider 名统计失败率, 开断后快速失败 */
+    @Data
+    public static class CircuitBreaker {
+        /** 是否启用熔断; 关闭时全部直通 */
+        private boolean enabled = false;
+        /** 触发开断的失败率阈值 (0~1, 窗口内最小调用数需达到 minCalls) */
+        private double failureRateThreshold = 0.5;
+        /** 统计窗口内最小调用数 (不足时不判定开断, 避免小样本误判) */
+        private int minCalls = 10;
+        /** 开断后等待时间 (ms), 之后进入半开放行一次探测 */
+        private long waitOpenMs = 30_000;
+    }
+
+    /** F-37 插件系统: 外部 JAR 加载 */
+    @Data
+    public static class Plugin {
+        /** 是否启用插件加载; 关闭时忽略 plugins 目录 */
+        private boolean enabled = false;
+        /** 插件目录 (相对工作目录) */
+        private String dir = "./plugins";
+        /**
+         * 危险 API 审计拦截: 扫描插件字节码中的 Runtime/ProcessBuilder/反射特征,
+         * 发现即拒绝加载。关闭后仅 WARN 不拦截 (不推荐)。
+         */
+        private boolean blockDangerous = true;
+    }
+
+    /** F-36 多租户: 租户级资源配额 */
+    @Data
+    public static class Tenant {
+        /** 是否启用多租户; 关闭时所有配额检查跳过 (用户 tenantId 仍可存储) */
+        private boolean enabled = false;
     }
 }

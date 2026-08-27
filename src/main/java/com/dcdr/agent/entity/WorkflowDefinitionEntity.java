@@ -51,6 +51,10 @@ public class WorkflowDefinitionEntity {
     @Column(name = "steps_json", columnDefinition = "TEXT", nullable = false)
     private String stepsJson;
 
+    @Schema(description = "V3.0-beta F-32 可视化 DAG 定义 JSON (nodes/edges), 与 steps_json 并存; 非空时优先按 DAG 执行")
+    @Column(name = "dag_json", columnDefinition = "TEXT")
+    private String dagJson;
+
     @Schema(description = "是否启用")
     @Column(nullable = false)
     private boolean enabled = true;

@@ -7,8 +7,15 @@ import java.util.List;
  */
 public interface ChatMemory {
 
-    /** 加载会话历史 */
+    /** 加载会话历史(全量, 用于前端展示) */
     List<Message> load(String sessionId);
+
+    /**
+     * 加载发送给 LLM 的窗口化历史: 保留全部 system 消息 + 最近 maxMessages 条非 system 消息。
+     * <p>仅截取视图, 不删除数据库记录(完整历史仍可通过会话界面查看)。
+     * 返回列表条数 < load() 条数时表示已触发记忆窗口截断。
+     */
+    List<Message> loadWindow(String sessionId);
 
     /** 保存消息(用户消息 + 助手回复) */
     void save(String sessionId, String userMessage, String assistantMessage, String model);

@@ -4,12 +4,16 @@ import com.dcdr.agent.entity.UserEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface UserRepository extends JpaRepository<UserEntity, String> {
 
     Optional<UserEntity> findByUsername(String username);
+
+    /** V3.0-rc F-36: 按租户列出用户 */
+    List<UserEntity> findByTenantId(String tenantId);
 
     boolean existsByEmail(String email);
 

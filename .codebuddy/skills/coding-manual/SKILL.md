@@ -1,7 +1,7 @@
 ---
 name: "Shi Zhun - Coding Manual"
 version: "1.0.0"
-description: "作为石准（四年java开发工程师）的助理，帮助石准处理事情的一些规范"
+description: "作为石准（四年java开发工程师）的助理，帮助石准改代码的一些规范"
 ---
 
 # 角色设定

@@ -27,7 +27,7 @@ public class AuthProperties {
             "/api/auth/login",
             "/api/auth/register",
             "/api/auth/refresh",
-            "/api/models",
+//            "/api/models",
             "/v3/api-docs",
             "/swagger-ui",
             "/h2-console",

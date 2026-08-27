@@ -79,7 +79,7 @@ agent:
 
   # 记忆配置
   memory:
-    max-messages: 20
+    max-messages: 6
     storage: memory
     # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
     context-token-limit: 8000
@@ -107,6 +107,11 @@ agent:
       - /swagger-ui
       - /h2-console
       - /api/files/uploads
+      # F-40.2 健康检查/指标采集: 供负载均衡探活与 Prometheus 抓取 (部署于内网)
+      - /actuator/health
+      - /actuator/readiness
+      - /actuator/liveness
+      - /actuator/prometheus
 
   # ===== V2.1 RAG 知识库配置 =====
   # 仅在 pg profile 下生效真实向量检索; H2 默认 profile 不支持 pgvector,
@@ -239,6 +244,19 @@ agent:
         capabilities:
           - function_calling
 
+      # V3.0-rc F-38 本地模型: Ollama OpenAI 兼容端点 (私有化部署, 数据不出内网)
+      # 前置: 安装 Ollama 并拉取模型 (ollama pull qwen3:8b), 然后 enabled 改 true
+      - name: "ollama-chat"
+        enabled: false
+        provider: "ollama"
+        # Ollama 本地无需鉴权, 占位即可
+        api-key: "ollama"
+        # Ollama 原生 OpenAI 兼容端点 (端口 11434, 需带 /v1)
+        base-url: "http://localhost:11434/v1"
+        model: "qwen3:8b"
+        capabilities:
+          - function_calling
+
     image:
       - name: "qwen-image"
         enabled: true
@@ -335,6 +353,48 @@ agent:
       # Webhook 触发 URL 外部基址 (回显给用户用); 留空回显相对路径
       # 生产环境应填完整外网地址, 如: https://api.example.com/api/webhooks/trigger
       base-url: ""
+    # F-39 成本与配额管理 (V3.0-beta): 用户级日/月 token 限额 + 工作流单次执行限额
+    quota:
+      # 是否启用配额拦截; 关闭时不做任何限额检查 (仅统计用量)
+      enabled: false
+      # 用户级: 单日 token 上限 (0 = 不限)
+      daily-tokens: 100000
+      # 用户级: 单月 token 上限 (0 = 不限)
+      monthly-tokens: 2000000
+      # 工作流级: 单次执行 token 上限 (0 = 不限); 超出时该执行标记 failed
+      workflow-max-tokens-per-execution: 50000
+
+    # ===== V3.0-rc 生产化加固 (F-40.3/F-40.4) =====
+    # F-40.3 API 限流: 固定窗口计数, 用户+IP 双维度 (未登录按 IP)
+    rate-limit:
+      enabled: false
+      # 登录用户每分钟请求上限
+      user-requests-per-minute: 60
+      # 匿名/按 IP 每分钟请求上限 (保护未认证接口)
+      ip-requests-per-minute: 120
+
+    # F-40.4 LLM 熔断: 按模型名统计失败率, 开断后快速失败 503
+    circuit-breaker:
+      enabled: false
+      # 开断失败率阈值 (0~1, 窗口内调用数需达到 min-calls)
+      failure-rate-threshold: 0.5
+      # 统计窗口内最小调用数 (小样本不判定)
+      min-calls: 10
+      # 开断持续时间 (ms), 之后进入半开放行一次探测
+      wait-open-ms: 30000
+
+    # ===== V3.0-rc 业务能力 (F-36/F-37) =====
+    # F-36 多租户: 租户级资源配额 (租户/成员由 TenantController 管理)
+    tenant:
+      enabled: false
+
+    # F-37 插件系统: 外部 JAR 插件加载 (./plugins 目录)
+    plugin:
+      enabled: false
+      # 插件目录 (相对工作目录)
+      dir: "./plugins"
+      # 危险 API 审计: 扫描插件字节码, 发现 Runtime/ProcessBuilder/反射特征即拒绝加载
+      block-dangerous: true
 
 # 工具配置
 agent-tools:
@@ -379,13 +439,46 @@ springdoc:
     tags-sorter: alpha
     operations-sorter: method
     doc-expansion: none
-  packages-to-scan: com.dcdr.agent.controller
+  packages-to-scan: com.dcdr.agent.controller,com.dcdr.agent.auth.contorller
   default-flat-param-object: true
 
 # 日志
+# F-40.12: 控制台格式带 traceId/spanId (Micrometer Tracing 开启时自动填充 MDC, 未开启时显示空)
 logging:
   level:
     com.dcdr.agent: info
     org.springframework.ai: info
   pattern:
-    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] [${traceId:-},${spanId:-}] %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [${traceId:-},${spanId:-}] %logger{36} - %msg%n"
+  file:
+    name: ./logs/dcdr-agent.log
+  logback:
+    rollingpolicy:
+      # F-40.6 日志轮转: 单文件 100MB, 保留 30 天 / 总量 2GB
+      max-file-size: 100MB
+      max-history: 30
+      total-size-cap: 2GB
+
+# ===== F-40.2 / F-40.12 生产化加固: Actuator + 追踪 =====
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when_authorized
+  tracing:
+    sampling:
+      # 采样率 (0~1): 生产默认 0.1, 排障时可临时调 1.0
+      probability: 0.1
+    export:
+      zipkin:
+        # F-40.12 分布式追踪: 上报到 Zipkin Server (docker run -d -p 9411:9411 openzipkin/zipkin)
+        # 关闭(默认)时不导出, traceId 仍会注入日志 MDC, 可按日志串联链路
+        enabled: false
+        endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}
+  propagation:
+    # W3C Trace Context: traceparent 头跨服务传播, 与 Zipkin/Tempo 兼容
+    type: w3c

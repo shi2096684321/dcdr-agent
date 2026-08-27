@@ -198,4 +198,28 @@ public class WorkflowController {
         workflowEngine.cancel(id, userId);
         return Result.success();
     }
+
+    // ===== V3.0-beta F-34 版本管理 =====
+
+    @Operation(summary = "版本历史",
+            description = "V3.0-beta F-34: 返回工作流的版本快照列表 (创建/每次更新/回滚均生成版本), 按版本号倒序。")
+    @GetMapping("/{id}/versions")
+    public Result<List<WorkflowDtos.VersionView>> listVersions(
+            @Parameter(description = "工作流 ID", required = true) @PathVariable String id,
+            ServerWebExchange exchange) {
+        return Result.success(workflowEngine.listVersions(id, SecurityContext.getUserId(exchange)));
+    }
+
+    @Operation(summary = "回滚到指定版本",
+            description = "V3.0-beta F-34: 将工作流定义回滚到指定历史版本; 回滚动作本身会生成新的版本快照, "
+                    + "因此历史不会被覆盖, 可继续回滚。普通用户仅可回滚自己的工作流, 模板仅管理员。")
+    @PostMapping("/{id}/versions/{version}/rollback")
+    public Result<WorkflowDtos.WorkflowView> rollback(
+            @Parameter(description = "工作流 ID", required = true) @PathVariable String id,
+            @Parameter(description = "目标版本号", required = true) @PathVariable int version,
+            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(workflowEngine.rollback(id, version, userId, isAdmin));
+    }
 }

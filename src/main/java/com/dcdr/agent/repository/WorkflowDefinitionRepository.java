@@ -2,6 +2,7 @@ package com.dcdr.agent.repository;
 
 import com.dcdr.agent.entity.WorkflowDefinitionEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
@@ -25,4 +26,8 @@ public interface WorkflowDefinitionRepository extends JpaRepository<WorkflowDefi
      */
     @Query("SELECT w FROM WorkflowDefinitionEntity w WHERE w.userId = :userId OR w.isTemplate = true ORDER BY w.updatedAt DESC")
     List<WorkflowDefinitionEntity> findVisible(String userId);
+
+    /** V3.0-rc F-36: 按用户集合统计非模板工作流数 (租户配额用) */
+    @Query("SELECT COUNT(w) FROM WorkflowDefinitionEntity w WHERE w.userId IN :userIds AND w.isTemplate = false")
+    long countByUserIds(@Param("userIds") List<String> userIds);
 }

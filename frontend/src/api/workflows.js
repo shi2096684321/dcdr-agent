@@ -45,3 +45,12 @@ export const approveWorkflowExecution = (id, comment) =>
 export const cancelWorkflowExecution = (id) =>
   unwrap(api.post(`/api/workflows/executions/${id}/cancel`))
 
+// ===== V3.0-beta F-34 版本管理 =====
+
+// 版本历史 (按版本号倒序)
+export const getWorkflowVersions = (id) => unwrap(api.get(`/api/workflows/${id}/versions`))
+
+// 回滚到指定版本
+export const rollbackWorkflowVersion = (id, version) =>
+  unwrap(api.post(`/api/workflows/${id}/versions/${version}/rollback`))
+

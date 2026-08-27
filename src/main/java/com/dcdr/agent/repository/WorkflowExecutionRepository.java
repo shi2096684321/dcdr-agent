@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -49,4 +50,14 @@ public interface WorkflowExecutionRepository extends JpaRepository<WorkflowExecu
                                                     @Param("triggerType") String triggerType,
                                                     @Param("keyword") String keyword,
                                                     Pageable pageable);
+
+    /**
+     * V3.0-beta F-34: 时间窗口内的执行记录 (监控统计用)。
+     * userId 为 null 时统计全局 (仅管理员监控接口会传 null)。
+     */
+    @Query("SELECT e FROM WorkflowExecutionEntity e WHERE " +
+            "(:userId IS NULL OR e.userId = :userId) AND e.startedAt >= :since " +
+            "ORDER BY e.startedAt DESC")
+    List<WorkflowExecutionEntity> findRecentForMonitor(@Param("userId") String userId,
+                                                       @Param("since") LocalDateTime since);
 }

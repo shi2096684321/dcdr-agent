@@ -24,4 +24,8 @@ public interface AgentDefinitionRepository extends JpaRepository<AgentDefinition
     /** 兼容旧调用: 用户自己的 + 公开 */
     @Query("SELECT a FROM AgentDefinitionEntity a WHERE a.userId = :userId OR a.isPublic = true ORDER BY a.updatedAt DESC")
     List<AgentDefinitionEntity> findByUserIdOrIsPublicTrueOrderByUpdatedAtDesc(@Param("userId") String userId);
+
+    /** V3.0-rc F-36: 按用户集合统计非模板 Agent 数 (租户配额用) */
+    @Query("SELECT COUNT(a) FROM AgentDefinitionEntity a WHERE a.userId IN :userIds AND a.isTemplate = false")
+    long countByUserIds(@Param("userIds") List<String> userIds);
 }
