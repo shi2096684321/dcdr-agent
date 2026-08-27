@@ -1,5 +1,6 @@
 package com.dcdr.agent.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -42,9 +43,33 @@ public class ChatRequest {
     @Schema(description = "函数调用工具定义列表(OpenAI function calling 格式)", hidden = true)
     private List<Map<String, Object>> tools;
 
+    /**
+     * 函数调用工具定义列表(框架原生 ToolSpecification, V3.1)。
+     * <p>
+     * 由 ToolRegistry 注册期缓存直供, LangChain4j Provider 优先消费(零 Map 往返转换);
+     * legacy 手写 Provider 回退消费 {@link #tools}。仅服务端内部传递, 不参与 JSON 序列化。
+     */
+    @JsonIgnore
+    @Schema(hidden = true)
+    private transient List<dev.langchain4j.agent.tool.ToolSpecification> toolSpecifications;
+
     /** 是否开启联网搜索(用户意图, 影响是否提示模型优先使用 web_search) */
     @Schema(description = "是否开启联网搜索（用户意图，影响是否优先使用 web_search 工具）", defaultValue = "false")
     private boolean webSearch = false;
+
+    /**
+     * 是否开启深度思考(思维链) (可选, 仅思考型模型生效, 如 Qwen3 混合推理系列)。
+     * <p>语义:
+     * <ul>
+     *   <li>{@code null}/{@code true}: 不干预, 走模型默认行为(Qwen3 默认开启思考)</li>
+     *   <li>{@code false}: 传厂商关闭参数真关闭(如 DashScope {@code enable_thinking=false}),
+     *       模型跳过思考阶段直接作答, 节省思考 token 与首字延迟(区别于仅前端不展示)</li>
+     * </ul>
+     * 注意: 各厂商参数不同(DashScope enable_thinking / 智谱 thinking.type), 由 Provider 按 base-url 适配;
+     * 不支持关闭的模型(如 deepseek-reasoner)忽略此开关。
+     */
+    @Schema(description = "是否开启深度思考（可选，仅思考型模型生效；false 时真关闭思考省 token，默认不干预走模型默认）", defaultValue = "true")
+    private Boolean thinkingEnabled;
 
     /**
      * 知识库 ID 列表(RAG 检索增强, 可选)。

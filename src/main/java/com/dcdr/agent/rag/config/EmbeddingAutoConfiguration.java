@@ -1,6 +1,7 @@
 package com.dcdr.agent.rag.config;
 
 import com.dcdr.agent.rag.embedding.EmbeddingRegistry;
+import com.dcdr.agent.rag.embedding.LangChain4jEmbeddingProvider;
 import com.dcdr.agent.rag.embedding.OpenAiEmbeddingProvider;
 import com.dcdr.agent.rag.embedding.QwenEmbeddingProvider;
 import com.dcdr.agent.rag.embedding.ZhipuEmbeddingProvider;
@@ -51,6 +52,9 @@ public class EmbeddingAutoConfiguration {
                 }
                 try {
                     switch (c.getProvider()) {
+                        // langchain4j: 框架内核实现(V3.1 起主线默认), 适配任意 OpenAI 兼容端点
+                        case "langchain4j" -> { registry.register(new LangChain4jEmbeddingProvider(c)); count++; }
+                        // 以下为手写 WebClient 实现, 保留作为回退选项(改 provider 值即可切换)
                         case "qwen" -> { registry.register(new QwenEmbeddingProvider(c)); count++; }
                         case "openai" -> { registry.register(new OpenAiEmbeddingProvider(c)); count++; }
                         case "zhipu" -> { registry.register(new ZhipuEmbeddingProvider(c)); count++; }

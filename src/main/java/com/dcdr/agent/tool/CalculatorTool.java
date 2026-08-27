@@ -1,8 +1,11 @@
 package com.dcdr.agent.tool;
 
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import org.springframework.stereotype.Component;
 
 import javax.script.ScriptEngineManager;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -22,18 +25,12 @@ public class CalculatorTool extends AbstractTool {
     }
 
     @Override
-    public String getParameterSchema() {
-        return """
-                {
-                    "type": "object",
-                    "properties": {
-                        "expression": {
-                            "type": "string",
-                            "description": "数学表达式, 如 '1234 * 5678' 或 '(1+2)*3'"
-                        }
-                    },
-                    "required": ["expression"]
-                }""";
+    public JsonObjectSchema getParameters() {
+        return JsonObjectSchema.builder()
+                .addProperty("expression", JsonStringSchema.builder()
+                        .description("数学表达式, 如 '1234 * 5678' 或 '(1+2)*3'").build())
+                .required(List.of("expression"))
+                .build();
     }
 
     @Override

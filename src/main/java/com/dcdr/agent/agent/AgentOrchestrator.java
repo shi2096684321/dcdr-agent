@@ -194,10 +194,14 @@ public class AgentOrchestrator {
                         // 若模型支持函数调用, 注入标记 supportsStreaming 的工具定义(默认仅 image_generation;
                         // Weather/Calculator 等不会暴露给流式对话)
                         // V2.3: 若指定了自定义 Agent, 仅注入 Agent 工具白名单中的工具
+                        // V3.1: 双格式注入 — 框架原生 ToolSpecification(LangChain4j Provider 直连)
+                        // + OpenAI Map(legacy 手写 Provider 回退), 各 Provider 按需取用
                         List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitionsFiltered(
                                 ctx.agentAllowedTools());
                         if (provider.supportsFunctionCalling() && !toolDefs.isEmpty()) {
                             request.setTools(toolDefs);
+                            request.setToolSpecifications(
+                                    toolRegistry.getStreamingToolSpecificationsFiltered(ctx.agentAllowedTools()));
                         }
 
                         // 流式调用模型

@@ -1,5 +1,7 @@
 package com.dcdr.agent.tool;
 
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -23,17 +25,11 @@ public class TimeTool extends AbstractTool {
     }
 
     @Override
-    public String getParameterSchema() {
-        return """
-                {
-                    "type": "object",
-                    "properties": {
-                        "format": {
-                            "type": "string",
-                            "description": "时间格式, 可选: 'date'(仅日期), 'time'(仅时间), 'all'(全部, 默认)"
-                        }
-                    }
-                }""";
+    public JsonObjectSchema getParameters() {
+        return JsonObjectSchema.builder()
+                .addProperty("format", JsonStringSchema.builder()
+                        .description("时间格式, 可选: 'date'(仅日期), 'time'(仅时间), 'all'(全部, 默认)").build())
+                .build();
     }
 
     @Override

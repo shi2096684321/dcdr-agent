@@ -20,6 +20,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class JavaAgentApplication {
 
     public static void main(String[] args) {
+        // V3.1 框架化改造: LangChain4j 底层使用 JDK HttpClient 连接池(不经过 WebClientFactory),
+        // 限制空闲 keep-alive 连接存活时间, 避免上游网关(DashScope 等)关闭空闲连接后
+        // 复用死连接抛 Connection reset(对齐 WebClientFactory 的 maxIdleTime=20s 约束)
+        System.setProperty("jdk.httpclient.keepalive.timeout", "20");
         SpringApplication.run(JavaAgentApplication.class, args);
     }
 }

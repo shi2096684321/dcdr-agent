@@ -1,10 +1,13 @@
 package com.dcdr.agent.tool;
 
 import com.dcdr.agent.config.ToolsProperties;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -38,18 +41,12 @@ public class WeatherTool extends AbstractTool {
     }
 
     @Override
-    public String getParameterSchema() {
-        return """
-                {
-                    "type": "object",
-                    "properties": {
-                        "city": {
-                            "type": "string",
-                            "description": "城市名称, 如 '北京' 或 '上海'"
-                        }
-                    },
-                    "required": ["city"]
-                }""";
+    public JsonObjectSchema getParameters() {
+        return JsonObjectSchema.builder()
+                .addProperty("city", JsonStringSchema.builder()
+                        .description("城市名称, 如 '北京' 或 '上海'").build())
+                .required(List.of("city"))
+                .build();
     }
 
     @Override

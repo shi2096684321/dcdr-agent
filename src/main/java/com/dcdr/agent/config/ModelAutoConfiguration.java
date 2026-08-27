@@ -2,6 +2,7 @@ package com.dcdr.agent.config;
 
 import com.dcdr.agent.model.deepseek.DeepseekChatProvider;
 import com.dcdr.agent.model.kling.KlingVideoProvider;
+import com.dcdr.agent.model.langchain4j.LangChain4jChatProvider;
 import com.dcdr.agent.model.openai.OpenAiAudioProvider;
 import com.dcdr.agent.model.openai.OpenAiChatProvider;
 import com.dcdr.agent.model.openai.OpenAiImageProvider;
@@ -35,6 +36,9 @@ public class ModelAutoConfiguration {
                     if (!c.isEnabled()) continue;
                     try {
                         switch (c.getProvider()) {
+                            // langchain4j: 框架内核实现(V3.1 起主线默认), 适配任意 OpenAI 兼容端点
+                            case "langchain4j" -> { registry.registerChatProvider(new LangChain4jChatProvider(c)); chatCount++; }
+                            // 以下为手写 WebClient 实现, 保留作为回退选项(改 provider 值即可切换)
                             case "openai" -> { registry.registerChatProvider(new OpenAiChatProvider(c)); chatCount++; }
                             case "zhipu" -> { registry.registerChatProvider(new ZhipuChatProvider(c)); chatCount++; }
                             case "qwen" -> { registry.registerChatProvider(new QwenChatProvider(c)); chatCount++; }

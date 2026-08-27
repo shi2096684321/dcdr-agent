@@ -1,5 +1,7 @@
 package com.dcdr.agent.tool;
 
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+
 import java.util.Map;
 
 /**
@@ -13,8 +15,25 @@ public interface Tool {
     /** 工具描述(给 LLM 看的, 告诉它什么时候用这个工具) */
     String getDescription();
 
-    /** 参数 JSON Schema(给 LLM 看的, 描述需要哪些参数) */
-    String getParameterSchema();
+    /**
+     * 参数 schema(框架原生类型, V3.1): 类型安全构造, 注册时由 ToolRegistry
+     * 缓存为规范格式 {@code ToolSpecification}。
+     * <p>
+     * 静态 schema 工具(参数固定)优先实现此方法(流式 builder, 编译期校验);
+     * 动态 schema 工具(MCP 服务端下发 / 配置驱动)可返回 null,
+     * 由 ToolRegistry 解析 {@link #getParameterSchema()} JSON 字符串。
+     */
+    default JsonObjectSchema getParameters() {
+        return null;
+    }
+
+    /**
+     * 参数 JSON Schema 字符串(动态 schema 工具的数据源, 如 MCP inputSchema)。
+     * 静态工具已迁移到 {@link #getParameters()}, 此方法仅动态工具需要覆盖。
+     */
+    default String getParameterSchema() {
+        return null;
+    }
 
     /** 执行工具(返回纯文本) */
     String execute(Map<String, Object> params);

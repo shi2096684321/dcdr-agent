@@ -5,6 +5,8 @@ import com.dcdr.agent.rag.dto.RetrievalResult;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.tool.AbstractTool;
 import com.dcdr.agent.tool.ToolInfo;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -75,18 +77,12 @@ public class KnowledgeSearchTool extends AbstractTool {
     }
 
     @Override
-    public String getParameterSchema() {
-        return """
-                {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "检索关键词或问题, 用于从知识库中查找相关文档片段"
-                        }
-                    },
-                    "required": ["query"]
-                }""";
+    public JsonObjectSchema getParameters() {
+        return JsonObjectSchema.builder()
+                .addProperty("query", JsonStringSchema.builder()
+                        .description("检索关键词或问题, 用于从知识库中查找相关文档片段").build())
+                .required(List.of("query"))
+                .build();
     }
 
     @Override

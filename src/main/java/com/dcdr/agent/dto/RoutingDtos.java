@@ -1,7 +1,6 @@
 package com.dcdr.agent.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -52,7 +51,7 @@ public class RoutingDtos {
         private BigDecimal confidence;
         private String reason;
         private LocalDateTime createdAt;
-        @JsonProperty("isHighConfidence")
+        /** 是否高置信(>=阈值): Lombok isHighConfidence() getter 默认序列化为 highConfidence, 与前端字段一致 */
         private boolean highConfidence;
     }
 

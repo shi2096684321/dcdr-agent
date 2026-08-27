@@ -143,6 +143,9 @@
             <!-- 联网搜索开关 -->
             <button class="action-btn" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
                     @click="$emit('update:webSearch', !webSearch)" :disabled="streaming">🌐</button>
+            <!-- 深度思考开关(仅思考型模型生效): 关闭时跳过思考直接作答, 更快更省 -->
+            <button class="action-btn" :class="{active: thinkingEnabled}" title="深度思考：开启后模型先思考再作答（仅思考型模型生效），关闭更快更省"
+                    @click="$emit('update:thinkingEnabled', !thinkingEnabled)" :disabled="streaming">🧠</button>
             <!-- 图片上传按钮 -->
             <label class="action-btn" title="上传图片/视频">
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
@@ -203,7 +206,7 @@ const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
 const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
 const vFocus = { mounted: (el) => el.focus() }
-const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false } })
+const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false }, thinkingEnabled: { type: Boolean, default: true } })
 const authStore = useAuthStore()
 
 const sessions = ref([])
@@ -436,6 +439,7 @@ async function send(opts = {}) {
       model: props.currentModel,
       images: (userMsg.images || []).map(i => i.url),
       webSearch: props.webSearch,
+      thinkingEnabled: props.thinkingEnabled,
       knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined,
       agentId: selectedAgentId.value || undefined
     },

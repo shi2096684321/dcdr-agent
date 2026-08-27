@@ -131,9 +131,10 @@ agent:
       providers:
         # 通义 DashScope text-embedding-v4 (Qwen3-Embedding, 支持 1536 维, 与 schema VECTOR(1536) 对齐)
         # 注: v3 仅支持 1024/768/512 维, 传 1536 会 400; v4 是推荐模型, 支持 1536 且多语种更强
+        # provider: langchain4j = 框架内核(主线默认); qwen = 手写实现(回退)
         - name: qwen-embedding
           enabled: true
-          provider: qwen
+          provider: langchain4j
           api-key: ${DASHSCOPE_API_KEY:demo-key}
           base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
           model: qwen3.7-text-embedding
@@ -191,12 +192,17 @@ agent:
   models:
     default-chat: "qwen-chat"
 
+    # provider 说明:
+    #   langchain4j = 框架内核(V3.1 起主线默认, 适配任意 OpenAI 兼容端点)
+    #   qwen/zhipu/deepseek/openai = 手写 WebClient 实现(回退选项, 改值即切换)
+    # 两者 base-url 约定一致(均追加 /chat/completions), 切换无需改其他字段
     chat:
       - name: "openai-chat"
         enabled: false
-        provider: "openai"
+        provider: "langchain4j"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
-        base-url: "https://api.openai.com"
+        # langchain4j 直接在 base-url 后追加 /chat/completions, OpenAI 官方端点需带 /v1
+        base-url: "https://api.openai.com/v1"
         model: "gpt-4o"
         temperature: 0.7
         max-tokens: 2000
@@ -206,7 +212,7 @@ agent:
 
       - name: "zhipu-chat"
         enabled: true
-        provider: "zhipu"
+        provider: "langchain4j"
         api-key: ${ZHIPU_API_KEY:demo-key}
         base-url: "https://open.bigmodel.cn/api/paas/v4"
         model: "glm-4-plus"
@@ -216,7 +222,7 @@ agent:
 
       - name: "qwen-chat"
         enabled: true
-        provider: "qwen"
+        provider: "langchain4j"
         api-key: ${DASHSCOPE_API_KEY:demo-key}
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model: "qwen3.7-max-2026-06-08"
@@ -226,7 +232,7 @@ agent:
 
       - name: "deepseek-chat"
         enabled: true
-        provider: "deepseek"
+        provider: "langchain4j"
         api-key: ${DEEPSEEK_API_KEY:demo-key}
         base-url: "https://api.deepseek.com"
         model: "deepseek-v4-flash"

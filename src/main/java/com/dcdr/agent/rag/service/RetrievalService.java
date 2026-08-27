@@ -1,7 +1,6 @@
 package com.dcdr.agent.rag.service;
 
 import com.dcdr.agent.common.exception.BusinessException;
-import com.dcdr.agent.entity.DocumentChunkEntity;
 import com.dcdr.agent.entity.DocumentEntity;
 import com.dcdr.agent.entity.VectorType;
 import com.dcdr.agent.rag.config.RagProperties;
@@ -85,16 +84,15 @@ public class RetrievalService {
         List<RetrievalResult> all = new ArrayList<>();
         for (String kbId : kbIds) {
             try {
-                List<DocumentChunkEntity> chunks = chunkRepository.findTopKByKbId(kbId, vecStr, k);
-                for (DocumentChunkEntity chunk : chunks) {
-                    // chunk.embedding 已从 DB 读出, 但计算相似度直接用 distance 即可;
-                    // 这里不重新算 distance(避免 float[] 精度损失), 改用约定: 越靠前相似度越高
-                    // 精确分数需用 native query 返回 distance 列, 当前 Repository 未返回,
-                    // 估算为按排序序号递减(第 i 条 score = 1 - i*0.05, 兜底展示用)
-                    double score = 1.0 - (all.size() % k) * 0.05;
+                // V3.1 修复: native query 直接返回真实 cosine distance,
+                // similarity = 1 - distance, min-score 过滤不再依赖估算分数
+                List<DocumentChunkRepository.ChunkWithDistance> chunks =
+                        chunkRepository.findTopKWithDistance(kbId, vecStr, k);
+                for (DocumentChunkRepository.ChunkWithDistance chunk : chunks) {
+                    double similarity = 1.0 - chunk.getDistance();
                     RetrievalResult r = new RetrievalResult(
                             chunk.getId(), chunk.getDocId(), chunk.getKbId(),
-                            chunk.getChunkIndex(), chunk.getContent(), score, null);
+                            chunk.getChunkIndex(), chunk.getContent(), similarity, null);
                     all.add(r);
                 }
             } catch (Exception e) {

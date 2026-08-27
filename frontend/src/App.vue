@@ -16,7 +16,7 @@
         @show-auth="showAuth = true"
       />
       <main class="app-main">
-        <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" :models="models" />
+        <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" v-model:thinking-enabled="thinkingEnabled" :models="models" />
         <CreativeView v-else-if="mode==='creative'" :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
         <AgentView v-else-if="mode==='agent'" />
@@ -51,6 +51,8 @@ const mode = ref('chat')
 const models = computed(() => modelStore.models)
 const currentModel = ref('')
 const webSearch = ref(false)
+// 深度思考开关(仅思考型模型生效): false 时后端传厂商参数真关闭, 省思考 token 与首字延迟
+const thinkingEnabled = ref(true)
 // 控制 AuthView 显示: 启动时若已有 Token 则尝试拉取用户, 失败时再显示登录页
 const showAuth = ref(false)
 // V2.2: 认证状态确认标志, false 时显示加载占位, 阻止子组件 onMounted 发起 API 请求
