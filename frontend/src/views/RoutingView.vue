@@ -33,6 +33,7 @@
                   :type="log.highConfidence ? 'success' : 'warning'">
             置信度 {{ formatConf(log.confidence) }}
           </el-tag>
+          <span v-if="log.totalTokens" class="log-tokens">🪙 {{ log.totalTokens }} token</span>
           <span class="log-time">{{ formatTime(log.createdAt) }}</span>
         </div>
         <div class="log-message">
@@ -135,6 +136,7 @@ onMounted(() => {
 .log-card.low-conf { border-left: 3px solid #e6a23c; }
 .log-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .log-target { font-size: 13px; font-weight: 500; color: #667eea; }
+.log-tokens { font-size: 11px; color: #86909c; }
 .log-time { font-size: 11px; color: #a0a4ab; margin-left: auto; }
 .log-message { font-size: 13px; color: #1d2129; line-height: 1.6; word-break: break-word; }
 .log-message .rl, .log-reason .rl { color: #86909c; font-size: 12px; }

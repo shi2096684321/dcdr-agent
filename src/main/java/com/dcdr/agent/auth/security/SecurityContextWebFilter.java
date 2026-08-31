@@ -119,11 +119,17 @@ public class SecurityContextWebFilter implements WebFilter {
                 .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication));
     }
 
-    /** 判断 path 是否在白名单中 */
+    /**
+     * 判断 path 是否在白名单中。
+     * 与 SecurityConfig.authorizeExchange 保持一致: 支持 Spring Ant 风格通配, 前缀以 "/**" 结尾
+     * 时放行其所有子路径(例如 /api/files/uploads/** 放行 /api/files/uploads/2026/08/31/x.png)。
+     * 仅精确前缀匹配子路径会导致子路径被 authorizeExchange 的 /api/** authenticated() 拦截。
+     */
     private boolean isPermitted(String path) {
         List<String> permits = authProperties.getPermitPaths();
         if (permits == null || permits.isEmpty()) return false;
-        for (String prefix : permits) {
+        for (String p : permits) {
+            String prefix = p.endsWith("/**") ? p.substring(0, p.length() - 3) : p;
             if (path.startsWith(prefix)) return true;
         }
         return false;

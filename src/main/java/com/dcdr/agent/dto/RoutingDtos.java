@@ -1,5 +1,6 @@
 package com.dcdr.agent.dto;
 
+import com.dcdr.agent.dto.ChatResponse.TokenUsage;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
@@ -30,6 +31,9 @@ public class RoutingDtos {
         private BigDecimal confidence;
         @Schema(description = "判断理由")
         private String reason;
+        /** 本次路由 LLM 调用的 token 消耗(服务端回填, 供 routing_logs 落库展示; 不计入用户用量) */
+        @Schema(hidden = true)
+        private TokenUsage tokenUsage;
 
         public boolean isWorkflow() { return "workflow".equalsIgnoreCase(type); }
         public boolean isAgent() { return "agent".equalsIgnoreCase(type); }
@@ -50,6 +54,13 @@ public class RoutingDtos {
         private String targetName;
         private BigDecimal confidence;
         private String reason;
+        /** 路由 LLM 调用 token 消耗(平台探测成本, 不计入用户用量/配额) */
+        @Schema(description = "路由 LLM 消耗的输入 token")
+        private Integer inputTokens;
+        @Schema(description = "路由 LLM 消耗的输出 token")
+        private Integer outputTokens;
+        @Schema(description = "路由 LLM 消耗的总 token")
+        private Integer totalTokens;
         private LocalDateTime createdAt;
         /** 是否高置信(>=阈值): Lombok isHighConfidence() getter 默认序列化为 highConfidence, 与前端字段一致 */
         private boolean highConfidence;

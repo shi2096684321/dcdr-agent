@@ -2,7 +2,6 @@ package com.dcdr.agent.agent.router;
 
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.agent.workflow.WorkflowEngine;
-import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.config.V3Properties;
 import com.dcdr.agent.dto.AgentDtos;
 import com.dcdr.agent.dto.ChatRequest;
@@ -55,7 +54,6 @@ public class IntentRouter {
     private final ModelRegistry modelRegistry;
     private final V3Properties v3Properties;
     private final RoutingLogRepository routingLogRepository;
-    private final CostTracker costTracker;
     /** 容忍未知字段: LLM 输出可能携带非预期字段, 双保险配合 RouteResult 上的 @JsonIgnoreProperties */
     private final ObjectMapper mapper = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
@@ -169,9 +167,9 @@ public class IntentRouter {
                 }
             }
             ChatResponse resp = provider.invoke(req, List.of(Message.system(SYSTEM_PROMPT)));
-            // V3.0-beta F-34: 记录路由 LLM 调用 token 用量 (source=routing)
-            costTracker.record(userId, sessionId, null, "routing", provider.getName(), resp.getTokenUsage());
             RoutingDtos.RouteResult r = parse(resp.getContent(), agents, workflows);
+            // 路由 token 不计入用户用量/配额 (平台探测成本), 仅随 routing_logs 落库展示
+            r.setTokenUsage(resp.getTokenUsage());
             // 置信度阈值
             double conf = r.getConfidence() == null ? 0 : r.getConfidence().doubleValue();
             if (conf < v3Properties.getSmartRouting().getConfidenceThreshold()) {
@@ -347,6 +345,12 @@ public class IntentRouter {
             e.setTargetId(r.getTarget());
             e.setConfidence(r.getConfidence());
             e.setReason(r.getReason());
+            ChatResponse.TokenUsage u = r.getTokenUsage();
+            if (u != null) {
+                e.setInputTokens(u.getPrompt());
+                e.setOutputTokens(u.getCompletion());
+                e.setTotalTokens(u.getTotal());
+            }
             e.setCreatedAt(LocalDateTime.now());
             routingLogRepository.save(e);
         } catch (Exception ex) {

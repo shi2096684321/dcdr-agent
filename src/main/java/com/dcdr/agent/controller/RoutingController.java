@@ -95,6 +95,9 @@ public class RoutingController {
         v.setTargetName(resolveTargetName(e, nameCache));
         v.setConfidence(e.getConfidence());
         v.setReason(e.getReason());
+        v.setInputTokens(e.getInputTokens());
+        v.setOutputTokens(e.getOutputTokens());
+        v.setTotalTokens(e.getTotalTokens());
         v.setCreatedAt(e.getCreatedAt());
         BigDecimal conf = e.getConfidence();
         v.setHighConfidence(conf != null && conf.compareTo(new BigDecimal("0.6")) >= 0);

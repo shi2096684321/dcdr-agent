@@ -106,7 +106,10 @@ agent:
       - /v3/api-docs
       - /swagger-ui
       - /h2-console
-      - /api/files/uploads
+      # 上传文件匿名访问: 用 Ant 通配 /** 放行所有子路径(图片 URL 形如 /api/files/uploads/2026/08/31/xxx.png)。
+      # 仅写 /api/files/uploads(无 /**) 时, SecurityConfig.authorizeExchange 的 Ant pathMatchers 不匹配子路径,
+      # 子路径会落到下方 /api/** authenticated() 被拦, 而浏览器 <img> 不带 token 导致 401 加载失败。
+      - /api/files/uploads/**
       # F-40.2 健康检查/指标采集: 供负载均衡探活与 Prometheus 抓取 (部署于内网)
       - /actuator/health
       - /actuator/readiness

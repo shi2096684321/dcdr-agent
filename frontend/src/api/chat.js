@@ -6,6 +6,10 @@ export const getSessions = () => unwrap(api.get('/api/sessions'))
 export const createSession = (data) => unwrap(api.post('/api/sessions', data))
 export const deleteSession = (id) => api.delete(`/api/sessions/${id}`).then(r => r.data)
 export const renameSession = (id, title) => api.put(`/api/sessions/${id}/title`, { title }).then(r => r.data)
+// 更新会话级 System Prompt(用户定制人设/约束): 传空字符串清除
+export const updateSystemPrompt = (id, systemPrompt) =>
+  api.patch(`/api/sessions/${id}/system-prompt`, { systemPrompt }).then(r => r.data)
+export const getSession = (id) => unwrap(api.get(`/api/sessions/${id}`))
 
 // ===== 消息历史 =====
 export const getMessages = (id) => unwrap(api.get(`/api/sessions/${id}/messages`))

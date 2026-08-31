@@ -14,6 +14,7 @@
           <template v-else>
             <span class="session-title">{{ s.title }}</span>
             <button class="rename-btn" @click.stop="startRename(s)" title="重命名">✎</button>
+            <button class="settings-btn" @click.stop="openSettings(s)" title="会话设置(人设/约束)">⚙</button>
             <el-dropdown class="export-dropdown" trigger="click" @command="fmt => exportSession(s, fmt)" @click.stop>
               <button class="export-btn" @click.stop title="导出对话">⬇</button>
               <template #dropdown>
@@ -74,8 +75,8 @@
           @preview-image="previewImage"
         />
 
-        <!-- 流式输出中 -->
-        <div v-if="streaming" class="msg-item msg-assistant">
+        <!-- 流式输出中(仅当当前会话正是该流归属会话时展示; 切走则不显示, 返回继续) -->
+        <div v-if="streaming && streamSessionId === currentSessionId" class="msg-item msg-assistant">
           <div class="msg-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
           <div class="msg-content">
             <div class="msg-role">DCDR</div>
@@ -182,6 +183,22 @@
       </div>
     </div>
 
+    <!-- 会话设置弹窗: 定制会话级 System Prompt(人设/约束), 覆盖全局与场景级默认 -->
+    <el-dialog v-model="settingsVisible" title="会话设置 · 人设/约束定制" width="560px" append-to-body>
+      <el-form label-position="top">
+        <el-form-item label="系统提示词(System Prompt)">
+          <el-input v-model="settingsPrompt" type="textarea" :rows="6"
+                    placeholder="定义模型在该会话中的角色与行为规则，例如：你是一位专业的Java代码审查专家，回答先给结论、用中文、不超过200字。留空保存可清除。" />
+        </el-form-item>
+      </el-form>
+      <div class="settings-tip">提示：此处人设/约束优先级最高，仅对当前会话生效，不会影响其他会话。</div>
+      <template #footer>
+        <el-button @click="settingsVisible = false">取消</el-button>
+        <el-button @click="clearSettings" v-if="settingsPrompt">清除</el-button>
+        <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 图片预览弹窗 -->
     <ImagePreviewModal v-model:url="previewImageUrl" />
   </div>
@@ -192,7 +209,7 @@ import { ref, onMounted, nextTick } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
-  renameSession, deleteSession, uploadFile,
+  renameSession, updateSystemPrompt, getSession, deleteSession, uploadFile,
   buildExportUrl, getKnowledgeBases, getAgents
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
@@ -214,6 +231,11 @@ const currentSessionId = ref(null)
 const messages = ref([])
 const input = ref('')
 const streaming = ref(false)
+// 方案 B: 流式输出归属会话隔离。streamSessionId 记录当前流式输出归属的会话。
+// 由于同一时刻最多只有一个流式(send/sendImage 均有 streaming 互斥), 全局流式展示变量
+// 即代表该唯一活跃流; 切换会话时仅通过 streamSessionId===currentSessionId 控制显示,
+// 不中断流, 切回该会话时继续展示, onDone 时只把回答写入归属会话。
+const streamSessionId = ref(null)
 const interruptedRef = ref(false)
 const streamContent = ref('')
 const reasoningContent = ref('')
@@ -237,6 +259,12 @@ const editBuffer = ref('')
 const selectedFiles = ref([])
 const previewImageUrl = ref(null)
 const sidebarCollapsed = ref(false)
+
+// 会话设置(会话级 System Prompt 定制)
+const settingsVisible = ref(false)
+const settingsSessionId = ref(null)
+const settingsPrompt = ref('')
+const settingsSaving = ref(false)
 
 // 知识库选择(RAG 检索增强)
 const knowledgeBases = ref([])
@@ -340,6 +368,39 @@ async function removeSession(s) {
   ElMessage.success('已删除')
 }
 
+// ===== 会话设置: 定制会话级 System Prompt(人设/约束) =====
+async function openSettings(s) {
+  settingsSessionId.value = s.id
+  settingsPrompt.value = ''
+  try {
+    const detail = await getSession(s.id)
+    settingsPrompt.value = detail?.systemPrompt || ''
+  } catch (e) {
+    console.error('加载会话 System Prompt 失败', e)
+  }
+  settingsVisible.value = true
+}
+
+async function saveSettings() {
+  if (!settingsSessionId.value) return
+  settingsSaving.value = true
+  try {
+    await updateSystemPrompt(settingsSessionId.value, settingsPrompt.value.trim())
+    ElMessage.success('已保存，后续对话按新的人设/约束生效')
+    settingsVisible.value = false
+  } catch (e) {
+    const msg = e?.response?.data?.message || e?.message || '保存失败'
+    ElMessage.error(msg)
+  } finally {
+    settingsSaving.value = false
+  }
+}
+
+async function clearSettings() {
+  settingsPrompt.value = ''
+  await saveSettings()
+}
+
 // 文件选择处理
 function handleFileSelect(e) {
   const files = Array.from(e.target.files)
@@ -423,6 +484,7 @@ async function send(opts = {}) {
   selectedFiles.value = []
 
   streaming.value = true
+  streamSessionId.value = currentSessionId.value  // 记录该流归属会话(方案 B: 切走不显示、返回继续)
   streamContent.value = ''
   reasoningContent.value = ''
   streamImages.value = []
@@ -499,7 +561,10 @@ async function send(opts = {}) {
       if (ok(chunk.content)) { streamContent.value += chunk.content; scrollBottom() }
     },
     () => {
-      if (streamContent.value || reasoningContent.value || streamImages.value.length) {
+      // 方案 B: 仅当当前展示的会话就是该流归属会话时, 才把回答写入本地 messages;
+      // 若期间已切到其他会话, 不污染当前列表(返回归属会话时靠 getMessages 拉取后端已落库的完整回答)
+      const stillOnOwnerSession = streamSessionId.value === currentSessionId.value
+      if (stillOnOwnerSession && (streamContent.value || reasoningContent.value || streamImages.value.length)) {
         messages.value.push({
           id: Date.now(),
           role: 'assistant',
@@ -517,11 +582,13 @@ async function send(opts = {}) {
       reasoningContent.value = ''
       streamImages.value = []
       statusHint.value = ''
+      pipeline.value = null
+      streamSessionId.value = null
       streaming.value = false
       loadSessions()
       scrollBottom()
-      // 将后端 seq 回写到本地消息, 以支持编辑/重试时按 seq 截断历史
-      if (currentSessionId.value) {
+      // 将后端 seq 回写到本地消息, 以支持编辑/重试时按 seq 截断历史(同样仅在归属会话当前展示时)
+      if (stillOnOwnerSession && currentSessionId.value) {
         getMessages(currentSessionId.value)
           .then(list => {
             // 仅当数量一致时回写后端 seq(用于编辑/重试截断历史);
@@ -533,7 +600,7 @@ async function send(opts = {}) {
           .catch(() => {})
       }
     },
-    (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = ''; statusHint.value = ''; ElMessage.error('对话请求失败：' + (e?.message || '网络异常')) }
+    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; statusHint.value = ''; ElMessage.error('对话请求失败：' + (e?.message || '网络异常')) }
   )
 }
 
@@ -553,6 +620,7 @@ async function sendImage() {
   selectedFiles.value = []
 
   streaming.value = true
+  streamSessionId.value = currentSessionId.value  // 记录该流归属会话(方案 B)
   streamContent.value = ''
   reasoningContent.value = ''
   streamImages.value = []
@@ -608,7 +676,9 @@ async function sendImage() {
       if (chunk.content) { streamContent.value += chunk.content; scrollBottom() }
     },
     () => {
-      if (streamImages.value.length || streamContent.value || reasoningContent.value) {
+      // 方案 B: 仅当当前展示会话是该流归属会话时才写入本地 messages
+      const stillOnOwnerSession = streamSessionId.value === currentSessionId.value
+      if (stillOnOwnerSession && (streamImages.value.length || streamContent.value || reasoningContent.value)) {
         messages.value.push({
           id: Date.now(),
           role: 'assistant',
@@ -625,11 +695,13 @@ async function sendImage() {
       reasoningContent.value = ''
       streamImages.value = []
       statusHint.value = ''
+      pipeline.value = null
+      streamSessionId.value = null
       streaming.value = false
       loadSessions()
       scrollBottom()
-      // 回写后端 seq, 支持编辑/重试时按 seq 截断历史
-      if (currentSessionId.value) {
+      // 回写后端 seq, 支持编辑/重试时按 seq 截断历史(仅在归属会话当前展示时)
+      if (stillOnOwnerSession && currentSessionId.value) {
         getMessages(currentSessionId.value)
           .then(list => {
             if (list && list.length === messages.value.length) {
@@ -639,7 +711,7 @@ async function sendImage() {
           .catch(() => {})
       }
     },
-    (e) => { streaming.value = false; streamContent.value = ''; reasoningContent.value = ''; streamImages.value = []; statusHint.value = ''; ElMessage.error('文生图请求失败：' + (e?.message || '网络异常')) }
+    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; streamImages.value = []; statusHint.value = ''; ElMessage.error('文生图请求失败：' + (e?.message || '网络异常')) }
   )
 }
 
@@ -731,12 +803,14 @@ onMounted(() => { loadSessions() })
 .session-item:hover { background: #f5f7fa; }
 .session-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%); color: #667eea; font-weight: 500; border: 1px solid rgba(102,126,234,0.15); }
 .session-title { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rename-btn, .delete-btn, .export-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
-.session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn { opacity: 1; }
+.rename-btn, .delete-btn, .export-btn, .settings-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: #909399; opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn, .session-item:hover .settings-btn { opacity: 1; }
 .rename-btn:hover { color: #667eea; background: rgba(102,126,234,0.1); }
+.settings-btn:hover { color: #e6a23c; background: rgba(230,162,60,0.1); }
 .export-btn:hover { color: #67c23a; background: rgba(103,194,58,0.1); }
 .delete-btn:hover { color: #f56c6c; background: rgba(245,108,108,0.1); }
 .export-dropdown { flex-shrink: 0; }
+.settings-tip { font-size: 12px; color: #909399; line-height: 1.5; margin-top: -8px; }
 .rename-input { flex: 1; font-size: 13px; border: 2px solid #667eea; border-radius: 8px; padding: 6px 10px; outline: none; min-width: 0; }
 
 /* 聊天区域 */

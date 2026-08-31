@@ -54,6 +54,18 @@ public class RoutingLogEntity {
     @Column(columnDefinition = "TEXT")
     private String reason;
 
+    @Schema(description = "路由 LLM 调用消耗的输入 token")
+    @Column(nullable = false)
+    private Integer inputTokens = 0;
+
+    @Schema(description = "路由 LLM 调用消耗的输出 token")
+    @Column(nullable = false)
+    private Integer outputTokens = 0;
+
+    @Schema(description = "路由 LLM 调用消耗的总 token")
+    @Column(nullable = false)
+    private Integer totalTokens = 0;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

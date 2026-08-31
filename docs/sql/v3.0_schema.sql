@@ -9,6 +9,7 @@
 -- ============================================================================
 
 -- 1. F-30 智能路由记录表 (用于分析路由准确率, 文档 §4.5)
+--    token 字段: 路由 LLM 调用消耗(平台探测成本, 不计入用户用量/配额, 仅此处展示)
 CREATE TABLE IF NOT EXISTS routing_logs (
     id               VARCHAR(64)  PRIMARY KEY,
     user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
@@ -18,8 +19,14 @@ CREATE TABLE IF NOT EXISTS routing_logs (
     target_id        VARCHAR(64),
     confidence       DECIMAL(3,2),
     reason           TEXT,
+    input_tokens     INTEGER      NOT NULL DEFAULT 0,  -- 路由 LLM 输入 token
+    output_tokens    INTEGER      NOT NULL DEFAULT 0,  -- 路由 LLM 输出 token
+    total_tokens     INTEGER      NOT NULL DEFAULT 0,  -- 路由 LLM 总 token
     created_at       TIMESTAMP    NOT NULL DEFAULT now()
 );
+ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS input_tokens  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS total_tokens  INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_routing_user  ON routing_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_routing_time  ON routing_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_routing_type  ON routing_logs(route_type);

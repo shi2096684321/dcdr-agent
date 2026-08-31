@@ -223,6 +223,8 @@ public class AgentOrchestrator {
                         StringBuilder reasoningAccumulated = new StringBuilder();
                         // 防止正常完成与中断并发时重复保存助手消息(只保存一条)
                         final AtomicBoolean assistantSaved = new AtomicBoolean(false);
+                        // 防止正常完成与中断并发时重复记录 token 用量(F-34 成本口径只记一次)
+                        final AtomicBoolean costRecorded = new AtomicBoolean(false);
                         // handle 引用需在回调中访问, 用数组持有以满足 effectively final
                         final ActiveChatRegistry.ChatHandle[] handleHolder = new ActiveChatRegistry.ChatHandle[1];
                         // 捕获模型真实返回的 token 消耗与结束原因, 用于回填 done 块
@@ -276,14 +278,6 @@ public class AgentOrchestrator {
 
                         // 首轮模型流(provider 自动追加当前 user 消息)
                         Flux<ChatChunk> upstream = provider.stream(request, history).doOnNext(collector);
-
-                        // 工具执行阶段(首轮, 含阻塞 IO, 走弹性线程)
-                        // 进入前捕获本轮工具调用快照(回灌与落库用)
-                        roundToolCalls[0] = new ArrayList<>(toolCallsHolder[0]);
-                        Flux<ChatChunk> toolFlux = Flux
-                                .defer(() -> executeTools(roundToolCalls[0], accumulated.toString(),
-                                        reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds))
-                                .subscribeOn(Schedulers.boundedElastic());
 
                         // 工具循环尾部: 若模型发起工具调用, 将本轮工具结果回填 history 后再发起下一轮生成;
                         // 否则收尾。每一轮回灌的是该轮自己的工具调用与结果(支持 agentic 多步),
@@ -347,12 +341,11 @@ public class AgentOrchestrator {
                             // 无需工具(或已达上限): 收尾并保存
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
                                     accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
-                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, currentUserId, request));
+                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request));
                         });
                         tailRef.set(tailFlux);
 
                         Disposable upstreamSub = upstream
-                                .concatWith(toolFlux)
                                 .concatWith(tailFlux)
                                 .subscribe(
                                         sink::next,
@@ -394,12 +387,15 @@ public class AgentOrchestrator {
 
                         // 注册句柄: 支持主动中断 + 客户端断开时自动取消上游模型调用
                         ActiveChatRegistry.ChatHandle handle = new ActiveChatRegistry.ChatHandle(sink, upstreamSub);
-                        // 中断回调: 下发 interrupted + 用已累积文本估算 token 的 done(模型 usage 中途断开时拿不到)
+                        // 中断回调: 下发 interrupted + done。真实 usage 优先(竞态: usage 块可能先于
+                        // 中断到达), 拿不到再估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
                         handle.setOnInterrupt(() -> {
-                            int estP = tokenEstimator.estimate(contextForEstimate);
-                            int estC = tokenEstimator.estimate(accumulated.toString())
-                                    + tokenEstimator.estimate(reasoningAccumulated.toString());
-                            int estT = estP + estC;
+                            ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
+                                    usageHolder[0], contextForEstimate,
+                                    accumulated.toString(), reasoningAccumulated.toString());
+                            int estP = u.getPrompt();
+                            int estC = u.getCompletion();
+                            int estT = u.getTotal();
                             long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
                             // 手动终止也要保留已生成的部分(即使不完整)
                             String intC = accumulated.toString();
@@ -421,6 +417,16 @@ public class AgentOrchestrator {
                             sink.next(ChatChunk.done(estP, estC, estT, durationMs));
                             sink.complete();
                             activeChatRegistry.unregister(sessId);
+                            // V3.0-beta F-34: 中断路径补记 token 用量(成本/配额口径不漏记)。
+                            // finalizeAssistant 被取消不会执行, 但需与竞态下的已记录去重。
+                            if (costRecorded.compareAndSet(false, true)) {
+                                ChatResponse.TokenUsage intUsage = new ChatResponse.TokenUsage();
+                                intUsage.setPrompt(estP);
+                                intUsage.setCompletion(estC);
+                                intUsage.setTotal(estT);
+                                costTracker.record(currentUserId, sessId, null, "chat",
+                                        provider.getName(), intUsage);
+                            }
                             // 审计日志: 中断场景 (F-28)
                             auditService.record("chat", "session", sessId,
                                     buildChatAuditDetail(provider.getName(), estP, estC, estT, durationMs,
@@ -1130,25 +1136,22 @@ public class AgentOrchestrator {
                                              List<String> toolResults, List<Map<String, Object>> collectedSources,
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
-                                             AtomicBoolean assistantSaved, String userId, ChatRequest request) {
-        ChatResponse.TokenUsage u = usageHolder[0];
-        int p = u != null ? u.getPrompt() : tokenEstimator.estimate(contextForEstimate);
-        int c = u != null ? u.getCompletion()
-                : tokenEstimator.estimate(accumulated.toString()) + tokenEstimator.estimate(reasoning.toString());
-        int t = u != null ? u.getTotal() : (p + c);
+                                             AtomicBoolean assistantSaved, AtomicBoolean costRecorded, String userId, ChatRequest request) {
+        // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
+        ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
+                usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
+        int p = u.getPrompt();
+        int c = u.getCompletion();
+        int t = u.getTotal();
         long durationMs = (System.nanoTime() - startNanos) / 1_000_000;
         String fr = finishReasonHolder[0];
 
-        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径)。
-        // 模型未返回 usage (如中断) 时用估算值兜底, 保证配额口径不漏记。
-        ChatResponse.TokenUsage recorded = u;
-        if (recorded == null) {
-            recorded = new ChatResponse.TokenUsage();
-            recorded.setPrompt(p);
-            recorded.setCompletion(c);
-            recorded.setTotal(t);
+        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径, 仅模型自身消耗;
+        // 路由为平台探测成本, 不计入用户用量 —— 见 routing_logs.token 字段)。
+        // costRecorded 与中断回调的补记互斥, 竞态下只记一次。
+        if (costRecorded.compareAndSet(false, true)) {
+            costTracker.record(userId, sessId, null, "chat", provider.getName(), u);
         }
-        costTracker.record(userId, sessId, null, "chat", provider.getName(), recorded);
 
         // 仅构建待落库消息(不在此处阻塞 SSE)
         Message assistantMessage = null;
@@ -1343,7 +1346,10 @@ public class AgentOrchestrator {
         }
 
         // 2.1 上下文上限估算(用于调用模型前的提示)
-        List<Message> contextForEstimate = new ArrayList<>(history);
+        //    注意: 必须基于「全量历史」而非滑窗视图估算 —— 滑窗只保留最近 max-messages 条(默认 6)，
+        //    按 6 条对话估算远达不到 context-token-limit 阈值, 导致 nearLimit 恒为 false 提示从未触发。
+        //    contextTokenLimit 衡量的是会话累计上下文占用, 故用 fullHistory + 当前提问来估算。
+        List<Message> contextForEstimate = new ArrayList<>(fullHistory);
         contextForEstimate.add(Message.user(request.getMessage()));
         boolean nearLimit = tokenEstimator.isNearLimit(contextForEstimate);
         int est = nearLimit ? tokenEstimator.estimate(contextForEstimate) : 0;
@@ -1544,25 +1550,34 @@ public class AgentOrchestrator {
         }
 
         ChatResponse response = prepSync.answerProvider().invoke(request, history);
-        if (imageFallbackWarning != null) {
-            response.setContextWarning(imageFallbackWarning);
+
+        // 上下文接近上限提示(与流式 chat 路径一致): 用「全量历史 + 当前提问」做估算,
+        // 而非滑窗视图(滑窗仅保留最近 max-messages 条, 估算远达不到阈值导致提示从未触发)
+        List<Message> contextForEstimateSync = new ArrayList<>(fullHistorySync);
+        contextForEstimateSync.add(Message.user(request.getMessage()));
+        if (tokenEstimator.isNearLimit(contextForEstimateSync) && response.getContextWarning() == null) {
+            response.setContextWarning(String.format(
+                    "对话已较长（约 %d token），接近上下文上限，建议开启新对话以免丢失早期内容。",
+                    tokenEstimator.estimate(contextForEstimateSync)));
         }
-        // 记忆窗口超限提示(优先级低于图片降级提示, 未被覆盖时下发)
+        // 记忆窗口超限提示(优先级低于图片降级与 token 接近上限提示, 未被覆盖时下发)
         if (memoryTrimmedSync > 0 && response.getContextWarning() == null) {
             response.setContextWarning(String.format(
                     "对话已达记忆窗口上限，仅保留最近 %d 条消息参与回答（已省略最早 %d 条），完整历史仍可在会话中查看。",
                     history.stream().filter(m -> !"system".equals(m.getRole())).count(), memoryTrimmedSync));
         }
-        Integer usage = response.getTokenUsage() != null ? response.getTokenUsage().getTotal() : null;
+        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径, 仅模型自身消耗;
+        // 路由为平台探测成本, 不计入用户用量 —— 见 routing_logs.token 字段)
+        ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
+        costTracker.record(currentUserId, sessionId, null, "chat",
+                prepSync.answerProvider().getName(), syncUsage);
+
+        Integer usage = syncUsage != null ? syncUsage.getTotal() : null;
         memory.save(sessionId, Message.assistant(response.getContent(), null, prepSync.answerProvider().getName(), usage));
 
         sessionManager.touch(sessionId);
 
         // 审计日志: 同步对话元数据 (F-28)
-        ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
-        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径)
-        costTracker.record(currentUserId, sessionId, null, "chat",
-                prepSync.answerProvider().getName(), syncUsage);
         auditService.record("chat_sync", "session", sessionId,
                 buildChatAuditDetail(prepSync.answerProvider().getName(),
                         syncUsage != null ? syncUsage.getPrompt() : null,
@@ -1681,9 +1696,12 @@ public class AgentOrchestrator {
         // 当前模型不支持视觉但有图片: 自动切换到视觉模型直接回答(一步)
         ChatModelProvider vision = registry.getFirstVisionChatProvider();
         if (vision == null) {
-            log.warn("用户上传了图片, 但当前模型[{}]不支持视觉且无可用视觉模型, 图片将被忽略", provider.getName());
-            return new ImagePrep("当前没有可用的视觉模型，上传的图片将被忽略，仅按文字内容回答。",
-                    null, null, "none", null, null, provider);
+            // 无任何可用视觉模型: 不应继续调用非视觉模型硬答(模型会误说"未收到图片")。
+            // 设置 unrecognizedError 以触发既有的"直接提示并中止、不调用 LLM"机制(流式/同步均处理)。
+            String tip = String.format("当前模型「%s」不支持图片识别，且系统中没有可用的视觉模型。"
+                    + "请换用支持图片识别的模型，或仅发送文字。", provider.getName());
+            log.warn("用户上传了图片, 但当前模型[{}]不支持视觉且无可用视觉模型, 中止作答并提示", provider.getName());
+            return new ImagePrep(null, tip, null, "none", null, null, provider);
         }
         log.info("当前模型[{}]不支持看图, 自动切换到视觉模型[{}]直接回答", provider.getName(), vision.getName());
         return new ImagePrep(

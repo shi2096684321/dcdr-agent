@@ -195,6 +195,15 @@ public class LangChain4jChatProvider implements ChatModelProvider {
             ChatResponse response = new ChatResponse();
             response.setContent(content);
             response.setModel(model);
+            // usage 映射: 同步路径此前缺失, 导致 chatSync/路由等调用方拿不到 token 统计
+            TokenUsage usage = lcResponse.metadata() != null ? lcResponse.metadata().tokenUsage() : null;
+            if (usage != null) {
+                ChatResponse.TokenUsage u = new ChatResponse.TokenUsage();
+                u.setPrompt(nz(usage.inputTokenCount()));
+                u.setCompletion(nz(usage.outputTokenCount()));
+                u.setTotal(nz(usage.totalTokenCount()));
+                response.setTokenUsage(u);
+            }
             return response;
         } catch (Exception e) {
             log.error("{} 同步调用失败", name, e);
