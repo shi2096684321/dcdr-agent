@@ -276,8 +276,12 @@ public class AgentOrchestrator {
                             }
                         };
 
-                        // 首轮模型流(provider 自动追加当前 user 消息)
-                        Flux<ChatChunk> upstream = provider.stream(request, history).doOnNext(collector);
+                        // 当前 user 消息注入本次请求的 history(仅内存视图, memory 中已单独落库, 不重复保存):
+                        // 工具回灌轮 includeCurrentUser=false, 若 history 缺当前提问,
+                        // 回灌请求将只有 assistant(tool_calls)+tool 结果, 模型看不到用户问题(只能盲目重试工具)
+                        history.add(Message.user(request.getMessage(), request.getImages()));
+                        // 首轮模型流(user 消息已在 history, 不再由 provider 追加)
+                        Flux<ChatChunk> upstream = provider.stream(request, history, false).doOnNext(collector);
 
                         // 工具循环尾部: 若模型发起工具调用, 将本轮工具结果回填 history 后再发起下一轮生成;
                         // 否则收尾。每一轮回灌的是该轮自己的工具调用与结果(支持 agentic 多步),
@@ -290,7 +294,7 @@ public class AgentOrchestrator {
                             boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !currentRound.isEmpty();
                             if (needTool && toolRound[0] < MAX_TOOL_ROUNDS) {
                                 toolRound[0]++;
-                                // 把本轮工具结果回填 history: assistant(tool_calls) + 各 tool 结果
+                                // assistant(tool_calls) 消息不依赖执行结果, 先行回填 history
                                 List<Map<String, Object>> tcs = new ArrayList<>();
                                 for (ChatChunk tc : currentRound) {
                                     Map<String, Object> m = new LinkedHashMap<>();
@@ -303,39 +307,48 @@ public class AgentOrchestrator {
                                 assistMsg.setRole("assistant");
                                 assistMsg.setToolCalls(tcs);
                                 history.add(assistMsg);
-                                List<Message> roundMsgs = new ArrayList<>();
-                                roundMsgs.add(assistMsg);
-                                for (int i = 0; i < currentRound.size(); i++) {
-                                    ChatChunk tc = currentRound.get(i);
-                                    String raw = i < toolResults.size() ? toolResults.get(i) : "";
-                                    // 回灌内容截断, 控制 token 开销
-                                    String res = truncate(raw, TOOL_RESULT_MAX_LEN);
-                                    Message toolMsg = new Message();
-                                    toolMsg.setRole("tool");
-                                    toolMsg.setToolCallId(tc.getId());
-                                    toolMsg.setName(tc.getTool());
-                                    toolMsg.setContent(res);
-                                    history.add(toolMsg);
-                                    roundMsgs.add(toolMsg);
-                                }
-                                // 异步持久化本轮工具往返(assistant(tool_calls) + tool 结果),
-                                // 刷新后可恢复完整 agentic 上下文
-                                final String sessForSave = sessId;
-                                Mono.fromCallable(() -> {
-                                    for (Message m : roundMsgs) {
-                                        memory.save(sessForSave, m);
-                                    }
-                                    return null;
-                                }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+                                // 审计快照: 更新为本轮实际执行的调用(修复此前恒为空的问题)
+                                roundToolCalls[0] = new ArrayList<>(currentRound);
                                 // 换新列表采集下一轮工具调用(避免污染本轮快照)
                                 toolCallsHolder[0] = new ArrayList<>();
-                                // 下一轮执行本轮新工具(多步 agentic), 再回灌
+                                // 每个工具调用的回灌结果(key=tool_call_id), 由 executeTools 填充;
+                                // 被去重拦截的调用也会写入提示文案, 保证每个 tool_call_id 都有配对的 tool 消息
+                                Map<String, String> resultsById = new LinkedHashMap<>();
+                                // 下一轮执行本轮新工具(多步 agentic)
                                 Flux<ChatChunk> nextTool = Flux
                                         .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds))
+                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById))
                                         .subscribeOn(Schedulers.boundedElastic());
-                                // 下一轮: 不再追加当前 user 消息(上下文已在 history)
-                                Flux<ChatChunk> next = nextTool.thenMany(provider.stream(request, history, false).doOnNext(collector));
+                                // 关键时序: 先执行工具拿到真实结果, 再构造 tool 消息回灌 history 并发起下一轮生成。
+                                // 修复: 原实现在此处(执行前)构造 tool 消息, 回灌内容恒为空,
+                                // 模型看不到工具结果导致重复发起相同调用(如反复生图)
+                                Flux<ChatChunk> next = nextTool.thenMany(Flux.defer(() -> {
+                                    List<Message> roundMsgs = new ArrayList<>();
+                                    roundMsgs.add(assistMsg);
+                                    for (ChatChunk tc : currentRound) {
+                                        String raw = resultsById.getOrDefault(tc.getId(), "工具执行失败或未返回结果");
+                                        // 回灌内容截断, 控制 token 开销
+                                        String res = truncate(raw, TOOL_RESULT_MAX_LEN);
+                                        Message toolMsg = new Message();
+                                        toolMsg.setRole("tool");
+                                        toolMsg.setToolCallId(tc.getId());
+                                        toolMsg.setName(tc.getTool());
+                                        toolMsg.setContent(res);
+                                        history.add(toolMsg);
+                                        roundMsgs.add(toolMsg);
+                                    }
+                                    // 异步持久化本轮工具往返(assistant(tool_calls) + 真实 tool 结果),
+                                    // 刷新后可恢复完整 agentic 上下文
+                                    final String sessForSave = sessId;
+                                    Mono.fromCallable(() -> {
+                                        for (Message m : roundMsgs) {
+                                            memory.save(sessForSave, m);
+                                        }
+                                        return null;
+                                    }).subscribeOn(Schedulers.boundedElastic()).subscribe();
+                                    // 下一轮: 不再追加当前 user 消息(user 消息已注入 history)
+                                    return provider.stream(request, history, false).doOnNext(collector);
+                                }));
                                 return next.concatWith(tailRef.get());
                             }
                             // 无需工具(或已达上限): 收尾并保存
@@ -543,7 +556,8 @@ public class AgentOrchestrator {
     private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
                                         List<String> outUrls, List<String> outPrompts, String[] outError,
                                         List<String> outToolResults, List<Map<String, Object>> collectedSources,
-                                        String userQuery, List<String> knowledgeBaseIds) {
+                                        String userQuery, List<String> knowledgeBaseIds,
+                                        Map<String, String> outResultsById) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
@@ -560,6 +574,8 @@ public class AgentOrchestrator {
                 effectiveCalls.add(tc);
             } else {
                 log.warn("检测到 LLM 重复的工具调用，已拦截: 工具={}, 指纹={}", tc.getTool(), fingerprint);
+                // 被拦截的调用也要有配对的回灌结果, 让模型明确"结果同前序调用", 避免再次重试
+                outResultsById.put(tc.getId(), "重复的工具调用已被拦截（与本轮前序调用参数完全相同），请直接使用前序调用的结果，不要再次调用。");
             }
         }
         if (effectiveCalls.isEmpty()) {
@@ -620,6 +636,7 @@ public class AgentOrchestrator {
                         }
                         if (urls.isEmpty()) {
                             // 生图未产出图片(且未抛异常): 与原始行为一致, 不报错, 直接返回空
+                            outResultsById.put(tc.getId(), "图片生成未返回结果，请勿重复调用。");
                             return Flux.empty();
                         }
                         for (String u : urls) {
@@ -627,6 +644,10 @@ public class AgentOrchestrator {
                             outUrls.add(u);
                         }
                         if (prompt != null) outPrompts.add(prompt.toString());
+                        // 回灌给模型的生图结果陈述句: 让模型明确"图片已生成",
+                        // 避免回灌轮看不到结果而重复发起相同的生图调用
+                        String promptDesc = prompt != null ? prompt.toString() : accumulatedText;
+                        outResultsById.put(tc.getId(), "已成功生成图片：" + promptDesc + "，图片地址：" + String.join("、", urls));
                     } catch (Exception e) {
                         outError[0] = e.getMessage();
                         log.error("文生图结果解析失败", e);
@@ -644,6 +665,8 @@ public class AgentOrchestrator {
                         result = rebuildCompact(srcs);
                     }
                     outToolResults.add(result);
+                    // 按 tool_call_id 记录回灌结果(与 tool 消息配对)
+                    outResultsById.put(tc.getId(), result);
                     chunks.add(ChatChunk.toolResult(name, result, srcs));
                     if (srcs != null && !srcs.isEmpty()) {
                         // 全局兜底: 搜索结果自带 content="undefined" 的条目(部分 Tavily 版本),
