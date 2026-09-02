@@ -52,8 +52,14 @@ public class AgentProperties {
         private String name;
         private boolean enabled = true;
         private String provider;
+        /** 实现引擎: langchain4j=框架内核(默认, 适配任意 OpenAI 兼容端点) | manual=手写 WebClient 实现(回退选项) */
+        private String engine = "langchain4j";
         private String apiKey;
+        /** 主 base-url: langchain4j 引擎使用(版本段如 /v1 由它携带, 框架在其后追加资源路径) */
         private String baseUrl;
+        /** 手写引擎专用 base-url(可选): 仅当两种引擎端点本质不同时配置, 如 qwen 生图
+         *  (manual=DashScope 原生根地址 / langchain4j=compatible-mode); 缺省回退 base-url */
+        private String manualBaseUrl;
         /** 鉴权头格式: bearer(默认, 即 "Bearer <key>") 或 raw(即 "<key>", 部分中转平台用) */
         private String authScheme = "bearer";
         private String model;

@@ -58,7 +58,7 @@ public class QwenImageProvider implements ImageModelProvider {
     public ImageResponse generate(ImageRequest request) {
         try {
             List<String> urls = callModel(request);
-            if (urls == null || urls.isEmpty()) {
+            if (urls.isEmpty()) {
                 throw new IllegalStateException("模型未返回图片 URL");
             }
 
@@ -71,19 +71,21 @@ public class QwenImageProvider implements ImageModelProvider {
             response.setModel(model);
             return response;
         } catch (Exception e) {
+            // 会话中断(用户停止生成/断开页面)时 Reactor 会 interrupt 阻塞线程,
+            // 这是正常取消语义而非生图故障, 单独识别避免误导性的"图片生成失败"
+            if (isInterrupted(e)) {
+                Thread.currentThread().interrupt();
+                log.info("{} 图片生成被取消(会话中断)", name);
+                throw new RuntimeException("图片生成已取消", e);
+            }
             if (isTimeout(e)) {
                 log.error("通义万相图片生成超时({}s), 判定失败", REQUEST_TIMEOUT.getSeconds(), e);
                 throw new RuntimeException("图片生成超时, 请稍后重试", e);
             }
             String raw = extractResponseBody(e);
             String bizMsg = parseBusinessError(raw);
-            if (bizMsg != null) {
-                // 平台明确拒绝的业务错误(鉴权/参数/IP侵权等): 直接抛出让前端提示失败, 不返回占位假图
-                log.error("通义万相图片生成被平台拒绝: {}", bizMsg);
-                throw new RuntimeException("图片生成失败: " + bizMsg, e);
-            }
-            log.error("通义万相图片生成失败, 进入演示模式{}", raw, e);
-            return demoResponse(request);
+            log.error("通义万相图片生成失败{}", raw, e);
+            throw new RuntimeException("图片生成失败: " + (bizMsg != null ? bizMsg : e.getMessage()), e);
         }
     }
 
@@ -120,10 +122,21 @@ public class QwenImageProvider implements ImageModelProvider {
         return null;
     }
 
-    /** 判断异常链中是否包含超时(区别于其他网络/业务异常, 超时不走演示兜底) */
+    /** 判断异常链中是否包含超时(超时给出独立的错误提示) */
     private boolean isTimeout(Throwable e) {
         while (e != null) {
             if (e instanceof TimeoutException) {
+                return true;
+            }
+            e = e.getCause();
+        }
+        return false;
+    }
+
+    /** 沿异常链识别中断(Reactor 会把 InterruptedException 包装为 ReactiveException) */
+    private boolean isInterrupted(Throwable e) {
+        while (e != null) {
+            if (e instanceof InterruptedException) {
                 return true;
             }
             e = e.getCause();
@@ -200,19 +213,5 @@ public class QwenImageProvider implements ImageModelProvider {
             return "1024*1024";
         }
         return size.replace("x", "*").replace("X", "*");
-    }
-
-    private ImageResponse demoResponse(ImageRequest request) {
-        ImageResponse response = new ImageResponse();
-        response.setId("gen_" + System.currentTimeMillis());
-        // 未显式指定种子时每次随机, 避免"相同提示词永远生成同一张图"(重新生成无变化)
-        int seed = request.getSeed() != null ? request.getSeed() : (int) (Math.random() * 100000);
-        String url = "https://picsum.photos/seed/" + seed + "/1024/1024";
-        response.setImageUrl(url);
-        response.setImageUrls(List.of(url));
-        response.setThumbnailUrl("https://picsum.photos/seed/" + seed + "/200/200");
-        response.setPrompt(request.getPrompt());
-        response.setModel(model);
-        return response;
     }
 }

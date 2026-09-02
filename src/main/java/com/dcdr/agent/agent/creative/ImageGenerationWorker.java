@@ -86,7 +86,8 @@ public class ImageGenerationWorker {
         GenerationDTO extra = new GenerationDTO();
         extra.setId("gen_" + UUID.randomUUID().toString().replace("-", ""));
         extra.setProjectId(request.getProjectId());
-        extra.setType(request.getEngineType() != null ? request.getEngineType() : "image");
+        // type 是生成记录的类型(image/video)。与主记录保持一致, type 固定为 "image"。
+        extra.setType("image");
         extra.setPrompt(request.getPrompt());
         extra.setSize(request.getSize());
         extra.setReferImageUrl(referImageStorage.save(request.getReferImage()));

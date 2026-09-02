@@ -22,9 +22,6 @@ public class ImageRequest {
     /** 参考图(base64或URL, 可选) */
     @Schema(description = "参考图（base64 或 URL，可选）")
     private String referImage;
-    /** 引擎类型: auto/stable/flux/midjourney */
-    @Schema(description = "引擎类型", allowableValues = {"auto", "stable", "flux", "midjourney"}, defaultValue = "auto")
-    private String engineType = "auto";
     /** 尺寸, 如 1024x1024 */
     @Schema(description = "尺寸", example = "1024x1024", defaultValue = "1024x1024")
     private String size = "1024x1024";

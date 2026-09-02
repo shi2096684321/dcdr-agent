@@ -103,7 +103,6 @@ public class CreativeEngine {
         r.setModel(src.getModel());
         r.setPrompt(src.getPrompt());
         r.setReferImage(src.getReferImage());
-        r.setEngineType(src.getEngineType());
         r.setSize(src.getSize());
         r.setAspectRatio(src.getAspectRatio());
         r.setStyle(src.getStyle());
@@ -122,7 +121,8 @@ public class CreativeEngine {
         GenerationDTO record = new GenerationDTO();
         record.setId("gen_" + UUID.randomUUID().toString().replace("-", ""));
         record.setProjectId(projectId);
-        record.setType(request.getEngineType() != null ? request.getEngineType() : "image");
+        // type 是生成记录的类型(image/video)。此处为文生图/图生图路径, type 固定为 "image"。
+        record.setType("image");
         record.setPrompt(request.getPrompt());
         record.setSize(request.getSize());
         record.setReferImageUrl(referImageUrl);

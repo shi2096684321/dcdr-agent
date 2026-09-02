@@ -51,14 +51,16 @@ public class EmbeddingAutoConfiguration {
                     continue;
                 }
                 try {
-                    switch (c.getProvider()) {
-                        // langchain4j: 框架内核实现(V3.1 起主线默认), 适配任意 OpenAI 兼容端点
-                        case "langchain4j" -> { registry.register(new LangChain4jEmbeddingProvider(c)); count++; }
-                        // 以下为手写 WebClient 实现, 保留作为回退选项(改 provider 值即可切换)
-                        case "qwen" -> { registry.register(new QwenEmbeddingProvider(c)); count++; }
-                        case "openai" -> { registry.register(new OpenAiEmbeddingProvider(c)); count++; }
-                        case "zhipu" -> { registry.register(new ZhipuEmbeddingProvider(c)); count++; }
-                        default -> log.warn("未知 Embedding provider 类型: {} (name={})", c.getProvider(), c.getName());
+                    // engine 分发: manual=手写 WebClient 实现(回退); 默认 langchain4j 框架内核
+                    if ("manual".equals(c.getEngine())) {
+                        switch (c.getProvider()) {
+                            case "qwen" -> { registry.register(new QwenEmbeddingProvider(c)); count++; }
+                            case "openai" -> { registry.register(new OpenAiEmbeddingProvider(c)); count++; }
+                            case "zhipu" -> { registry.register(new ZhipuEmbeddingProvider(c)); count++; }
+                            default -> log.warn("未知手写 Embedding provider: {} (name={})", c.getProvider(), c.getName());
+                        }
+                    } else {
+                        registry.register(new LangChain4jEmbeddingProvider(c)); count++;
                     }
                 } catch (Exception e) {
                     log.error("注册 Embedding 模型失败: {}", c.getName(), e);

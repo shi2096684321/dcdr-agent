@@ -67,13 +67,8 @@ public class ZhipuImageProvider implements ImageModelProvider {
             }
             String raw = extractResponseBody(e);
             String bizMsg = parseBusinessError(raw);
-            if (bizMsg != null) {
-                // 平台明确拒绝的业务错误(鉴权/参数/IP侵权等): 直接抛出让前端提示失败, 不返回占位假图
-                log.error("智谱图片生成被平台拒绝: {}", bizMsg);
-                throw new RuntimeException("图片生成失败: " + bizMsg, e);
-            }
-            log.error("智谱图片生成失败, 进入演示模式{}", raw, e);
-            return demoResponse(request);
+            log.error("智谱图片生成失败{}", raw, e);
+            throw new RuntimeException("图片生成失败: " + (bizMsg != null ? bizMsg : e.getMessage()), e);
         }
     }
 
@@ -119,17 +114,5 @@ public class ZhipuImageProvider implements ImageModelProvider {
             e = e.getCause();
         }
         return false;
-    }
-
-    private ImageResponse demoResponse(ImageRequest request) {
-        ImageResponse response = new ImageResponse();
-        response.setId("gen_" + System.currentTimeMillis());
-        // 未显式指定种子时每次随机, 避免"相同提示词永远生成同一张图"(重新生成无变化)
-        int seed = request.getSeed() != null ? request.getSeed() : (int) (Math.random() * 100000);
-        response.setImageUrl("https://picsum.photos/seed/" + seed + "/1024/1024");
-        response.setThumbnailUrl("https://picsum.photos/seed/" + seed + "/200/200");
-        response.setPrompt(request.getPrompt());
-        response.setModel(model);
-        return response;
     }
 }

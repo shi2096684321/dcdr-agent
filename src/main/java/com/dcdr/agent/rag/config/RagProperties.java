@@ -70,6 +70,8 @@ public class RagProperties {
         private boolean enabled = true;
         /** 提供方: qwen | openai | zhipu */
         private String provider;
+        /** 实现引擎: langchain4j=框架内核(默认, 适配任意 OpenAI 兼容端点) | manual=手写 WebClient 实现(回退选项) */
+        private String engine = "langchain4j";
         private String apiKey;
         private String baseUrl;
         private String model;

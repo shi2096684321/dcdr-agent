@@ -60,7 +60,7 @@ public class OpenAiAudioProvider implements AudioModelProvider {
         }).contentType(MediaType.APPLICATION_OCTET_STREAM);
 
         try {
-            String resp = webClient.post().uri("/v1/audio/transcriptions")
+            String resp = webClient.post().uri("/audio/transcriptions")
                     .contentType(MediaType.MULTIPART_FORM_DATA)
                     .body(BodyInserters.fromMultipartData(builder.build()))
                     .retrieve().bodyToMono(String.class)
@@ -89,7 +89,7 @@ public class OpenAiAudioProvider implements AudioModelProvider {
         body.put("response_format", request.getFormat() != null ? request.getFormat() : "mp3");
 
         try {
-            byte[] audio = webClient.post().uri("/v1/audio/speech")
+            byte[] audio = webClient.post().uri("/audio/speech")
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(body.toString())
                     .retrieve().bodyToMono(byte[].class)

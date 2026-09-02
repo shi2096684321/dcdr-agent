@@ -402,6 +402,11 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 return;
             }
             if (msg.getContent() == null || msg.getContent().isBlank()) {
+                // 生图纯工具轮: assistant 正文为空但携带 images —— 从结构化字段合成最小标记,
+                // 避免历史中 tool 消息后无 assistant 响应(部分提供方校验消息配对), 也让模型感知生图记录
+                if (msg.getImages() != null && !msg.getImages().isEmpty()) {
+                    messages.add(AiMessage.from("已生成图片。"));
+                }
                 return;
             }
             messages.add(AiMessage.from(msg.getContent()));

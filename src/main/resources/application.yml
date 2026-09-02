@@ -138,12 +138,12 @@ agent:
       # 默认 Embedding provider; 维度必须 = 1536 (与 document_chunks.embedding VECTOR(1536) 一致)
       default-provider: qwen-embedding
       providers:
+        # provider = 厂商(qwen/zhipu/openai); engine 约定同 models(langchain4j 默认 / manual 回退)
         # 通义 DashScope text-embedding-v4 (Qwen3-Embedding, 支持 1536 维, 与 schema VECTOR(1536) 对齐)
         # 注: v3 仅支持 1024/768/512 维, 传 1536 会 400; v4 是推荐模型, 支持 1536 且多语种更强
-        # provider: langchain4j = 框架内核(主线默认); qwen = 手写实现(回退)
         - name: qwen-embedding
           enabled: true
-          provider: langchain4j
+          provider: qwen
           api-key: ${DASHSCOPE_API_KEY:demo-key}
           base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
           model: qwen3.7-text-embedding
@@ -151,11 +151,12 @@ agent:
           # v4 单次请求最大 10 条(官方限制), v3 为 25; 此处按 v4 限制
           batch-size: 10
         # OpenAI text-embedding-3-small (1536 维); 配置有效 OPENAI_API_KEY 后启用
+        # base-url 约定(两引擎一致): 版本段由 base-url 携带, 引擎在其后追加 /embeddings
         - name: openai-embedding
           enabled: false
           provider: openai
           api-key: ${OPENAI_API_KEY:sk-demo-key}
-          base-url: https://api.openai.com
+          base-url: https://api.openai.com/v1
           model: text-embedding-3-small
           dimensions: 1536
           batch-size: 100
@@ -201,16 +202,17 @@ agent:
   models:
     default-chat: "qwen-chat"
 
-    # provider 说明:
-    #   langchain4j = 框架内核(V3.1 起主线默认, 适配任意 OpenAI 兼容端点)
-    #   qwen/zhipu/deepseek/openai = 手写 WebClient 实现(回退选项, 改值即切换)
-    # 两者 base-url 约定一致(均追加 /chat/completions), 切换无需改其他字段
+    # provider = 厂商(qwen/zhipu/deepseek/openai/ollama), 用于 /api/models 展示与 manual 模式分发
+    # engine 说明:
+    #   langchain4j = 框架内核(默认, 适配任意 OpenAI 兼容端点, 在 base-url 后追加 /chat/completions)
+    #   manual = 手写 WebClient 实现(回退选项)
+    # 切换引擎只需改 engine 值
     chat:
       - name: "openai-chat"
         enabled: false
-        provider: "langchain4j"
+        provider: "openai"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
-        # langchain4j 直接在 base-url 后追加 /chat/completions, OpenAI 官方端点需带 /v1
+        # base-url 约定(两引擎一致): 版本段由 base-url 携带, 引擎在其后追加 /chat/completions
         base-url: "https://api.openai.com/v1"
         model: "gpt-4o"
         temperature: 0.7
@@ -221,7 +223,7 @@ agent:
 
       - name: "zhipu-chat"
         enabled: true
-        provider: "langchain4j"
+        provider: "zhipu"
         api-key: ${ZHIPU_API_KEY:demo-key}
         base-url: "https://open.bigmodel.cn/api/paas/v4"
         model: "glm-4-plus"
@@ -231,7 +233,7 @@ agent:
 
       - name: "qwen-chat"
         enabled: true
-        provider: "langchain4j"
+        provider: "qwen"
         api-key: ${DASHSCOPE_API_KEY:demo-key}
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
         model: "qwen3.7-max-2026-06-08"
@@ -241,7 +243,7 @@ agent:
 
       - name: "deepseek-chat"
         enabled: true
-        provider: "langchain4j"
+        provider: "deepseek"
         api-key: ${DEEPSEEK_API_KEY:demo-key}
         base-url: "https://api.deepseek.com"
         model: "deepseek-v4-flash"
@@ -261,12 +263,21 @@ agent:
         capabilities:
           - function_calling
 
+    # provider = 厂商(qwen/zhipu/openai); engine 约定同 chat(langchain4j 默认 / manual 回退)
+    # base-url 约定(两引擎一致): 版本段(/v1 等)由 base-url 携带, 路径只含资源部分, 切换引擎无需改地址
+    #   智谱: https://open.bigmodel.cn/api/paas/v4 (cogview 系列)
+    #   OpenAI: https://api.openai.com/v1 (dall-e 系列)
+    # qwen 例外(端点本质不同, 配双地址):
+    #   base-url        = langchain4j 引擎用 compatible-mode(注: DashScope 生图无兼容端点, 实测 404, 仅留作切换)
+    #   manual-base-url = manual 引擎用 DashScope 原生根地址(multimodal-generation)
     image:
       - name: "qwen-image"
         enabled: true
         provider: "qwen"
+        engine: "manual"
         api-key: ${DASHSCOPE_API_KEY:demo-key}
-        base-url: "https://dashscope.aliyuncs.com"
+        base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        manual-base-url: "https://dashscope.aliyuncs.com"
         model: "qwen-image-2.0-pro-2026-06-22"
         size: "1024x1024"
 
@@ -274,7 +285,7 @@ agent:
         enabled: false
         provider: "openai"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
-        base-url: "https://api.openai.com"
+        base-url: "https://api.openai.com/v1"
         model: "dall-e-3"
         size: "1024x1024"
 
@@ -305,12 +316,14 @@ agent:
         model-i2v: "happyhorse-1.1-i2v"   # 图生视频(i2v)专用模型名
 
     # 语音模型 (STT/TTS), V1.1 新增; 配置有效 OPENAI_API_KEY 后将 enabled 改为 true
+    # provider = 厂商; engine 约定同 chat(langchain4j 默认 / manual 回退)
+    # base-url 约定(两引擎一致): 版本段由 base-url 携带, 引擎在其后追加 /audio/*
     audio:
       - name: "openai-audio"
         enabled: false
         provider: "openai"
         api-key: ${OPENAI_API_KEY:sk-demo-key}
-        base-url: "https://api.openai.com"
+        base-url: "https://api.openai.com/v1"
         model: "whisper-1"
 
       # 阿里云百炼 Sambert 语音合成 (仅 TTS); 配置有效 DASHSCOPE_API_KEY 后将 enabled 改为 true

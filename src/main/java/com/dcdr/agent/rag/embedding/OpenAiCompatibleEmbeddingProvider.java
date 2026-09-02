@@ -66,9 +66,9 @@ public abstract class OpenAiCompatibleEmbeddingProvider implements EmbeddingProv
         this.batchSize = Math.max(1, config.getBatchSize());
     }
 
-    /** Embeddings 接口路径, 默认 OpenAI 风格 /v1/embeddings, 通义同; 智谱为 /embeddings */
+    /** Embeddings 接口路径, 统一不带 /v1(版本段由 base-url 携带, 与 langchain4j 引擎约定一致) */
     protected String getEmbeddingsPath() {
-        return "/v1/embeddings";
+        return "/embeddings";
     }
 
     /** 是否在请求体中显式传 dimensions 字段(仅 text-embedding-3/v3 系列支持) */

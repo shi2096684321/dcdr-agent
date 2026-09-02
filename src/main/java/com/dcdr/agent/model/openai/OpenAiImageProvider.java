@@ -52,7 +52,7 @@ public class OpenAiImageProvider implements ImageModelProvider {
             body.put("style", request.getStyle());
         }
         try {
-            String resp = webClient.post().uri("/v1/images/generations")
+            String resp = webClient.post().uri("/images/generations")
                     .bodyValue(body.toString())
                     .retrieve().bodyToMono(String.class)
                     .timeout(REQUEST_TIMEOUT)
@@ -71,12 +71,12 @@ public class OpenAiImageProvider implements ImageModelProvider {
                 log.error("OpenAI图片生成超时({}s), 判定失败", REQUEST_TIMEOUT.getSeconds(), e);
                 throw new RuntimeException("图片生成超时, 请稍后重试", e);
             }
-            log.error("OpenAI图片生成失败, 进入演示模式", e);
-            return demoResponse(request);
+            log.error("OpenAI图片生成失败", e);
+            throw new RuntimeException("图片生成失败: " + e.getMessage(), e);
         }
     }
 
-    /** 判断异常链中是否包含超时(区别于其他网络/业务异常, 超时不走演示兜底) */
+    /** 判断异常链中是否包含超时(超时给出独立的错误提示) */
     private boolean isTimeout(Throwable e) {
         while (e != null) {
             if (e instanceof TimeoutException) {
@@ -85,17 +85,5 @@ public class OpenAiImageProvider implements ImageModelProvider {
             e = e.getCause();
         }
         return false;
-    }
-
-    private ImageResponse demoResponse(ImageRequest request) {
-        ImageResponse response = new ImageResponse();
-        response.setId("gen_" + System.currentTimeMillis());
-        // 未显式指定种子时每次随机, 避免"相同提示词永远生成同一张图"(重新生成无变化)
-        int seed = request.getSeed() != null ? request.getSeed() : (int) (Math.random() * 100000);
-        response.setImageUrl("https://picsum.photos/seed/" + seed + "/1024/1024");
-        response.setThumbnailUrl("https://picsum.photos/seed/" + seed + "/200/200");
-        response.setPrompt(request.getPrompt());
-        response.setModel(model);
-        return response;
     }
 }

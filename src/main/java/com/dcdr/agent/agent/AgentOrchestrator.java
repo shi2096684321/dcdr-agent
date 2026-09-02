@@ -238,8 +238,6 @@ public class AgentOrchestrator {
                         final List<ChatChunk>[] roundToolCalls = new List[1];
                         roundToolCalls[0] = new ArrayList<>();
                         final List<String> generatedUrls = new ArrayList<>();
-                        // 本轮实际生图的内容摘要(prompt), 供落库陈述句使用, 让下一轮模型明确"这些图片已生成过"
-                        final List<String> generatedPrompts = new ArrayList<>();
                         final String[] toolError = new String[1];
                         // 非图片工具(如 calculator/weather)的执行结果, 供落库时并入助手消息, 保证可见且可持久化
                         final List<String> toolResults = new ArrayList<>();
@@ -317,12 +315,14 @@ public class AgentOrchestrator {
                                 // 下一轮执行本轮新工具(多步 agentic)
                                 Flux<ChatChunk> nextTool = Flux
                                         .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, generatedPrompts, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById))
+                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById))
                                         .subscribeOn(Schedulers.boundedElastic());
                                 // 关键时序: 先执行工具拿到真实结果, 再构造 tool 消息回灌 history 并发起下一轮生成。
                                 // 修复: 原实现在此处(执行前)构造 tool 消息, 回灌内容恒为空,
-                                // 模型看不到工具结果导致重复发起相同调用(如反复生图)
-                                Flux<ChatChunk> next = nextTool.thenMany(Flux.defer(() -> {
+                                // 模型看不到工具结果导致重复发起相同调用(如反复生图)。
+                                // 注意用 concatWith 而非 thenMany: thenMany 会丢弃 executeTools 发出的
+                                // image/tool_result 分块, 导致生图结果不实时下发、刷新才能看到
+                                Flux<ChatChunk> next = nextTool.concatWith(Flux.defer(() -> {
                                     List<Message> roundMsgs = new ArrayList<>();
                                     roundMsgs.add(assistMsg);
                                     for (ChatChunk tc : currentRound) {
@@ -353,7 +353,7 @@ public class AgentOrchestrator {
                             }
                             // 无需工具(或已达上限): 收尾并保存
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
-                                    accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, generatedPrompts, toolError, toolResults, collectedSources,
+                                    accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
                                     usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request));
                         });
                         tailRef.set(tailFlux);
@@ -516,10 +516,11 @@ public class AgentOrchestrator {
                             for (String u : urls) {
                                 chunks.add(ChatChunk.image(u));
                             }
-                            // 关键: 按钮生图即使没有任何文本, 也要在 assistant 内容里记下"已生成图片",
-                            // 否则下一轮模型在历史中看不到已生成记录, 会把前一张图重新生成一份(历史诱导重画)。
-                            // 注意: 不拼接用户原题(req.getPrompt()), 那是对话指令而非图片描述, 直接拼进历史会污染下一轮上下文;
-                            // 图片主体已记录在 user 消息中, 此处仅作"本轮已生图"的声明即可。
+                            // 按钮生图不经过工具往返, 历史中没有 role=tool 记录可让模型感知"图已生成",
+                            // 因此 assistant 正文需保留最小标记"已生成图片。"(图片主体已记录在 user 消息中),
+                            // 防止下一轮模型把前一张图重新生成一份(历史诱导重画);
+                            // 对话内生图走工具往返, 无此需要, 见 finalizeAssistant。
+                            // 注意: 不拼接用户原题(req.getPrompt()), 那是对话指令而非图片描述, 直接拼进历史会污染下一轮上下文。
                             String imgContent = "已生成图片。";
                             chunks.add(ChatChunk.chunk(imgContent));
                             return Flux.fromIterable(chunks).concatWith(Flux.defer(() -> {
@@ -550,11 +551,11 @@ public class AgentOrchestrator {
 
     /**
      * 执行对话内的工具调用: 经通用 ToolRegistry 分发到对应 Tool.execute。
-     * 文生图(image_generation)结果额外渲染为 image 分块并回填 outUrls / outPrompts 供落库陈述句;
+     * 文生图(image_generation)结果额外渲染为 image 分块并回填 outUrls;
      * 其它工具结果渲染为 tool_result 分块。
      */
     private Flux<ChatChunk> executeTools(List<ChatChunk> toolCalls, String accumulatedText, String reasoningText,
-                                        List<String> outUrls, List<String> outPrompts, String[] outError,
+                                        List<String> outUrls, String[] outError,
                                         List<String> outToolResults, List<Map<String, Object>> collectedSources,
                                         String userQuery, List<String> knowledgeBaseIds,
                                         Map<String, String> outResultsById) {
@@ -623,6 +624,15 @@ public class AgentOrchestrator {
                 }
                 String result = toolInfo.getContent();
                 if ("image_generation".equals(name)) {
+                    // 跨轮生图幂等: 本轮对话已成功生成过图片时, 模型后续轮次再发起的生图调用直接拦截,
+                    // 回灌已有结果(不再真实生成)。模型在多步 agentic 中可能重复发起相同意图的生图
+                    // (同轮去重拦不住跨轮), 放行会导致一次请求出多张重复图、成倍等待与计费
+                    if (!outUrls.isEmpty()) {
+                        log.info("拦截跨轮重复生图调用(本轮已生成 {} 张), 回灌已有结果", outUrls.size());
+                        outResultsById.put(tc.getId(),
+                                "本轮已生成过图片（地址：" + String.join("、", outUrls) + "），无需重复生成，请直接基于已有图片回答。");
+                        return Flux.empty();
+                    }
                     callCount++;
                     try {
                         Map<String, Object> res = mapper.readValue(result, Map.class);
@@ -643,15 +653,19 @@ public class AgentOrchestrator {
                             chunks.add(ChatChunk.image(u));
                             outUrls.add(u);
                         }
-                        if (prompt != null) outPrompts.add(prompt.toString());
-                        // 回灌给模型的生图结果陈述句: 让模型明确"图片已生成",
-                        // 避免回灌轮看不到结果而重复发起相同的生图调用
+                        // 回灌给模型的生图工具结果(结构化记录, 对齐主流产品的 image_generation_call):
+                        // 含 prompt 摘要与图片地址, 持久化为 role=tool 消息并参与后续历史回放,
+                        // 是模型感知"图片已生成"的唯一来源(assistant 正文不再追加陈述句)
                         String promptDesc = prompt != null ? prompt.toString() : accumulatedText;
                         outResultsById.put(tc.getId(), "已成功生成图片：" + promptDesc + "，图片地址：" + String.join("、", urls));
                     } catch (Exception e) {
-                        outError[0] = e.getMessage();
-                        log.error("文生图结果解析失败", e);
-                        return Flux.just(ChatChunk.error("图片生成失败: " + e.getMessage(), "IMAGE_GEN_ERROR"));
+                        // 工具失败时返回的是纯文本错误(如"文生图失败: ..."), JSON 解析失败属预期:
+                        // 用原始结果文本回灌模型与提示前端, 而非暴露 JsonParseException 细节
+                        outError[0] = result;
+                        log.warn("文生图未产出图片, 工具原始返回: {}", result);
+                        outResultsById.put(tc.getId(),
+                                result + " 请勿重复调用该工具, 可向用户说明失败原因并建议稍后重试。");
+                        return Flux.just(ChatChunk.error("图片生成失败: " + result, "IMAGE_GEN_ERROR"));
                     }
                 } else {
                     List<Map<String, Object>> srcs = toolInfo.getSources();
@@ -1155,7 +1169,7 @@ public class AgentOrchestrator {
      */
     private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
                                              StringBuilder accumulated, StringBuilder reasoning,
-                                             List<ChatChunk> toolCalls, List<String> urls, List<String> prompts, String[] toolError,
+                                             List<ChatChunk> toolCalls, List<String> urls, String[] toolError,
                                              List<String> toolResults, List<Map<String, Object>> collectedSources,
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
@@ -1178,25 +1192,14 @@ public class AgentOrchestrator {
 
         // 仅构建待落库消息(不在此处阻塞 SSE)
         Message assistantMessage = null;
-        // 生图轮给下一轮模型的陈述句(仅追加部分): 同时回传前端, 保证实时流与刷新后内容一致
-        final String[] appendedStatement = { null };
         if (assistantSaved.compareAndSet(false, true)) {
             if (!toolCalls.isEmpty()) {
                 if (!urls.isEmpty()) {
-                    // 落库为陈述句形态(含本轮生图内容摘要), 让下一轮模型明确"这些图片已生成过",
-                    // 避免历史诱导模型把已生成图片当成本轮目标重复生成。
-                    String content = accumulated.toString();
-                    if (!prompts.isEmpty()) {
-                        StringBuilder sb = new StringBuilder();
-                        if (content != null && !content.isBlank()) {
-                            sb.append(content).append("\n");
-                        }
-                        String stmt = "已生成图片：" + String.join("、", prompts) + "。";
-                        sb.append(stmt);
-                        appendedStatement[0] = stmt;
-                        content = sb.toString();
-                    }
-                    assistantMessage = Message.assistantImage(urls, content, provider.getName());
+                    // 主流产品形态(ChatGPT/GPT-4o)对齐: 生图轮 assistant 正文只保留模型自己的叙述,
+                    // 图片由结构化字段(images, type=image)携带; 模型上下文中的生图记录由已落库的
+                    // 工具往返(assistant.tool_calls + role=tool 结果含图片地址)提供,
+                    // 正文不再追加"已生成图片"陈述句, 避免与模型叙述重复
+                    assistantMessage = Message.assistantImage(urls, accumulated.toString(), provider.getName());
                     // 关键: 生图轮也要携带推理内容, 否则刷新后会丢失(assistantImage 工厂不设置 reasoningContent)
                     assistantMessage.setReasoningContent(reasoning.toString());
                 } else {
@@ -1247,10 +1250,6 @@ public class AgentOrchestrator {
                 .subscribe();
 
         List<ChatChunk> tail = new ArrayList<>();
-        // 把落库陈述句回传给前端(仅追加部分), 使实时流与刷新后持久化内容一致, 避免"刷新后多一句已生成图片"
-        if (appendedStatement[0] != null) {
-            tail.add(ChatChunk.chunk(appendedStatement[0]));
-        }
         // done 块: collectedSources 含联网搜索/知识库检索的引用来源(Agentic RAG 模式下由工具返回),
         // 随 done 下发给前端渲染引用卡片
         if (collectedSources != null && !collectedSources.isEmpty()) {

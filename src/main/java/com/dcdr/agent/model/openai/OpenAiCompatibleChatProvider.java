@@ -70,7 +70,8 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
     }
 
     protected String getChatPath() {
-        return "/v1/chat/completions";
+        // 路径不带 /v1, 版本段由 base-url 携带(与 langchain4j 引擎约定一致, 切换引擎无需改 base-url)
+        return "/chat/completions";
     }
 
     @Override
@@ -153,8 +154,18 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                     mNode.put("content", msg.getContent() == null ? "" : msg.getContent());
                     continue;
                 }
-                // 普通消息: 跳过空内容
-                if (msg.getContent() == null || msg.getContent().isBlank()) continue;
+                // 普通消息: 跳过空内容(移除已占位的空节点, 避免残留仅含 role 的消息)
+                if (msg.getContent() == null || msg.getContent().isBlank()) {
+                    messages.remove(messages.size() - 1);
+                    // 生图纯工具轮: assistant 正文为空但携带 images —— 从结构化字段合成最小标记,
+                    // 避免历史中 tool 消息后无 assistant 响应(部分提供方校验消息配对), 也让模型感知生图记录
+                    if ("assistant".equals(role) && msg.getImages() != null && !msg.getImages().isEmpty()) {
+                        ObjectNode imgNode = messages.addObject();
+                        imgNode.put("role", "assistant");
+                        imgNode.put("content", "已生成图片。");
+                    }
+                    continue;
+                }
                 List<String> imgs = msg.getImages();
                 if (imgs != null && !imgs.isEmpty() && supportsVision() && "user".equals(role)) {
                     ArrayNode content = mNode.putArray("content");
