@@ -133,6 +133,16 @@ public class IntentRouter {
      * @return 路由结果; 任何异常都回退到普通对话, 不影响主流程
      */
     public RoutingDtos.RouteResult route(String userMessage, String userId, String sessionId) {
+        return route(userMessage, userId, sessionId, null);
+    }
+
+    /**
+     * 路由判断(带调用链追踪)。
+     *
+     * @param trace LLM 调用链追踪器(可空: 为空时不打点, 兼容既有调用方)
+     */
+    public RoutingDtos.RouteResult route(String userMessage, String userId, String sessionId,
+                                         com.dcdr.agent.common.log.LlmCallTrace trace) {
         RoutingDtos.RouteResult fallback = chatFallback();
         if (!v3Properties.getSmartRouting().isEnabled()) {
             return fallback;
@@ -151,6 +161,7 @@ public class IntentRouter {
             }
             String prompt = buildPrompt(userMessage, agents, workflows);
             ChatModelProvider provider = resolveProvider();
+            final long routeStartNanos = System.nanoTime();
             ChatRequest req = new ChatRequest();
             req.setMessage(prompt);
             req.setStream(false);
@@ -167,6 +178,12 @@ public class IntentRouter {
                 }
             }
             ChatResponse resp = provider.invoke(req, List.of(Message.system(SYSTEM_PROMPT)));
+            if (trace != null) {
+                ChatResponse.TokenUsage u = resp.getTokenUsage();
+                trace.recordLlm("routing", provider.getName(),
+                        u != null ? u.getPrompt() : null, u != null ? u.getCompletion() : null,
+                        (System.nanoTime() - routeStartNanos) / 1_000_000, false);
+            }
             RoutingDtos.RouteResult r = parse(resp.getContent(), agents, workflows);
             // 路由 token 不计入用户用量/配额 (平台探测成本), 仅随 routing_logs 落库展示
             r.setTokenUsage(resp.getTokenUsage());

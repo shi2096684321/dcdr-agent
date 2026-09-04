@@ -111,6 +111,7 @@ agent:
       # 子路径会落到下方 /api/** authenticated() 被拦, 而浏览器 <img> 不带 token 导致 401 加载失败。
       - /api/files/uploads/**
       - /api/files/generated/**
+      - /api/files/videos/**
       # F-40.2 健康检查/指标采集: 供负载均衡探活与 Prometheus 抓取 (部署于内网)
       - /actuator/health
       - /actuator/readiness
@@ -236,7 +237,7 @@ agent:
         provider: "qwen"
         api-key: ${DASHSCOPE_API_KEY:demo-key}
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        model: "qwen3.7-max-2026-06-08"
+        model: "qwen3.7-flash-2026-07-15"
         capabilities:
 #          - vision
           - function_calling

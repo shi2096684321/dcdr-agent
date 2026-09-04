@@ -1,36 +1,27 @@
 package com.dcdr.agent.rag.service;
 
 import com.dcdr.agent.common.exception.BusinessException;
-import com.dcdr.agent.entity.DocumentEntity;
-import com.dcdr.agent.entity.VectorType;
 import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
-import com.dcdr.agent.rag.embedding.EmbeddingProvider;
-import com.dcdr.agent.rag.embedding.EmbeddingRegistry;
-import com.dcdr.agent.repository.DocumentChunkRepository;
-import com.dcdr.agent.repository.DocumentRepository;
+import com.dcdr.agent.rag.retrieval.KnowledgeBaseContentRetriever;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.rag.content.Content;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * 检索增强 Service (V2.1, 对应 F-20-004 / F-21-003)。
  * <p>
- * 检索流程:
- * <ol>
- *   <li>问题向量化: 用默认 Embedding provider 把 query 转为 float[]</li>
- *   <li>向量检索: 调 {@code findTopKByKbId} 用 pgvector 余弦距离算 Top-K</li>
- *   <li>相似度换算: pgvector {@code <=>} 返回的是 cosine distance (0~2),
- *       similarity = 1 - distance, 范围 [-1, 1]; 实际语义相关时接近 1</li>
- *   <li>分数过滤: 低于 {@code minScore} 的片段丢弃</li>
- *   <li>补全文件名: 批量查 documents 表, 把 filename 填入结果</li>
- * </ol>
+ * V3.2 框架化(从手写 pgvector 迁移到 LangChain4j 原生检索):
+ * 本 Service 不再手写向量 SQL, 而是把检索委托给框架 {@link KnowledgeBaseContentRetriever}
+ * (内含 {@code EmbeddingStore} 适配器 + 可选 BM25/RRF 混合 + 可选 Rerank)。
+ * 默认(hybrid/rerank 关闭)下检索语义与迁移前完全一致: 逐库 KNN → similarity=1-distance →
+ * minScore 过滤 → topK 截断 → 补全文件名。
  * <p>
  * 同时支持单知识库与多知识库检索(对话集成时 ChatRequest.knowledgeBaseIds 为列表)。
  */
@@ -39,9 +30,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class RetrievalService {
 
-    private final DocumentChunkRepository chunkRepository;
-    private final DocumentRepository documentRepository;
-    private final EmbeddingRegistry embeddingRegistry;
+    private final KnowledgeBaseContentRetriever contentRetriever;
     private final RagProperties properties;
 
     /**
@@ -58,9 +47,6 @@ public class RetrievalService {
 
     /**
      * 多知识库检索(对话集成用)。
-     * <p>
-     * 当前实现: 逐个知识库检索后合并取 Top-K(简单可靠);
-     * 后续可优化为跨库 UNION 检索(需改 native SQL)。
      *
      * @param kbIds 知识库 ID 列表(空则返回空)
      * @param query 用户问题
@@ -74,63 +60,30 @@ public class RetrievalService {
         if (kbIds == null || kbIds.isEmpty() || query == null || query.isBlank()) {
             return List.of();
         }
-        int k = topK != null ? topK : properties.getRetrieval().getTopK();
-        double minScore = properties.getRetrieval().getMinScore();
-
-        EmbeddingProvider embedding = embeddingRegistry.getDefault();
-        float[] queryVec = embedding.embed(query);
-        String vecStr = VectorType.toVectorString(queryVec);
-
-        List<RetrievalResult> all = new ArrayList<>();
-        for (String kbId : kbIds) {
-            try {
-                // V3.1 修复: native query 直接返回真实 cosine distance,
-                // similarity = 1 - distance, min-score 过滤不再依赖估算分数
-                List<DocumentChunkRepository.ChunkWithDistance> chunks =
-                        chunkRepository.findTopKWithDistance(kbId, vecStr, k);
-                for (DocumentChunkRepository.ChunkWithDistance chunk : chunks) {
-                    double similarity = 1.0 - chunk.getDistance();
-                    RetrievalResult r = new RetrievalResult(
-                            chunk.getId(), chunk.getDocId(), chunk.getKbId(),
-                            chunk.getChunkIndex(), chunk.getContent(), similarity, null);
-                    all.add(r);
-                }
-            } catch (Exception e) {
-                // H2 profile 下 pgvector 操作会失败, 单库失败不影响其他库
-                log.warn("知识库 {} 检索失败(可能是 H2 不支持 pgvector): {}", kbId, e.getMessage());
-            }
+        List<Content> contents = contentRetriever.retrieve(kbIds, topK, query);
+        List<RetrievalResult> results = new ArrayList<>(contents.size());
+        for (Content c : contents) {
+            results.add(toRetrievalResult(c));
         }
-
-        // 补全文件名
-        fillFilenames(all);
-
-        // 过滤低分 + 截断到 topK
-        List<RetrievalResult> filtered = all.stream()
-                .filter(r -> r.getScore() >= minScore)
-                .limit(k)
-                .collect(Collectors.toList());
-        log.info("RAG 检索: kbIds={}, query='{}', 命中 {} 条(过滤后 {} 条)", kbIds, clip(query), all.size(), filtered.size());
-        return filtered;
+        log.info("RAG 检索: kbIds={}, query='{}', 返回 {} 条", kbIds, clip(query), results.size());
+        return results;
     }
 
-    /** 批量查 documents 表, 把 filename 填入每条结果 */
-    private void fillFilenames(List<RetrievalResult> results) {
-        if (results.isEmpty()) return;
-        Map<String, String> docIdToFilename = new HashMap<>();
-        for (RetrievalResult r : results) {
-            docIdToFilename.putIfAbsent(r.getDocumentId(), r.getDocumentId());
-        }
-        // 一次性查所有涉及的文档
-        for (String docId : new ArrayList<>(docIdToFilename.keySet())) {
-            try {
-                documentRepository.findById(docId).ifPresent(d -> docIdToFilename.put(docId, d.getFilename()));
-            } catch (Exception e) {
-                log.warn("查询文档文件名失败: {}", docId, e);
-            }
-        }
-        for (RetrievalResult r : results) {
-            r.setFilename(docIdToFilename.getOrDefault(r.getDocumentId(), r.getDocumentId()));
-        }
+    /** 把框架 {@link Content} 还原为业务 {@link RetrievalResult}(metadata 键由适配器写入) */
+    private RetrievalResult toRetrievalResult(Content content) {
+        TextSegment segment = content.textSegment();
+        String text = segment.text();
+        Metadata meta = segment.metadata();
+        Integer chunkIndex = meta.getInteger("chunkIndex");
+        Double score = meta.getDouble("score");
+        return new RetrievalResult(
+                meta.getString("chunkId"),
+                meta.getString("documentId"),
+                meta.getString("kbId"),
+                chunkIndex != null ? chunkIndex : 0,
+                text,
+                score != null ? score : 0.0,
+                meta.getString("filename"));
     }
 
     private static String clip(String s) {

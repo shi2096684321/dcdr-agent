@@ -108,6 +108,13 @@
             <artifactId>langchain4j</artifactId>
         </dependency>
 
+        <!-- V3.1 JDK HTTP 客户端实现: langchain4j-open-ai 对其为 optional 依赖,
+             显式引入以定制 HttpClientBuilder(强制 HTTP/1.1, 消除 H2 连接池竞态导致的 Connection reset) -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-http-client-jdk</artifactId>
+        </dependency>
+
         <!-- V2.1 RAG 文档解析: PDF (PDFBox) / Word (POI) / HTML (Jsoup) -->
         <dependency>
             <groupId>org.apache.pdfbox</groupId>

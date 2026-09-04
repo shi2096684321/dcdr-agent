@@ -22,9 +22,10 @@ public class JavaAgentApplication {
     public static void main(String[] args) {
         // V3.1 框架化改造: LangChain4j 底层使用 JDK HttpClient 连接池(不经过 WebClientFactory),
         // 限制空闲 keep-alive 连接存活时间, 避免上游网关(DashScope 等)关闭空闲连接后
-        // 复用死连接抛 Connection reset。20s 实测仍出现复用死连接(上游回收更激进/H2 池惰性清理
-        // 存在竞态), 收紧到 5s 并显式覆盖 H2 池(jdk.httpclient.keepalive.timeout.h2, JDK20+ 生效);
-        // 代价仅是每次冷启动多一次 TLS 握手, 框架内置重试作为兜底仍保留
+        // 复用死连接抛 Connection reset。
+        // keepalive 5s 之后仍高频出现 reset, 根因在 H2: 连接池惰性清理竞态 + 网关关闭一条 H2 连接
+        // 会连带其上所有在途流失败 —— 已在各框架 Provider 统一强制 HTTP/1.1(见 LangChain4jHttp),
+        // 此处 keepalive 继续管理 H1.1 池(5s 空闲驱逐); .h2 属性已无 H2 连接可管, 保留无害
         System.setProperty("jdk.httpclient.keepalive.timeout", "5");
         System.setProperty("jdk.httpclient.keepalive.timeout.h2", "5");
         SpringApplication.run(JavaAgentApplication.class, args);

@@ -86,7 +86,9 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 .baseUrl(config.getBaseUrl())
                 .apiKey(config.getApiKey())
                 .modelName(config.getModel())
-                .timeout(TIMEOUT);
+                .timeout(TIMEOUT)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                .httpClientBuilder(LangChain4jHttp.forcedHttp11());
         if (config.getTemperature() != null) {
             chatBuilder.temperature(config.getTemperature());
         }
@@ -100,6 +102,8 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 .apiKey(config.getApiKey())
                 .modelName(config.getModel())
                 .timeout(TIMEOUT)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                .httpClientBuilder(LangChain4jHttp.forcedHttp11())
                 // 思维链开关: 框架默认 false, 开启后 delta.reasoning_content(DashScope/DeepSeek 风格)
                 // 才会经 onPartialThinking 回调发出, 否则思考内容在框架内部被静默丢弃
                 .returnThinking(true);

@@ -29,6 +29,10 @@ export const reprocessDocument = (kbId, docId) =>
 export const searchKnowledgeBase = (kbId, query, topK) =>
   unwrap(api.post(`/api/knowledge-bases/${kbId}/search`, { query, topK }))
 
+// 多知识库合并检索测试 (V3.2): 一次查询跨多个知识库检索
+export const searchKnowledgeBases = (kbIds, query, topK) =>
+  unwrap(api.post('/api/knowledge-bases/search', { kbIds, query, topK }))
+
 // ===== 对话导出 (F-27) =====
 // 直接拼 URL 触发浏览器下载, 避免 axios 处理 blob
 export const buildExportUrl = (sessionId, format = 'markdown') =>

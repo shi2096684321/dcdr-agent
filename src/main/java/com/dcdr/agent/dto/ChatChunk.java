@@ -47,6 +47,10 @@ public class ChatChunk {
     @Schema(description = "图片 URL（type=image 时，文生图内联结果）")
     private String imageUrl;
 
+    /** 调用链步骤事件(type=llm_trace 时): kind/seq/purpose/model/inTokens/outTokens/costMs/interrupted */
+    @Schema(description = "LLM 调用链步骤事件（type=llm_trace 时）：kind=llm/tool 及元数据")
+    private java.util.Map<String, Object> traceStep;
+
     /** 错误信息(type=error时) */
     @Schema(description = "错误信息（type=error 时）")
     private String message;
@@ -117,6 +121,14 @@ public class ChatChunk {
         ChatChunk c = new ChatChunk();
         c.setType("image");
         c.setImageUrl(imageUrl);
+        return c;
+    }
+
+    /** 调用链步骤事件: type=trace_step, 前端收集后在回答下方渲染"调用链"折叠面板 */
+    public static ChatChunk traceStep(java.util.Map<String, Object> step) {
+        ChatChunk c = new ChatChunk();
+        c.setType("trace_step");
+        c.setTraceStep(step);
         return c;
     }
 

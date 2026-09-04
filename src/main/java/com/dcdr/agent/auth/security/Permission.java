@@ -16,13 +16,13 @@ import java.util.Set;
  * <pre>
  * 角色权限映射 (文档 §4.3 F-23):
  *   admin  → 全部权限 + ROLE_ADMIN (含知识库管理)
- *   user   → chat:chat, session:read, session:write, agent:create,
- *             agent:read, agent:write, workflow:execute, schedule:manage + ROLE_USER (无知识库管理权限)
+ *   user   → chat:chat, session:read, session:write, kb:read, kb:write, agent:create,
+ *             agent:read, agent:write, workflow:execute, schedule:manage + ROLE_USER
  *   guest  → chat:chat + ROLE_GUEST
  * </pre>
  * <p>
- * 知识库管理(kb:read/kb:write)仅 admin 拥有; 普通用户在对话中自动受益于 PLATFORM 级 RAG,
- * 无需也无法手动管理知识库。
+ * 知识库管理(kb:read/kb:write): user 与 admin 均拥有; 普通用户可创建/管理自己的
+ * USER 级知识库, PLATFORM 级知识库仅 admin 可改、普通用户只读(仅限已登录用户, guest 无此权限)。
  * <p>
  * V2.3 新增权限: agent:read / agent:write (自定义 Agent CRUD),
  * workflow:execute (工作流编排), schedule:manage (定时任务管理); user 与 admin 均可使用。
@@ -73,6 +73,7 @@ public final class Permission {
     private static final Map<String, Set<String>> ROLE_PERMISSIONS = Map.of(
             ROLE_ADMIN, Set.copyOf(ALL_PERMISSIONS),
             ROLE_USER, Set.of(CHAT_CHAT, SESSION_READ, SESSION_WRITE,
+                    KB_READ, KB_WRITE,   // V3.0: 知识库开放给普通用户(可创建/管理自己的 USER 级; PLATFORM 级只读)
                     AGENT_CREATE, AGENT_READ, AGENT_WRITE,
                     WORKFLOW_EXECUTE, SCHEDULE_MANAGE),
             ROLE_GUEST, Set.of(CHAT_CHAT)

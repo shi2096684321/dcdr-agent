@@ -80,12 +80,12 @@ public class DocumentService {
      * <p>
      * 返回上传后的 DocumentEntity(status=pending, 真正入库在异步线程完成后才变 completed)。
      */
-    public Mono<DocumentEntity> upload(String kbId, FilePart filePart, String userId) {
+    public Mono<DocumentEntity> upload(String kbId, FilePart filePart, String userId, boolean isAdmin) {
         if (!properties.isEnabled()) {
             return Mono.error(new BusinessException(503, "RAG 功能未启用", "RAG_DISABLED"));
         }
-        // 1. 校验知识库存在 + 文档数未超上限
-        KnowledgeBaseEntity kb = knowledgeBaseService.get(kbId);
+        // 1. 校验知识库存在 + 归属(普通用户仅能上传到自己的 USER 级; PLATFORM 级仅 admin)
+        KnowledgeBaseEntity kb = knowledgeBaseService.getAccessible(kbId, userId, isAdmin, true);
         int maxDocs = properties.getDocument().getMaxDocsPerKb();
         long existing = documentRepository.findByKbIdOrderByCreatedAtDesc(kbId).size();
         if (existing >= maxDocs) {
@@ -145,9 +145,9 @@ public class DocumentService {
                 });
     }
 
-    /** 文档列表 */
-    public List<DocumentEntity> listDocuments(String kbId) {
-        knowledgeBaseService.get(kbId); // 校验存在
+    /** 文档列表(需有该知识库读权限) */
+    public List<DocumentEntity> listDocuments(String kbId, String userId, boolean isAdmin) {
+        knowledgeBaseService.getAccessible(kbId, userId, isAdmin, false); // 校验存在 + 读权限
         return documentRepository.findByKbIdOrderByCreatedAtDesc(kbId);
     }
 
@@ -163,8 +163,10 @@ public class DocumentService {
      * 标 {@code @Transactional} 保证删 chunks 与删 document 原子(经 Spring 代理进入, 非自调用)。
      */
     @Transactional
-    public void deleteDocument(String docId) {
+    public void deleteDocument(String docId, String userId, boolean isAdmin) {
         DocumentEntity doc = getDocument(docId);
+        // 归属校验: 普通用户仅能删除自己 USER 级知识库中的文档
+        knowledgeBaseService.getAccessible(doc.getKbId(), userId, isAdmin, true);
         chunkRepository.deleteAll(chunkRepository.findByDocIdOrderByChunkIndexAsc(docId));
         documentRepository.delete(doc);
         knowledgeBaseService.decrementDocCount(doc.getKbId());
@@ -175,8 +177,10 @@ public class DocumentService {
     /**
      * 重新解析/向量化文档: 删除旧 chunks → 重置状态 → 触发异步入库。
      */
-    public void reprocess(String docId) {
+    public void reprocess(String docId, String userId, boolean isAdmin) {
         DocumentEntity doc = getDocument(docId);
+        // 归属校验: 普通用户仅能重处理自己 USER 级知识库中的文档
+        knowledgeBaseService.getAccessible(doc.getKbId(), userId, isAdmin, true);
         chunkRepository.deleteAll(chunkRepository.findByDocIdOrderByChunkIndexAsc(docId));
         doc.setStatus("pending");
         doc.setErrorMsg(null);

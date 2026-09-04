@@ -119,7 +119,15 @@
     <div class="preview-area">
       <template v-if="genType==='image'">
       <div v-if="images.length===0 && !generating" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">输入提示词并点击生成</p></div>
-      <img v-if="currentImg && !generating" :src="currentImg" class="result-img" />
+      <!-- 选中失败记录: 用破裂图片占位 + 错误原因 -->
+      <div v-else-if="!generating && selectedGenFailed" class="failed-preview">
+        <div class="failed-preview-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg>
+        </div>
+        <p class="failed-preview-title">图片生成失败</p>
+        <p class="failed-preview-msg" v-if="currentSel && currentSel.errorMessage">{{ currentSel.errorMessage }}</p>
+      </div>
+      <img v-else-if="currentImg && !generating" :src="currentImg" class="result-img" />
       <div v-if="generating" class="gen-progress">
         <div class="progress-head">
           <span class="progress-text">正在生成图片 {{ doneCount }} / {{ totalCount }}</span>
@@ -139,16 +147,19 @@
         <div class="hist-pages">
           <button class="hist-nav" :disabled="historyPage<=1" @click="changeImagePage(historyPage-1)" title="上一页">‹</button>
           <div class="thumb-list">
-            <div v-for="item in pagedHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:selIdx===item.idx}" @click="selIdx=item.idx"><img :src="item.g.resultUrl" /></div>
+            <div v-for="item in pagedHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:selIdx===item.idx, failed: item.g.status === 'failed'}" :title="item.g.status === 'failed' ? (item.g.errorMessage || '生成失败') : ''" @click="selIdx=item.idx">
+              <img v-if="item.g.resultUrl" :src="item.g.resultUrl" />
+              <span v-else class="thumb-broken">🖼</span>
+            </div>
           </div>
           <button class="hist-nav" :disabled="historyPage>=historyTotalPages" @click="changeImagePage(historyPage+1)" title="下一页">›</button>
         </div>
         <div class="hist-meta">{{ historyPage }} / {{ historyTotalPages }} · 共 {{ imageTotal }} 张</div>
       </div>
-      <div v-if="currentImg && !generating" class="actions">
+      <div v-if="!generating && (currentImg || currentSel)" class="actions">
         <button class="act primary" @click="regenerate">重新生成</button>
-        <button class="act secondary" @click="openDetail(images[selIdx])">查看详情</button>
-        <a class="act secondary" :href="currentImg" download>下载</a>
+        <button class="act secondary" @click="openDetail(currentSel)">查看详情</button>
+        <a v-if="currentImg" class="act secondary" :href="currentImg" download>下载</a>
       </div>
       </template>
 
@@ -175,19 +186,26 @@
           </div>
           <p class="vp-tip">视频生成无真实进度，进度为阶段估算；排队/渲染时间取自后端真实时间节点</p>
         </div>
-        <div v-else-if="!currentVideo && !resultVideo" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p></div>
+        <div v-else-if="!currentVideo && !resultVideo && !currentVideoSelFailed" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p></div>
+        <!-- 选中失败视频记录: 占位展示 -->
+        <div v-else-if="currentVideoSelFailed" class="failed-preview">
+          <div class="failed-preview-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg></div>
+          <p class="failed-preview-title">视频生成失败</p>
+          <p class="failed-preview-msg" v-if="currentVideoSelFailed.errorMessage">{{ currentVideoSelFailed.errorMessage }}</p>
+        </div>
         <video v-else :src="currentVideo || resultVideo" class="result-img" controls autoplay loop></video>
-        <div v-if="currentVideo || resultVideo" class="actions">
-          <a class="act secondary" :href="currentVideo || resultVideo" download>下载</a>
-          <button class="act secondary" @click="openDetail(videos[videoSelIdx])">查看详情</button>
+        <div v-if="(currentVideo || resultVideo || currentVideoSelFailed) && !videoGenerating" class="actions">
+          <a v-if="currentVideo || resultVideo" class="act secondary" :href="currentVideo || resultVideo" download>下载</a>
+          <button class="act secondary" @click="openDetail(currentVideoSelFailed || videos[videoSelIdx])">查看详情</button>
         </div>
         <!-- 视频历史缩略图 -->
         <div v-if="videoTotal>0" class="history">
           <div class="hist-pages">
             <button class="hist-nav" :disabled="videoHistoryPage<=1" @click="changeVideoPage(videoHistoryPage-1)" title="上一页">‹</button>
             <div class="thumb-list">
-              <div v-for="item in pagedVideoHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:videoSelIdx===item.idx}" @click="videoSelIdx=item.idx">
-                <video :src="item.g.resultUrl" class="thumb-video" muted preload="metadata"></video>
+              <div v-for="item in pagedVideoHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:videoSelIdx===item.idx, failed: item.g.status === 'failed'}" :title="item.g.status === 'failed' ? (item.g.errorMessage || '生成失败') : ''" @click="videoSelIdx=item.idx">
+                <video v-if="item.g.resultUrl" :src="item.g.resultUrl" class="thumb-video" muted preload="metadata"></video>
+                <span v-else class="thumb-broken">🎬</span>
                 <button class="thumb-detail" title="查看详情" @click.stop="openDetail(item.g)">ⓘ</button>
               </div>
             </div>
@@ -368,6 +386,8 @@ const videoHistoryTotalPages = computed(() => Math.max(1, Math.ceil(videoTotal.v
 const pagedVideoHistory = computed(() => videos.value.map((g, idx) => ({ g, idx })))
 // 当前选中的视频(历史点击或刚生成)
 const currentVideo = computed(() => videoSelIdx.value >= 0 ? videos.value[videoSelIdx.value]?.resultUrl : null)
+// 选中的失败视频记录(用于占位/详情展示)
+const currentVideoSelFailed = computed(() => videoSelIdx.value >= 0 && videos.value[videoSelIdx.value]?.status === 'failed' ? videos.value[videoSelIdx.value] : null)
 async function generateVideo() {
   if (!videoPrompt.value.trim() || videoGenerating.value) return
   if (!currentProjectId.value) await ensureProject()
@@ -469,6 +489,9 @@ function stopVideoPolling() {
   if (videoPollTimer) { clearInterval(videoPollTimer); videoPollTimer = null }
 }
 const currentImg = computed(() => selIdx.value >= 0 ? images.value[selIdx.value]?.resultUrl : null)
+// 当前选中的记录对象(含失败记录, 用于占位/详情/重生成)
+const currentSel = computed(() => selIdx.value >= 0 ? images.value[selIdx.value] : null)
+const selectedGenFailed = computed(() => currentSel.value && currentSel.value.status === 'failed')
 async function loadProjects() { projects.value = await getProjects() }
 // 从后端分页加载某项目下历史生成记录 (图片/视频各自分页, 互不混入)
 // 加载当前页: 图片加载 historyPage, 视频加载 videoHistoryPage
@@ -497,19 +520,19 @@ async function loadProjectImages(id, newIds = null) {
   } catch (e) { console.error('加载历史记录失败', e); images.value = []; selIdx.value = -1; imageTotal.value = 0; videos.value = []; videoSelIdx.value = -1; videoTotal.value = 0 }
 }
 
-// 图片历史分页加载 (后端)
+// 图片历史分页加载 (后端仅返回终态: completed/failed, total 与展示一致)
 async function loadImagePage(id) {
   const page = await getGenerations(id, { type: 'image', page: historyPage.value, size: HISTORY_PAGE_SIZE })
-  images.value = (page?.records || []).filter(g => g.status === 'completed' && g.resultUrl)
+  images.value = page?.records || []
   imageTotal.value = page?.total || 0
   // 仅保留当前页范围内的选中(切换页后重置选中, 避免越界)
   if (selIdx.value >= images.value.length) selIdx.value = -1
 }
 
-// 视频历史分页加载 (后端)
+// 视频历史分页加载 (后端仅返回终态)
 async function loadVideoPage(id) {
   const page = await getGenerations(id, { type: 'video', page: videoHistoryPage.value, size: HISTORY_PAGE_SIZE })
-  videos.value = (page?.records || []).filter(g => g.status === 'completed' && g.resultUrl)
+  videos.value = page?.records || []
   videoTotal.value = page?.total || 0
   if (videoSelIdx.value >= videos.value.length) videoSelIdx.value = -1
 }
@@ -1017,6 +1040,37 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--border);
   animation: fadein 0.4s var(--ease);
 }
+
+/* ===== 失败记录占位(破裂图片) ===== */
+.failed-preview {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; max-width: 85%; padding: 40px 48px; text-align: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(248, 113, 113, 0.35); border-radius: 16px;
+  color: var(--text-3);
+}
+.failed-preview-icon {
+  width: 96px; height: 96px; color: rgba(248, 113, 113, 0.55);
+  filter: drop-shadow(0 0 18px rgba(248, 113, 113, 0.15));
+}
+.failed-preview-icon svg { width: 100%; height: 100%; }
+.failed-preview-title { font-size: 16px; font-weight: 600; color: var(--danger); margin: 0; }
+.failed-preview-msg {
+  font-size: 12px; color: var(--text-2); margin: 0; max-width: 420px;
+  word-break: break-all; line-height: 1.6;
+  background: rgba(248, 113, 113, 0.08); border-radius: 8px; padding: 8px 12px;
+}
+.thumb-broken {
+  display: flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%; font-size: 24px;
+  color: rgba(248, 113, 113, 0.5);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(248, 113, 113, 0.08), transparent 60%),
+    rgba(255, 255, 255, 0.03);
+}
+.thumb.failed { border-color: rgba(248, 113, 113, 0.3); opacity: 0.7; }
+.thumb.failed:hover { opacity: 1; }
+.thumb.failed.active { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2); opacity: 1; }
 
 .loading-grid {
   flex: 1; display: flex; flex-wrap: wrap; align-content: center; justify-content: center;

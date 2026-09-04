@@ -71,23 +71,45 @@ public class KnowledgeBaseService {
         return kb;
     }
 
+    /**
+     * 校验用户对知识库的访问权并返回知识库(防越权统一入口)。
+     * <ul>
+     *   <li>admin: 任意知识库可访问/可写</li>
+     *   <li>普通用户(userId != null 且非 admin):
+     *       USER 级仅可访问/写自己的; PLATFORM 级只读(write=true 时拒绝)</li>
+     *   <li>匿名(userId == null, 认证关闭): 兼容 V2.1, 可访问任意 USER 级(写由上层决定)</li>
+     * </ul>
+     *
+     * @param write true 表示写操作(创建文档/更新/删除), false 表示读操作(查看/检索/上传受限)
+     */
+    public KnowledgeBaseEntity getAccessible(String kbId, String userId, boolean isAdmin, boolean write) {
+        KnowledgeBaseEntity kb = get(kbId);
+        if (isAdmin) return kb;
+        boolean platform = "PLATFORM".equals(kb.getVisibility());
+        // 平台级: 对所有登录用户只读可见; 写操作仅 admin 可做
+        if (platform) {
+            if (write) {
+                throw new BusinessException(403, "平台级知识库仅管理员可修改", "FORBIDDEN");
+            }
+            return kb;
+        }
+        // 用户级: 仅创建者可访问(未登录/匿名退化为放行, 兼容 V2.1 单用户)
+        if (userId != null && !userId.equals(kb.getUserId())) {
+            throw new BusinessException(404, "知识库不存在: " + kbId, "KB_NOT_FOUND");
+        }
+        return kb;
+    }
+
     public List<KnowledgeBaseEntity> list(String userId) {
         validateEnabled();
-        // 仅返回用户级(visibility=USER)知识库, 平台级(PLATFORM)不暴露给普通用户
+        // 仅返回该用户的 USER 级知识库(平台级不在此接口返回, 由 Controller 单独合并)
         if (userId == null) {
-            // userId 为 null 时返回全部用户级(单用户兜底)
+            // 匿名/认证关闭: 返回全部 USER 级(V2.1 单用户兜底)
             return new ArrayList<>(kbRepository.findAll().stream()
                     .filter(kb -> "USER".equals(kb.getVisibility()))
                     .toList());
         }
-        List<KnowledgeBaseEntity> list = kbRepository.findByVisibilityAndUserIdOrderByUpdatedAtDesc("USER", userId);
-        // 兜底: userId 维度查不到时退化为全部用户级(V2.1 单用户场景)
-        if (list.isEmpty()) {
-            list = new ArrayList<>(kbRepository.findAll().stream()
-                    .filter(kb -> "USER".equals(kb.getVisibility()))
-                    .toList());
-        }
-        return list;
+        return new ArrayList<>(kbRepository.findByVisibilityAndUserIdOrderByUpdatedAtDesc("USER", userId));
     }
 
     /**
@@ -108,9 +130,9 @@ public class KnowledgeBaseService {
     }
 
     @Transactional
-    public KnowledgeBaseEntity update(String kbId, String name, String description) {
+    public KnowledgeBaseEntity update(String kbId, String name, String description, String userId, boolean isAdmin) {
         validateEnabled();
-        KnowledgeBaseEntity kb = get(kbId);
+        KnowledgeBaseEntity kb = getAccessible(kbId, userId, isAdmin, true);
         if (name != null && !name.isBlank()) kb.setName(name.trim());
         if (description != null) kb.setDescription(description);
         kb.setUpdatedAt(LocalDateTime.now());
@@ -123,9 +145,9 @@ public class KnowledgeBaseService {
      * 此处主要做落盘文件清理 + 计数日志。
      */
     @Transactional
-    public void delete(String kbId) {
+    public void delete(String kbId, String userId, boolean isAdmin) {
         validateEnabled();
-        KnowledgeBaseEntity kb = get(kbId);
+        KnowledgeBaseEntity kb = getAccessible(kbId, userId, isAdmin, true);
         List<DocumentEntity> docs = documentRepository.findByKbIdOrderByCreatedAtDesc(kbId);
         // 先删 chunks(防止部分 DB FK 未配 CASCADE 时残留)
         for (DocumentEntity doc : docs) {

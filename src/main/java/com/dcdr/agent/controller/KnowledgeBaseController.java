@@ -101,25 +101,34 @@ public class KnowledgeBaseController {
         return Result.success(knowledgeBaseService.create(name, description, userId, visibility));
     }
 
-    @Operation(summary = "知识库详情")
+    @Operation(summary = "知识库详情", description = "仅可查看自己 USER 级或平台级(只读); admin 可查看任意")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = KnowledgeBaseEntity.class)))
     @ApiResponse(responseCode = "404", description = "知识库不存在")
     @GetMapping("/{id}")
-    public Result<KnowledgeBaseEntity> get(@Parameter(description = "知识库 ID", required = true) @PathVariable String id) {
-        return Result.success(knowledgeBaseService.get(id));
+    public Result<KnowledgeBaseEntity> get(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
+                                           ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(knowledgeBaseService.getAccessible(id, userId, isAdmin, false));
     }
 
-    @Operation(summary = "更新知识库", description = "更新名称/描述(其余字段如 embedding 模型由全局配置统一管理)")
+    @Operation(summary = "更新知识库", description = "更新名称/描述(仅自己 USER 级; 平台级仅 admin)")
     @PutMapping("/{id}")
     public Result<KnowledgeBaseEntity> update(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
-                                              @RequestBody Map<String, String> body) {
-        return Result.success(knowledgeBaseService.update(id, body.get("name"), body.get("description")));
+                                              @RequestBody Map<String, String> body,
+                                              ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(knowledgeBaseService.update(id, body.get("name"), body.get("description"), userId, isAdmin));
     }
 
-    @Operation(summary = "删除知识库", description = "级联删除文档、向量及落盘文件")
+    @Operation(summary = "删除知识库", description = "级联删除文档、向量及落盘文件(仅自己 USER 级; 平台级仅 admin)")
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@Parameter(description = "知识库 ID", required = true) @PathVariable String id) {
-        knowledgeBaseService.delete(id);
+    public Result<Void> delete(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
+                               ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        knowledgeBaseService.delete(id, userId, isAdmin);
         return Result.success();
     }
 
@@ -135,49 +144,92 @@ public class KnowledgeBaseController {
                     schema = @Schema(type = "string", format = "binary"))
             @RequestPart("file") FilePart file,
             ServerWebExchange exchange) {
-        // 从 exchange 同步段读取 userId, 再传入异步链路
+        // 从 exchange 同步段读取 userId/isAdmin, 再传入异步链路(校验归属)
         String userId = SecurityContext.getUserId(exchange);
-        return documentService.upload(id, file, userId)
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return documentService.upload(id, file, userId, isAdmin)
                 .map(Result::success);
     }
 
-    @Operation(summary = "文档列表", description = "返回知识库内全部文档(含状态、分块数、大小)")
+    @Operation(summary = "文档列表", description = "返回知识库内全部文档(含状态、分块数、大小; 需有读权限)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = DocumentEntity.class)))
     @GetMapping("/{id}/documents")
-    public Result<List<DocumentEntity>> listDocuments(@Parameter(description = "知识库 ID", required = true) @PathVariable String id) {
-        return Result.success(documentService.listDocuments(id));
+    public Result<List<DocumentEntity>> listDocuments(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
+                                                      ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        return Result.success(documentService.listDocuments(id, userId, isAdmin));
     }
 
-    @Operation(summary = "删除文档", description = "删除文档及对应的向量与落盘文件")
+    @Operation(summary = "删除文档", description = "删除文档及对应的向量与落盘文件(仅自己 USER 级; 平台级仅 admin)")
     @DeleteMapping("/{id}/documents/{docId}")
     public Result<Void> deleteDocument(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
-                                       @Parameter(description = "文档 ID", required = true) @PathVariable String docId) {
-        documentService.deleteDocument(docId);
+                                       @Parameter(description = "文档 ID", required = true) @PathVariable String docId,
+                                       ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        documentService.deleteDocument(docId, userId, isAdmin);
         return Result.success();
     }
 
-    @Operation(summary = "重新入库", description = "清空旧分块后重新解析+向量化; 用于切换 embedding 模型或修复失败文档")
+    @Operation(summary = "重新入库", description = "清空旧分块后重新解析+向量化(仅自己 USER 级; 平台级仅 admin)")
     @PostMapping("/{id}/documents/{docId}/reprocess")
     public Result<Void> reprocess(@Parameter(description = "知识库 ID", required = true) @PathVariable String id,
-                                  @Parameter(description = "文档 ID", required = true) @PathVariable String docId) {
-        documentService.reprocess(docId);
+                                  @Parameter(description = "文档 ID", required = true) @PathVariable String docId,
+                                  ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        documentService.reprocess(docId, userId, isAdmin);
         return Result.success();
     }
 
     // ===== 检索测试 (F-21-003) =====
 
-    @Operation(summary = "检索测试", description = "输入问题查看命中的文档块及相似度分数; 可调 Top-K")
+    @Operation(summary = "检索测试", description = "输入问题查看命中的文档块及相似度分数; 可调 Top-K(需有该知识库读权限)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = RetrievalResult.class)))
     @PostMapping("/{id}/search")
     public Mono<Result<List<RetrievalResult>>> search(
             @Parameter(description = "知识库 ID", required = true) @PathVariable String id,
-            @RequestBody Map<String, Object> body) {
+            @RequestBody Map<String, Object> body,
+            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
         String query = body.get("query") == null ? null : String.valueOf(body.get("query"));
         Integer topK = body.get("topK") == null ? null : Integer.parseInt(String.valueOf(body.get("topK")));
+        // 先同步校验读权限, 再进入异步检索
+        knowledgeBaseService.getAccessible(id, userId, isAdmin, false);
         // retrieve 内部调用 embedding.embed() 会 .block() 等待 HTTP 响应,
         // 不能在 reactor-http-nio 线程执行, 需切到 boundedElastic 线程池
         return Mono.fromCallable(() -> retrievalService.retrieve(id, query, topK))
                 .subscribeOn(Schedulers.boundedElastic())
+                .map(Result::success);
+    }
+
+    // ===== 多知识库合并检索 (V3.2 索引测试扩展) =====
+
+    @Operation(summary = "多知识库检索测试",
+            description = "一次查询跨多个知识库合并检索, 结果标注来源知识库+文件名; 需对每个库有读权限")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = RetrievalResult.class)))
+    @PostMapping("/search")
+    public Mono<Result<List<RetrievalResult>>> searchMulti(
+            @RequestBody Map<String, Object> body,
+            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        @SuppressWarnings("unchecked")
+        List<String> kbIds = (List<String>) body.get("kbIds");
+        String query = body.get("query") == null ? null : String.valueOf(body.get("query"));
+        Integer topK = body.get("topK") == null ? null : Integer.parseInt(String.valueOf(body.get("topK")));
+        if (kbIds == null || kbIds.isEmpty()) {
+            return Mono.just(Result.success(List.of()));
+        }
+        return Mono.fromCallable(() -> {
+            // 逐个同步校验读权限, 再进入异步检索
+            for (String kbId : kbIds) {
+                knowledgeBaseService.getAccessible(kbId, userId, isAdmin, false);
+            }
+            return retrievalService.retrieve(kbIds, query, topK);
+        }).subscribeOn(Schedulers.boundedElastic())
                 .map(Result::success);
     }
 }

@@ -1,6 +1,7 @@
 package com.dcdr.agent.rag.embedding;
 
 import com.dcdr.agent.common.constant.ModelType;
+import com.dcdr.agent.model.langchain4j.LangChain4jHttp;
 import com.dcdr.agent.rag.config.RagProperties;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
@@ -49,6 +50,8 @@ public class LangChain4jEmbeddingProvider implements EmbeddingProvider {
                 .dimensions(config.getDimensions())
                 .maxSegmentsPerBatch(Math.max(1, config.getBatchSize()))
                 .timeout(TIMEOUT)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                .httpClientBuilder(LangChain4jHttp.forcedHttp11())
                 .build();
         this.name = config.getName();
         this.label = config.getModel();

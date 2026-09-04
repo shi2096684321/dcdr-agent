@@ -50,6 +50,43 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunkEnti
             @Param("topK") int topK);
 
     /**
+     * BM25 全文检索 Top-K (V3.2 框架化: 混合检索的全文路径)。
+     * 用 Postgres FTS {@code to_tsvector/to_tsquery}, 按 {@code ts_rank_cd} 相关度降序。
+     * 仅当 {@code agent.rag.retrieval.hybrid.enabled=true} 时被调用; 需要
+     * content 上的 GIN(trgm) 索引(见 docs/sql 增量 DDL)。
+     */
+    @Query(value = """
+            SELECT id, doc_id, kb_id, chunk_index, content,
+                   ts_rank_cd(to_tsvector('simple', content), plainto_tsquery('simple', :query)) AS score
+            FROM document_chunks
+            WHERE kb_id = :kbId AND content IS NOT NULL
+              AND to_tsvector('simple', content) @@ plainto_tsquery('simple', :query)
+            ORDER BY score DESC
+            LIMIT :topK
+            """, nativeQuery = true)
+    List<ChunkWithFtsScore> findTopKByKbFts(
+            @Param("kbId") String kbId,
+            @Param("query") String query,
+            @Param("topK") int topK);
+
+    /**
+     * BM25 全文检索结果投影 (与 {@link ChunkWithDistance} 同结构, 但 score 直接为 ts_rank_cd)。
+     */
+    interface ChunkWithFtsScore {
+        String getId();
+
+        String getDocId();
+
+        String getKbId();
+
+        Integer getChunkIndex();
+
+        String getContent();
+
+        double getScore();
+    }
+
+    /**
      * 带真实距离的检索结果投影 (native query 列名 → getter 驼峰映射)。
      */
     interface ChunkWithDistance {

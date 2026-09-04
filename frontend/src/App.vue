@@ -25,6 +25,7 @@
         <TemplateMarketView v-else-if="mode==='market'" />
         <ScheduledTaskView v-else-if="mode==='schedule'" />
         <RoutingView v-else-if="mode==='routing'" />
+        <LlmCallLogView v-else-if="mode==='llm-logs'" />
         <MonitorView v-else-if="mode==='monitor'" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
@@ -47,6 +48,7 @@ import DagEditorView from '@/views/DagEditorView.vue'
 import TemplateMarketView from '@/views/TemplateMarketView.vue'
 import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
 import RoutingView from '@/views/RoutingView.vue'
+import LlmCallLogView from '@/views/LlmCallLogView.vue'
 import MonitorView from '@/views/MonitorView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'

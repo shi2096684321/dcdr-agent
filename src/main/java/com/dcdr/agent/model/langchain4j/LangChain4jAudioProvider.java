@@ -60,6 +60,9 @@ public class LangChain4jAudioProvider implements AudioModelProvider {
                 .modelName(config.getModel() != null ? config.getModel() : "whisper-1")
                 .timeout(TIMEOUT)
                 .maxRetries(1)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                // 注意: STT Builder 的方法名是 httpClientProvider(与其它模型的 httpClientBuilder 不一致)
+                .httpClientProvider(LangChain4jHttp.forcedHttp11())
                 .build();
     }
 
@@ -113,6 +116,8 @@ public class LangChain4jAudioProvider implements AudioModelProvider {
                 .modelName(modelName)
                 .timeout(TIMEOUT)
                 .maxRetries(1)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                .httpClientBuilder(LangChain4jHttp.forcedHttp11())
                 .build();
     }
 

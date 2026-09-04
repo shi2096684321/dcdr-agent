@@ -167,6 +167,8 @@ public class LangChain4jImageProvider implements ImageModelProvider {
                 .size(size)
                 .timeout(TIMEOUT)
                 .maxRetries(1)
+                // 强制 HTTP/1.1: 消除 H2 连接池惰性清理竞态导致的高频 Connection reset(详见 LangChain4jHttp)
+                .httpClientBuilder(LangChain4jHttp.forcedHttp11())
                 .build();
     }
 

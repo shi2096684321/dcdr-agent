@@ -152,14 +152,16 @@
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
               📎
             </label>
-            <!-- 知识库选择(RAG 检索增强): 仅 admin 可见, 普通用户通过 PLATFORM 级 RAG 自动受益 -->
-            <el-select v-if="authStore.isAdmin" v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
+            <!-- 知识库选择(RAG 检索增强): 登录用户可见; 显式选择=强意图, 后端走强制检索(命中带引用/未命中明说)。
+                 普通用户仅显示自己的 USER 级库(PLATFORM 级是管理员统一配置的无感增强, 不出现在选择器);
+                 admin 可见全部(可显式选平台库强制检索) -->
+            <el-select v-if="authStore.isLoggedIn" v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
                        :max-collapse-tags="1" placeholder="知识库" size="small"
                        class="kb-select" :class="{active: selectedKbIds.length > 0}"
                        :disabled="streaming" :loading="kbLoading"
-                       title="选择知识库后, 对话会从知识库检索相关片段增强回答"
+                       title="选择知识库后, 每轮对话会自动从知识库检索相关内容增强回答"
                        @visible-change="onKbDropdownOpen">
-              <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
+              <el-option v-for="kb in selectableKnowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
             </el-select>
             <!-- V2.3 Agent 选择: 登录用户可见, 选择后对话使用该 Agent 的角色/模型/工具配置 -->
             <el-select v-if="authStore.isLoggedIn" v-model="selectedAgentId" clearable
@@ -205,7 +207,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
@@ -270,6 +272,12 @@ const settingsSaving = ref(false)
 const knowledgeBases = ref([])
 const selectedKbIds = ref([])
 const kbLoading = ref(false)
+
+// 选择器可选列表: 普通用户过滤掉 PLATFORM 级(平台库走后端无感 Agentic 注入, 不应被显式选择);
+// admin 可见全部(可显式选平台库触发强制检索)
+const selectableKnowledgeBases = computed(() =>
+  authStore.isAdmin ? knowledgeBases.value : knowledgeBases.value.filter(kb => kb.visibility !== 'PLATFORM')
+)
 
 async function loadKnowledgeBases() {
   kbLoading.value = true

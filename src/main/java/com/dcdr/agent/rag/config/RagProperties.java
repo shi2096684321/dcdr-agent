@@ -93,6 +93,34 @@ public class RagProperties {
         private int topK = 5;
         /** 最小余弦相似度, 低于此值的片段过滤掉 */
         private double minScore = 0.3;
+        /** 混合检索(向量 + BM25 全文, RRF 融合)。默认关闭, 纯向量迁移不带行为变化 */
+        private HybridConfig hybrid = new HybridConfig();
+        /** 相关性重排(ReRankingContentAggregator, 需配置 ScoringModel)。默认关闭 */
+        private RerankConfig rerank = new RerankConfig();
+    }
+
+    @Data
+    public static class HybridConfig {
+        /** 混合检索总开关 */
+        private boolean enabled = false;
+        /** RRF 融合常数 K(仅融合排序用, 不改变向量分语义) */
+        private int rrfK = 60;
+    }
+
+    @Data
+    public static class RerankConfig {
+        /** 重排总开关 */
+        private boolean enabled = false;
+        /** OpenAI 兼容 rerank 端点 baseUrl (未配置则重排不回退, 视为关闭) */
+        private String baseUrl;
+        /** API Key */
+        private String apiKey;
+        /** rerank 模型名 */
+        private String model = "xxx-rerank";
+        /** 重排后保留的最低分; 为空则用检索 minScore */
+        private Double minScore;
+        /** 重排后保留的最大条数; 为空则用检索 topK */
+        private Integer maxResults;
     }
 
     /**

@@ -25,7 +25,7 @@
             </div>
             <div class="kb-desc" v-if="kb.description" :title="kb.description">{{ kb.description }}</div>
           </div>
-          <button class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除">🗑</button>
+          <button v-if="canEditKb(kb)" class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除">🗑</button>
         </div>
         <div v-if="!knowledgeBases.length && !loading" class="empty-tip">
           暂无知识库<br/>点击上方按钮创建
@@ -48,11 +48,16 @@
             <span class="kb-desc-full" v-if="currentKb.description" :title="currentKb.description">{{ currentKb.description }}</span>
           </div>
           <div class="kb-toolbar-right">
-            <label class="upload-btn gradient-bg" :class="{disabled: uploading}">
+            <button class="refresh-btn" @click="refreshAll" :disabled="refreshing" title="刷新列表与文档状态">
+              <span :class="{spin: refreshing}">⟳</span>
+              {{ refreshing ? '刷新中…' : '刷新' }}
+            </button>
+            <label v-if="canEditKb(currentKb)" class="upload-btn gradient-bg" :class="{disabled: uploading}">
               <input type="file" ref="fileInput" @change="handleUpload" accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm" hidden :disabled="uploading" />
               <span v-if="!uploading">📎 上传文档</span>
               <span v-else>上传中…</span>
             </label>
+            <el-tag v-else type="info" effect="plain">平台级知识库 · 只读</el-tag>
           </div>
         </div>
 
@@ -80,7 +85,7 @@
                     <span class="error-hint">⚠</span>
                   </el-tooltip>
                 </div>
-                <div class="doc-actions">
+                <div class="doc-actions" v-if="canEditKb(currentKb)">
                   <button class="doc-action-btn" @click="reprocessDoc(doc)" title="重新入库"
                           :disabled="doc.status === 'indexing'">↻</button>
                   <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">🗑</button>
@@ -102,6 +107,11 @@
                           placeholder="输入测试问题，查看检索到的文档片段及相似度分数"
                           @keydown.ctrl.enter="runSearch" />
                 <div class="search-options">
+                  <el-switch v-model="multiSearch" size="small" active-text="多知识库" />
+                  <el-select v-if="multiSearch" v-model="multiSearchKbIds" multiple collapse-tags
+                             placeholder="选择知识库" size="small" style="width: 220px">
+                    <el-option v-for="k in knowledgeBases" :key="k.id" :label="k.name" :value="k.id" />
+                  </el-select>
                   <span class="opt-label">Top-K:</span>
                   <el-input-number v-model="searchTopK" :min="1" :max="20" :step="1" size="small" />
                   <button class="search-btn gradient-bg" @click="runSearch" :disabled="searching || !searchQuery.trim()">
@@ -118,6 +128,7 @@
                     <span class="result-score" :style="{color: scoreColor(r.score)}">
                       相似度 {{ (r.score * 100).toFixed(1) }}%
                     </span>
+                    <el-tag size="small" type="info">{{ kbName(r.kbId) }}</el-tag>
                     <el-tag size="small" type="info">{{ r.filename || r.documentId }}</el-tag>
                     <span class="result-chunk">块 #{{ r.chunkIndex }}</span>
                   </div>
@@ -153,7 +164,7 @@
           <el-input v-model="createForm.description" type="textarea" :rows="3"
                     placeholder="可选，知识库用途说明" maxlength="500" show-word-limit />
         </el-form-item>
-        <el-form-item label="可见性" required>
+        <el-form-item v-if="isAdmin" label="可见性" required>
           <el-radio-group v-model="createForm.visibility">
             <el-radio value="USER">用户级</el-radio>
             <el-radio value="PLATFORM">平台级</el-radio>
@@ -175,11 +186,23 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { useAuthStore } from '@/stores/auth'
 import {
   getKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase,
   listDocuments, uploadDocument, deleteDocument, reprocessDocument,
-  searchKnowledgeBase
+  searchKnowledgeBase, searchKnowledgeBases
 } from '@/api'
+
+const authStore = useAuthStore()
+// 当前用户是否为管理员(管理员可维护平台级知识库; 普通用户仅管理自己的用户级)
+const isAdmin = computed(() => authStore.isAdmin)
+
+// 知识库是否可编辑: admin 全部可编辑; 普通用户仅能编辑自己创建的 USER 级(平台级只读)
+function canEditKb(kb) {
+  if (!kb) return false
+  if (isAdmin.value) return true
+  return kb.visibility !== 'PLATFORM'
+}
 
 const knowledgeBases = ref([])
 const currentKbId = ref(null)
@@ -188,6 +211,7 @@ const documents = ref([])
 const loading = ref(false)
 const docsLoading = ref(false)
 const uploading = ref(false)
+const refreshing = ref(false)
 const sidebarCollapsed = ref(false)
 const fileInput = ref(null)
 const activeTab = ref('documents')
@@ -203,6 +227,9 @@ const searchTopK = ref(5)
 const searchResults = ref([])
 const searching = ref(false)
 const searchDone = ref(false)
+// 多知识库合并检索 (V3.2)
+const multiSearch = ref(false)
+const multiSearchKbIds = ref([])
 
 async function loadKnowledgeBases() {
   loading.value = true
@@ -239,6 +266,31 @@ async function loadDocuments() {
   }
 }
 
+/** 刷新: 重新拉取知识库列表 + 当前库文档列表(查看最新文档解析状态/文档数) */
+async function refreshAll() {
+  if (refreshing.value) return
+  refreshing.value = true
+  const kbId = currentKbId.value
+  try {
+    // 重新拉知识库列表(刷新 docCount 等统计)
+    const list = await getKnowledgeBases()
+    knowledgeBases.value = list
+    // 若刷新期间当前库被删除, 列表不再包含它
+    if (kbId && !knowledgeBases.value.some(k => k.id === kbId)) {
+      currentKbId.value = null
+      documents.value = []
+    } else {
+      // 保持当前选中并重新加载文档
+      await loadDocuments()
+    }
+    ElMessage.success('已刷新')
+  } catch (e) {
+    ElMessage.error('刷新失败：' + (e?.message || '未知错误'))
+  } finally {
+    refreshing.value = false
+  }
+}
+
 function openCreateDialog() {
   createForm.value = { name: '', description: '', visibility: 'USER' }
   createDialogVisible.value = true
@@ -251,10 +303,12 @@ async function confirmCreate() {
   }
   creating.value = true
   try {
+    // 普通用户只能创建用户级知识库(平台级选项仅 admin 可见, 此处二次兜底)
+    const visibility = isAdmin.value ? (createForm.value.visibility || 'USER') : 'USER'
     const kb = await createKnowledgeBase({
       name: createForm.value.name.trim(),
       description: createForm.value.description || null,
-      visibility: createForm.value.visibility || 'USER'
+      visibility
     })
     knowledgeBases.value.unshift(kb)
     createDialogVisible.value = false
@@ -338,18 +392,39 @@ async function reprocessDoc(doc) {
 
 // ===== 检索测试 =====
 async function runSearch() {
-  if (!searchQuery.value.trim() || !currentKbId.value) return
+  if (!searchQuery.value.trim()) return
+  let ids
+  if (multiSearch.value) {
+    // 多知识库模式: 未选则默认当前知识库
+    ids = multiSearchKbIds.value.length ? multiSearchKbIds.value : [currentKbId.value]
+    if (!ids.length) {
+      ElMessage.warning('请至少选择或创建一个知识库')
+      return
+    }
+  } else {
+    if (!currentKbId.value) return
+    ids = [currentKbId.value]
+  }
   searching.value = true
   searchDone.value = false
   searchResults.value = []
   try {
-    searchResults.value = await searchKnowledgeBase(currentKbId.value, searchQuery.value.trim(), searchTopK.value)
+    searchResults.value = multiSearch.value
+      ? await searchKnowledgeBases(ids, searchQuery.value.trim(), searchTopK.value)
+      : await searchKnowledgeBase(ids[0], searchQuery.value.trim(), searchTopK.value)
     searchDone.value = true
   } catch (e) {
     ElMessage.error('检索失败：' + (extractMessage(e) || '未知错误'))
   } finally {
     searching.value = false
   }
+}
+
+// 知识库 ID → 名称(多库检索结果标注来源)
+function kbName(id) {
+  if (!id) return ''
+  const k = knowledgeBases.value.find(x => x.id === id)
+  return k ? k.name : id
 }
 
 // ===== 工具方法 =====
@@ -427,6 +502,15 @@ onMounted(() => { loadKnowledgeBases() })
 .upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
 .upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(102,126,234,0.4); }
 .upload-btn.disabled { opacity: 0.5; cursor: not-allowed; }
+.refresh-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px;
+  border: 1px solid #e0e3ea; border-radius: 10px; background: #fff; color: #606266;
+  font-size: 13px; cursor: pointer; user-select: none; transition: all 0.2s;
+}
+.refresh-btn:hover:not(:disabled) { border-color: #667eea; color: #667eea; background: rgba(102,126,234,0.06); }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.refresh-btn .spin { display: inline-block; animation: kb-spin 0.8s linear infinite; }
+@keyframes kb-spin { to { transform: rotate(360deg); } }
 
 .kb-tabs { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 0 24px; }
 .kb-tabs :deep(.el-tabs__header) { margin-bottom: 0; }

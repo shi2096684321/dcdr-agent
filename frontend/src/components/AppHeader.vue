@@ -8,13 +8,15 @@
       <div class="mode-switch">
         <div class="mode-tab" :class="{active: mode==='chat'}" @click="$emit('update:mode', 'chat')">对话</div>
         <div class="mode-tab" :class="{active: mode==='creative'}" @click="$emit('update:mode', 'creative')">创作</div>
-        <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
+        <!-- 知识库开放给普通用户(可管理自己的 USER 级; 平台级只读), 登录即可使用 -->
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='agent'}" @click="$emit('update:mode', 'agent')">Agent</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='workflow'}" @click="$emit('update:mode', 'workflow')">工作流</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='dag'}" @click="$emit('update:mode', 'dag')">DAG编排</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='market'}" @click="$emit('update:mode', 'market')">模板市场</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='schedule'}" @click="$emit('update:mode', 'schedule')">定时任务</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='routing'}" @click="$emit('update:mode', 'routing')">智能路由</div>
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='llm-logs'}" @click="$emit('update:mode', 'llm-logs')">调用链</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='monitor'}" @click="$emit('update:mode', 'monitor')">监控</div>
         <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='admin'}" @click="$emit('update:mode', 'admin')">管理</div>
       </div>

@@ -111,7 +111,8 @@ public class ProjectManager {
     }
 
     /**
-     * 分页获取项目的生成历史, 可按 type (image/video) 过滤。
+     * 分页获取项目的生成历史(仅终态: completed 成功 / failed 失败), 可按 type (image/video) 过滤。
+     * 排除进行中的 pending/processing —— 历史页只展示已结束的记录, 且分页 total 与展示一致。
      *
      * @param projectId 项目 ID
      * @param type      生成类型, 为空表示不过滤
@@ -124,9 +125,8 @@ public class ProjectManager {
         }
         int zeroBased = Math.max(page - 1, 0);
         Pageable pageable = PageRequest.of(zeroBased, size);
-        Page<GenerationEntity> result = (type == null || type.isBlank())
-                ? generationRepository.findByProjectIdOrderByCreatedAtDesc(projectId, pageable)
-                : generationRepository.findByProjectIdAndType(projectId, type, pageable);
+        String effectiveType = (type == null || type.isBlank()) ? null : type;
+        Page<GenerationEntity> result = generationRepository.findTerminatedByProjectId(projectId, effectiveType, pageable);
         List<GenerationDTO> records = result.getContent().stream()
                 .map(ProjectManager::toDTO)
                 .toList();
