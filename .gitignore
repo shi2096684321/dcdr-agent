@@ -56,4 +56,7 @@ postgres-data/
 build_log.txt
 mcp_*.txt
 
+# 知识库上传文档(运行时数据, 含用户私有内容, 不入库)
+data/kb/kb_17884264109978b068a5/doc_17884264175107332938.pdf
+
 
