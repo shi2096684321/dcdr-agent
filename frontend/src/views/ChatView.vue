@@ -185,15 +185,15 @@
       </div>
     </div>
 
-    <!-- 会话设置弹窗: 定制会话级 System Prompt(人设/约束), 覆盖全局与场景级默认 -->
-    <el-dialog v-model="settingsVisible" title="会话设置 · 人设/约束定制" width="560px" append-to-body>
+    <!-- 会话设置弹窗: 定制会话角色设定(人设/偏好), 由平台包装后转述给模型, 不覆盖平台系统约束 -->
+    <el-dialog v-model="settingsVisible" title="会话设置 · 角色设定" width="560px" append-to-body>
       <el-form label-position="top">
-        <el-form-item label="系统提示词(System Prompt)">
+        <el-form-item label="角色设定">
           <el-input v-model="settingsPrompt" type="textarea" :rows="6"
-                    placeholder="定义模型在该会话中的角色与行为规则，例如：你是一位专业的Java代码审查专家，回答先给结论、用中文、不超过200字。留空保存可清除。" />
+                    placeholder="为当前会话设定角色与偏好，例如：回答先给结论、用中文、不超过 200 字。它将由平台转述给模型，不会覆盖平台的安全与规则约束。留空保存可清除。" />
         </el-form-item>
       </el-form>
-      <div class="settings-tip">提示：此处人设/约束优先级最高，仅对当前会话生效，不会影响其他会话。</div>
+      <div class="settings-tip">提示：仅对当前会话生效，不影响其他会话；与平台规则冲突时以平台规则为准。</div>
       <template #footer>
         <el-button @click="settingsVisible = false">取消</el-button>
         <el-button @click="clearSettings" v-if="settingsPrompt">清除</el-button>
@@ -211,7 +211,7 @@ import { ref, computed, onMounted, nextTick } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
-  renameSession, updateSystemPrompt, getSession, deleteSession, uploadFile,
+  renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
   buildExportUrl, getKnowledgeBases, getAgents
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
@@ -382,7 +382,7 @@ async function openSettings(s) {
   settingsPrompt.value = ''
   try {
     const detail = await getSession(s.id)
-    settingsPrompt.value = detail?.systemPrompt || ''
+    settingsPrompt.value = detail?.persona || ''
   } catch (e) {
     console.error('加载会话 System Prompt 失败', e)
   }
@@ -393,8 +393,8 @@ async function saveSettings() {
   if (!settingsSessionId.value) return
   settingsSaving.value = true
   try {
-    await updateSystemPrompt(settingsSessionId.value, settingsPrompt.value.trim())
-    ElMessage.success('已保存，后续对话按新的人设/约束生效')
+    await updateSessionPersona(settingsSessionId.value, settingsPrompt.value.trim())
+    ElMessage.success('已保存，后续对话按新的角色设定生效')
     settingsVisible.value = false
   } catch (e) {
     const msg = e?.response?.data?.message || e?.message || '保存失败'

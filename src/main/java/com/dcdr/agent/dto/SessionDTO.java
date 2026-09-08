@@ -22,8 +22,8 @@ public class SessionDTO {
     private boolean titleAuto;
     @Schema(description = "默认模型")
     private String model;
-    @Schema(description = "系统提示词")
-    private String systemPrompt;
+    @Schema(description = "会话角色设定(用户人设/偏好, 由平台包装后转述给模型, 非系统提示词)")
+    private String persona;
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
     @Schema(description = "更新时间")

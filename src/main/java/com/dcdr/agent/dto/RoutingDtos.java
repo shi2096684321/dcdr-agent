@@ -54,6 +54,8 @@ public class RoutingDtos {
         private String targetName;
         private BigDecimal confidence;
         private String reason;
+        @Schema(description = "本次路由 LLM 调用实际提交的 System Prompt(截断, 仅管理员详情可见)")
+        private String systemPrompt;
         /** 路由 LLM 调用 token 消耗(平台探测成本, 不计入用户用量/配额) */
         @Schema(description = "路由 LLM 消耗的输入 token")
         private Integer inputTokens;

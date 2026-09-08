@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS routing_logs (
 ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS input_tokens  INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS total_tokens  INTEGER NOT NULL DEFAULT 0;
+-- V3.1: 路由调用实际提交的 System Prompt(截断 4000 字符), 供管理员路由详情排查
+ALTER TABLE routing_logs ADD COLUMN IF NOT EXISTS system_prompt TEXT;
 CREATE INDEX IF NOT EXISTS idx_routing_user  ON routing_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_routing_time  ON routing_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_routing_type  ON routing_logs(route_type);

@@ -42,6 +42,9 @@
         <div class="log-reason" v-if="log.reason">
           <span class="rl">判断依据:</span> {{ log.reason }}
         </div>
+        <div class="card-foot" v-if="authStore.isAdmin">
+          <button class="detail-toggle" @click="openDetail(log)">🔍 查看详情</button>
+        </div>
       </div>
       <div v-if="!loading && !filteredLogs.length" class="empty-tip">
         暂无路由记录<br />
@@ -50,9 +53,40 @@
     </div>
 
     <div class="pager" v-if="total > pageSize">
-      <el-pagination background layout="prev, pager, next" :total="total"
-                     :page-size="pageSize" v-model:current-page="page" @current-change="loadLogs" />
+      <el-pagination background layout="total, sizes, prev, pager, next" :total="total"
+                     :page-sizes="[10, 20, 50, 100]" v-model:page-size="pageSize"
+                     v-model:current-page="page" @current-change="loadLogs" @size-change="onSizeChange" />
     </div>
+
+    <!-- 路由详情抽屉: 单次路由判断的完整信息(置信度/目标/token 消耗/判断依据) -->
+    <el-drawer v-model="detailVisible" size="560px" title="路由详情">
+      <template v-if="detailLog">
+        <div class="d-grid">
+          <span class="d-k">路由类型</span><span class="d-v"><el-tag size="small" :type="routeTypeTag(detailLog.routeType)">{{ routeTypeLabel(detailLog.routeType) }}</el-tag></span>
+          <span class="d-k">命中目标</span><span class="d-v">{{ detailLog.targetName || detailLog.targetId || '-' }}</span>
+          <span class="d-k" v-if="detailLog.targetId">目标 ID</span><span class="d-v mono" v-if="detailLog.targetId">{{ detailLog.targetId }}</span>
+          <span class="d-k">置信度</span><span class="d-v">{{ formatConf(detailLog.confidence) }} <el-tag size="small" :type="detailLog.highConfidence ? 'success' : 'warning'">{{ detailLog.highConfidence ? '高置信' : '低置信(已回退)' }}</el-tag></span>
+          <span class="d-k">会话 ID</span><span class="d-v mono">{{ detailLog.sessionId || '-' }}</span>
+          <template v-if="detailLog.userId && authStore.isAdmin">
+            <span class="d-k">用户</span><span class="d-v mono">{{ detailLog.userId }}</span>
+          </template>
+          <span class="d-k">时间</span><span class="d-v">{{ formatTime(detailLog.createdAt) }}</span>
+          <span class="d-k">Token 消耗</span><span class="d-v">入 {{ detailLog.inputTokens ?? '-' }} / 出 {{ detailLog.outputTokens ?? '-' }} / 共 {{ detailLog.totalTokens ?? '-' }} <span class="d-note">(路由探测成本, 不计入用户配额)</span></span>
+        </div>
+        <div class="d-block">
+          <div class="d-k">用户消息</div>
+          <pre class="d-pre">{{ detailLog.userMessage || '(空)' }}</pre>
+        </div>
+        <div class="d-block">
+          <div class="d-k">判断依据</div>
+          <pre class="d-pre">{{ detailLog.reason || '(无)' }}</pre>
+        </div>
+        <details class="d-raw" v-if="detailLog.systemPrompt">
+          <summary>本次提交的 System Prompt</summary>
+          <pre class="d-pre">{{ detailLog.systemPrompt }}</pre>
+        </details>
+      </template>
+    </el-drawer>
   </div>
 </template>
 
@@ -67,9 +101,23 @@ const loading = ref(false)
 const logs = ref([])
 const total = ref(0)
 const page = ref(1)
-const pageSize = 20
+const pageSize = ref(20)
+
+/** 切换每页条数: 回到第一页重新加载(避免当前页越界) */
+function onSizeChange() {
+  page.value = 1
+  loadLogs()
+}
 const filterUserId = ref('')
 const filterType = ref('')
+
+// ===== 详情抽屉 =====
+const detailVisible = ref(false)
+const detailLog = ref(null)
+function openDetail(log) {
+  detailLog.value = log
+  detailVisible.value = true
+}
 
 const filteredLogs = computed(() => {
   if (!filterType.value) return logs.value
@@ -101,7 +149,7 @@ async function loadLogs() {
   try {
     const params = {
       page: page.value - 1,
-      size: pageSize
+      size: pageSize.value
     }
     if (authStore.isAdmin && filterUserId.value) params.userId = filterUserId.value
     const data = await getRoutingLogs(params)
@@ -120,7 +168,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.routing-mode { padding: 20px 24px; max-width: 960px; margin: 0 auto; }
+/* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
+.routing-mode { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 960px; margin: 0 auto; }
 .routing-header { margin-bottom: 16px; }
 .routing-header h2 { margin: 0 0 4px; font-size: 20px; color: #1d2129; }
 .subtitle { margin: 0; font-size: 13px; color: #86909c; }
@@ -143,6 +192,18 @@ onMounted(() => {
 .log-reason { font-size: 12px; color: #606266; margin-top: 6px; line-height: 1.6; }
 
 .empty-tip { text-align: center; color: #a0a4ab; padding: 60px 20px; font-size: 13px; line-height: 1.8; }
+
+/* ===== 详情抽屉 ===== */
+.card-foot { margin-top: 8px; }
+.detail-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #667eea; background: #f2f4ff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.detail-toggle:hover { background: #e6eaff; }
+.d-grid { display: grid; grid-template-columns: 100px 1fr; gap: 8px 10px; font-size: 13px; align-items: baseline; }
+.d-k { color: #86909c; font-size: 12px; }
+.d-v { color: #1d2129; word-break: break-all; }
+.d-v.mono { font-family: monospace; }
+.d-note { font-size: 11px; color: #c0c4cc; }
+.d-block { margin-top: 14px; }
+.d-pre { margin: 4px 0 0; background: #f8f9fc; border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 
 .pager { margin-top: 20px; display: flex; justify-content: center; }
 </style>

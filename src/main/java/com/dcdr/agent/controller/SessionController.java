@@ -58,8 +58,8 @@ public class SessionController {
                                      ServerWebExchange exchange) {
         String title = body.get("title");
         String model = body.get("model");
-        String systemPrompt = body.get("systemPrompt");
-        return Result.success(sessionManager.createSession(title, model, systemPrompt, SecurityContext.getUserId(exchange)));
+        String persona = body.get("persona");
+        return Result.success(sessionManager.createSession(title, model, persona, SecurityContext.getUserId(exchange)));
     }
 
     @Operation(summary = "获取会话详情")
@@ -91,19 +91,20 @@ public class SessionController {
         return Result.success();
     }
 
-    @Operation(summary = "更新会话级 System Prompt",
-            description = "更新后同时同步落库字段与消息历史中的 system 消息，保证后续对话立即生效。传空字符串可清除。")
+    @Operation(summary = "更新会话角色设定",
+            description = "用户可为会话设定角色(人设/偏好)。注意: 这不是 System Prompt —— 角色设定由平台包装后转述给模型, "
+                    + "不以独立系统指令身份生效, 与平台规则冲突时以平台规则为准。传空字符串可清除。")
     @ApiResponse(responseCode = "200", description = "更新成功")
-    @ApiResponse(responseCode = "400", description = "systemPrompt 过长")
+    @ApiResponse(responseCode = "400", description = "persona 过长")
     @ApiResponse(responseCode = "404", description = "会话不存在")
-    @PatchMapping("/{id}/system-prompt")
-    public Result<Void> updateSystemPrompt(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
-                                           @RequestBody Map<String, String> body) {
+    @PatchMapping("/{id}/persona")
+    public Result<Void> updatePersona(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
+                                      @RequestBody Map<String, String> body) {
         if (sessionManager.getSession(id) == null) {
             return Result.error(404, "会话不存在");
         }
         try {
-            sessionManager.updateSystemPrompt(id, body.get("systemPrompt"));
+            sessionManager.updatePersona(id, body.get("persona"));
         } catch (IllegalArgumentException e) {
             return Result.error(400, e.getMessage());
         }

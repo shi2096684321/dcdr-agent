@@ -180,9 +180,18 @@ public class IntentRouter {
             ChatResponse resp = provider.invoke(req, List.of(Message.system(SYSTEM_PROMPT)));
             if (trace != null) {
                 ChatResponse.TokenUsage u = resp.getTokenUsage();
+                // 请求参数明细: 路由调用的温度、上下文规模与实际提交的 system prompt
+                java.util.Map<String, Object> params = new java.util.LinkedHashMap<>();
+                params.put("temperature", req.getTemperature());
+                params.put("messageCount", 1);
+                params.put("systemPrompt", SYSTEM_PROMPT.length() > 4000
+                        ? SYSTEM_PROMPT.substring(0, 4000) + "…(截断)" : SYSTEM_PROMPT);
+                params.put("messages", java.util.List.of(
+                        java.util.Map.of("role", "system", "content", SYSTEM_PROMPT.length() > 1000
+                                ? SYSTEM_PROMPT.substring(0, 1000) + "…(截断)" : SYSTEM_PROMPT)));
                 trace.recordLlm("routing", provider.getName(),
                         u != null ? u.getPrompt() : null, u != null ? u.getCompletion() : null,
-                        (System.nanoTime() - routeStartNanos) / 1_000_000, false);
+                        (System.nanoTime() - routeStartNanos) / 1_000_000, false, params);
             }
             RoutingDtos.RouteResult r = parse(resp.getContent(), agents, workflows);
             // 路由 token 不计入用户用量/配额 (平台探测成本), 仅随 routing_logs 落库展示
@@ -362,6 +371,9 @@ public class IntentRouter {
             e.setTargetId(r.getTarget());
             e.setConfidence(r.getConfidence());
             e.setReason(r.getReason());
+            // 记录本次路由调用实际提交的 System Prompt(截断 4000 字符), 供管理员在路由详情中排查
+            e.setSystemPrompt(SYSTEM_PROMPT != null && SYSTEM_PROMPT.length() > 4000
+                    ? SYSTEM_PROMPT.substring(0, 4000) + "…(截断)" : SYSTEM_PROMPT);
             ChatResponse.TokenUsage u = r.getTokenUsage();
             if (u != null) {
                 e.setInputTokens(u.getPrompt());

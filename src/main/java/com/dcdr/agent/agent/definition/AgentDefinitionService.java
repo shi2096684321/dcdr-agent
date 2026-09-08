@@ -151,7 +151,7 @@ public class AgentDefinitionService {
         req.setName(src.getName() + " (副本)");
         req.setDescription(src.getDescription());
         req.setAvatar(src.getAvatar());
-        req.setSystemPrompt(src.getSystemPrompt());
+        req.setPersona(src.getSystemPrompt());
         req.setModel(src.getModel());
         req.setTools(parseStrList(src.getTools()));
         req.setKbIds(parseStrList(src.getKbIds()));
@@ -172,7 +172,7 @@ public class AgentDefinitionService {
         e.setName(req.getName().trim());
         e.setDescription(req.getDescription());
         e.setAvatar(req.getAvatar());
-        e.setSystemPrompt(req.getSystemPrompt());
+        e.setSystemPrompt(req.getPersona());
         e.setModel((req.getModel() == null || req.getModel().isBlank()) ? null : req.getModel().trim());
         e.setTools(serializeList(req.getTools()));
         e.setKbIds(serializeList(req.getKbIds()));
@@ -205,7 +205,7 @@ public class AgentDefinitionService {
         v.setName(e.getName());
         v.setDescription(e.getDescription());
         v.setAvatar(e.getAvatar());
-        v.setSystemPrompt(e.getSystemPrompt());
+        v.setPersona(e.getSystemPrompt());
         v.setModel(e.getModel());
         v.setTools(parseStrList(e.getTools()));
         v.setKbIds(parseStrList(e.getKbIds()));

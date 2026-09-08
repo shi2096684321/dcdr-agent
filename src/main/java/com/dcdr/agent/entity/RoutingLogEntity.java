@@ -54,6 +54,10 @@ public class RoutingLogEntity {
     @Column(columnDefinition = "TEXT")
     private String reason;
 
+    @Schema(description = "本次路由 LLM 调用实际提交的 System Prompt(截断 4000 字符, 供管理员详情排查)")
+    @Column(columnDefinition = "TEXT")
+    private String systemPrompt;
+
     @Schema(description = "路由 LLM 调用消耗的输入 token")
     @Column(nullable = false)
     private Integer inputTokens = 0;

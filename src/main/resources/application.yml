@@ -53,7 +53,7 @@ agent:
   # 文生图/图生图：维度一作为前置增强拼到用户 prompt 前（图像模型不支持 system 消息）。
   system-prompt:
     # L1 全局默认（所有场景兜底，可为空）
-#    default-prompt: "你是一位全能的工作助手，你的名字叫dcdr（多吃点肉）,小名叫多肉。是石准将你创造出来的。不用每次回答都介绍自己"
+    default-prompt: "在没有用户设置的角色的情况下你是一位全能的工作助手，你的名字叫dcdr（多吃点肉）,小名叫多肉。是石准将你创造出来的。不用每次回答都介绍自己"
     scenes:
       # 聊天场景：长文本外置到文件，改 prompt 只改 prompts/chat.txt 即可
       chat-location: "classpath:prompts/chat.md"

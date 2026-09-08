@@ -95,6 +95,7 @@ public class RoutingController {
         v.setTargetName(resolveTargetName(e, nameCache));
         v.setConfidence(e.getConfidence());
         v.setReason(e.getReason());
+        v.setSystemPrompt(e.getSystemPrompt());
         v.setInputTokens(e.getInputTokens());
         v.setOutputTokens(e.getOutputTokens());
         v.setTotalTokens(e.getTotalTokens());

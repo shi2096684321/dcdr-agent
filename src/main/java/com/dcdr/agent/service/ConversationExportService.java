@@ -106,9 +106,9 @@ public class ConversationExportService {
         sb.append("- 模型: ").append(safe(session.getModel())).append("\n");
         sb.append("- 创建时间: ").append(fmt(session.getCreatedAt())).append("\n");
         sb.append("- 导出时间: ").append(fmt(LocalDateTime.now())).append("\n");
-        if (session.getSystemPrompt() != null && !session.getSystemPrompt().isBlank()) {
-            sb.append("\n> **System Prompt**\n> \n> ")
-              .append(session.getSystemPrompt().replace("\n", "\n> ")).append("\n");
+        if (session.getPersona() != null && !session.getPersona().isBlank()) {
+            sb.append("\n> **会话角色设定**\n> \n> ")
+              .append(session.getPersona().replace("\n", "\n> ")).append("\n");
         }
         sb.append("\n---\n\n");
 

@@ -87,6 +87,16 @@ public final class LlmCallTrace {
     /** 记录一次 LLM 调用完成(purpose 如 routing / round-1 / round-2 / chatSync) */
     public synchronized void recordLlm(String purpose, String model, Integer inTokens, Integer outTokens,
                                         long costMs, boolean interrupted) {
+        recordLlm(purpose, model, inTokens, outTokens, costMs, interrupted, null);
+    }
+
+    /**
+     * 记录一次 LLM 调用完成(带请求参数明细, 供调用链详情页展示)。
+     *
+     * @param params 请求参数键值(如 temperature / messageCount / toolSpecCount / finishReason), 可为 null
+     */
+    public synchronized void recordLlm(String purpose, String model, Integer inTokens, Integer outTokens,
+                                        long costMs, boolean interrupted, java.util.Map<String, Object> params) {
         llmCalls++;
         if (inTokens != null) totalIn += inTokens;
         if (outTokens != null) totalOut += outTokens;
@@ -100,6 +110,9 @@ public final class LlmCallTrace {
         step.put("outTokens", outTokens);
         step.put("costMs", costMs);
         step.put("interrupted", interrupted);
+        if (params != null && !params.isEmpty()) {
+            step.putAll(params);
+        }
         steps.add(step);
         emit(step);
         log.info("[llm-trace] turn={} #{} LLM {} model={} tokens={}/{} {}{}",
@@ -110,6 +123,16 @@ public final class LlmCallTrace {
 
     /** 记录一次工具执行步骤(非 LLM 调用, 但占据链路时延, 是理解多轮成因的关键) */
     public synchronized void recordTool(String tools, long costMs, boolean interrupted) {
+        recordTool(tools, costMs, interrupted, null);
+    }
+
+    /**
+     * 记录一次工具执行步骤(带调用明细, 供调用链详情页展示每个工具的参数与结果摘要)。
+     *
+     * @param calls 调用明细列表(元素: name / args / resultPreview), 可为 null
+     */
+    public synchronized void recordTool(String tools, long costMs, boolean interrupted,
+                                         java.util.List<java.util.Map<String, Object>> calls) {
         toolSteps++;
         chain.add("tool[" + tools + "]");
         java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
@@ -118,6 +141,9 @@ public final class LlmCallTrace {
         step.put("tools", tools);
         step.put("costMs", costMs);
         step.put("interrupted", interrupted);
+        if (calls != null && !calls.isEmpty()) {
+            step.put("calls", calls);
+        }
         steps.add(step);
         emit(step);
         log.info("[llm-trace] turn={} TOOL {} {}{}", turnId, tools, fmtMs(costMs), interrupted ? " [中断]" : "");

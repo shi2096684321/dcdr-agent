@@ -25,8 +25,8 @@ public class AgentDtos {
         private String description;
         @Schema(description = "头像 URL")
         private String avatar;
-        @Schema(description = "系统提示词 (定义 Agent 行为)")
-        private String systemPrompt;
+        @Schema(description = "Agent 角色设定 (定义 Agent 的角色与行为; 由平台包装后转述给模型, 非系统提示词)")
+        private String persona;
         @Schema(description = "使用的模型名称 (留空则用系统默认)")
         private String model;
         @Schema(description = "启用的工具名称列表 (留空表示不启用工具)")
@@ -52,7 +52,8 @@ public class AgentDtos {
         private String name;
         private String description;
         private String avatar;
-        private String systemPrompt;
+        @Schema(description = "Agent 角色设定 (由平台包装后转述给模型, 非系统提示词)")
+        private String persona;
         private String model;
         private List<String> tools;
         private List<String> kbIds;

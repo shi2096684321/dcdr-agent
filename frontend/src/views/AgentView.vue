@@ -82,8 +82,8 @@
                 </div>
               </div>
               <div class="detail-row detail-prompt">
-                <div class="detail-label">系统提示词</div>
-                <pre class="prompt-box">{{ currentAgent.systemPrompt || '(空)' }}</pre>
+                <div class="detail-label">角色设定</div>
+                <pre class="prompt-box">{{ currentAgent.persona || '(空)' }}</pre>
               </div>
             </div>
           </template>
@@ -125,9 +125,9 @@
         <el-form-item label="头像 URL">
           <el-input v-model="form.avatar" placeholder="可选, 留空则用首字母占位" />
         </el-form-item>
-        <el-form-item label="系统提示词">
-          <el-input v-model="form.systemPrompt" type="textarea" :rows="5"
-                    placeholder="定义 Agent 的角色与行为, 如: 你是一个专业翻译, 支持中英互译..." />
+        <el-form-item label="角色设定">
+          <el-input v-model="form.persona" type="textarea" :rows="5"
+                    placeholder="设定该 Agent 的角色与行为, 如: 你是一个专业翻译, 支持中英互译... (由平台转述给模型, 不覆盖平台安全约束)" />
         </el-form-item>
         <el-form-item label="模型">
           <el-select v-model="form.model" placeholder="留空使用系统默认" clearable filterable style="width:100%">
@@ -188,7 +188,7 @@ const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
 const form = reactive({
-  id: '', name: '', description: '', avatar: '', systemPrompt: '',
+  id: '', name: '', description: '', avatar: '', persona: '',
   model: '', temperature: 0.7, tools: [], kbIds: [], isPublic: false
 })
 
@@ -260,7 +260,7 @@ function openEditDialog() {
   form.name = a.name
   form.description = a.description || ''
   form.avatar = a.avatar || ''
-  form.systemPrompt = a.systemPrompt || ''
+  form.persona = a.persona || ''
   form.model = a.model || ''
   form.temperature = a.temperature != null ? Number(a.temperature) : 0.7
   form.tools = [...(a.tools || [])]
@@ -274,7 +274,7 @@ function resetForm() {
   form.name = ''
   form.description = ''
   form.avatar = ''
-  form.systemPrompt = ''
+  form.persona = ''
   form.model = ''
   form.temperature = 0.7
   form.tools = []
@@ -293,7 +293,7 @@ async function submitForm() {
       name: form.name.trim(),
       description: form.description || null,
       avatar: form.avatar || null,
-      systemPrompt: form.systemPrompt || null,
+      persona: form.persona || null,
       model: form.model || null,
       temperature: form.temperature != null ? Number(form.temperature) : null,
       tools: form.tools || [],
