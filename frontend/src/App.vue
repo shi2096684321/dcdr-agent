@@ -20,8 +20,8 @@
         <CreativeView v-else-if="mode==='creative'" :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
         <AgentView v-else-if="mode==='agent'" />
-        <WorkflowView v-else-if="mode==='workflow'" />
-        <DagEditorView v-else-if="mode==='dag'" />
+        <WorkflowView v-else-if="mode==='workflow'" @open-dag="onOpenDag" />
+        <DagEditorView v-else-if="mode==='dag'" :initial-workflow-id="dagTargetId" />
         <TemplateMarketView v-else-if="mode==='market'" />
         <ScheduledTaskView v-else-if="mode==='schedule'" />
         <RoutingView v-else-if="mode==='routing'" />
@@ -68,6 +68,13 @@ const authReady = ref(false)
 
 const imageModels = computed(() => modelStore.imageModels)
 const videoModels = computed(() => modelStore.videoModels)
+
+// 从工作流页跳转到 DAG 编辑器时携带目标工作流 ID, 供 DagEditorView 打开后自动选中
+const dagTargetId = ref('')
+function onOpenDag(id) {
+  dagTargetId.value = id || ''
+  mode.value = 'dag'
+}
 
 async function loadModels() {
   try {

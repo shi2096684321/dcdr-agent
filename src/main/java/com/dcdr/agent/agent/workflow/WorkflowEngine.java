@@ -641,6 +641,8 @@ public class WorkflowEngine {
      *   <li>agent 节点: 调用 Agent (复用步骤重试/成本追踪链路), 输出存入 ${nodeId.output}</li>
      *   <li>condition 节点: LLM 自然语言判断 (mode=llm, 默认) 或表达式判断 (mode=expr),
      *       仅沿标签匹配的出边 (是/true 或 否/false) 继续</li>
+     *   <li>router 节点: LLM 任务分配器, 只输出候选执行者 (出边标签), 自身不执行任务;
+     *       仅命中路由输出的那条出边激活</li>
      *   <li>approval 节点: 人工审批门禁, 执行到该处暂停 (复用 F-33 paused 状态)</li>
      *   <li>merge 节点: 汇聚多个分支, 输出为各前驱输出的拼接</li>
      * </ul>
@@ -659,6 +661,20 @@ public class WorkflowEngine {
 
         // condition 节点的分支判定结果: nodeId → true/false (未判定过的节点按全边放行)
         Map<String, Boolean> conditionResults = new HashMap<>();
+        // router 节点的路由结果: nodeId → 选中的候选执行者 (出边标签)
+        Map<String, String> routerResults = new HashMap<>();
+        // router 节点的候选执行者列表 (出边标签, 校验已保证非空)
+        Map<String, List<String>> routerCandidates = new HashMap<>();
+        for (WorkflowDtos.DagNode n : dag.getNodes()) {
+            if (isRouter(n)) {
+                List<String> cands = new ArrayList<>();
+                for (WorkflowDtos.DagEdge e : outgoing.getOrDefault(n.getId(), List.of())) {
+                    String lbl = e.getLabel() == null ? "" : e.getLabel().trim();
+                    if (!lbl.isEmpty() && !cands.contains(lbl)) cands.add(lbl);
+                }
+                routerCandidates.put(n.getId(), cands);
+            }
+        }
 
         while (true) {
             // 找就绪节点: 未完成 且 所有入边均已激活 (source 已完成且边命中分支)
@@ -667,7 +683,7 @@ public class WorkflowEngine {
                 if (ctx.completed.contains(node.getId())) continue;
                 boolean allReady = true;
                 for (WorkflowDtos.DagEdge in : incoming.getOrDefault(node.getId(), List.of())) {
-                    if (!ctx.completed.contains(in.getSource()) || !isActiveEdge(in, conditionResults)) {
+                    if (!ctx.completed.contains(in.getSource()) || !isActiveEdge(in, conditionResults, routerResults)) {
                         allReady = false;
                         break;
                     }
@@ -680,7 +696,7 @@ public class WorkflowEngine {
             Map<String, CompletableFuture<WorkflowDtos.StepResult>> futures = new LinkedHashMap<>();
             for (WorkflowDtos.DagNode node : ready) {
                 futures.put(node.getId(), CompletableFuture.supplyAsync(
-                        () -> executeDagNode(node, ctx), parallelExecutor));
+                        () -> executeDagNode(node, ctx, routerCandidates), parallelExecutor));
             }
             for (Map.Entry<String, CompletableFuture<WorkflowDtos.StepResult>> en : futures.entrySet()) {
                 String nodeId = en.getKey();
@@ -702,6 +718,10 @@ public class WorkflowEngine {
                 if (isCondition(node)) {
                     conditionResults.put(nodeId, "是".equals(r.getOutput()) || "true".equalsIgnoreCase(r.getOutput()));
                 }
+                // router 节点: 记录路由输出 (选中的候选执行者), 仅匹配的出边激活
+                if (isRouter(node)) {
+                    routerResults.put(nodeId, r.getOutput() == null ? "" : r.getOutput());
+                }
                 persistState(ctx);
 
                 // 审批节点暂停
@@ -719,8 +739,21 @@ public class WorkflowEngine {
         }
     }
 
-    /** 边是否激活: source 为 condition 节点时仅命中判定分支标签 (是/true 或 否/false) 的边 */
-    private boolean isActiveEdge(WorkflowDtos.DagEdge edge, Map<String, Boolean> conditionResults) {
+    /**
+     * 边是否激活:
+     * <ul>
+     *   <li>condition 节点: 仅命中判定分支标签 (是/true 或 否/false) 的边</li>
+     *   <li>router 节点: 仅命中路由输出 (候选执行者名) 的边</li>
+     *   <li>其他节点: 全边放行</li>
+     * </ul>
+     */
+    private boolean isActiveEdge(WorkflowDtos.DagEdge edge, Map<String, Boolean> conditionResults,
+                                 Map<String, String> routerResults) {
+        String routed = routerResults.get(edge.getSource());
+        if (routed != null) {
+            String label = edge.getLabel() == null ? "" : edge.getLabel().trim();
+            return routerMatches(routed, label);
+        }
         Boolean result = conditionResults.get(edge.getSource());
         if (result == null) return true;
         String label = edge.getLabel() == null ? "" : edge.getLabel().trim();
@@ -729,12 +762,14 @@ public class WorkflowEngine {
     }
 
     /** 执行单个 DAG 节点 */
-    private WorkflowDtos.StepResult executeDagNode(WorkflowDtos.DagNode node, ExecCtx ctx) {
+    private WorkflowDtos.StepResult executeDagNode(WorkflowDtos.DagNode node, ExecCtx ctx,
+                                                   Map<String, List<String>> routerCandidates) {
         String type = node.getType() == null ? "agent" : node.getType().toLowerCase();
         String label = node.getData() != null && node.getData().getLabel() != null
                 ? node.getData().getLabel() : node.getId();
         return switch (type) {
             case "condition" -> executeDagCondition(node, ctx, label);
+            case "router" -> executeDagRouter(node, ctx, routerCandidates.getOrDefault(node.getId(), List.of()));
             case "approval" -> executeDagApproval(node, ctx, label);
             case "merge" -> executeDagMerge(node, ctx, label);
             default -> executeDagAgent(node, ctx, label);
@@ -774,6 +809,81 @@ public class WorkflowEngine {
         r.setStatus("success");
         r.setDurationMs(System.currentTimeMillis() - start);
         return r;
+    }
+
+    /**
+     * router 节点: 任务分配器。只做分析并指派执行者 (输出候选名), 自身不执行任务;
+     * 仅有 1 个候选时直接放行, 多个候选时由 LLM 选择 (出边标签 = 候选执行者)。
+     */
+    private WorkflowDtos.StepResult executeDagRouter(WorkflowDtos.DagNode node, ExecCtx ctx,
+                                                     List<String> candidates) {
+        WorkflowDtos.StepResult r = new WorkflowDtos.StepResult();
+        r.setName(node.getId());
+        if (candidates == null || candidates.isEmpty()) {
+            r.setOutput("");
+            r.setStatus("success");
+            return r;
+        }
+        String chosen;
+        long start = System.currentTimeMillis();
+        if (candidates.size() == 1) {
+            chosen = candidates.get(0);
+            r.setDurationMs(0);
+        } else {
+            chosen = routeByLlm(node, ctx, candidates);
+            r.setInput("候选执行者: " + String.join(", ", candidates));
+            r.setDurationMs(System.currentTimeMillis() - start);
+        }
+        r.setOutput(chosen);
+        r.setStatus("success");
+        return r;
+    }
+
+    /** router 节点 LLM 路由判定: 从候选执行者中选最合适的一个, 输出候选名本身 */
+    private String routeByLlm(WorkflowDtos.DagNode node, ExecCtx ctx, List<String> candidates) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("你是任务分配器。根据任务内容, 从候选执行者中选择最合适的一个, 只输出候选执行者名称本身, 不要任何解释、序号或标点。\n");
+        sb.append("候选执行者:\n");
+        for (String c : candidates) sb.append("- ").append(c).append("\n");
+        sb.append("任务内容:\n").append(ctx.userInput == null ? "" : ctx.userInput);
+        if (node.getData() != null && node.getData().getInput() != null && !node.getData().getInput().isBlank()) {
+            sb.append("\n\n路由规则/参考:\n").append(substituteVars(node.getData().getInput(), ctx.outputs));
+        }
+        try {
+            ChatRequest req = new ChatRequest();
+            req.setMessage(sb.toString());
+            req.setStream(false);
+            req.setTemperature(0.1);
+            ChatResponse resp = modelRegistry.getDefaultChatProvider().invoke(req,
+                    List.of(Message.system("你是严格的任务分配器, 只输出候选执行者名称, 不输出其他内容。")));
+            if (resp.getTokenUsage() != null) {
+                ctx.totalTokens += resp.getTokenUsage().getTotal() > 0
+                        ? resp.getTokenUsage().getTotal()
+                        : resp.getTokenUsage().getPrompt() + resp.getTokenUsage().getCompletion();
+                costTracker.record(ctx.userId, null, ctx.entity.getId(), "workflow",
+                        resp.getModel(), resp.getTokenUsage());
+            }
+            String content = resp.getContent() == null ? "" : resp.getContent().trim();
+            for (String c : candidates) {
+                if (routerMatches(content, c)) return c;
+            }
+            log.warn("LLM 路由输出未命中候选 [{}], 实际输出=[{}], 默认取第一个候选",
+                    String.join("|", candidates), content);
+            return candidates.get(0);
+        } catch (Exception e) {
+            log.warn("LLM 路由判定失败, 默认取第一个候选: {}", e.getMessage());
+            return candidates.get(0);
+        }
+    }
+
+    /** 路由匹配: 路由输出与候选名精确/包含匹配 (忽略大小写) */
+    private static boolean routerMatches(String output, String candidate) {
+        if (output == null || output.isBlank()) return false;
+        String o = output.trim();
+        String c = candidate == null ? "" : candidate.trim();
+        if (c.isEmpty()) return false;
+        String lo = o.toLowerCase(), lc = c.toLowerCase();
+        return o.equalsIgnoreCase(c) || lo.contains(lc) || lc.contains(lo);
     }
 
     /** approval 节点: 人工审批门禁 (F-33 paused 状态复用) */
@@ -836,6 +946,10 @@ public class WorkflowEngine {
         return node.getData() != null && "approval".equalsIgnoreCase(node.getType());
     }
 
+    private static boolean isRouter(WorkflowDtos.DagNode node) {
+        return node.getData() != null && "router".equalsIgnoreCase(node.getType());
+    }
+
     /** F-32 DAG 校验: 节点/边引用完整性 + 环检测 (拓扑排序) */
     private void validateDag(WorkflowDtos.DagSpec dag) {
         if (dag.getNodes() == null || dag.getNodes().isEmpty()) {
@@ -850,8 +964,9 @@ public class WorkflowEngine {
                 throw new BusinessException(400, "DAG 节点 ID 重复: " + n.getId());
             }
             String type = n.getType() == null ? "agent" : n.getType().toLowerCase();
-            if (!"agent".equals(type) && !"condition".equals(type) && !"approval".equals(type) && !"merge".equals(type)) {
-                throw new BusinessException(400, "DAG 节点类型非法: " + type + " (允许 agent/condition/approval/merge)");
+            if (!"agent".equals(type) && !"condition".equals(type) && !"approval".equals(type)
+                    && !"merge".equals(type) && !"router".equals(type)) {
+                throw new BusinessException(400, "DAG 节点类型非法: " + type + " (允许 agent/condition/approval/merge/router)");
             }
             if ("agent".equals(type) && (n.getData() == null || n.getData().getAgentId() == null
                     || n.getData().getAgentId().isBlank())) {
@@ -866,6 +981,23 @@ public class WorkflowEngine {
             for (WorkflowDtos.DagEdge e : dag.getEdges()) {
                 if (!ids.contains(e.getSource()) || !ids.contains(e.getTarget())) {
                     throw new BusinessException(400, "DAG 边引用了不存在的节点: " + e.getSource() + " → " + e.getTarget());
+                }
+            }
+        }
+        // router 节点必须至少有一条带标签的出边 (标签为候选执行者)
+        for (WorkflowDtos.DagNode n : dag.getNodes()) {
+            if (isRouter(n)) {
+                boolean hasLabeledOut = false;
+                if (dag.getEdges() != null) {
+                    for (WorkflowDtos.DagEdge e : dag.getEdges()) {
+                        if (e.getSource().equals(n.getId()) && e.getLabel() != null && !e.getLabel().isBlank()) {
+                            hasLabeledOut = true;
+                            break;
+                        }
+                    }
+                }
+                if (!hasLabeledOut) {
+                    throw new BusinessException(400, "router 节点 " + n.getId() + " 至少需要一条带标签的出边 (标签为候选执行者)");
                 }
             }
         }

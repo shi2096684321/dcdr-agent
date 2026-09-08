@@ -44,8 +44,13 @@ import java.util.Map;
  *   <li>POST   /api/knowledge-bases/{id}/search              检索测试</li>
  * </ul>
  * <p>
- * <b>userId 来源</b>: V2.2 从 {@link SecurityContext} 取当前登录用户 ID;
- * 未登录(auth.enabled=false 或匿名访问)时退化为 null, 行为与 V2.1 单用户一致。
+ * <b>userId 来源</b>: 从 {@link SecurityContext} 取当前登录用户 ID 与 isAdmin;
+ * 未登录(auth.enabled=false 或匿名访问)时 userId 退化为 null, 行为与 V2.1 单用户一致。
+ * <p>
+ * <b>开放范围与越权校验</b>: 知识库已开放给普通用户(user 角色, 拥有 kb:read/kb:write):
+ * 可创建/管理自己的 USER 级知识库; PLATFORM 级知识库仅 admin 可写, 普通用户只读。
+ * 因此本类每个涉及具体知识库的接口都必须先取 userId/isAdmin 并交给
+ * {@link com.dcdr.agent.rag.service.KnowledgeBaseService#getAccessible} 校验, 禁止直接按 id 操作。
  */
 @Slf4j
 @RestController

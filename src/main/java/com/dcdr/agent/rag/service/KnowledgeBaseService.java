@@ -24,8 +24,15 @@ import java.util.concurrent.ThreadLocalRandom;
  * 提供知识库 CRUD; 删除时级联清理文档与向量(数据库 FK ON DELETE CASCADE 已兜底,
  * 此处显式调 repository 便于日志与计数同步)。
  * <p>
- * <b>userId 处理</b>: V2.1 尚未上认证(V2.2 才做), 当前以单用户视角运行,
- * userId 入参允许为 null 或固定值; 表结构已预留 user_id 列, V2.2 接入认证后无需改 schema。
+ * <b>userId 处理与越权防护</b>: 已接入多用户认证(V2.2+)。知识库按 {@code userId} 归属,
+ * 并区分 {@code visibility}(USER 用户级 / PLATFORM 平台级):
+ * <ul>
+ *   <li>admin: 可访问/修改任意知识库</li>
+ *   <li>普通用户: 仅可访问/修改自己创建的 USER 级; PLATFORM 级只读</li>
+ *   <li>未登录(认证关闭): userId 为 null, 退化为单用户视角(兼容历史部署方式)</li>
+ * </ul>
+ * 所有外部入口(Controller)必须经 {@link #getAccessible(String, String, boolean, boolean)} 校验,
+ * 避免用户跨账号访问/篡改他人知识库。
  */
 @Slf4j
 @Service

@@ -19,7 +19,8 @@
             <div class="wf-meta">
               <span>{{ modeLabel(w.mode) }}</span>
               <span>·</span>
-              <span>{{ (w.steps || []).length }} 步</span>
+              <span v-if="w.mode === 'dag'">{{ (w.dag?.nodes || []).length }} 节点</span>
+              <span v-else>{{ (w.steps || []).length }} 步</span>
             </div>
           </div>
         </div>
@@ -37,19 +38,44 @@
           <div class="wf-toolbar-left">
             <h2>{{ currentWf.name }}</h2>
             <el-tag size="small" :type="modeTagType(currentWf.mode)">{{ modeLabel(currentWf.mode) }}</el-tag>
-            <el-tag size="small">{{ (currentWf.steps || []).length }} 步</el-tag>
+            <el-tag size="small" v-if="currentWf.mode === 'dag'">{{ (currentWf.dag?.nodes || []).length }} 节点</el-tag>
+            <el-tag size="small" v-else>{{ (currentWf.steps || []).length }} 步</el-tag>
             <span class="wf-desc-full" v-if="currentWf.description" :title="currentWf.description">{{ currentWf.description }}</span>
           </div>
           <div class="wf-toolbar-right">
-            <el-button size="small" @click="openEditDialog">编辑</el-button>
+            <el-button size="small" @click="onEditClick">编辑</el-button>
             <el-button type="danger" size="small" @click="removeWf">删除</el-button>
           </div>
         </div>
 
         <el-tabs v-model="activeTab" class="wf-tabs" @tab-change="onTabChange">
-          <!-- 步骤可视化 -->
+          <!-- 步骤可视化 (DAG 工作流展示节点图概览) -->
           <el-tab-pane label="步骤定义" name="steps">
-            <div class="steps-viz">
+            <div v-if="currentWf.mode === 'dag'" class="dag-summary">
+              <div class="dag-summary-head">
+                <div>
+                  <b>DAG 节点图</b>
+                  <span class="dag-summary-meta">{{ (currentWf.dag?.nodes || []).length }} 节点 · {{ (currentWf.dag?.edges || []).length }} 条边</span>
+                </div>
+                <el-button size="small" type="primary" @click="openDagEditor">打开 DAG 编辑器</el-button>
+              </div>
+              <div v-if="(currentWf.dag?.nodes || []).length" class="dag-node-list">
+                <div v-for="n in currentWf.dag.nodes" :key="n.id" class="dag-node-card">
+                  <span class="dag-node-type" :class="'t-' + n.type">{{ dagNodeTypeLabel(n.type) }}</span>
+                  <span class="dag-node-name">{{ n.data?.label || n.id }}</span>
+                  <span class="dag-node-sub">{{ dagNodeSub(n) }}</span>
+                </div>
+              </div>
+              <div v-else class="dag-empty">该 DAG 工作流暂无节点定义</div>
+              <div v-if="(currentWf.dag?.edges || []).length" class="dag-edge-section">
+                <div class="dag-edge-title">连线 ({{ currentWf.dag.edges.length }})</div>
+                <div v-for="(e, i) in currentWf.dag.edges" :key="i" class="dag-edge-row">
+                  <code>{{ e.source }}</code> <span class="dag-arrow">→</span> <code>{{ e.target }}</code>
+                  <el-tag v-if="e.label" size="small" type="warning">{{ e.label }}</el-tag>
+                </div>
+              </div>
+            </div>
+            <div v-else class="steps-viz">
               <div v-for="(step, idx) in (currentWf.steps || [])" :key="idx" class="step-card">
                 <div class="step-no">{{ idx + 1 }}</div>
                 <div class="step-body">
@@ -362,6 +388,31 @@ const runInput = ref('')
 const running = ref(false)
 const executionResult = ref(null)
 
+// 跨视图联动: DAG 工作流编辑/概览跳转到 DAG 编辑器 (App.vue 监听后切换 mode)
+const emit = defineEmits(['open-dag'])
+
+// DAG 工作流: 编辑按钮跳转 DAG 编辑器; 其余走步骤表单
+function onEditClick() {
+  if (currentWf.value && currentWf.value.mode === 'dag') {
+    openDagEditor()
+  } else {
+    openEditDialog()
+  }
+}
+function openDagEditor() {
+  if (!currentWf.value) return
+  emit('open-dag', currentWf.value.id)
+}
+const dagNodeTypeLabel = (t) => ({ agent: 'Agent', condition: '条件', router: '路由', approval: '审批', merge: '合并' })[t] || t
+function dagNodeSub(n) {
+  if (n.type === 'agent') return n.data?.input ? `输入: ${n.data.input}` : 'Agent 节点'
+  if (n.type === 'condition') return n.data?.condition || '条件节点'
+  if (n.type === 'router') return '分析并指派执行者'
+  if (n.type === 'approval') return '人工审批门禁'
+  if (n.type === 'merge') return '分支合并'
+  return ''
+}
+
 // 对话框
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -371,16 +422,19 @@ const form = reactive({
 })
 
 function modeIcon(mode) {
+  if (mode === 'dag') return '◈'
   if (mode === 'parallel') return '⇶'
   if (mode === 'conditional') return '⑂'
   return '→'
 }
 function modeLabel(mode) {
+  if (mode === 'dag') return 'DAG'
   if (mode === 'parallel') return '并行'
   if (mode === 'conditional') return '条件'
   return '串行'
 }
 function modeTagType(mode) {
+  if (mode === 'dag') return 'primary'
   if (mode === 'parallel') return 'success'
   if (mode === 'conditional') return 'warning'
   return 'info'
@@ -890,6 +944,27 @@ onMounted(() => {
 .wf-tabs :deep(.el-tabs__content) { flex: 1; overflow-y: auto; padding-bottom: 20px; }
 
 .steps-viz { padding: 12px 0; display: flex; flex-direction: column; align-items: center; }
+
+/* DAG 工作流概览 (步骤定义 Tab) */
+.dag-summary { padding: 12px 0; max-width: 720px; }
+.dag-summary-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.dag-summary-meta { font-size: 12px; color: #86909c; margin-left: 10px; }
+.dag-node-list { display: flex; flex-direction: column; gap: 8px; }
+.dag-node-card { display: flex; align-items: center; gap: 10px; background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 8px; padding: 10px 14px; }
+.dag-node-type { font-size: 11px; font-weight: 600; color: #fff; border-radius: 4px; padding: 2px 8px; flex-shrink: 0; }
+.dag-node-type.t-agent { background: #667eea; }
+.dag-node-type.t-condition { background: #e6a23c; }
+.dag-node-type.t-router { background: #8b5cf6; }
+.dag-node-type.t-approval { background: #f56c6c; }
+.dag-node-type.t-merge { background: #67c23a; }
+.dag-node-name { font-size: 13px; font-weight: 500; color: #303133; }
+.dag-node-sub { font-size: 12px; color: #86909c; margin-left: auto; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dag-empty { padding: 30px 0; text-align: center; color: #a0a4ab; font-size: 13px; }
+.dag-edge-section { margin-top: 16px; }
+.dag-edge-title { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 8px; }
+.dag-edge-row { display: flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 0; }
+.dag-edge-row code { background: #f2f3f5; border-radius: 4px; padding: 1px 6px; color: #4e5969; }
+.dag-arrow { color: #c0c4cc; }
 .step-card { display: flex; align-items: flex-start; gap: 12px; width: 100%; max-width: 640px; background: #fafbfc; border: 1px solid #e8e8e8; border-radius: 10px; padding: 12px 16px; }
 .step-no { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
 .step-body { flex: 1; min-width: 0; }

@@ -26,6 +26,9 @@
         <div class="p-item" @click="addNode('condition')">
           <span class="p-icon" style="background:#e6a23c">?</span> 条件分支
         </div>
+        <div class="p-item" @click="addNode('router')">
+          <span class="p-icon" style="background:#8b5cf6">⇢</span> 路由节点
+        </div>
         <div class="p-item" @click="addNode('approval')">
           <span class="p-icon" style="background:#f56c6c">☑</span> 人工审批
         </div>
@@ -37,6 +40,7 @@
           <div>· 点击节点后点击"连线"再到目标节点创建边</div>
           <div>· 点击节点/边进行配置或删除</div>
           <div>· condition 出边标签: 是/否</div>
+          <div>· router 出边标签: 候选执行者名</div>
         </div>
       </div>
 
@@ -107,6 +111,13 @@
                           :placeholder="conditionPlaceholder" @input="dirty = true" />
               </el-form-item>
             </template>
+            <template v-if="selectedNode.type === 'router'">
+              <el-form-item label="路由规则">
+                <el-input v-model="selectedNode.data.input" type="textarea" :rows="3"
+                          placeholder="可选: 自然语言分配规则, 如: 涉及代码的任务走 编程Agent; 支持 ${nodeId.output}" @input="dirty = true" />
+              </el-form-item>
+            </template>
+            <div class="p-tip" v-if="selectedNode.type === 'router'">该节点只做分析+指派, 不执行任务; 出边标签为候选执行者, LLM 会选最合适的一个继续。</div>
             <div class="p-tip" v-if="selectedNode.type === 'approval'">执行到该节点会暂停, 等待人工审批通过后继续。</div>
             <div class="p-tip" v-if="selectedNode.type === 'merge'">汇聚多个分支, 输出为各前驱节点输出的拼接。</div>
           </el-form>
@@ -116,7 +127,7 @@
           <div class="p-title">边配置</div>
           <el-form label-width="72px" size="small">
             <el-form-item label="标签">
-              <el-input v-model="selectedEdge.label" placeholder="condition 出边填: 是 / 否" @input="dirty = true" />
+              <el-input v-model="selectedEdge.label" :placeholder="edgeLabelPlaceholder" @input="dirty = true" />
             </el-form-item>
           </el-form>
           <el-button size="small" type="danger" text @click="removeEdge(selectedEdge)">删除边</el-button>
@@ -186,6 +197,9 @@ import {
   getWorkflowVersions, rollbackWorkflowVersion, getAgents, extractMessage
 } from '@/api'
 
+// 从工作流页跳转时携带目标工作流 ID, 挂载后自动选中加载
+const props = defineProps({ initialWorkflowId: { type: String, default: '' } })
+
 const NODE_W = 180
 const NODE_H = 52
 
@@ -221,11 +235,18 @@ const canvasH = ref(900)
 const editableWorkflows = computed(() => (workflows.value || []).filter(w => w.editable !== false && !w.isTemplate))
 const canvasWrap = ref(null)
 
-const nodeIcon = (t) => ({ agent: 'A', condition: '?', approval: '☑', merge: 'M' })[t] || 'N'
+const nodeIcon = (t) => ({ agent: 'A', condition: '?', router: '⇢', approval: '☑', merge: 'M' })[t] || 'N'
 const conditionPlaceholder = computed(() => {
   return selectedNode.value?.data?.conditionMode === 'expr'
     ? "形如 contains(${n1.output},'YES')"
     : '用自然语言描述, 如: 判断上一节点输出是否包含错误信息'
+})
+const edgeLabelPlaceholder = computed(() => {
+  if (!selectedEdge.value) return ''
+  const src = nodes.value.find(n => n.id === selectedEdge.value.source)
+  if (src?.type === 'condition') return 'condition 出边填: 是 / 否'
+  if (src?.type === 'router') return 'router 出边填: 候选执行者名 (如: 编程Agent)'
+  return '可选边标签'
 })
 const nodeSub = (n) => {
   if (n.type === 'agent') {
@@ -233,6 +254,7 @@ const nodeSub = (n) => {
     return a ? a.name : '未选择 Agent'
   }
   if (n.type === 'condition') return n.data?.conditionMode === 'expr' ? '表达式判断' : '自然语言判断'
+  if (n.type === 'router') return '分析并指派执行者'
   if (n.type === 'approval') return '人工审批门禁'
   return '合并汇聚'
 }
@@ -264,7 +286,7 @@ const previewPath = computed(() => {
 let nodeSeq = 0
 function addNode(type) {
   const id = 'n' + (++nodeSeq)
-  const label = { agent: 'Agent', condition: '条件', approval: '审批', merge: '合并' }[type]
+  const label = { agent: 'Agent', condition: '条件', router: '路由', approval: '审批', merge: '合并' }[type]
   nodes.value.push({
     id,
     type,
@@ -291,7 +313,9 @@ function selectNode(n) {
     // 完成连线
     if (!edges.value.some(e => e.source === linkFrom.value.id && e.target === n.id)) {
       const from = linkFrom.value
-      const label = from.type === 'condition' ? '是' : ''
+      // condition 出边默认 是; router 出边默认取目标节点名作为候选执行者
+      let label = from.type === 'condition' ? '是' : ''
+      if (from.type === 'router') label = n.data?.label || n.id
       edges.value.push({ source: from.id, target: n.id, label })
       dirty.value = true
     }
@@ -482,6 +506,14 @@ async function doRollback(row) {
 onMounted(async () => {
   try {
     await loadLists()
+    // 从工作流页跳转而来: 自动选中并加载对应工作流
+    if (props.initialWorkflowId) {
+      const wf = workflows.value.find(w => w.id === props.initialWorkflowId)
+      if (wf) {
+        workflowId.value = wf.id
+        await loadWorkflow(wf)
+      }
+    }
   } catch (e) {
     ElMessage.error(extractMessage(e) || '初始化失败')
   }
@@ -512,6 +544,7 @@ onMounted(async () => {
 .node-box { fill: #fff; stroke: #b9c0cc; stroke-width: 1.5; }
 .node-box.nt-agent { stroke: #667eea; }
 .node-box.nt-condition { stroke: #e6a23c; }
+.node-box.nt-router { stroke: #8b5cf6; }
 .node-box.nt-approval { stroke: #f56c6c; }
 .node-box.nt-merge { stroke: #67c23a; }
 .node-box.selected { stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(102,126,234,0.35)); }

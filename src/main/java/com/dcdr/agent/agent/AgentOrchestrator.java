@@ -869,7 +869,7 @@ public class AgentOrchestrator {
     private static final int MAX_CONTENT_LENGTH = 4000;
 
     /** 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮 */
-    private static final int MAX_TOOL_ROUNDS = 4;
+    private static final int MAX_TOOL_ROUNDS = 10;
 
     /** 工具结果回灌到模型上下文时的最大长度(字符), 超长截断以控制 token 开销 */
     private static final int TOOL_RESULT_MAX_LEN = 6000;

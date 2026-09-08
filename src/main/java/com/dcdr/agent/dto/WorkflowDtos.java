@@ -100,7 +100,7 @@ public class WorkflowDtos {
     public static class DagNode {
         @Schema(description = "节点 ID (如 n1)")
         private String id;
-        @Schema(description = "节点类型: agent / condition / approval / merge")
+        @Schema(description = "节点类型: agent / condition / approval / merge / router")
         private String type;
         @Schema(description = "画布坐标 (仅前端布局用)")
         private Map<String, Integer> position;
@@ -134,7 +134,7 @@ public class WorkflowDtos {
         private String source;
         @Schema(description = "目标节点 ID")
         private String target;
-        @Schema(description = "边标签; condition 节点出边用 是/否 (true/false) 标识分支")
+        @Schema(description = "边标签; condition 出边用 是/否 (true/false) 标识分支, router 出边填候选执行者名称")
         private String label;
     }
 

@@ -55,6 +55,11 @@ import java.util.regex.Pattern;
  * (避免反应式调度下自调用绕过代理的陷阱), 依赖 {@code SimpleJpaRepository} 自带的方法级事务。
  * 需要原子的多步操作(如删 chunks + 删 document)用 {@code @Transactional} 标注的 public 方法,
  * 由外部调用经 Spring 代理进入。
+ * <p>
+ * <b>越权防护</b>: 所有对外方法(upload / listDocuments / deleteDocument / reprocess)
+ * 都接收 userId 与 isAdmin, 并经 {@link KnowledgeBaseService#getAccessible} 校验知识库归属:
+ * 普通用户仅可操作自己 USER 级知识库中的文档, PLATFORM 级仅 admin 可写。
+ * 新增对外方法时必须同样校验, 否则会造成跨用户文档访问/篡改。
  */
 @Slf4j
 @Service
