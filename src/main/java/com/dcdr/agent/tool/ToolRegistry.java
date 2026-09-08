@@ -13,7 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 工具注册中心 - 管理所有可用工具
  * <p>
- * V3.1 框架化: 注册时即把工具定义转换为框架规范格式 {@link ToolSpecification} 并缓存
+ * V3.0 框架化: 注册时即把工具定义转换为框架规范格式 {@link ToolSpecification} 并缓存
  * (schema 解析/转换只发生一次, 且坏 schema 在启动期暴露而非对话期),
  * LLM 工具定义有两个出口:
  * <ul>
@@ -159,7 +159,7 @@ public class ToolRegistry {
     }
 
     /**
-     * 返回全部已注册工具的框架原生 ToolSpecification(V3.1 主路径,
+     * 返回全部已注册工具的框架原生 ToolSpecification(V3.0 主路径,
      * LangChain4j Provider 直接消费, 无 Map 往返转换)。
      */
     public List<ToolSpecification> getToolSpecifications() {

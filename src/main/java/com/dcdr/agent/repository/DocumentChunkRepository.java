@@ -31,7 +31,7 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunkEnti
             @Param("topK") int topK);
 
     /**
-     * 检索 Top-K 并返回真实余弦距离 (V3.1 修复: 原实现 score 按排序位置估算,
+     * 检索 Top-K 并返回真实余弦距离 (V3.0 修复: 原实现 score 按排序位置估算,
      * min-score 过滤依据失真)。
      * <p>
      * pgvector {@code <=>} 返回 cosine distance (0~2), similarity = 1 - distance。

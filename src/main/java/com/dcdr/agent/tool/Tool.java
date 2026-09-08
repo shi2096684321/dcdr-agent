@@ -16,7 +16,7 @@ public interface Tool {
     String getDescription();
 
     /**
-     * 参数 schema(框架原生类型, V3.1): 类型安全构造, 注册时由 ToolRegistry
+     * 参数 schema(框架原生类型, V3.0): 类型安全构造, 注册时由 ToolRegistry
      * 缓存为规范格式 {@code ToolSpecification}。
      * <p>
      * 静态 schema 工具(参数固定)优先实现此方法(流式 builder, 编译期校验);

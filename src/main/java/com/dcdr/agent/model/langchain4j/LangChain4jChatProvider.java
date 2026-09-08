@@ -40,7 +40,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 基于 LangChain4j 的对话模型 Provider (V3.1 框架化改造)。
+ * 基于 LangChain4j 的对话模型 Provider (V3.0 框架化改造)。
  * <p>
  * 实现 {@link ChatModelProvider} 业务接口, 内核替换为框架的
  * {@link OpenAiChatModel}(同步) + {@link OpenAiStreamingChatModel}(流式):
@@ -343,7 +343,7 @@ public class LangChain4jChatProvider implements ChatModelProvider {
         }
         if (request.getToolSpecifications() != null && !request.getToolSpecifications().isEmpty()
                 && supportsFunctionCalling()) {
-            // V3.1 主路径: ToolRegistry 注册期缓存的框架原生工具规范直供, 零 Map 往返转换
+            // V3.0 主路径: ToolRegistry 注册期缓存的框架原生工具规范直供, 零 Map 往返转换
             builder.toolSpecifications(request.getToolSpecifications());
         } else if (request.getTools() != null && !request.getTools().isEmpty() && supportsFunctionCalling()) {
             // 兼容路径: OpenAI 格式 JSON 定义 → ToolSpecification

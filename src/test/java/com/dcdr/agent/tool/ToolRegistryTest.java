@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ToolRegistry 注册期转换测试 (V3.1 P2 工具定义框架化)。
+ * ToolRegistry 注册期转换测试 (V3.0 P2 工具定义框架化)。
  * <p>
  * 验证三件事:
  * <ol>

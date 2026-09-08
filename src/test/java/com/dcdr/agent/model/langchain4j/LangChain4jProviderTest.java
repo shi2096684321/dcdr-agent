@@ -22,7 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * V3.1 框架化改造: LangChain4j Provider 集成测试。
+ * V3.0 框架化改造: LangChain4j Provider 集成测试。
  * <p>
  * 不依赖 Spring 上下文, 直接用与 application.yml 一致的配置实例化 Provider,
  * 真调 DashScope 验证四条关键链路:

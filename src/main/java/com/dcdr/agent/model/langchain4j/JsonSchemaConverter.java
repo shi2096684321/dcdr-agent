@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * JSON Schema 转换器 (V3.1 框架化改造)。
+ * JSON Schema 转换器 (V3.0 框架化改造)。
  * <p>
  * 项目内部(ToolRegistry 工具定义 / IntentRouter 路由 schema / Agent 结构化输出)通行的都是
  * OpenAI 风格的 JSON Schema(裸 Map 结构), 而 LangChain4j 的

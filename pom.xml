@@ -21,7 +21,7 @@
         <java.version>17</java.version>
     </properties>
 
-    <!-- ===== V3.1 LangChain4j 对照版 (feat/v3.1-langchain4j 分支) =====
+    <!-- ===== V3.0 LangChain4j 对照版 (feat/v3.0-langchain4j 分支) =====
          BOM 统一管理核心库与集成模块版本, 避免模块间错配 -->
     <dependencyManagement>
         <dependencies>
@@ -93,7 +93,7 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- V3.1 LangChain4j 对照版: 纯库引入(不用 spring-boot-starter 自动配置),
+        <!-- V3.0 LangChain4j 对照版: 纯库引入(不用 spring-boot-starter 自动配置),
              显式学习框架核心抽象 ChatModel/EmbeddingModel/EmbeddingStore/AiServices。
              DashScope 走 OpenAI 兼容端点, 由 langchain4j-open-ai 直接对接,
              版本由上方 langchain4j-bom 统一管理。 -->
@@ -102,13 +102,13 @@
             <artifactId>langchain4j-open-ai</artifactId>
         </dependency>
 
-        <!-- V3.1 主模块: AiServices 工具循环 / ChatMemory 窗口策略 / @Tool 注解 schema 生成 -->
+        <!-- V3.0 主模块: AiServices 工具循环 / ChatMemory 窗口策略 / @Tool 注解 schema 生成 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
         </dependency>
 
-        <!-- V3.1 JDK HTTP 客户端实现: langchain4j-open-ai 对其为 optional 依赖,
+        <!-- V3.0 JDK HTTP 客户端实现: langchain4j-open-ai 对其为 optional 依赖,
              显式引入以定制 HttpClientBuilder(强制 HTTP/1.1, 消除 H2 连接池竞态导致的 Connection reset) -->
         <dependency>
             <groupId>dev.langchain4j</groupId>

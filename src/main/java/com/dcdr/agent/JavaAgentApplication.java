@@ -20,7 +20,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class JavaAgentApplication {
 
     public static void main(String[] args) {
-        // V3.1 框架化改造: LangChain4j 底层使用 JDK HttpClient 连接池(不经过 WebClientFactory),
+        // V3.0 框架化改造: LangChain4j 底层使用 JDK HttpClient 连接池(不经过 WebClientFactory),
         // 限制空闲 keep-alive 连接存活时间, 避免上游网关(DashScope 等)关闭空闲连接后
         // 复用死连接抛 Connection reset。
         // keepalive 5s 之后仍高频出现 reset, 根因在 H2: 连接池惰性清理竞态 + 网关关闭一条 H2 连接

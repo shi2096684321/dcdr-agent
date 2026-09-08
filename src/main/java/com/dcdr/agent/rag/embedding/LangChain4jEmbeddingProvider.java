@@ -15,7 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 基于 LangChain4j OpenAiEmbeddingModel 的 Embedding Provider (V3.1 框架化改造)。
+ * 基于 LangChain4j OpenAiEmbeddingModel 的 Embedding Provider (V3.0 框架化改造)。
  * <p>
  * 实现 {@link EmbeddingProvider} 业务接口, 内核替换为框架的
  * {@link OpenAiEmbeddingModel}: 请求构造/批量分片/maxRetries 由框架完成,

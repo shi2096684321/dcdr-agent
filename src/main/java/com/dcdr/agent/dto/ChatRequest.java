@@ -44,7 +44,7 @@ public class ChatRequest {
     private List<Map<String, Object>> tools;
 
     /**
-     * 函数调用工具定义列表(框架原生 ToolSpecification, V3.1)。
+     * 函数调用工具定义列表(框架原生 ToolSpecification, V3.0)。
      * <p>
      * 由 ToolRegistry 注册期缓存直供, LangChain4j Provider 优先消费(零 Map 往返转换);
      * legacy 手写 Provider 回退消费 {@link #tools}。仅服务端内部传递, 不参与 JSON 序列化。

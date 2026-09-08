@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 基于 LangChain4j 的图片生成 Provider (V3.1 框架化改造)。
+ * 基于 LangChain4j 的图片生成 Provider (V3.0 框架化改造)。
  * <p>
  * 实现 {@link ImageModelProvider} 业务接口, 内核替换为框架的
  * {@link OpenAiImageModel}: 请求构造(/images/generations)、鉴权头、
