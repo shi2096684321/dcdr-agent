@@ -41,10 +41,8 @@ frontend/.env.local
 frontend/.env.*.local
 
 # ===== Runtime artifacts (不应入库) =====
-# H2 运行时数据库文件
-data/database/*.db
-data/database/*.db.*
-data/database/*.trace.db
+# 应用运行时数据整体不入库: 知识库文档/上传文件/生成图片/H2 数据库等均为用户运行时数据
+data/
 
 # PostgreSQL 运行时数据 (Docker 卷或本地挂载, 不入库)
 pgdata/
@@ -55,8 +53,5 @@ postgres-data/
 *.txt
 build_log.txt
 mcp_*.txt
-
-# 知识库上传文档(运行时数据, 含用户私有内容, 不入库)
-data/kb/kb_17884264109978b068a5/doc_17884264175107332938.pdf
 
 
