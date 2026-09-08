@@ -51,6 +51,7 @@ public class SecurityContextWebFilter implements WebFilter {
 
     private final JwtUtil jwtUtil;
     private final AuthProperties authProperties;
+    private final AccessTokenBlacklist accessTokenBlacklist;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private static final String BEARER_PREFIX = "Bearer ";
@@ -99,6 +100,11 @@ public class SecurityContextWebFilter implements WebFilter {
         String userId = claims.getSubject();
         String username = claims.get("username", String.class);
         String role = claims.get("role", String.class);
+
+        // F-40.9 黑名单: 登出/换发后旧 Access Token 立即失效
+        if (accessTokenBlacklist.isRevoked(userId, claims.get("iatMs", Long.class))) {
+            return unauthorized(exchange, 401, "Token 已失效(已登出或已刷新), 请重新登录", "TOKEN_REVOKED");
+        }
 
         // 构造 Spring Security GrantedAuthority: ROLE_ 前缀(角色) + 细粒度权限(chat:chat 等)
         List<SimpleGrantedAuthority> authorities = new ArrayList<>();

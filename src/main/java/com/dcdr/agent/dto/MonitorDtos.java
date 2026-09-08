@@ -5,6 +5,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * V3.0-beta 治理与可观测性 DTO (F-34 执行监控 / 成本统计, 文档 §8)。
@@ -106,5 +107,21 @@ public class MonitorDtos {
         private long monthlyUsed;
         @Schema(description = "本月限额 (0=不限)")
         private long monthlyLimit;
+    }
+
+    /** LLM 服务调用与熔断概览 (F-40.2 / F-40.4, 前端内置监控面板用) */
+    @Data
+    @Schema(description = "LLM 服务调用与熔断概览 (F-40.2 / F-40.4)")
+    public static class LlmMonitorOverview {
+        @Schema(description = "成功调用总数(进程内累计)")
+        private long totalCalls;
+        @Schema(description = "失败调用总数")
+        private long totalErrors;
+        @Schema(description = "总体失败率 (0~1)")
+        private double overallErrorRate;
+        @Schema(description = "各 provider 调用/失败/耗时统计")
+        private List<Map<String, Object>> providers;
+        @Schema(description = "熔断器快照 (provider/state/windowCalls/windowFailures)")
+        private List<Map<String, Object>> circuitBreaker;
     }
 }

@@ -83,9 +83,13 @@ public class AuthController {
         return Result.success();
     }
 
-    @Operation(summary = "登出", description = "无状态 JWT, 后端不做任何处理; 前端丢弃 Token 即完成登出")
+    @Operation(summary = "登出", description = "作废当前用户已签发 Access Token, 后续携带旧 Token 访问将被拒绝; 前端随后可丢弃本地 Token")
     @PostMapping("/logout")
-    public Result<Void> logout() {
+    public Result<Void> logout(ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        if (userId != null) {
+            authService.logout(userId);
+        }
         return Result.success();
     }
 }

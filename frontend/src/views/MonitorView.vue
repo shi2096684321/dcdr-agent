@@ -134,13 +134,53 @@
       </el-table>
       <div v-if="!overview?.byWorkflow?.length" class="empty-tip">窗口内暂无工作流执行记录</div>
     </div>
+
+    <!-- LLM 服务调用与熔断 (F-40.2/F-40.4, 内置监控面板) -->
+    <div class="chart-card">
+      <div class="c-title">LLM 服务调用与熔断</div>
+      <div class="stat-cards">
+        <div class="stat-card">
+          <div class="s-value">{{ llm ? llm.totalCalls : '-' }}</div>
+          <div class="s-label">LLM 调用总数</div>
+        </div>
+        <div class="stat-card" :class="{ danger: (llm?.totalErrors || 0) > 0 }">
+          <div class="s-value">{{ llm ? llm.totalErrors : '-' }}</div>
+          <div class="s-label">失败总数</div>
+        </div>
+        <div class="stat-card" :class="{ danger: (llm?.overallErrorRate || 0) > 0.05 }">
+          <div class="s-value">{{ llm ? (llm.overallErrorRate * 100).toFixed(1) + '%' : '-' }}</div>
+          <div class="s-label">总体失败率</div>
+        </div>
+      </div>
+      <el-table :data="llmRows" size="small" style="margin-top: 12px">
+        <el-table-column prop="provider" label="模型" min-width="150" />
+        <el-table-column prop="calls" label="调用" width="90" />
+        <el-table-column label="失败" width="90">
+          <template #default="{ row }">
+            <span :class="{ 'llm-err': (row.errors || 0) > 0 }">{{ row.errors }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="失败率" width="100">
+          <template #default="{ row }">{{ ((row.errorRate || 0) * 100).toFixed(1) }}%</template>
+        </el-table-column>
+        <el-table-column label="平均耗时" width="110">
+          <template #default="{ row }">{{ (row.latencyMeanSeconds || 0).toFixed(2) }}s</template>
+        </el-table-column>
+        <el-table-column label="熔断状态" width="130">
+          <template #default="{ row }">
+            <el-tag size="small" :type="cbType(row.cbState)" effect="plain">{{ row.cbState }}</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="!llmRows.length" class="empty-tip">暂无 LLM 调用记录（发一条对话后出现）</div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getWorkflowMonitor, getCostStats, getQuotaUsage, extractMessage } from '@/api'
+import { getWorkflowMonitor, getCostStats, getQuotaUsage, getLlmMonitor, extractMessage } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -150,11 +190,23 @@ const scope = ref('')
 const overview = ref(null)
 const cost = ref(null)
 const quota = ref(null)
+const llm = ref(null)
 
 const dailyRows = computed(() => (cost.value?.daily || []).slice().reverse())
 const modelRows = computed(() => cost.value?.byModel || [])
 const maxTotal = computed(() => Math.max(1, ...dailyRows.value.map(d => d.totalTokens)))
 const maxModelTotal = computed(() => Math.max(1, ...modelRows.value.map(m => m.totalTokens)))
+
+// LLM 服务状态 (合并熔断快照)
+const cbMap = computed(() => {
+  const m = {}
+  ;(llm.value?.circuitBreaker || []).forEach(c => { m[c.provider] = c.state })
+  return m
+})
+const llmRows = computed(() =>
+  (llm.value?.providers || []).map(p => ({ ...p, cbState: cbMap.value[p.provider] || 'CLOSED' }))
+)
+const cbType = (s) => (s === 'OPEN' ? 'danger' : s === 'HALF_OPEN' ? 'warning' : 'success')
 
 const pct = (v) => Math.min(90, (v / maxTotal.value) * 90) + '%'
 const pctModel = (v) => Math.min(90, (v / maxModelTotal.value) * 90) + '%'
@@ -180,14 +232,16 @@ async function loadAll() {
   const params = { days: days.value }
   if (authStore.isAdmin && scope.value) params.scope = scope.value
   try {
-    const [wo, cs, qu] = await Promise.all([
+    const [wo, cs, qu, lm] = await Promise.all([
       getWorkflowMonitor(params),
       getCostStats(params),
-      getQuotaUsage()
+      getQuotaUsage(),
+      getLlmMonitor()
     ])
     overview.value = wo
     cost.value = cs
     quota.value = qu
+    llm.value = lm
   } catch (e) {
     ElMessage.error(extractMessage(e) || '加载监控数据失败')
   } finally {

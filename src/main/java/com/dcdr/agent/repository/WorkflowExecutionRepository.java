@@ -60,4 +60,12 @@ public interface WorkflowExecutionRepository extends JpaRepository<WorkflowExecu
             "ORDER BY e.startedAt DESC")
     List<WorkflowExecutionEntity> findRecentForMonitor(@Param("userId") String userId,
                                                        @Param("since") LocalDateTime since);
+
+    /**
+     * F-40.8 兜底: 查询超过阈值仍未结束的指定状态执行记录(用于把卡死的运行标记为 dead_letter)。
+     * statuses 例如 ["running"]; before = 应完成时限。
+     */
+    @Query("SELECT e FROM WorkflowExecutionEntity e WHERE e.status IN :statuses AND e.startedAt < :before")
+    List<WorkflowExecutionEntity> findStuckByStatus(@Param("statuses") List<String> statuses,
+                                                    @Param("before") LocalDateTime before);
 }

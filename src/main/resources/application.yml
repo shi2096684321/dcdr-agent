@@ -1,9 +1,14 @@
 server:
   port: 8080
+  # V3.0 F-40.6 优雅停机: 停机等待在途请求/SSE 处理完, 超时后强制退出
+  shutdown: graceful
 
 spring:
   application:
     name: dcdr-agent
+  # 优雅停机每阶段等待上限 (可结合停机事件把 running 工作流标记为 interrupted)
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 
   # 默认不激活额外 profile (走 application.yml 的 H2); 设置 SPRING_PROFILES_ACTIVE=pg 即切 PostgreSQL
   profiles:
@@ -467,8 +472,9 @@ logging:
     com.dcdr.agent: info
     org.springframework.ai: info
   pattern:
-    console: "%d{HH:mm:ss.SSS} %-5level [%thread] [${traceId:-},${spanId:-}] %logger{36} - %msg%n"
-    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [${traceId:-},${spanId:-}] %logger{36} - %msg%n"
+    # 注意: 读 MDC 必须用 %X{traceId}/%X{spanId}(Micrometer 注入到 MDC); ${traceId} 是属性占位符恒为空
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{traceId:-},%X{spanId:-}] %logger{36} - %msg%n"
   file:
     name: ./logs/dcdr-agent.log
   logback:
@@ -491,12 +497,14 @@ management:
     sampling:
       # 采样率 (0~1): 生产默认 0.1, 排障时可临时调 1.0
       probability: 0.1
-    export:
-      zipkin:
-        # F-40.12 分布式追踪: 上报到 Zipkin Server (docker run -d -p 9411:9411 openzipkin/zipkin)
-        # 关闭(默认)时不导出, traceId 仍会注入日志 MDC, 可按日志串联链路
-        enabled: false
-        endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}
+  zipkin:
+    tracing:
+      # F-40.12 分布式追踪: 上报到 Zipkin Server (docker run -d -p 9411:9411 openzipkin/zipkin)
+      # 注意: Spring Boot 3.3 的生效键是 management.zipkin.tracing.*;
+      # 3.4 才改名为 management.tracing.export.zipkin.* —— 旧写法在此版本会静默失效(默认仍上报 localhost:9411)。
+      # 设 ZIPKIN_EXPORT_ENABLED=false 可关闭上报; 关闭后 traceId 仍会注入日志 MDC 用于日志串联。
+      enabled: ${ZIPKIN_EXPORT_ENABLED:true}
+      endpoint: ${ZIPKIN_ENDPOINT:http://localhost:9411/api/v2/spans}
   propagation:
     # W3C Trace Context: traceparent 头跨服务传播, 与 Zipkin/Tempo 兼容
     type: w3c

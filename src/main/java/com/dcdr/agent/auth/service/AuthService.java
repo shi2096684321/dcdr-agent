@@ -1,6 +1,7 @@
 package com.dcdr.agent.auth.service;
 
 import com.dcdr.agent.audit.AuditService;
+import com.dcdr.agent.auth.security.AccessTokenBlacklist;
 import com.dcdr.agent.auth.config.AuthProperties;
 import com.dcdr.agent.auth.dto.AuthDtos;
 import com.dcdr.agent.auth.jwt.JwtUtil;
@@ -35,6 +36,7 @@ public class AuthService {
     private final UserRepository userRepository;
     private final JwtUtil jwtUtil;
     private final AuthProperties authProperties;
+    private final AccessTokenBlacklist accessTokenBlacklist;
     private final AuditService auditService;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder(10);
 
@@ -131,7 +133,15 @@ public class AuthService {
         if (!"active".equals(user.getStatus())) {
             throw new BusinessException(403, "账号已被禁用", "ACCOUNT_DISABLED");
         }
+        // F-40.9 换发即失效: 使刷新前签发的全部 Access Token 立即失效(旧令牌不可再用)
+        accessTokenBlacklist.revokeAll(userId);
         return buildAuthResponse(user);
+    }
+
+    /** 登出: 作废该用户当前有效的全部 Access Token(前端随后可丢弃本地 Token) */
+    public void logout(String userId) {
+        accessTokenBlacklist.revokeAll(userId);
+        log.info("用户 {} 登出, 已作废其全部 Access Token", userId);
     }
 
     /** 获取当前登录用户信息 */

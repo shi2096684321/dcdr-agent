@@ -68,6 +68,8 @@ public class JwtUtil {
                 .claim("username", username)
                 .claim("role", role)
                 .claim("type", type)
+                // F-40.9 毫秒级签发时刻: 用于 Access Token 黑名单(登出/换发即失效)作废边界比较
+                .claim("iatMs", now.toEpochMilli())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plus(ttl)))
                 .signWith(signingKey)

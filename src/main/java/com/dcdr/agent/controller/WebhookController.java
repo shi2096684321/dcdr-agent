@@ -9,6 +9,7 @@ import com.dcdr.agent.dto.WebhookDtos;
 import com.dcdr.agent.dto.WorkflowDtos;
 import com.dcdr.agent.entity.WebhookEndpointEntity;
 import com.dcdr.agent.entity.WorkflowDefinitionEntity;
+import com.dcdr.agent.model.circuitbreaker.LlmCircuitBreaker;
 import com.dcdr.agent.repository.WebhookEndpointRepository;
 import com.dcdr.agent.repository.WorkflowDefinitionRepository;
 import io.swagger.v3.oas.annotations.Operation;
@@ -59,6 +60,7 @@ public class WebhookController {
     private final WebhookEndpointRepository webhookRepository;
     private final WorkflowDefinitionRepository workflowRepository;
     private final WorkflowEngine workflowEngine;
+    private final LlmCircuitBreaker circuitBreaker;
     private final V3Properties v3Properties;
 
     // ===== 管理 API (需登录 + workflow:execute 权限) =====
@@ -165,15 +167,16 @@ public class WebhookController {
             @PathVariable String token,
             @RequestBody(required = false) Map<String, Object> body,
             @RequestHeader(value = "X-Webhook-Secret", required = false) String secret,
+            @RequestHeader(value = "X-Webhook-Id", required = false) String webhookId,
             ServerWebExchange exchange) {
         // 工作流执行为阻塞 LLM 调用, 必须切到 boundedElastic
-        return Mono.fromCallable(() -> doTrigger(token, body, secret))
+        return Mono.fromCallable(() -> doTrigger(token, body, secret, webhookId))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(Result::success);
     }
 
     /** 触发逻辑 (同步, 在 boundedElastic 执行) */
-    private WorkflowDtos.ExecutionResult doTrigger(String token, Map<String, Object> body, String secret) {
+    private WorkflowDtos.ExecutionResult doTrigger(String token, Map<String, Object> body, String secret, String webhookId) {
         WebhookEndpointEntity e = webhookRepository.findByToken(token)
                 .orElseThrow(() -> new BusinessException(404, "Webhook 不存在或 token 无效", "WEBHOOK_NOT_FOUND"));
         if (!e.isEnabled()) {
@@ -191,8 +194,43 @@ public class WebhookController {
         e.setLastTriggered(LocalDateTime.now());
         webhookRepository.save(e);
         log.info("Webhook 触发: id={}, workflow={}, user={}", e.getId(), e.getWorkflowId(), e.getUserId());
-        // 以 Webhook 所属用户身份执行工作流
-        return workflowEngine.executeWithTrigger(e.getWorkflowId(), input, "webhook", e.getUserId());
+        // F-40.8 幂等: 依赖方携带 X-Webhook-Id 时, 处理过(成功)的同一 id 直接判定重复, 不重复执行。
+        // 仅在成功后才保留 id; 执行失败/熔断拒绝会释放, 允许重试(进程内存, 单实例够用)。
+        boolean claimed = webhookId != null && !webhookId.isBlank()
+                && webhookIds.putIfAbsent(webhookId, System.currentTimeMillis()) == null;
+        if (webhookId != null && !webhookId.isBlank() && !claimed) {
+            throw new BusinessException(409, "重复的 Webhook 请求 (X-Webhook-Id 已成功处理)", "WEBHOOK_DUPLICATE");
+        }
+        evictWebhookIds();
+        // F-40.4 熔断降级: 以工作流为粒度保护 Webhook 触发的执行链路(工作流内含的 LLM 调用
+        // 已由 CircuitBreakerChatProvider 各自熔断, 这里覆盖工作流整体执行的偶发异常)
+        String breakerKey = "webhook:" + e.getWorkflowId();
+        circuitBreaker.check(breakerKey);
+        try {
+            // 以 Webhook 所属用户身份执行工作流
+            WorkflowDtos.ExecutionResult result =
+                    workflowEngine.executeWithTrigger(e.getWorkflowId(), input, "webhook", e.getUserId());
+            circuitBreaker.recordSuccess(breakerKey);
+            return result;
+        } catch (RuntimeException ex) {
+            if (claimed) webhookIds.remove(webhookId); // 失败可重试, 释放幂等占位
+            circuitBreaker.recordFailure(breakerKey);
+            throw ex;
+        }
+    }
+
+    /** F-40.8 幂等占位: webhookId -> 最近处理时间戳(成功触发后保留) */
+    private final java.util.concurrent.ConcurrentMap<String, Long> webhookIds =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 幂等保留窗口 */
+    private static final long IDEMPOTENT_RETENTION_MS = 10 * 60_000L;
+
+    /** 容量过大时清理过期占位 */
+    private void evictWebhookIds() {
+        if (webhookIds.size() <= 10_000) return;
+        long cutoff = System.currentTimeMillis() - IDEMPOTENT_RETENTION_MS;
+        webhookIds.entrySet().removeIf(en -> en.getValue() < cutoff);
     }
 
     /** 从请求体提取工作流输入 */

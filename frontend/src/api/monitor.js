@@ -12,3 +12,6 @@ export const getCostStats = (params = {}) =>
 
 // 我的配额使用情况
 export const getQuotaUsage = () => unwrap(api.get('/api/monitor/quota'))
+
+// LLM 服务调用与熔断概览 (F-40.2/F-40.4, 内置面板, 免 Prometheus/Grafana)
+export const getLlmMonitor = () => unwrap(api.get('/api/monitor/llm'))

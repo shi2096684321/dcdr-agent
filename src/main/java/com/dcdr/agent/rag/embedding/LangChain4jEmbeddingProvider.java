@@ -1,6 +1,7 @@
 package com.dcdr.agent.rag.embedding;
 
 import com.dcdr.agent.common.constant.ModelType;
+import com.dcdr.agent.model.circuitbreaker.LlmCircuitBreaker;
 import com.dcdr.agent.model.langchain4j.LangChain4jHttp;
 import com.dcdr.agent.rag.config.RagProperties;
 import dev.langchain4j.data.embedding.Embedding;
@@ -41,8 +42,10 @@ public class LangChain4jEmbeddingProvider implements EmbeddingProvider {
     private final String model;
     private final int dimensions;
     private final int batchSize;
+    /** F-40.4 熔断降级: 保护 Embedding 上游调用(与 LLM 熔断共用同一实现) */
+    private final LlmCircuitBreaker circuitBreaker;
 
-    public LangChain4jEmbeddingProvider(RagProperties.EmbeddingProviderConfig config) {
+    public LangChain4jEmbeddingProvider(RagProperties.EmbeddingProviderConfig config, LlmCircuitBreaker circuitBreaker) {
         this.embeddingModel = OpenAiEmbeddingModel.builder()
                 .baseUrl(config.getBaseUrl())
                 .apiKey(config.getApiKey())
@@ -59,6 +62,7 @@ public class LangChain4jEmbeddingProvider implements EmbeddingProvider {
         this.model = config.getModel();
         this.dimensions = config.getDimensions();
         this.batchSize = Math.max(1, config.getBatchSize());
+        this.circuitBreaker = circuitBreaker;
     }
 
     @Override
@@ -96,8 +100,16 @@ public class LangChain4jEmbeddingProvider implements EmbeddingProvider {
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("待向量化的文本不能为空");
         }
-        Response<Embedding> response = embeddingModel.embed(text);
-        return response.content().vector();
+        String key = breakerKey();
+        circuitBreaker.check(key);
+        try {
+            Response<Embedding> response = embeddingModel.embed(text);
+            circuitBreaker.recordSuccess(key);
+            return response.content().vector();
+        } catch (RuntimeException e) {
+            circuitBreaker.recordFailure(key);
+            throw e;
+        }
     }
 
     @Override
@@ -105,20 +117,33 @@ public class LangChain4jEmbeddingProvider implements EmbeddingProvider {
         if (texts == null || texts.isEmpty()) {
             return List.of();
         }
-        List<TextSegment> segments = texts.stream().map(TextSegment::from).toList();
-        // 框架内部按 maxSegmentsPerBatch 分批调用上游, 等价于手写版的 batchSize 分片循环
-        Response<List<Embedding>> response = embeddingModel.embedAll(segments);
-        List<Embedding> embeddings = response.content();
-        if (embeddings == null || embeddings.size() != texts.size()) {
-            log.warn("{} embedding 返回数量({})与入参({})不一致",
-                    name, embeddings == null ? 0 : embeddings.size(), texts.size());
-        }
-        List<float[]> result = new ArrayList<>(embeddings != null ? embeddings.size() : 0);
-        if (embeddings != null) {
-            for (Embedding e : embeddings) {
-                result.add(e.vector());
+        String key = breakerKey();
+        circuitBreaker.check(key);
+        try {
+            List<TextSegment> segments = texts.stream().map(TextSegment::from).toList();
+            // 框架内部按 maxSegmentsPerBatch 分批调用上游, 等价于手写版的 batchSize 分片循环
+            Response<List<Embedding>> response = embeddingModel.embedAll(segments);
+            circuitBreaker.recordSuccess(key);
+            List<Embedding> embeddings = response.content();
+            if (embeddings == null || embeddings.size() != texts.size()) {
+                log.warn("{} embedding 返回数量({})与入参({})不一致",
+                        name, embeddings == null ? 0 : embeddings.size(), texts.size());
             }
+            List<float[]> result = new ArrayList<>(embeddings != null ? embeddings.size() : 0);
+            if (embeddings != null) {
+                for (Embedding e : embeddings) {
+                    result.add(e.vector());
+                }
+            }
+            return result;
+        } catch (RuntimeException e) {
+            circuitBreaker.recordFailure(key);
+            throw e;
         }
-        return result;
+    }
+
+    /** F-40.4 熔断 key: 以 "embedding:<名称>" 与 LLM provider 的 key 区分, 便于监控面板按资源查看 */
+    private String breakerKey() {
+        return "embedding:" + name;
     }
 }

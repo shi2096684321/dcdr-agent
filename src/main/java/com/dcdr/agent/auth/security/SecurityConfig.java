@@ -53,6 +53,7 @@ public class    SecurityConfig {
     private final AuthProperties authProperties;
     private final JwtUtil jwtUtil;
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final AccessTokenBlacklist accessTokenBlacklist;
 
     @Bean
     public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
@@ -66,7 +67,7 @@ public class    SecurityConfig {
         }
 
         // JWT 认证过滤器 (非 @Component, 避免被 Spring Boot 自动注册为独立 WebFilter 导致重复执行)
-        SecurityContextWebFilter jwtAuthFilter = new SecurityContextWebFilter(jwtUtil, authProperties);
+        SecurityContextWebFilter jwtAuthFilter = new SecurityContextWebFilter(jwtUtil, authProperties, accessTokenBlacklist);
 
         // 白名单路径 (从 AuthProperties 读取)
         String[] permitPaths = authProperties.getPermitPaths().toArray(new String[0]);

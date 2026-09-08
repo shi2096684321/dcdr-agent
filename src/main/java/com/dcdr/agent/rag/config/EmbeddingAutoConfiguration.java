@@ -11,6 +11,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import com.dcdr.agent.model.circuitbreaker.LlmCircuitBreaker;
+
 /**
  * Embedding Provider 自动注册 (V2.1 RAG)。
  * <p>
@@ -27,6 +29,7 @@ public class EmbeddingAutoConfiguration {
     private static final int SCHEMA_EMBEDDING_DIM = 1536;
 
     private final RagProperties properties;
+    private final LlmCircuitBreaker circuitBreaker;
 
     @Bean
     public CommandLineRunner embeddingRegistrar(EmbeddingRegistry registry) {
@@ -60,7 +63,7 @@ public class EmbeddingAutoConfiguration {
                             default -> log.warn("未知手写 Embedding provider: {} (name={})", c.getProvider(), c.getName());
                         }
                     } else {
-                        registry.register(new LangChain4jEmbeddingProvider(c)); count++;
+                        registry.register(new LangChain4jEmbeddingProvider(c, circuitBreaker)); count++;
                     }
                 } catch (Exception e) {
                     log.error("注册 Embedding 模型失败: {}", c.getName(), e);

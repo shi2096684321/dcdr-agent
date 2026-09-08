@@ -10,6 +10,17 @@ spring:
     driver-class-name: org.postgresql.Driver
     username: dcdr_agent
     password: dcdr_agent
+    # F-40.10 性能与扩展性: Hikari 连接池调优
+    hikari:
+      pool-name: dcdr-agent-pg
+      # 池大小 = (核数 × 2) + 磁盘数, WebFlux 阻塞调用走 boundedElastic, 池不宜过大
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000       # 获取连接最大等待
+      validation-timeout: 3000        # 校验连接毫秒数
+      idle-timeout: 600000            # 10 分钟空闲回收
+      max-lifetime: 1800000           # 30 分钟达到生命周期上限(需 < DB wait_timeout)
+      leak-detection-threshold: 8000  # 8 秒未归还视为泄漏, 输出告警(生产建议开启定位连接泄漏)
   jpa:
     # 表结构已由 v2.0_schema.sql 显式管理; JPA 仅做校验, 不自动改表
     hibernate:
@@ -18,6 +29,9 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        # F-40.10 慢查询定位: 默认关, 排障时置 true 会在 session 关闭打印执行统计(含各查询耗时)。
+        # 生产级慢查询看 PostgreSQL 的 auto_explain / pg_stat_statements(见 docs 部署文档)。
+        generate_statistics: ${HIBERNATE_STATISTICS:false}
     open-in-view: false
 
 # PgVector 向量检索相关配置 (V2.0 RAG 向量库)

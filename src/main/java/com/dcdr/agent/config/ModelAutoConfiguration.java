@@ -33,7 +33,7 @@ public class ModelAutoConfiguration {
     private final AgentProperties properties;
 
     @Bean
-    public CommandLineRunner modelRegistrar(ModelRegistry registry, LlmCircuitBreaker circuitBreaker) {
+    public CommandLineRunner modelRegistrar(ModelRegistry registry, LlmCircuitBreaker circuitBreaker, LlmMetrics metrics) {
         return args -> {
             AgentProperties.ModelsConfig models = properties.getModels();
             int chatCount = 0, imageCount = 0, videoCount = 0, audioCount = 0;
@@ -42,8 +42,9 @@ public class ModelAutoConfiguration {
                     if (!c.isEnabled()) continue;
                     try {
                         // V3.0-rc F-40.4: 所有对话 Provider 注册前包一层熔断装饰器 (关闭时透明直通)
+                        // V3.0 F-40.2: 同时注入 LlmMetrics, 在统一出口打自定义业务指标
                         java.util.function.UnaryOperator<ChatModelProvider> wrap = p ->
-                                new CircuitBreakerChatProvider(p, circuitBreaker);
+                                new CircuitBreakerChatProvider(p, circuitBreaker, metrics);
                         // engine 分发: manual=手写 WebClient 实现(回退); 默认 langchain4j 框架内核
                         if ("manual".equals(c.getEngine())) {
                             switch (c.getProvider()) {
