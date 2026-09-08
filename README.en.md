@@ -1,21 +1,27 @@
 # dcdr-agent
 
-An open-source intelligent agent (Agent) platform based on Spring Boot + Vue 3, supporting streaming conversation, text-to-image creation, and unified orchestration and tool calling (Function Calling) for multi-vendor large models.
+A production-grade Agent orchestration platform based on Spring Boot + Java 17 + LangChain4j, featuring intelligent routing, visual DAG workflow orchestration, fault-tolerant execution, knowledge base RAG, multimodal generation, and full observability (tracing / metrics / audit).
 
-Current version: **v2.3.0** (Release Notes: [`docs/RELEASE-v2.3.0.md`](docs/RELEASE-v2.3.0.md)).
+Current version: **v3.0.0** (Release Notes: [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md)).
 
-> Version note: v2.3.0 unifies V2.0 (Knowledge Base / Auth / Multi-Agent) through V2.3 (Custom Agent / Workflow / Scheduled Task / Streaming Image). See [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md).
+> Version note: v3.0.0 unifies the v3.0.0-alpha milestone (intelligent routing F-30 / trigger layer F-31 / execution fault tolerance F-33) with visual DAG orchestration (F-32), template market (F-35), cost & quota (F-39), production hardening (F-40 partial), and the LangChain4j framework migration of the capability layer. See [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md).
 
 ## ✨ Features
 
 - **Streaming conversation**: SSE real-time output, reasoning (CoT) content displayed separately; supports message editing / retry / truncation and conversation interruption (stop).
-- **Context protection**: context length estimation and over-length alerts to avoid exceeding the model context window.
+- **Intelligent routing (F-30)**: LLM-based intent recognition routes a chat message to workflow / Agent / plain conversation automatically; low-confidence results fall back to conversation; routing logs are persisted and queryable.
+- **Visual DAG orchestration (F-32)**: drag-and-drop canvas with routing nodes, replacing form-only workflow editing.
+- **Fault-tolerant execution (F-33)**: workflow state persisted (`workflow_executions`), retries (fixed / linear / exponential backoff), resumable from the last completed step, and human-approval nodes (`approve` / `cancel`).
+- **Trigger layer (F-31)**: trigger types `manual / api / webhook / event / schedule / chat`; Webhook endpoints with token auth and optional signature verification.
+- **Governance & observability (F-34 / F-40)**: LLM call tracing (Micrometer Tracing + Zipkin), monitoring view, Actuator health, Prometheus metrics, rate limiting and model-call circuit breaker, audit logs, log rotation (100MB/file, 30 days / 2GB cap).
+- **Cost & quota (F-39)**: per-conversation token usage tracking (CostTracker) and user-level quota checks (429 when exceeded).
+- **Template market (F-35)**: Agent / workflow templates with one-click reuse.
+- **Context protection**: context length estimation and over-length alerts; session-level System Prompt customization; streaming messages are session-scoped (switching sessions never mixes outputs).
+- **Knowledge base RAG**: KB management (user-level / platform-level visibility), document upload → chunking → embedding → vector retrieval (pgvector); Agentic RAG with forced-retrieval mode and citation cards.
 - **Multimodal**: in-conversation text-to-image (ChatImageService), image recognition and visual model auto-routing Q&A.
-- **Creation mode**: text-to-image project management, async generation tasks, batch generation and parameter reuse.
-- **Text-to-video**: video sub-mode in creation mode, with async task orchestration and status polling.
-- **Web search**: built-in `web_search` tool (connected via MCP to an external Server), with de-duplication interception of repeated calls within the same conversation turn.
-- **Tool calling (Function Calling)**: built-in `calculator` / `time` / `weather` / `image_generation` / `web_search`, unified tool framework, streaming result return and persistence.
-- **Multi-model adaptation**: SPI-style Provider abstraction, with built-in OpenAI-compatible, Qwen, DeepSeek, Zhipu; auto-routed by UI mode / model type.
+- **Creation mode**: text-to-image / text-to-video project management, async generation tasks, batch generation and parameter reuse.
+- **Tool calling (Function Calling)**: built-in `calculator` / `time` / `weather` / `image_generation` / `web_search` / `knowledge_base_search`, unified tool framework (registered as native `ToolSpecification` at startup), streaming result return and persistence.
+- **Multi-model adaptation**: LangChain4j-based providers with OpenAI-compatible, Qwen, DeepSeek, Zhipu built in; auto-routed by UI mode / model type.
 
 ## 🧱 Software Architecture
 
@@ -46,7 +52,7 @@ frontend/
 │   │   └── GenerationDetailDialog.vue  # creation image detail dialog (with param reuse)
 │   ├── composables/             # Vue composables (reusable logic)
 │   │   └── useMarkdown.js        #   shared markdown-it instance + renderMarkdown
-│   ├── stores/                  # Pinia state management (registered, reserved)
+│   ├── stores/                  # Pinia state (auth.js auth / model.js global model list)
 │   ├── styles/                  # global styles
 │   │   ├── base.css              #   base reset
 │   │   ├── gradients.css        #   .gradient-bg/green/orange utility classes
@@ -55,7 +61,17 @@ frontend/
 │   │   └── format.js             #   formatDuration / formatDate / styleLabel
 │   ├── views/                   # page-level components (one mode/route each)
 │   │   ├── ChatView.vue          #   chat mode: sidebar + message list + streaming + input
-│   │   └── CreativeView.vue      #   creation mode: project sidebar + control panel + preview
+│   │   ├── CreativeView.vue      #   creation mode: project sidebar + control panel + preview
+│   │   ├── KnowledgeBaseView.vue #   knowledge base management (docs / retrieval test)
+│   │   ├── AgentView.vue         #   custom agent CRUD
+│   │   ├── WorkflowView.vue      #   workflow definition & execution history
+│   │   ├── DagEditorView.vue     #   visual DAG canvas (v3.0)
+│   │   ├── TemplateMarketView.vue#   agent/workflow template market (v3.0)
+│   │   ├── ScheduledTaskView.vue #   scheduled tasks
+│   │   ├── RoutingView.vue       #   routing logs (v3.0)
+│   │   ├── MonitorView.vue       #   monitoring dashboard (v3.0)
+│   │   ├── AdminView.vue         #   admin console (admin only)
+│   │   └── AuthView.vue          #   login / register
 │   ├── App.vue                   # root component: layout + <AppHeader> + view orchestration
 │   └── main.js                   # entry: register Pinia / ElementPlus, import styles
 ├── index.html
@@ -224,7 +240,8 @@ Main configuration is in `src/main/resources/application.yml`:
       enabled: true
       api-key: ${WEATHER_API_KEY:demo-key}
   ```
-- **Datasource**: defaults to H2 file DB `./data/database/agent`; switchable to MySQL etc. via `spring.datasource`.
+- **Datasource**: defaults to H2 file DB `./data/database/agent` for development; for production use PostgreSQL (+pgvector for RAG) via `spring.datasource`, and run `docs/sql/v3.0_schema.sql` (adds `routing_logs` / `webhook_endpoints` / `workflow_executions`).
+- **V3 switches**: routing / retry / webhook base URL are under `agent.v3.*`; each capability can be toggled independently (with routing disabled, chat behaves exactly as v2.3).
 - **Web search (MCP)**: this project acts as an MCP Host, connecting to an external MCP Server via `mcp.servers` for capability — **no built-in search implementation**. The sample configures the official Tavily Server (`@tavily/mcp-server`), requiring env var `TAVILY_API_KEY` first (see run steps above). The tool name is mapped to `web_search` via `aliases`; the orchestration layer and front-end need no changes.
 
 ## 🛠 Built-in Tools
@@ -237,6 +254,7 @@ Main configuration is in `src/main/resources/application.yml`:
 | `image_generation` | text-to-image | reuses in-conversation image model |
 | `video_generation` | text-to-video | creation mode video sub-mode, async task orchestration |
 | `web_search` | web search (MCP) | via MCP to external Server, requires `TAVILY_API_KEY`; de-dup interception of repeated calls within the same conversation turn |
+| `knowledge_base_search` | knowledge base retrieval (RAG) | searches user-selected KBs (merged with platform KBs) on the LLM's decision (Agentic RAG) |
 
 Adding a tool: implement the `Tool` interface and annotate with `@Component`; it auto-registers in `ToolAutoConfiguration`. To expose it in streaming conversation, override `supportsStreaming()` to return `true`.
 
@@ -244,12 +262,13 @@ Adding a tool: implement the `Tool` interface and annotate with `@Component`; it
 
 - [`docs/01-需求文档.md`](docs/01-需求文档.md)
 - [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
+- [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md) (intelligent routing / DAG / fault tolerance / hardening)
+- [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md) (current release)
+- [`docs/RELEASE-v3.0.0-alpha-self-impl.md`](docs/RELEASE-v3.0.0-alpha-self-impl.md) (v3.0 alpha milestone)
 - [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md) (knowledge base / auth / multi-agent)
 - [`docs/04-V1.1规划文档.md`](docs/04-V1.1规划文档.md) (voice STT/TTS / video generation)
 - [`docs/05-语言对话模块（未来可扩展项）.md`](docs/05-语言对话模块（未来可扩展项）.md) (pure conversation / voice, future)
-- [`docs/06-V1.1发布说明（Release Notes）.md`](docs/06-V1.1发布说明（Release Notes）.md)
-- [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md)
-- [`docs/RELEASE-v1.1.0.md`](docs/RELEASE-v1.1.0.md)
+- [`docs/RELEASE-v1.0.0.md`](docs/RELEASE-v1.0.0.md) and other historical release notes under `docs/`
 
 ## 🤝 Contributing
 

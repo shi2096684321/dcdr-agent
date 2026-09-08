@@ -1,4 +1,4 @@
----
+  ---
 name: "Release Notes 发布说明规范"
 version: "1.0.0"
 description: "约定本项目每次版本发布时，必须按统一格式生成发布说明文件。触发场景：用户要求发布版本、生成 Release Notes、打版本 tag 时。"
