@@ -107,7 +107,9 @@ agent:
       - /api/auth/login
       - /api/auth/register
       - /api/auth/refresh
-      - /api/models
+      # 注意: /api/models 不能加白名单 —— 白名单路径在 SecurityContextWebFilter 中直接放行、不解析 Token,
+      # 导致 Controller 里 SecurityContext.getUserId() 恒为 null, 用户自定义模型无法追加进列表。
+      # 走下方 /api/** authenticated() 规则, 登录后携带 Token 正常解析用户上下文 (V3.1)。
       - /v3/api-docs
       - /swagger-ui
       - /h2-console
@@ -207,6 +209,9 @@ agent:
   # 模型配置
   models:
     default-chat: "qwen-chat"
+    # 用户自定义模型 apiKey 的 AES 加密主密钥; 生产环境通过环境变量 MODEL_API_KEY_SECRET 注入
+    # (不可与其他密钥复用, 泄露会导致用户 apiKey 密文可被解出)
+    api-key-secret: ${MODEL_API_KEY_SECRET:dcdr-agent-model-api-key-secret-change-me-32bytes}
 
     # provider = 厂商(qwen/zhipu/deepseek/openai/ollama), 用于 /api/models 展示与 manual 模式分发
     # engine 说明:

@@ -18,3 +18,5 @@ export * from './market'
 export * from './monitor'
 // 调用链日志
 export * from './llmCalls'
+// V3.1 用户自定义模型
+export * from './userModels'

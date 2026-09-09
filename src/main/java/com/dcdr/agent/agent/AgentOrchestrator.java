@@ -1456,7 +1456,7 @@ public class AgentOrchestrator {
         history.removeIf(m -> "system".equals(m.getRole()) && m.getName() == null);
 
         // 3. 路由决策
-        ChatModelProvider provider = router.route(request, history);
+        ChatModelProvider provider = router.route(request, history, userId);
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
 
         // 3.1 分层 system prompt 注入(L1 全局 + L2/chat 场景级):
@@ -1816,7 +1816,7 @@ public class AgentOrchestrator {
         List<Message> fullHistorySync = memory.load(sessionId);
         List<Message> history = memory.loadWindow(sessionId);
         int memoryTrimmedSync = fullHistorySync.size() - history.size();
-        ChatModelProvider provider = router.route(request, history);
+        ChatModelProvider provider = router.route(request, history, currentUserId);
 
         // V3.1 清除历史中的裸 system 消息(与流式 prepareForChat 2.1 同口径, 见该处注释)
         fullHistorySync = new ArrayList<>(fullHistorySync);

@@ -40,6 +40,8 @@ public class AgentProperties {
     @Data
     public static class ModelsConfig {
         private String defaultChat = "qwen-chat";
+        /** 用户自定义模型 apiKey 的 AES 加密主密钥(>=16 字节)。生产用环境变量 MODEL_API_KEY_SECRET 注入; 缺省回退内置值 */
+        private String apiKeySecret;
         private List<ModelConfig> chat = new ArrayList<>();
         private List<ModelConfig> image = new ArrayList<>();
         private List<ModelConfig> video = new ArrayList<>();
