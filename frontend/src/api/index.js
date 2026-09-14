@@ -20,3 +20,5 @@ export * from './monitor'
 export * from './llmCalls'
 // V3.1 用户自定义模型
 export * from './userModels'
+// V3.1 回答反馈 (F-48)
+export * from './feedback'

@@ -1,5 +1,6 @@
 package com.dcdr.agent.agent.session;
 
+import com.dcdr.agent.agent.feedback.FeedbackService;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.config.AgentProperties;
@@ -41,6 +42,8 @@ public class SessionManager {
     private final MessageRepository messageRepository;
     private final ChatMemory memory;
     private final AgentProperties properties;
+    /** V3.1 F-48: 读取消息时回填当前用户对该条回答的反馈状态 (点赞/点踩), 并负责会话级联清理 */
+    private final FeedbackService feedbackService;
 
     /** 创建新会话 */
     @Transactional
@@ -105,12 +108,29 @@ public class SessionManager {
     public void deleteSession(String id) {
         sessionRepository.deleteById(id);
         messageRepository.deleteBySessionId(id);
+        // V3.1 F-48: 会话删除时一并清理其反馈, 避免反馈表残留孤儿数据
+        feedbackService.deleteBySession(id);
         memory.clear(id);
         log.info("删除会话: {}", id);
     }
 
     /** 获取会话历史消息 */
     public List<MessageDTO> getMessages(String sessionId) {
+        return getMessages(sessionId, null);
+    }
+
+    /**
+     * 获取会话历史消息 (附带当前用户的反馈状态回填)。
+     * <p>
+     * V3.1 F-48: 每条助手回答会带上 {@code feedback} 字段 (up / down / null), 使前端刷新后
+     * 仍能正确显示"已点赞/已点踩"。反馈以 {@code (sessionId, seq)} 为键 —— seq 是 messages
+     * 表的会话内序号, 在记忆层与 DB 回退两条路径上都稳定, 而 DTO 的 id 是运行时合成值。
+     *
+     * @param sessionId 会话 ID
+     * @param userId    当前用户 ID (null 表示未登录/认证关闭, 此时按 anonymous 哨兵值匹配)
+     */
+    public List<MessageDTO> getMessages(String sessionId, String userId) {
+        Map<Integer, String> feedbacks = feedbackService.ratingsOfSession(sessionId, userId);
         List<Message> messages = memory.load(sessionId);
         // 优先用记忆模块(含窗口截断逻辑)；若为空则回退查库
         if (!messages.isEmpty()) {
@@ -135,6 +155,8 @@ public class SessionManager {
                 dto.setReasoningContent(msg.getReasoningContent());
                 dto.setModel(msg.getModel());
                 dto.setSeq(msg.getSeq());
+                // V3.1 F-48: 回填当前用户的反馈状态
+                dto.setFeedback(msg.getSeq() == null ? null : feedbacks.get(msg.getSeq()));
                 dto.setError(msg.getError());
                 dto.setTokenUsage(msg.getTokenUsage());
                 dto.setImages(msg.getImages());
@@ -163,7 +185,7 @@ public class SessionManager {
                 if (tcs != null) pend.addAll(tcs);
             }
             if (isHiddenToolMessage(m)) continue;
-            MessageDTO dto = toMessageDTO(m);
+            MessageDTO dto = toMessageDTO(m, feedbacks.get(m.getSeq()));
             if (!pend.isEmpty()) {
                 dto.setToolInvocations(new java.util.ArrayList<>(pend));
                 pend.clear();
@@ -315,6 +337,15 @@ public class SessionManager {
     }
 
     static MessageDTO toMessageDTO(MessageEntity m) {
+        return toMessageDTO(m, null);
+    }
+
+    /**
+     * 消息实体 → DTO。
+     *
+     * @param feedback 当前用户对该条回答的反馈 (up / down / null), V3.1 F-48
+     */
+    static MessageDTO toMessageDTO(MessageEntity m, String feedback) {
         MessageDTO dto = new MessageDTO();
         dto.setId(m.getSessionId() + "_" + m.getSeq());
         dto.setSessionId(m.getSessionId());
@@ -331,6 +362,7 @@ public class SessionManager {
         dto.setToolsUsed(m.getToolsUsed());
         dto.setTokenUsage(m.getTokenUsage());
         dto.setSeq(m.getSeq());
+        dto.setFeedback(feedback);
         dto.setError(m.getError());
         dto.setInterrupted(m.getInterrupted());
         dto.setCreatedAt(m.getCreatedAt());

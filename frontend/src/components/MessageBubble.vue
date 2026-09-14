@@ -120,6 +120,36 @@
           <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('start-edit', msg)" title="编辑并重新生成">✏️ 编辑</button>
           <button v-if="msg.role === 'assistant'" class="btn btn-small" @click="$emit('retry', msg)" title="重新生成此回答">🔄 重新生成</button>
         </div>
+
+        <!-- V3.1 F-48 回答反馈(收集): 点赞 / 点踩; 点踩可多选原因 -->
+        <div v-if="canFeedback" class="msg-feedback">
+          <button class="fb-btn" :class="{ active: feedback === 'up' }" :disabled="fbSubmitting"
+                  @click="quickUp" :title="feedback === 'up' ? '已点赞，点击取消' : '这个回答有帮助'">👍</button>
+          <button class="fb-btn" :class="{ active: feedback === 'down' }" :disabled="fbSubmitting"
+                  @click="openDownPicker" :title="feedback === 'down' ? '已点踩，点击修改' : '这个回答没帮助'">👎</button>
+          <span v-if="feedback" class="fb-state">
+            {{ feedback === 'up' ? '已点赞' : '已点踩' }}
+            <button class="fb-undo" @click="withdraw" :disabled="fbSubmitting">撤销</button>
+          </span>
+        </div>
+
+        <!-- 点踩原因面板: 采集"为什么不好"的结构化标签, 这是反馈能被归因的前提 -->
+        <div v-if="pickerOpen" class="fb-picker">
+          <div class="fb-picker-head">
+            <span class="fb-picker-title">{{ feedback === 'down' ? '修改反馈内容' : '哪里不满意？' }}</span>
+            <span class="fb-picker-tip">可多选（最多 5 个）</span>
+          </div>
+          <div class="fb-tags">
+            <button v-for="t in reasonTags" :key="t.code" class="fb-tag"
+                    :class="{ on: picked.includes(t.code) }" @click="toggleTag(t.code)">{{ t.label }}</button>
+          </div>
+          <textarea v-model="fbComment" class="fb-comment" rows="2" maxlength="1000"
+                    placeholder="补充说明（可选）：例如回答缺少出处、步骤跳太快、格式不便阅读…"></textarea>
+          <div class="fb-picker-actions">
+            <button class="btn btn-small" @click="closePicker" :disabled="fbSubmitting">取消</button>
+            <button class="btn btn-small btn-primary" @click="submitDown" :disabled="fbSubmitting">提交</button>
+          </div>
+        </div>
       </template>
     </div>
   </div>
@@ -129,6 +159,8 @@
 import { ref, computed, onBeforeUpdate } from 'vue'
 import logoUrl from '@/assets/dcdr-logo.png'
 import { useMarkdown } from '@/composables/useMarkdown'
+import { submitFeedback, withdrawFeedback, getFeedbackReasonTags, extractMessage } from '@/api'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   msg: { type: Object, required: true },
@@ -136,7 +168,7 @@ const props = defineProps({
   editing: { type: Boolean, default: false },
   editBuffer: { type: String, default: '' }
 })
-const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'cite-click'])
+const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 
@@ -264,6 +296,121 @@ function onBubbleClick(e) {
   citeTimer = setTimeout(() => { activeCite.value = 0 }, 2000)
   emit('cite-click', idx)
 }
+
+// ===== V3.1 F-48 回答反馈(点赞/点踩收集) =====
+// 反馈以 (sessionId, seq) 定位回答: seq 是后端 messages 表的会话内序号, 刷新后依然稳定。
+// 因此流式刚结束时 (seq 尚未回写) 不展示反馈按钮, 避免提交到错误的回答上。
+// 注: 不跟随 streaming 隐藏 —— 评价的是已完成的回答, 与正在生成的回答无关
+const canFeedback = computed(() => props.msg?.role === 'assistant'
+  && props.msg?.seq != null
+  && !props.msg?.error)
+// 反馈状态以父级传入的 msg.feedback 为准 (父级在提交成功后回写), 保证与后端一致
+const feedback = computed(() => props.msg?.feedback || null)
+
+const fbSubmitting = ref(false)
+const pickerOpen = ref(false)
+const picked = ref([])
+const fbComment = ref('')
+const reasonTags = ref([])
+
+// 后端不可用时的兜底标签; 正常情况下以后端 /api/feedback/reason-tags 为准
+const FALLBACK_TAGS = [
+  { code: 'INACCURATE', label: '内容不准确' },
+  { code: 'IRRELEVANT', label: '答非所问' },
+  { code: 'INCOMPLETE', label: '回答不完整' },
+  { code: 'OUTDATED', label: '信息过时' },
+  { code: 'FORMAT', label: '排版/格式差' },
+  { code: 'VERBOSE', label: '太啰嗦' },
+  { code: 'UNSAFE', label: '内容不安全' },
+  { code: 'OTHER', label: '其他' }
+]
+
+async function loadReasonTags() {
+  if (reasonTags.value.length) return
+  try {
+    const list = await getFeedbackReasonTags()
+    reasonTags.value = (list && list.length) ? list : FALLBACK_TAGS
+  } catch (e) {
+    reasonTags.value = FALLBACK_TAGS
+  }
+}
+
+/** 点赞: 再次点击则取消 */
+async function quickUp() {
+  if (feedback.value === 'up') return withdraw()
+  await submit('up', [], null)
+}
+
+/** 点踩: 先选原因再提交; 已点踩时点击用于修改 */
+async function openDownPicker() {
+  await loadReasonTags()
+  picked.value = []
+  fbComment.value = ''
+  pickerOpen.value = true
+}
+
+function closePicker() {
+  pickerOpen.value = false
+}
+
+function toggleTag(code) {
+  const i = picked.value.indexOf(code)
+  if (i >= 0) picked.value.splice(i, 1)
+  else if (picked.value.length < 5) picked.value.push(code)
+  else ElMessage.warning('最多选择 5 个原因')
+}
+
+async function submitDown() {
+  const ok = await submit('down', picked.value.slice(), fbComment.value.trim() || null)
+  if (ok) pickerOpen.value = false
+}
+
+/**
+ * 提交反馈。
+ * @param {'up'|'down'} rating
+ * @param {string[]} tags 原因标签 code
+ * @param {string|null} comment 补充说明
+ * @returns {Promise<boolean>} 是否成功
+ */
+async function submit(rating, tags, comment) {
+  const seq = props.msg?.seq
+  const sessionId = props.msg?.sessionId
+  if (seq == null || !sessionId) return false
+  fbSubmitting.value = true
+  try {
+    await submitFeedback({
+      sessionId,
+      messageSeq: seq,
+      rating,
+      reasonTags: tags && tags.length ? tags : undefined,
+      comment: comment || undefined
+    })
+    emit('feedback', { seq, rating })
+    return true
+  } catch (e) {
+    ElMessage.error('反馈提交失败：' + extractMessage(e))
+    return false
+  } finally {
+    fbSubmitting.value = false
+  }
+}
+
+/** 撤销反馈 (幂等) */
+async function withdraw() {
+  const seq = props.msg?.seq
+  const sessionId = props.msg?.sessionId
+  if (seq == null || !sessionId) return
+  fbSubmitting.value = true
+  try {
+    await withdrawFeedback(sessionId, seq)
+    pickerOpen.value = false
+    emit('feedback', { seq, rating: null })
+  } catch (e) {
+    ElMessage.error('撤销失败：' + extractMessage(e))
+  } finally {
+    fbSubmitting.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -390,4 +537,25 @@ function onBubbleClick(e) {
 /* 元信息 */
 .msg-meta { margin-top: 8px; display: flex; gap: 10px; font-size: 12px; color: #909399; }
 .msg-meta span { background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 8px; padding: 3px 10px; }
+
+/* ===== V3.1 F-48 回答反馈: 点赞/点踩 + 原因选择 ===== */
+.msg-feedback { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
+.fb-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 28px; border: 1px solid #dcdfe6; background: #fff; border-radius: 8px; cursor: pointer; font-size: 14px; line-height: 1; transition: all 0.2s; filter: grayscale(0.65); }
+.fb-btn:hover:not(:disabled) { border-color: #667eea; background: #667eea0d; filter: none; }
+.fb-btn.active { border-color: transparent; background: linear-gradient(135deg, rgba(102,126,234,0.2) 0%, rgba(118,75,162,0.16) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.45); filter: none; }
+.fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fb-state { font-size: 12px; color: #909399; }
+.fb-undo { border: none; background: none; color: #667eea; cursor: pointer; font-size: 12px; padding: 0 2px; }
+.fb-undo:hover { text-decoration: underline; }
+.fb-picker { margin-top: 8px; padding: 12px 14px; border: 1px solid #e8ecf4; border-radius: 12px; background: #fafbff; box-shadow: 0 2px 8px rgba(0,0,0,0.04); animation: fadeInUp 0.2s ease; }
+.fb-picker-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.fb-picker-title { font-size: 13px; font-weight: 600; color: #303133; }
+.fb-picker-tip { font-size: 11.5px; color: #a0a6b5; }
+.fb-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.fb-tag { border: 1px solid #dfe3ee; background: #fff; color: #5a6172; font-size: 12.5px; padding: 5px 12px; border-radius: 16px; cursor: pointer; transition: all 0.2s; }
+.fb-tag:hover { border-color: #667eea; color: #667eea; }
+.fb-tag.on { border-color: transparent; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; }
+.fb-comment { width: 100%; margin-top: 10px; resize: vertical; border: 1px solid #dcdfe6; border-radius: 8px; background: #fff; color: #303133; padding: 8px 10px; font-size: 13px; line-height: 1.6; outline: none; font-family: inherit; box-sizing: border-box; }
+.fb-comment:focus { border-color: #667eea; }
+.fb-picker-actions { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
 </style>

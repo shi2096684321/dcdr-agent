@@ -1,5 +1,6 @@
 package com.dcdr.agent.controller;
 
+import com.dcdr.agent.agent.feedback.FeedbackService;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.auth.SecurityContext;
@@ -43,6 +44,8 @@ public class SessionController {
     private final SessionManager sessionManager;
     private final ChatMemory memory;
     private final ConversationExportService exportService;
+    /** V3.1 F-48: 截断历史时同步清理被删消息上的反馈 */
+    private final FeedbackService feedbackService;
 
     @Operation(summary = "获取会话列表", description = "返回当前用户的所有会话(认证启用时按 userId 隔离; 未登录返回全部)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
@@ -111,11 +114,13 @@ public class SessionController {
         return Result.success();
     }
 
-    @Operation(summary = "获取会话消息历史", description = "返回指定会话的全部消息记录")
+    @Operation(summary = "获取会话消息历史",
+            description = "返回指定会话的全部消息记录; V3.1 F-48 起每条助手回答附带当前用户的反馈状态 (feedback: up/down/null)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = MessageDTO.class)))
     @GetMapping("/{id}/messages")
-    public Result<List<MessageDTO>> messages(@Parameter(description = "会话 ID", required = true) @PathVariable String id) {
-        return Result.success(sessionManager.getMessages(id));
+    public Result<List<MessageDTO>> messages(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
+                                             ServerWebExchange exchange) {
+        return Result.success(sessionManager.getMessages(id, SecurityContext.getUserId(exchange)));
     }
 
     @Operation(summary = "删除会话中的部分消息", description = "删除 seq >= fromSeq 的消息，用于编辑历史或重试失败时截断上下文")
@@ -127,6 +132,8 @@ public class SessionController {
             return Result.error(404, "会话不存在");
         }
         memory.deleteFrom(id, fromSeq);
+        // V3.1 F-48: 被截断的消息上的反馈一并清理 —— 否则重新生成后新消息复用同一 seq 会错误继承旧评价
+        feedbackService.deleteFromSeq(id, fromSeq);
         return Result.success();
     }
 

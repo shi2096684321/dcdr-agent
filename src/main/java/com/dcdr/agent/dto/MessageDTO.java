@@ -27,6 +27,14 @@ public class MessageDTO {
     /** 是否被用户手动中断(产生不完整的回复) */
     @Schema(description = "是否被用户手动中断（生成不完整）")
     private Boolean interrupted;
+    /**
+     * V3.1 F-48: 当前用户对该条回答的反馈状态。
+     * <p>
+     * up=点赞 / down=点踩 / null=未反馈。仅 assistant 消息有意义, 用于前端刷新后正确回显按钮选中态。
+     */
+    @Schema(description = "当前用户对该回答的反馈: up / down, null 表示未反馈",
+            allowableValues = {"up", "down"})
+    private String feedback;
     /** 角色: user / assistant / system */
     @Schema(description = "角色", allowableValues = {"user", "assistant", "system"}, example = "user")
     private String role;

@@ -73,6 +73,7 @@
           @cancel-edit="cancelEdit"
           @retry="retry"
           @preview-image="previewImage"
+          @feedback="onFeedbackChange"
         />
 
         <!-- 流式输出中(仅当当前会话正是该流归属会话时展示; 切走则不显示, 返回继续) -->
@@ -602,7 +603,13 @@ async function send(opts = {}) {
             // 仅当数量一致时回写后端 seq(用于编辑/重试截断历史);
             // 数量不一致(如刚中断, 本地消息尚未持久化)时保留本地消息, 避免把正在输出的内容冲掉
             if (list && list.length === messages.value.length) {
-              list.forEach((m, i) => { if (messages.value[i]) messages.value[i].seq = m.seq })
+              list.forEach((m, i) => {
+                if (!messages.value[i]) return
+                messages.value[i].seq = m.seq
+                // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
+                messages.value[i].sessionId = m.sessionId
+                messages.value[i].feedback = m.feedback || undefined
+              })
             }
           })
           .catch(() => {})
@@ -713,7 +720,13 @@ async function sendImage() {
         getMessages(currentSessionId.value)
           .then(list => {
             if (list && list.length === messages.value.length) {
-              list.forEach((m, i) => { if (messages.value[i]) messages.value[i].seq = m.seq })
+              list.forEach((m, i) => {
+                if (!messages.value[i]) return
+                messages.value[i].seq = m.seq
+                // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
+                messages.value[i].sessionId = m.sessionId
+                messages.value[i].feedback = m.feedback || undefined
+              })
             }
           })
           .catch(() => {})
@@ -786,6 +799,16 @@ async function retry(msg) {
   messages.value = messages.value.slice(0, idx - 1)
   input.value = userMsg.content
   await send({ images: userMsg.images })
+}
+
+/**
+ * V3.1 F-48: 回答反馈提交成功后的状态回写。
+ * 反馈按钮的选中态以 messages 里的 feedback 字段为准 (刷新后由后端 getMessages 回填);
+ * 撤销时 rating 为 null, 写回 undefined 表示未反馈。
+ */
+function onFeedbackChange({ seq, rating }) {
+  const m = messages.value.find(x => x.role === 'assistant' && x.seq === seq)
+  if (m) m.feedback = rating || undefined
 }
 
 onMounted(() => { loadSessions() })
