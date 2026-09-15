@@ -11,6 +11,7 @@
         <!-- 知识库开放给普通用户(可管理自己的 USER 级; 平台级只读), 登录即可使用 -->
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='agent'}" @click="$emit('update:mode', 'agent')">Agent</div>
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='memory'}" @click="$emit('update:mode', 'memory')">记忆</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='workflow'}" @click="$emit('update:mode', 'workflow')">工作流</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='dag'}" @click="$emit('update:mode', 'dag')">DAG编排</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='market'}" @click="$emit('update:mode', 'market')">模板市场</div>

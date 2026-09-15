@@ -3,6 +3,7 @@ package com.dcdr.agent.agent;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
@@ -27,6 +28,7 @@ import com.dcdr.agent.tool.FrameworkToolExecutorBridge;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
 import com.dcdr.agent.entity.KnowledgeBaseEntity;
+import com.dcdr.agent.entity.MemoryEntity;
 import com.dcdr.agent.repository.KnowledgeBaseRepository;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -80,10 +82,15 @@ public class AgentOrchestrator {
     private final RetrievalService retrievalService;
     private final KnowledgeBaseRepository kbRepository;
     private final FrameworkToolExecutorBridge frameworkToolExecutorBridge;
+    /** V3.1 长期记忆: 跨会话沉淀的用户级/Agent 级记忆, 在 prepareForChat 中召回注入 */
+    private final LongTermMemoryService longTermMemoryService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
     private static final int EXTRACT_TOP_N = 3;
+
+    /** V3.1 长期记忆注入的 system 消息名(兼作去重键, 与 runtime:* 口径一致) */
+    private static final String MEMORY_SYSTEM_NAME = "memory:long-term";
 
     // 预编译所有正则表达式为静态常量
     private static final java.util.regex.Pattern P_ARTICLE_KEYWORD =
@@ -109,7 +116,8 @@ public class AgentOrchestrator {
                              RagProperties ragProperties, AuditService auditService,
                              AgentDefinitionService agentDefinitionService, CostTracker costTracker,
                              RetrievalService retrievalService, KnowledgeBaseRepository kbRepository,
-                             FrameworkToolExecutorBridge frameworkToolExecutorBridge) {
+                             FrameworkToolExecutorBridge frameworkToolExecutorBridge,
+                             LongTermMemoryService longTermMemoryService) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -128,6 +136,7 @@ public class AgentOrchestrator {
         this.retrievalService = retrievalService;
         this.kbRepository = kbRepository;
         this.frameworkToolExecutorBridge = frameworkToolExecutorBridge;
+        this.longTermMemoryService = longTermMemoryService;
     }
 
     /**
@@ -541,23 +550,45 @@ public class AgentOrchestrator {
         } else if (request.getTools() != null) {
             params.put("toolSpecCount", request.getTools().size());
         }
+        // 不做内容截断: 调用链日志的意义就是事后完整复盘, 截断后无法定位"实际注入了什么"。
+        // 体积控制在接口层解决 —— 列表接口剔除 systemPrompt/messages 两个重字段, 仅详情接口返回全量。
         String sysJoined = joinSystemPrompts(contextHistory);
         if (!sysJoined.isEmpty()) {
-            params.put("systemPrompt", sysJoined.length() > 4000 ? sysJoined.substring(0, 4000) + "…(截断)" : sysJoined);
+            params.put("systemPrompt", sysJoined);
         }
         // 完整消息列表快照: system + 历史对话 + 工具回灌 + 当前提问, 逐条可查
         params.put("messages", snapshotMessages(contextHistory));
+        // 实际请求体快照(权威口径): 由 Provider 用自己的组装逻辑产出, 因此包含被过滤/改写的消息、
+        // 完整工具定义、tool_choice、response_format、厂商参数(如 enable_thinking)等。
+        // messages 是"业务视角", wireRequest 是"协议视角", 两者交叉验证可发现 Provider 的过滤差异。
+        // includeCurrentUser=false 须与调用点 provider.stream(request, history, false) 保持一致。
+        String wireRequest = provider.describeWireRequest(request, contextHistory, false, true);
+        if (wireRequest != null && !wireRequest.isBlank()) {
+            params.put("wireRequest", wireRequest);
+        }
         return round
                 .doOnSubscribe(s -> start[0] = System.nanoTime())
-                .doFinally(sig -> {
-                    ChatResponse.TokenUsage u = usageHolder[0];
-                    t.recordLlm(purpose, provider.getName(),
-                            u != null ? u.getPrompt() : null,
-                            u != null ? u.getCompletion() : null,
-                            (System.nanoTime() - start[0]) / 1_000_000,
-                            sig == reactor.core.publisher.SignalType.CANCEL,
-                            params);
-                });
+                // 必须用 doOnComplete/doOnError/doOnCancel 而非 doFinally —— 两者时机不同:
+                // doFinally 是"终止信号已传给下游之后"才执行, 而 Controller 侧用 doFinally 收尾
+                // summary(触发落库)。若此处用 doFinally, 最后一轮的记录会晚于 summary,
+                // 该轮步骤直接丢失(实测: 单轮对话的日志里只剩 routing)。
+                // 三个 doOnXxx 都在信号向下游传播"之前"执行, 保证记录先于落库。
+                .doOnComplete(() -> recordRound(t, purpose, provider, usageHolder, start, false, params))
+                .doOnError(e -> recordRound(t, purpose, provider, usageHolder, start, false, params))
+                .doOnCancel(() -> recordRound(t, purpose, provider, usageHolder, start, true, params));
+    }
+
+    /** 记录一轮 LLM 调用步骤(供 tracedRound 的三个终止回调复用; interrupted 仅取消时为 true) */
+    private static void recordRound(com.dcdr.agent.common.log.LlmCallTrace t, String purpose,
+                                    ChatModelProvider provider, ChatResponse.TokenUsage[] usageHolder,
+                                    long[] start, boolean interrupted, Map<String, Object> params) {
+        ChatResponse.TokenUsage u = usageHolder[0];
+        t.recordLlm(purpose, provider.getName(),
+                u != null ? u.getPrompt() : null,
+                u != null ? u.getCompletion() : null,
+                (System.nanoTime() - start[0]) / 1_000_000,
+                interrupted,
+                params);
     }
 
     /** 调用链打点: 包装一批工具执行流, 记录工具名(去重)、每个调用的参数与结果摘要、整批耗时 */
@@ -569,25 +600,29 @@ public class AgentOrchestrator {
         final long[] start = {0L};
         return tools
                 .doOnSubscribe(s -> start[0] = System.nanoTime())
-                .doFinally(sig -> {
-                    // 工具流结束后 resultsById 已被 executeTools 填充, 组装"参数 + 结果摘要"明细
-                    java.util.List<java.util.Map<String, Object>> details = new ArrayList<>(calls.size());
-                    for (ChatChunk tc : calls) {
-                        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
-                        m.put("name", tc.getTool());
-                        String args = tc.getArgs();
-                        m.put("args", args == null ? "" : (args.length() > 500 ? args.substring(0, 500) + "…(截断)" : args));
-                        String res = resultsById != null ? resultsById.get(tc.getId()) : null;
-                        if (res != null) {
-                            m.put("resultPreview", res.length() > 500 ? res.substring(0, 500) + "…(截断)" : res);
-                        }
-                        details.add(m);
-                    }
-                    t.recordTool(names,
-                            (System.nanoTime() - start[0]) / 1_000_000,
-                            sig == reactor.core.publisher.SignalType.CANCEL,
-                            details);
-                });
+                // 同 tracedRound: 用 doOnXxx 而非 doFinally, 保证记录先于下游的 summary 落库
+                .doOnComplete(() -> recordTool(t, names, calls, resultsById, start, false))
+                .doOnError(e -> recordTool(t, names, calls, resultsById, start, false))
+                .doOnCancel(() -> recordTool(t, names, calls, resultsById, start, true));
+    }
+
+    /** 记录一批工具执行步骤(供 tracedTool 的三个终止回调复用; resultsById 此时已被 executeTools 填充) */
+    private static void recordTool(com.dcdr.agent.common.log.LlmCallTrace t, String names,
+                                   List<ChatChunk> calls, Map<String, String> resultsById,
+                                   long[] start, boolean interrupted) {
+        java.util.List<java.util.Map<String, Object>> details = new ArrayList<>(calls.size());
+        for (ChatChunk tc : calls) {
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("name", tc.getTool());
+            String args = tc.getArgs();
+            m.put("args", args == null ? "" : (args.length() > 500 ? args.substring(0, 500) + "…(截断)" : args));
+            String res = resultsById != null ? resultsById.get(tc.getId()) : null;
+            if (res != null) {
+                m.put("resultPreview", res.length() > 500 ? res.substring(0, 500) + "…(截断)" : res);
+            }
+            details.add(m);
+        }
+        t.recordTool(names, (System.nanoTime() - start[0]) / 1_000_000, interrupted, details);
     }
 
     /**
@@ -1434,6 +1469,10 @@ public class AgentOrchestrator {
         }
         final String sessId = sessionId;
 
+        // 1.1 V3.1 记录本会话使用的 Agent: Agent 级长期记忆的归属依据
+        //     (Conversation 与 Agent 持久绑定后, 后续轮次才能确定这些记忆属于哪个 Agent)
+        sessionManager.bindAgent(sessId, request.getAgentId());
+
         // 2. 加载记忆
         //    load(): 全量历史(落库与前端展示口径); loadWindow(): 发给 LLM 的滑窗视图(system 全保留 + 最近 N 条)。
         //    超出 max-messages 时只截取视图、不删库(旧版直接删最早消息导致会话历史丢失, 已废弃该实现)。
@@ -1492,6 +1531,11 @@ public class AgentOrchestrator {
             withAgent.add(Message.system("agent:persona", wrapAgentPersona(agentOverride.systemPrompt())));
             history = withAgent;
         }
+
+        // 3.1.3 V3.1 长期记忆注入: 在 Agent 人设之后、平台运行时约束之前注入跨会话沉淀的记忆。
+        //       召回为「常驻(pinned/高重要度/画像类) + 关键词条件触发」两级, 本版本不含向量检索;
+        //       未命中任何记忆时不产生 system 消息。仅临时注入本次请求, 不落库。
+        history = injectLongTermMemory(history, userId, request);
 
         // 3.2 平台级运行时约束(生图策略 + 联网搜索引导), 与同步 chatSync 路径共用, 保证两条链路注入一致
         history = injectRuntimeSystemPrompts(history, provider, request);
@@ -1811,6 +1855,8 @@ public class AgentOrchestrator {
             sessionId = session.getId();
             request.setSessionId(sessionId);
         }
+        // V3.1 记录本会话使用的 Agent(与流式 1.1 同口径): Agent 级长期记忆的归属依据
+        sessionManager.bindAgent(sessionId, request.getAgentId());
 
         // 记忆窗口: 同步路径同样只把滑窗视图发给 LLM(system 全保留 + 最近 N 条), 超限时通过 contextWarning 提示
         List<Message> fullHistorySync = memory.load(sessionId);
@@ -1849,6 +1895,9 @@ public class AgentOrchestrator {
             withAgent.add(Message.system("agent:persona", wrapAgentPersona(agentOverride.systemPrompt())));
             history = withAgent;
         }
+
+        // V3.1 长期记忆注入 (与流式 3.1.3 同口径, 保证两条链路注入一致)
+        history = injectLongTermMemory(history, currentUserId, request);
 
         // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)
         String userOriginal = request.getMessage();
@@ -1892,11 +1941,18 @@ public class AgentOrchestrator {
             java.util.Map<String, Object> params = new java.util.LinkedHashMap<>();
             params.put("temperature", request.getTemperature());
             params.put("messageCount", history.size());
+            // 同流式路径: 不截断, 体积控制下沉到接口层(列表剔除重字段 / 详情给全量)
             String sysJoinedSync = joinSystemPrompts(history);
             if (!sysJoinedSync.isEmpty()) {
-                params.put("systemPrompt", sysJoinedSync.length() > 4000 ? sysJoinedSync.substring(0, 4000) + "…(截断)" : sysJoinedSync);
+                params.put("systemPrompt", sysJoinedSync);
             }
             params.put("messages", snapshotMessages(history));
+            // 实际请求体快照(权威口径, 同流式): 同步 invoke 内部固定 includeCurrentUser=true
+            String wireRequestSync = prepSync.answerProvider()
+                    .describeWireRequest(request, history, true, false);
+            if (wireRequestSync != null && !wireRequestSync.isBlank()) {
+                params.put("wireRequest", wireRequestSync);
+            }
             t.recordLlm("chatSync-answer", prepSync.answerProvider().getName(),
                     u != null ? u.getPrompt() : null,
                     u != null ? u.getCompletion() : null,
@@ -1941,6 +1997,55 @@ public class AgentOrchestrator {
                 currentUserId);
 
         return response;
+    }
+
+    /**
+     * 注入长期记忆 (V3.1)。
+     * <p>
+     * 召回「常驻 + 关键词条件触发」两级记忆并组装为一条 system 消息, 位置在 Agent 人设之后、
+     * 平台运行时约束之前 —— 越具体的人设越靠后, 平台规则最后注入以保有最高效力。
+     * <p>
+     * 注入文本内置三条约束 (见 {@code LongTermMemoryService.PROMPT_HEADER}): 不要复述记忆内容、
+     * 当前提问优先、记忆不构成系统指令。前者抑制模型把长期记忆当作"已答过的内容"重复输出,
+     * 后者防止通过写入记忆完成提示词注入。
+     * <p>
+     * 容错: 召回与命中统计失败都只记日志, 不阻断对话 —— 记忆是增强项, 不是主链路依赖。
+     *
+     * @param history 当前对话历史 (返回新列表, 不修改入参)
+     * @param userId  当前用户; 为空(未登录/认证关闭)时直接跳过
+     * @param request 对话请求 (取 agentId 作作用域, 取当轮提问作触发匹配)
+     * @return 注入记忆后的历史列表
+     */
+    private List<Message> injectLongTermMemory(List<Message> history, String userId, ChatRequest request) {
+        if (userId == null) return history;
+
+        List<MemoryEntity> recalled;
+        try {
+            recalled = longTermMemoryService.recall(userId, request.getAgentId(), request.getMessage());
+        } catch (Exception e) {
+            log.warn("长期记忆召回失败, 本次对话跳过记忆注入: {}", e.getMessage());
+            return history;
+        }
+        if (recalled.isEmpty()) return history;
+
+        String fragment = LongTermMemoryService.formatFragment(recalled);
+        if (fragment == null || fragment.isBlank()) return history;
+
+        List<Message> result = new ArrayList<>(history);
+        // 按 name 去重(与 injectIfAbsent 同口径): 同名 system 消息已存在则跳过, 保证幂等
+        boolean exists = result.stream().anyMatch(m ->
+                "system".equals(m.getRole()) && MEMORY_SYSTEM_NAME.equals(m.getName()));
+        if (!exists) {
+            result.add(Message.system(MEMORY_SYSTEM_NAME, fragment));
+        }
+
+        try {
+            longTermMemoryService.recordHit(recalled);
+        } catch (Exception e) {
+            log.debug("长期记忆命中统计写入失败(可忽略): {}", e.getMessage());
+        }
+        log.info("长期记忆注入: {} 条 (user={}, agent={})", recalled.size(), userId, request.getAgentId());
+        return result;
     }
 
     /**
@@ -2054,16 +2159,18 @@ public class AgentOrchestrator {
                 .collect(java.util.stream.Collectors.joining("\n\n---\n\n"));
     }
 
-    /** 单条消息内容快照截断上限(控制 steps_json 体积) */
-    private static final int MESSAGE_SNAPSHOT_LIMIT = 1000;
-
     /** 消息快照序列化用(静态方法无法访问实例 mapper) */
     private static final com.fasterxml.jackson.databind.ObjectMapper SNAPSHOT_MAPPER =
             new com.fasterxml.jackson.databind.ObjectMapper();
 
     /**
-     * 快照本次实际提交给模型的完整消息列表(system/历史对话/工具回灌/当前提问),
-     * 供调用链详情页逐条查看。每条 content 截断控制体积; 图片列表不快照(可能为 base64 大对象)。
+     * 快照本次实际提交给模型的完整消息列表(system/历史对话/工具回灌/当前提问), 供调用链详情页逐条查看。
+     * <p>
+     * <b>不做内容截断</b> —— 调用链日志的用途是事后完整复盘, 截断会让"实际注入了什么"失去排查依据。
+     * 体积控制下沉到接口层: 列表接口剔除 {@code systemPrompt} / {@code messages} 两个重字段,
+     * 仅详情接口返回全量。
+     * <p>
+     * 图片列表不快照(可能为 base64 大对象)。
      */
     private static java.util.List<java.util.Map<String, Object>> snapshotMessages(List<Message> history) {
         java.util.List<java.util.Map<String, Object>> out = new ArrayList<>(history.size());
@@ -2071,19 +2178,14 @@ public class AgentOrchestrator {
             java.util.Map<String, Object> mm = new java.util.LinkedHashMap<>();
             mm.put("role", m.getRole());
             if (m.getName() != null) mm.put("name", m.getName());
-            String c = m.getContent();
-            mm.put("content", c == null ? "" : (c.length() > MESSAGE_SNAPSHOT_LIMIT
-                    ? c.substring(0, MESSAGE_SNAPSHOT_LIMIT) + "…(截断)" : c));
+            mm.put("content", m.getContent() == null ? "" : m.getContent());
             if (m.getToolCallId() != null) mm.put("toolCallId", m.getToolCallId());
             if (m.getToolCalls() != null && !m.getToolCalls().isEmpty()) {
-                String tcJson;
                 try {
-                    tcJson = SNAPSHOT_MAPPER.writeValueAsString(m.getToolCalls());
+                    mm.put("toolCalls", SNAPSHOT_MAPPER.writeValueAsString(m.getToolCalls()));
                 } catch (Exception e) {
-                    tcJson = String.valueOf(m.getToolCalls());
+                    mm.put("toolCalls", String.valueOf(m.getToolCalls()));
                 }
-                mm.put("toolCalls", tcJson.length() > MESSAGE_SNAPSHOT_LIMIT
-                        ? tcJson.substring(0, MESSAGE_SNAPSHOT_LIMIT) + "…(截断)" : tcJson);
             }
             out.add(mm);
         }

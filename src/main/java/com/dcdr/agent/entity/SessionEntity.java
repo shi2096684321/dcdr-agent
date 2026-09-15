@@ -13,7 +13,9 @@ import java.time.LocalDateTime;
 @Entity
 @EntityListeners(OwnershipFillListener.class)
 @Schema(description = "会话实体 (对话模式)")
-@Table(name = "sessions")
+@Table(name = "sessions", indexes = {
+        @Index(name = "idx_session_agent", columnList = "agentId")
+})
 public class SessionEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (字符串型 UUID)")
@@ -31,6 +33,11 @@ public class SessionEntity implements OwnedEntity {
 
     @Schema(description = "当前会话使用的模型名称")
     private String model;
+
+    @Schema(description = "本会话使用的自定义 Agent ID (V3.1; 为空表示未指定/通用助手)。"
+            + "用于 Agent 级长期记忆的归属, 以及历史消息的 Agent 归因")
+    @Column(length = 64)
+    private String agentId;
 
     @Schema(description = "系统提示词 (覆盖默认行为)")
     @Column(columnDefinition = "TEXT")

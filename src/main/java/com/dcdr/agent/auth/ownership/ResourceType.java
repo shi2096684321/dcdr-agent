@@ -36,7 +36,9 @@ public enum ResourceType {
     /** 生成记录 */
     GENERATION("generation", "生成记录"),
     /** 模板市场分享记录(分享者归属, 用于"下架分享"校验) */
-    TEMPLATE_SHARE("template_share", "模板分享");
+    TEMPLATE_SHARE("template_share", "模板分享"),
+    /** 长期记忆条目 (V3.1) */
+    MEMORY("memory", "记忆");
 
     private final String code;
     private final String label;

@@ -16,6 +16,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -23,6 +24,7 @@ import org.springframework.web.server.ServerWebExchange;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * LLM 调用链日志查询接口。
@@ -63,7 +65,7 @@ public class LlmCallLogController {
             p = llmCallLogRepository.findByUserIdOrderByCreatedAtDesc(currentUserId, pageable);
         }
         List<LlmCallLogDtos.LlmCallLogView> views = p.getContent().stream()
-                .map(this::toView)
+                .map(e -> toView(e, false))
                 .toList();
         LlmCallLogDtos.LlmCallLogPageView v = new LlmCallLogDtos.LlmCallLogPageView();
         v.setContent(views);
@@ -74,7 +76,24 @@ public class LlmCallLogController {
         return Result.success(v);
     }
 
-    private LlmCallLogDtos.LlmCallLogView toView(LlmCallLogEntity e) {
+    @Operation(summary = "调用链日志详情",
+            description = "按 ID 返回单条日志的**完整**步骤明细(含实际提交的 System Prompt 与完整消息列表, 不做截断)。"
+                    + "列表接口只返回步骤元数据, 这两个重字段仅此处返回。")
+    @GetMapping("/logs/{id}")
+    public Result<LlmCallLogDtos.LlmCallLogView> detail(
+            @Parameter(description = "日志 ID", required = true) @PathVariable String id,
+            ServerWebExchange exchange) {
+        String currentUserId = SecurityContext.getUserId(exchange);
+        boolean isAdmin = SecurityContext.isAdmin(exchange);
+        LlmCallLogEntity entity = llmCallLogRepository.findById(id).orElse(null);
+        // 越权与不存在统一 404(与项目归属校验口径一致, 防止用响应差异枚举他人日志)
+        if (entity == null || (!isAdmin && !Objects.equals(entity.getUserId(), currentUserId))) {
+            return Result.error(404, "调用链日志不存在");
+        }
+        return Result.success(toView(entity, true));
+    }
+
+    private LlmCallLogDtos.LlmCallLogView toView(LlmCallLogEntity e, boolean full) {
         LlmCallLogDtos.LlmCallLogView v = new LlmCallLogDtos.LlmCallLogView();
         v.setId(e.getId());
         v.setTurnId(e.getTurnId());
@@ -88,15 +107,36 @@ public class LlmCallLogController {
         v.setTotalOutTokens(e.getTotalOutTokens());
         v.setTotalDurationMs(e.getTotalDurationMs());
         v.setChain(e.getChain());
-        v.setSteps(parseSteps(e.getStepsJson()));
+        v.setSteps(parseSteps(e.getStepsJson(), full));
         v.setCreatedAt(e.getCreatedAt());
         return v;
     }
 
-    private static List<Map<String, Object>> parseSteps(String json) {
+    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 体积大, 仅详情接口返回 */
+    private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
+    private static final String STEP_MESSAGES = "messages";
+    private static final String STEP_WIRE_REQUEST = "wireRequest";
+
+    /**
+     * 解析步骤 JSON。
+     * <p>
+     * 快照落库时<b>不截断</b>(调用链的意义是完整复盘), 因此体积控制在读取侧做:
+     * 列表分页只保留步骤元数据(模型/token/耗时/工具名), 剔除 {@code systemPrompt} 与
+     * {@code messages} 两个重字段; 需要看全量原文时走详情接口。
+     *
+     * @param full true = 完整明细(详情接口); false = 剔除重字段(列表接口)
+     */
+    private static List<Map<String, Object>> parseSteps(String json, boolean full) {
         if (json == null || json.isBlank()) return null;
         try {
-            return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+            List<Map<String, Object>> steps = MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
+            if (full) return steps;
+            for (Map<String, Object> step : steps) {
+                step.remove(STEP_SYSTEM_PROMPT);
+                step.remove(STEP_MESSAGES);
+                step.remove(STEP_WIRE_REQUEST);
+            }
+            return steps;
         } catch (Exception e) {
             return null;
         }

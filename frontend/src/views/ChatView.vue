@@ -117,8 +117,12 @@
             <div v-else-if="statusHint" class="msg-status">
               <span class="status-dot"></span>{{ statusHint }}
             </div>
+            <!-- 等待首个内容块期间的思考动画: 覆盖准备阶段(记忆召回/知识库检索/图片识别/路由)与首 token 等待 -->
             <div v-if="streamContent || reasoningContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)"></div>
-            <div v-else-if="!statusHint && !pipeline" class="msg-bubble streaming"><span class="cursor">|</span></div>
+            <div v-else-if="!statusHint && !pipeline" class="msg-thinking">
+              <span class="think-dots"><i></i><i></i><i></i></span>
+              <span class="think-label">思考中<template v-if="thinkSeconds > 0">（{{ thinkSeconds }}s）</template></span>
+            </div>
           </div>
         </div>
       </div>
@@ -208,7 +212,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch, onUnmounted } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
@@ -244,6 +248,20 @@ const streamContent = ref('')
 const reasoningContent = ref('')
 const streamImages = ref([])
 const statusHint = ref('')
+// 思考中计时(秒): 等待首个内容块期间显示。准备阶段(记忆召回/知识库检索/图片识别/路由)可能持续十几秒,
+// 实测路由单次可达 17~22s —— 有秒数用户才能确认"仍在工作"而不是卡死。
+const thinkSeconds = ref(0)
+let thinkTimer = null
+watch(streaming, (active) => {
+  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null }
+  thinkSeconds.value = 0
+  if (active) {
+    thinkTimer = setInterval(() => { thinkSeconds.value += 1 }, 1000)
+  }
+})
+onUnmounted(() => {
+  if (thinkTimer) clearInterval(thinkTimer)
+})
 // 联网搜索三步流水线状态: null 表示非搜索; {stage:1|2|3, done:bool}
 const pipeline = ref(null)
 const streamSources = ref([])
@@ -902,8 +920,22 @@ onMounted(() => { loadSessions() })
 .pstep-text { display: flex; flex-direction: column; line-height: 1.35; }
 .pstep-text b { font-size: 13.5px; color: #303133; }
 .pstep-text i { font-size: 11.5px; color: #8a90a3; font-style: normal; }
-.cursor { animation: blink 1s infinite; color: #667eea; font-weight: bold; }
-@keyframes blink { 50% { opacity: 0; } }
+/* 思考中动画: 等待首个内容块期间显示(替代原先的单个闪烁光标)。
+   三个圆点依次弹跳 + 文字渐变扫光, 让"模型正在工作"这件事在长时间准备阶段(记忆召回/检索/路由)可见 */
+.msg-thinking { display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 12px; background: #667eea0d; border: 1px solid #667eea22; }
+.think-dots { display: inline-flex; gap: 4px; }
+.think-dots i { width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); animation: thinkBounce 1.2s ease-in-out infinite; }
+.think-dots i:nth-child(2) { animation-delay: 0.15s; }
+.think-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes thinkBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+.think-label { font-size: 13px; background: linear-gradient(90deg, #9aa7c2 0%, #667eea 50%, #9aa7c2 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: thinkShimmer 2s linear infinite; }
+@keyframes thinkShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 /* 输入区域 */
 .input-area { padding: 16px 28px 20px; background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.8) 100%); }

@@ -1,9 +1,11 @@
 package com.dcdr.agent.model.langchain4j;
 
 import com.dcdr.agent.config.AgentProperties;
+import com.dcdr.agent.config.V3Properties;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
+import com.dcdr.agent.model.circuitbreaker.LlmCircuitBreaker;
 import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.embedding.LangChain4jEmbeddingProvider;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -179,7 +181,10 @@ class LangChain4jProviderTest {
         config.setModel("qwen3.7-text-embedding");
         config.setDimensions(1536);
         config.setBatchSize(10);
-        LangChain4jEmbeddingProvider embeddingProvider = new LangChain4jEmbeddingProvider(config);
+        // F-40.4 熔断器由 Spring 注入; 本测试不依赖上下文, 用默认配置的实例
+        // (正常调用不会触发开断, 对断言无影响)
+        LangChain4jEmbeddingProvider embeddingProvider =
+                new LangChain4jEmbeddingProvider(config, new LlmCircuitBreaker(new V3Properties()));
 
         List<float[]> vectors = embeddingProvider.embedBatch(List.of("你好世界", "知识库检索测试"));
         assertEquals(2, vectors.size());

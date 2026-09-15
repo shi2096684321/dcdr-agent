@@ -9,8 +9,9 @@
 -- 的会话内序号, 前后端链路稳定 (MessageDTO.id 是运行时合成 ID, 不可作为持久键)。
 --
 -- 执行前提: 已执行 v2.0_schema.sql / v3.0*.sql
--- 注意: pg profile 下 ddl-auto=validate 不会自动建表, 需手动在 PostgreSQL 执行本脚本;
---       H2 开发库 (ddl-auto=update) 由 JPA 自动建表, 无需执行。
+-- 注意: pg / H2 均由 JPA (ddl-auto=update) 在启动时自动补齐缺失的表与列, 本脚本无需手工执行。
+--       但 JPA 不生成 COMMENT 与特殊索引, 需要这些特性时手工执行一次本脚本补齐即可
+--       (全部语句为 IF NOT EXISTS, 可重复执行)。
 -- =====================================================================
 
 CREATE TABLE IF NOT EXISTS message_feedback (

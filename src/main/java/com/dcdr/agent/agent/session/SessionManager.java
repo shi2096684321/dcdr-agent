@@ -237,6 +237,31 @@ public class SessionManager {
         sessionRepository.save(entity);
     }
 
+    /**
+     * 绑定/解绑本会话使用的自定义 Agent (V3.1)。
+     * <p>
+     * 会话的 {@code agentId} 是 Agent 级长期记忆的归属依据: 落库后, 后续对话才能确定
+     * "这条 Agent 级记忆属于哪个 Agent 的会话"。仅在值发生变化时落库, 避免每轮无谓写入。
+     * <p>
+     * 注意: 此处<b>不</b>更新 {@code updatedAt} —— 绑定 Agent 不是"会话有新内容",
+     * 不应因此把会话顶到列表最前。
+     *
+     * @param sessionId 会话 ID
+     * @param agentId   自定义 Agent ID; 为空表示解绑(通用助手)
+     */
+    @Transactional
+    public void bindAgent(String sessionId, String agentId) {
+        String normalized = (agentId == null || agentId.isBlank()) ? null : agentId;
+        sessionRepository.findById(sessionId).ifPresent(s -> {
+            String current = s.getAgentId();
+            boolean unchanged = (current == null) ? normalized == null : current.equals(normalized);
+            if (unchanged) return;
+            s.setAgentId(normalized);
+            sessionRepository.save(s);
+            log.info("会话 {} 绑定 Agent: {} -> {}", sessionId, current, normalized);
+        });
+    }
+
     /** 以首个用户问题作为会话标题（仅在标题仍为自动默认时生效，避免覆盖用户自定义标题） */
     @Transactional
     public void autoTitleFromFirstMessage(String sessionId, String userMessage) {
@@ -277,6 +302,7 @@ public class SessionManager {
         dto.setTitleAuto(Boolean.TRUE.equals(e.getTitleAuto()));
         dto.setModel(e.getModel());
         dto.setPersona(e.getSystemPrompt());
+        dto.setAgentId(e.getAgentId());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setUpdatedAt(e.getUpdatedAt());
         return dto;

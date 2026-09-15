@@ -35,6 +35,7 @@ import reactor.core.publisher.Flux;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -284,14 +285,34 @@ public class LangChain4jChatProvider implements ChatModelProvider {
      */
     private dev.langchain4j.model.chat.request.ChatRequest buildChatRequest(
             ChatRequest request, List<Message> history, boolean includeCurrentUser) {
+        return buildChatRequest(request, history, includeCurrentUser, null);
+    }
+
+    /**
+     * 构造框架请求。
+     *
+     * @param includeCurrentUser 是否把 request.getMessage() 作为当前 user 消息追加;
+     *                           工具循环回灌轮须传 false(当前 user 消息已在 history 中)
+     * @param capture            可空。非空时在<b>同一次组装</b>中填充"实际发出的消息与参数"快照,
+     *                           供调用链日志归档 —— 与真实请求同源, 不会随时间漂移
+     */
+    private dev.langchain4j.model.chat.request.ChatRequest buildChatRequest(
+            ChatRequest request, List<Message> history, boolean includeCurrentUser, WireCapture capture) {
         List<ChatMessage> messages = new ArrayList<>();
         if (history != null) {
             for (Message msg : history) {
-                appendHistoryMessage(messages, msg);
+                appendHistoryMessage(messages, msg, capture);
             }
         }
         if (includeCurrentUser) {
             messages.add(toUserMessage(request.getMessage(), request.getImages()));
+            // 当前用户消息: 与上面 appendHistoryMessage 同规则(空内容也会被 toUserMessage 原样发出,
+            // 故此处不额外过滤), 图片仅记张数(模型不支持视觉时实际发了 0 张)
+            Map<String, Object> wm = wireMessage("user", request.getMessage());
+            if (request.getImages() != null && !request.getImages().isEmpty()) {
+                wm.put("imageCount", supportsVision() ? request.getImages().size() : 0);
+            }
+            capture(capture, wm);
         }
 
         var builder = dev.langchain4j.model.chat.request.ChatRequest.builder()
@@ -326,6 +347,7 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 params.temperature(temp);
             }
             builder.parameters(params.build());
+            captureForcedToolParams(capture, fnName, submitTool, request, temp);
             return builder.build();
         }
 
@@ -372,22 +394,34 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                             .build())
                     .build());
         }
+        captureNormalParams(capture, request, responseFormat, temp);
         return builder.build();
     }
 
-    /** 历史 Message(role=system/user/assistant/tool) → 框架消息 */
-    private void appendHistoryMessage(List<ChatMessage> messages, Message msg) {
+    /**
+     * 历史 Message(role=system/user/assistant/tool) → 框架消息。
+     * <p>
+     * 同时把<b>实际发出的消息</b>写入 capture(被跳过的分支不写) —— 调用链日志由此与真实请求严格
+     * 一致, 包括"空消息被过滤""生图占位被改写为『已生成图片。』""不支持视觉时图片被丢弃"这类差异。
+     */
+    private void appendHistoryMessage(List<ChatMessage> messages, Message msg, WireCapture capture) {
         String role = msg.getRole();
         if ("system".equals(role)) {
+            // content 为空的 system 消息不发送(故也不进快照)
             if (msg.getContent() != null && !msg.getContent().isBlank()) {
                 messages.add(SystemMessage.from(msg.getContent()));
+                capture(capture, wireMessage("system", msg.getContent()));
             }
             return;
         }
         if ("tool".equals(role)) {
             // 工具结果消息: 携带 tool_call_id 与工具名, 与 assistant 的 tool_calls 配对
-            messages.add(ToolExecutionResultMessage.from(
-                    msg.getToolCallId(), msg.getName(), msg.getContent() == null ? "" : msg.getContent()));
+            String content = msg.getContent() == null ? "" : msg.getContent();
+            messages.add(ToolExecutionResultMessage.from(msg.getToolCallId(), msg.getName(), content));
+            Map<String, Object> wm = wireMessage("tool", content);
+            wm.put("tool_call_id", msg.getToolCallId());
+            wm.put("name", msg.getName());
+            capture(capture, wm);
             return;
         }
         if ("assistant".equals(role)) {
@@ -403,17 +437,24 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                             .build());
                 }
                 messages.add(AiMessage.from(msg.getContent(), requests));
+                Map<String, Object> wm = wireMessage("assistant", msg.getContent());
+                wm.put("tool_calls", toolCalls);
+                capture(capture, wm);
                 return;
             }
             if (msg.getContent() == null || msg.getContent().isBlank()) {
                 // 生图纯工具轮: assistant 正文为空但携带 images —— 从结构化字段合成最小标记,
                 // 避免历史中 tool 消息后无 assistant 响应(部分提供方校验消息配对), 也让模型感知生图记录
                 if (msg.getImages() != null && !msg.getImages().isEmpty()) {
+                    // 快照记改写后的文本(而非空), 如实反映模型实际看到的内容
                     messages.add(AiMessage.from("已生成图片。"));
+                    capture(capture, wireMessage("assistant", "已生成图片。"));
                 }
+                // 无内容且无图片: 整条不发送(故也不进快照)
                 return;
             }
             messages.add(AiMessage.from(msg.getContent()));
+            capture(capture, wireMessage("assistant", msg.getContent()));
             return;
         }
         // user 消息(跳过空内容, 与手写版一致)
@@ -421,6 +462,11 @@ public class LangChain4jChatProvider implements ChatModelProvider {
             return;
         }
         messages.add(toUserMessage(msg.getContent(), msg.getImages()));
+        Map<String, Object> wm = wireMessage("user", msg.getContent());
+        if (msg.getImages() != null && !msg.getImages().isEmpty()) {
+            wm.put("imageCount", supportsVision() ? msg.getImages().size() : 0);
+        }
+        capture(capture, wm);
     }
 
     /** 用户消息: 支持视觉模型时图片转为 image content, 与手写版 image_url 结构一致 */
@@ -459,6 +505,102 @@ public class LangChain4jChatProvider implements ChatModelProvider {
             builder.parameters(JsonSchemaConverter.toObjectSchema(paramMap));
         }
         return builder.build();
+    }
+
+    // ===== 请求体快照(调用链日志: 保证"日志 = 实际发给 LLM") =====
+
+    /** 请求体快照序列化(静态, 与实例上下文无关) */
+    private static final com.fasterxml.jackson.databind.ObjectMapper WIRE_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /**
+     * 生成实际发给上游的请求体快照。
+     * <p>
+     * 复用 {@link #buildChatRequest} 的<b>同一次组装</b>: 消息过滤/改写、工具定义、工具选择、
+     * 输出格式、厂商参数全部由同一份逻辑产出, 因此日志不会随 Provider 改动而漂移。
+     * <p>
+     * 精度说明: 这是<b>逻辑等价</b>的请求体 —— 框架在 HTTP 序列化阶段仍可能补充少量字段
+     * (如流式的 stream_options)。要字节级精确需拦截 HTTP body, 代价与风险过高, 故不采用。
+     */
+    @Override
+    public String describeWireRequest(ChatRequest request, List<Message> history,
+                                      boolean includeCurrentUser, boolean stream) {
+        try {
+            WireCapture capture = new WireCapture();
+            buildChatRequest(request, history, includeCurrentUser, capture);
+            Map<String, Object> wire = new LinkedHashMap<>();
+            wire.put("model", model);
+            wire.put("stream", stream);
+            wire.put("messages", capture.messages);
+            wire.putAll(capture.params);
+            return WIRE_MAPPER.writeValueAsString(wire);
+        } catch (Exception e) {
+            // 快照失败绝不影响对话
+            log.warn("[{}] 请求体快照生成失败(不影响对话): {}", name, e.getMessage());
+            return null;
+        }
+    }
+
+    /** 请求体快照采集器: 由 {@link #buildChatRequest} 在组装过程中填充, 与真实请求一一对应 */
+    private static final class WireCapture {
+        /** 实际进入请求的消息(已被同样的规则过滤/改写) */
+        final List<Map<String, Object>> messages = new ArrayList<>();
+        /** 实际生效的请求参数(温度/工具定义/工具选择/输出格式/厂商参数) */
+        final Map<String, Object> params = new LinkedHashMap<>();
+    }
+
+    /** 构造一条快照消息(LinkedHashMap 保持字段插入顺序便于阅读; 允许 null 值) */
+    private static Map<String, Object> wireMessage(String role, String content) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("role", role);
+        m.put("content", content == null ? "" : content);
+        return m;
+    }
+
+    /** 收集一条快照消息(capture 为空则跳过) */
+    private static void capture(WireCapture capture, Map<String, Object> message) {
+        if (capture != null) {
+            capture.messages.add(message);
+        }
+    }
+
+    /**
+     * 采集 tool_call 强制结构化模式的请求参数。
+     * <p>该分支下实际发出的工具定义被替换为"提交结果"工具, 且 tool_choice 被强制,
+     * 与普通路径差异很大, 故单独采集。
+     */
+    private static void captureForcedToolParams(WireCapture capture, String fnName, ToolSpecification submitTool,
+                                               ChatRequest request, Double temp) {
+        if (capture == null) return;
+        if (temp != null) capture.params.put("temperature", temp);
+        Map<String, Object> fn = new LinkedHashMap<>();
+        fn.put("name", fnName);
+        fn.put("description", submitTool.description());
+        fn.put("parameters", request.getJsonSchema());
+        capture.params.put("tools", List.of(Map.of("type", "function", "function", fn)));
+        capture.params.put("tool_choice", "required(仅可调用 " + fnName + ")");
+        // DashScope 思考模式不支持 tool_choice=required, 该分支固定关闭思考
+        capture.params.put("customParameters", Map.of("enable_thinking", false));
+    }
+
+    /** 采集普通调用路径的请求参数(与 buildChatRequest 中的各分支一一对应) */
+    private void captureNormalParams(WireCapture capture, ChatRequest request, String responseFormat, Double temp) {
+        if (capture == null) return;
+        if (temp != null) capture.params.put("temperature", temp);
+        if (request.getTools() != null && !request.getTools().isEmpty() && supportsFunctionCalling()) {
+            capture.params.put("tools", request.getTools());
+            capture.params.put("tool_choice", "auto");
+        }
+        if (responseFormat != null && !responseFormat.isBlank()) {
+            capture.params.put("response_format", responseFormat);
+            if (request.getJsonSchema() != null) {
+                capture.params.put("json_schema_name", request.getJsonSchemaName());
+                capture.params.put("json_schema", request.getJsonSchema());
+            }
+        }
+        if (Boolean.FALSE.equals(request.getThinkingEnabled()) && thinkingDisableParams != null) {
+            capture.params.put("customParameters", thinkingDisableParams);
+        }
     }
 
     // ===== 工具方法 =====

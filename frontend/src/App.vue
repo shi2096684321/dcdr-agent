@@ -20,6 +20,7 @@
         <CreativeView v-else-if="mode==='creative'" :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
         <AgentView v-else-if="mode==='agent'" />
+        <MemoryView v-else-if="mode==='memory'" />
         <WorkflowView v-else-if="mode==='workflow'" @open-dag="onOpenDag" />
         <DagEditorView v-else-if="mode==='dag'" :initial-workflow-id="dagTargetId" />
         <TemplateMarketView v-else-if="mode==='market'" />
@@ -43,6 +44,7 @@ import ChatView from '@/views/ChatView.vue'
 import CreativeView from '@/views/CreativeView.vue'
 import KnowledgeBaseView from '@/views/KnowledgeBaseView.vue'
 import AgentView from '@/views/AgentView.vue'
+import MemoryView from '@/views/MemoryView.vue'
 import WorkflowView from '@/views/WorkflowView.vue'
 import DagEditorView from '@/views/DagEditorView.vue'
 import TemplateMarketView from '@/views/TemplateMarketView.vue'

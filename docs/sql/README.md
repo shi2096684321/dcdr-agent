@@ -94,7 +94,8 @@ mvn spring-boot:run -Dspring-boot.run.profiles=pg
 java -jar target/dcdr-agent-1.0.0.jar --spring.profiles.active=pg
 ```
 
-> `application-pg.yml` 中 `ddl-auto: validate`：表结构由 `v2.0_schema.sql` 管理，JPA 仅做校验，不会自动改表。
+> `application-pg.yml` 中 `ddl-auto: update`：表结构的**规范来源**仍是 `docs/sql/*.sql`，但 JPA 会在应用启动时自动补齐**新增**的表 / 列 / 索引（只做 ADD，不删列、不改已存在列的类型）。
+> 脚本需要保留并执行一次的场景：补齐 JPA 不生成的部分（`COMMENT`、部分索引 `WHERE`、`DESC` 排序索引）。脚本均为 `IF NOT EXISTS` 写法，可重复执行。
 
 ---
 

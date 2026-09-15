@@ -22,3 +22,5 @@ export * from './llmCalls'
 export * from './userModels'
 // V3.1 回答反馈 (F-48)
 export * from './feedback'
+// V3.1 长期记忆
+export * from './memories'

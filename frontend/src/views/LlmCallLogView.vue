@@ -76,6 +76,7 @@
 
     <!-- 调用链详情抽屉: 展示每次 LLM 调用的请求参数(温度/上下文规模/工具数)与工具调用参数/结果摘要 -->
     <el-drawer v-model="detailVisible" size="620px" :title="detailTitle">
+      <div v-loading="detailLoading" class="d-wrap">
       <template v-if="detailLog">
         <div class="d-section">
           <div class="d-title">基本信息</div>
@@ -116,6 +117,10 @@
             <summary>本次提交的 System Prompt</summary>
             <pre class="d-pre">{{ s.systemPrompt }}</pre>
           </details>
+          <details class="d-raw" v-if="s.wireRequest">
+            <summary>实际发给上游的请求体（由 Provider 组装，权威口径）</summary>
+            <pre class="d-pre">{{ prettyJson(s.wireRequest) }}</pre>
+          </details>
           <details class="d-raw" v-if="s.messages && s.messages.length">
             <summary>本次提交的完整消息列表 ({{ s.messages.length }} 条)</summary>
             <div v-for="(mm, mi) in s.messages" :key="mi" class="d-msg">
@@ -134,6 +139,7 @@
           </details>
         </div>
       </template>
+      </div>
     </el-drawer>
   </div>
 </template>
@@ -141,7 +147,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getLlmCallLogs, extractMessage } from '@/api'
+import { getLlmCallLogs, getLlmCallLogDetail, extractMessage } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
@@ -160,13 +166,24 @@ const filterUserId = ref('')
 const expanded = ref(new Set())
 
 // ===== 详情抽屉: 展示一次调用链的完整步骤与每次 LLM 调用的请求参数 =====
+// 列表接口不返回 systemPrompt / messages(单条可达数十 KB), 故打开抽屉时按 id 拉完整详情;
+// 先用列表数据渲染基本信息(秒开), 详情返回后整体替换。
 const detailVisible = ref(false)
 const detailLog = ref(null)
+const detailLoading = ref(false)
 const detailTitle = computed(() => detailLog.value ? `调用链详情 · #${detailLog.value.turnId}` : '调用链详情')
 
-function openDetail(log) {
+async function openDetail(log) {
   detailLog.value = log
   detailVisible.value = true
+  detailLoading.value = true
+  try {
+    detailLog.value = await getLlmCallLogDetail(log.id)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载调用链详情失败')
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 /** 步骤字段中文标签(未列出的字段原样显示 key) */
@@ -178,11 +195,16 @@ const STEP_LABELS = {
   kbCount: '知识库数', hits: '命中条数'
 }
 
+/** 请求体 JSON 字符串 → 缩进美化(解析失败则原样返回, 不阻断展示) */
+function prettyJson(raw) {
+  try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
+}
+
 /** 把步骤 Map 转为键值对列表(kind/seq 已在标题, calls 单独渲染) */
 function stepEntries(s) {
   const out = []
   for (const k of Object.keys(s)) {
-    if (k === 'kind' || k === 'seq' || k === 'calls' || k === 'systemPrompt' || k === 'messages') continue
+    if (k === 'kind' || k === 'seq' || k === 'calls' || k === 'systemPrompt' || k === 'messages' || k === 'wireRequest') continue
     const v = s[k]
     let label = STEP_LABELS[k] || k
     let value = v
@@ -318,6 +340,8 @@ onMounted(() => {
 .pager { margin-top: 20px; display: flex; justify-content: center; }
 
 /* ===== 详情抽屉 ===== */
+/* 详情内容容器: 给 v-loading 遮罩提供最小高度, 避免加载中抽屉塌陷 */
+.d-wrap { min-height: 240px; }
 .card-foot { margin-top: 8px; }
 .detail-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #667eea; background: #f2f4ff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .detail-toggle:hover { background: #e6eaff; }

@@ -58,4 +58,26 @@ public interface ChatModelProvider {
     default boolean supportsFunctionCalling() {
         return false;
     }
+
+    /**
+     * 生成"本次实际发给上游的请求体"快照(JSON 文本), 供调用链日志忠实归档。
+     * <p>
+     * <b>为什么由 Provider 提供, 而不是编排层自己拼</b>: 编排层持有的只是"业务视角的历史",
+     * 而真正发给上游的 messages 与参数由 Provider 组装 —— 它会过滤空消息、改写生图占位、
+     * 追加工具定义与厂商参数(如 {@code enable_thinking})。两处各拼一份必然随时间漂移,
+     * 因此以 Provider 的组装结果为准。
+     * <p>
+     * <b>实现约束</b>: 必须与实际发送逻辑<b>同源</b>(复用同一个构建方法), 不得另行拼装 ——
+     * 否则等于把漂移从一个地方搬到另一个地方。默认返回 {@code null} 表示不提供快照。
+     *
+     * @param request            当前请求
+     * @param history            对话历史
+     * @param includeCurrentUser 是否把当前用户消息追加进请求(须与真实调用一致)
+     * @param stream             true=流式调用, false=同步调用
+     * @return 请求体 JSON; 不提供或生成失败时返回 null(调用方须容忍 null)
+     */
+    default String describeWireRequest(ChatRequest request, List<Message> history,
+                                       boolean includeCurrentUser, boolean stream) {
+        return null;
+    }
 }

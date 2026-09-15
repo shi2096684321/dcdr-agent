@@ -248,6 +248,21 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         return body.toString();
     }
 
+    /**
+     * 请求体快照: 手动引擎的 {@link #buildRequestBody} 产物<b>就是</b>实际 POST 的 JSON,
+     * 直接复用即天然保证"日志 = 实际发出", 不存在二次拼装导致的漂移。
+     */
+    @Override
+    public String describeWireRequest(ChatRequest request, List<Message> history,
+                                      boolean includeCurrentUser, boolean stream) {
+        try {
+            return buildRequestBody(request, history, stream, includeCurrentUser);
+        } catch (Exception e) {
+            log.warn("[{}] 请求体快照生成失败(不影响对话): {}", name, e.getMessage());
+            return null;
+        }
+    }
+
     @Override
     public ChatResponse invoke(ChatRequest request, List<Message> history) {
         String json = buildRequestBody(request, history, false);

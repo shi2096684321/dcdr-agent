@@ -24,6 +24,8 @@ public class SessionDTO {
     private String model;
     @Schema(description = "会话角色设定(用户人设/偏好, 由平台包装后转述给模型, 非系统提示词)")
     private String persona;
+    @Schema(description = "本会话使用的自定义 Agent ID (V3.1; 为空表示通用助手)。用于 Agent 级长期记忆归属")
+    private String agentId;
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
     @Schema(description = "更新时间")

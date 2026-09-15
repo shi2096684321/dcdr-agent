@@ -22,9 +22,14 @@ spring:
       max-lifetime: 1800000           # 30 分钟达到生命周期上限(需 < DB wait_timeout)
       leak-detection-threshold: 8000  # 8 秒未归还视为泄漏, 输出告警(生产建议开启定位连接泄漏)
   jpa:
-    # 表结构已由 v2.0_schema.sql 显式管理; JPA 仅做校验, 不自动改表
+    # V3.1: 表结构仍以 docs/sql/*.sql 为规范来源, 但启动时由 JPA 自动补齐"新增"的表/列/索引,
+    #       免去每次加字段都要手工执行迁移脚本。update 只做 ADD(建缺失的表/列/索引), 不删列、
+    #       不改已存在列的类型, 与"只新增"的预期一致; pgvector 的 vector(1536) 列因实体侧显式
+    #       声明了 columnDefinition, 不会被误改。
+    #       代价: JPA 生成的 DDL 不含 COMMENT、部分索引(WHERE)与 DESC 排序索引 —— 需要这些特性时
+    #       仍执行 docs/sql/*.sql 补齐(脚本均为 IF NOT EXISTS, 重复执行安全)。
     hibernate:
-      ddl-auto: validate
+      ddl-auto: update
     show-sql: false
     properties:
       hibernate:
