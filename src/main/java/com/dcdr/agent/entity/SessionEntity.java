@@ -11,9 +11,10 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "会话实体 (对话模式)")
 @Table(name = "sessions")
-public class SessionEntity {
+public class SessionEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (字符串型 UUID)")
     @Id

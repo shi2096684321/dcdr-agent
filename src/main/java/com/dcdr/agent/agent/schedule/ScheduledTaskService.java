@@ -3,6 +3,8 @@ package com.dcdr.agent.agent.schedule;
 import com.dcdr.agent.agent.AgentOrchestrator;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
@@ -46,6 +48,8 @@ public class ScheduledTaskService {
     private final AgentDefinitionService agentDefinitionService;
     private final AgentOrchestrator orchestrator;
     private final SessionManager sessionManager;
+    /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (越权返回 404, 替代原先内联 equals 判断的 403) */
+    private final OwnershipGuard ownershipGuard;
 
     private ThreadPoolTaskScheduler scheduler;
     /** 任务 ID → 调度句柄, 用于启停 */
@@ -82,20 +86,25 @@ public class ScheduledTaskService {
 
     // ===== CRUD =====
 
-    public List<ScheduledTaskDtos.ScheduledTaskView> list(String userId) {
-        List<ScheduledTaskEntity> entities = repository.findByUserIdOrderByUpdatedAtDesc(userId);
+    /** 列出定时任务: 管理员返回全部(含他人); 普通用户仅自己的 */
+    public List<ScheduledTaskDtos.ScheduledTaskView> list(String userId, boolean isAdmin) {
+        List<ScheduledTaskEntity> entities = isAdmin
+                ? repository.findAllByOrderByUpdatedAtDesc()
+                : repository.findByUserIdOrderByUpdatedAtDesc(userId);
         List<ScheduledTaskDtos.ScheduledTaskView> views = new ArrayList<>(entities.size());
         for (ScheduledTaskEntity e : entities) views.add(toView(e));
         return views;
     }
 
-    public ScheduledTaskDtos.ScheduledTaskView get(String id, String userId) {
-        ScheduledTaskEntity e = repository.findById(id)
+    public ScheduledTaskDtos.ScheduledTaskView get(String id, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, id, userId, isAdmin, false);
+        return toView(loadEntity(id));
+    }
+
+    /** 内部加载实体 (归属校验通过后调用) */
+    private ScheduledTaskEntity loadEntity(String id) {
+        return repository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "定时任务不存在: " + id, "SCHEDULED_TASK_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权访问该定时任务", "FORBIDDEN");
-        }
-        return toView(e);
     }
 
     @Transactional
@@ -117,12 +126,11 @@ public class ScheduledTaskService {
     }
 
     @Transactional
-    public ScheduledTaskDtos.ScheduledTaskView update(String id, ScheduledTaskDtos.SaveScheduledTaskRequest req, String userId) {
-        ScheduledTaskEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "定时任务不存在: " + id, "SCHEDULED_TASK_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权修改该定时任务", "FORBIDDEN");
-        }
+    public ScheduledTaskDtos.ScheduledTaskView update(String id, ScheduledTaskDtos.SaveScheduledTaskRequest req,
+                                                      String userId, boolean isAdmin) {
+        // 归属校验(写): 创建者本人或 admin
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, id, userId, isAdmin, true);
+        ScheduledTaskEntity e = loadEntity(id);
         validate(req);
         // 取消旧调度
         cancelSchedule(e.getId());
@@ -135,23 +143,20 @@ public class ScheduledTaskService {
     }
 
     @Transactional
-    public void delete(String id, String userId) {
-        ScheduledTaskEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "定时任务不存在: " + id, "SCHEDULED_TASK_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权删除该定时任务", "FORBIDDEN");
-        }
+    public void delete(String id, String userId, boolean isAdmin) {
+        // 归属校验(写): 创建者本人或 admin
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, id, userId, isAdmin, true);
+        ScheduledTaskEntity e = loadEntity(id);
         cancelSchedule(e.getId());
         repository.delete(e);
     }
 
     /** 手动触发一次执行 (不依赖 cron, 用于测试 / 立即执行) */
-    public ScheduledTaskDtos.TriggerResult trigger(String id, ScheduledTaskDtos.TriggerRequest req, String userId) {
-        ScheduledTaskEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "定时任务不存在: " + id, "SCHEDULED_TASK_NOT_FOUND"));
-        if (!java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权触发该定时任务", "FORBIDDEN");
-        }
+    public ScheduledTaskDtos.TriggerResult trigger(String id, ScheduledTaskDtos.TriggerRequest req,
+                                                   String userId, boolean isAdmin) {
+        // 归属校验(写): 创建者本人或 admin
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, id, userId, isAdmin, true);
+        ScheduledTaskEntity e = loadEntity(id);
         String input = (req != null && req.getInputMessage() != null && !req.getInputMessage().isBlank())
                 ? req.getInputMessage() : e.getInputMessage();
         if (input == null || input.isBlank()) input = "(定时触发)";

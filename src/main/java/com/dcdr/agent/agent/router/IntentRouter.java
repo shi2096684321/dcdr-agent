@@ -151,8 +151,9 @@ public class IntentRouter {
             return fallback;
         }
         try {
-            List<AgentDtos.AgentView> agents = agentDefinitionService.list(userId);
-            List<WorkflowDtos.WorkflowView> workflows = workflowEngine.list(userId).stream()
+            // 内部路由按"发起者本人"视角取候选, 不使用管理员全局视图
+            List<AgentDtos.AgentView> agents = agentDefinitionService.list(userId, false);
+            List<WorkflowDtos.WorkflowView> workflows = workflowEngine.list(userId, false).stream()
                     .filter(WorkflowDtos.WorkflowView::isEnabled)
                     .toList();
             // 没有任何可路由目标时直接走普通对话, 省一次 LLM 调用

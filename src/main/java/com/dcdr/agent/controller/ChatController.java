@@ -8,6 +8,9 @@ import com.dcdr.agent.agent.router.IntentRouter;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.agent.workflow.WorkflowEngine;
 import com.dcdr.agent.auth.SecurityContext;
+import com.dcdr.agent.auth.ownership.AuthContext;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.common.log.LlmCallTrace;
 import com.dcdr.agent.config.V3Properties;
@@ -57,6 +60,8 @@ public class ChatController {
     private final V3Properties v3Properties;
     private final com.dcdr.agent.repository.LlmCallLogRepository llmCallLogRepository;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    /** V3.1 F-41: 对话内 RAG 检索范围的归属校验(防止携带他人知识库 ID 越权检索) */
+    private final OwnershipGuard ownershipGuard;
 
     private static final Function<ChatChunk, ServerSentEvent<ChatChunk>> TO_SSE =
             chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build();
@@ -91,6 +96,8 @@ public class ChatController {
                                                        ServerWebExchange exchange) {
         log.info("流式对话: session={}", request.getSessionId());
         String userId = SecurityContext.getUserId(exchange);
+        // V3.1 F-41: 剔除请求中越权的知识库 ID(对话内 RAG 检索范围)
+        sanitizeKnowledgeBaseIds(request, exchange);
         // LLM 调用链: 本轮请求的全部模型调用(路由/各生成轮)+工具步, 结束输出汇总(grep 'llm-trace')
         final LlmCallTrace trace = LlmCallTrace.begin();
         registerLogSink(trace, userId, request.getSessionId(), request.getMessage());
@@ -180,6 +187,8 @@ public class ChatController {
                                            ServerWebExchange exchange) {
         log.info("同步对话: session={}", request.getSessionId());
         String userId = SecurityContext.getUserId(exchange);
+        // V3.1 F-41: 剔除请求中越权的知识库 ID(对话内 RAG 检索范围)
+        sanitizeKnowledgeBaseIds(request, exchange);
         // LLM 调用链(与流式路径一致): 路由 + 生成调用, 结束输出汇总(grep 'llm-trace')
         final LlmCallTrace trace = LlmCallTrace.begin();
         registerLogSink(trace, userId, request.getSessionId(), request.getMessage());
@@ -213,6 +222,35 @@ public class ChatController {
             request.setAgentId(route.getTarget());
         }
         return orchestrator.chatSync(request, userId, trace);
+    }
+
+    // ===== 归属校验辅助 (V3.1 F-41) =====
+
+    /**
+     * 过滤对话内 RAG 检索的知识库范围。
+     * <p>
+     * {@code ChatRequest.knowledgeBaseIds} 由前端传入, 可能包含他人 USER 级知识库 ID ——
+     * 直接采信会让用户检索到他人的私有文档(V3.0 遗留越权面)。此处按统一归属口径
+     * ({@link OwnershipGuard}) 逐个校验, 不可访问的 ID <b>静默剔除</b>而非报错,
+     * 避免攻击者借错误信息确认资源是否存在。
+     * <p>
+     * 仅作用于 HTTP 入口(用户请求); 工作流定义 / 定时任务内部链路的知识库由平台配置,
+     * 属于可信来源, 不在此过滤。
+     */
+    private void sanitizeKnowledgeBaseIds(ChatRequest request, ServerWebExchange exchange) {
+        List<String> requested = request.getKnowledgeBaseIds();
+        if (requested == null || requested.isEmpty()) return;
+
+        AuthContext ctx = ownershipGuard.context(exchange);
+        List<String> allowed = new ArrayList<>(requested.size());
+        for (String kbId : requested) {
+            if (ownershipGuard.canAccess(ResourceType.KNOWLEDGE_BASE, kbId, ctx, false)) {
+                allowed.add(kbId);
+            } else {
+                log.warn("对话请求携带无权限的知识库 ID, 已剔除: kbId={}, user={}", kbId, ctx.userId());
+            }
+        }
+        request.setKnowledgeBaseIds(allowed);
     }
 
     // ===== 路由辅助 =====

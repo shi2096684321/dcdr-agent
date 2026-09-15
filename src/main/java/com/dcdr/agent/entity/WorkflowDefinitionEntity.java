@@ -20,11 +20,12 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "V2.3 工作流定义实体 (F-25 多 Agent 协作编排)")
 @Table(name = "workflow_definitions", indexes = {
         @Index(name = "idx_workflow_user", columnList = "userId")
 })
-public class WorkflowDefinitionEntity {
+public class WorkflowDefinitionEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID")
     @Id

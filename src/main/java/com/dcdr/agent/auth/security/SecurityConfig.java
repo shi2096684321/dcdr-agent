@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.security.config.annotation.method.configuration.EnableReactiveMethodSecurity;
 import org.springframework.security.config.annotation.web.reactive.EnableWebFluxSecurity;
 import org.springframework.security.config.web.server.SecurityWebFiltersOrder;
 import org.springframework.security.config.web.server.ServerHttpSecurity;
@@ -38,15 +39,22 @@ import java.util.List;
  *        → Controller
  * </pre>
  * <p>
- * <b>授权模型</b>: RBAC 三层 (User → Role → Permission), 权限编码 {@code 资源:操作} (如 kb:write),
- * 路径级用 {@code hasAuthority('kb:write')} 控制 (文档 F-23 权限编码)。
- * <p>
- * 注意: 不使用 {@code @PreAuthorize} 方法级注解, 因为它要求 Controller 方法返回 Mono/Flux;
- * 改用 {@code authorizeExchange} 路径级授权, 兼容现有同步返回类型的 Controller。
+ * <b>授权模型</b>: 分两层
+ * <ol>
+ *   <li><b>路径级 RBAC</b>(本类): 权限编码 {@code 资源:操作}(如 {@code kb:write}),
+ *       用 {@code authorizeExchange} + {@code hasAuthority(...)} 控制"能不能调这个接口"(文档 F-23);</li>
+ *   <li><b>方法级归属校验</b>({@code @EnableReactiveMethodSecurity}): 用 {@code @PreAuthorize}
+ *       控制"这个 id 是不是你的", 委托给 {@code OwnershipGuard}(V3.1 F-41 统一归属框架)。
+ *       表达式形如 {@code @ownershipGuard.requireRead(#id, 'SESSION', principal)},
+ *       当前用户直接由 Spring Security 提供的 {@code principal} 变量取得, <b>无需</b>方法参数传递上下文。</li>
+ * </ol>
+ * 注: {@code @EnableReactiveMethodSecurity} 要求被保护方法返回 {@code Mono}(不支持 Flux),
+ * 故接入归属校验的 Controller 端点统一返回 {@code Mono<Result<T>>}; 未接入的端点保持同步返回不变。
  */
 @Slf4j
 @Configuration
 @EnableWebFluxSecurity
+@EnableReactiveMethodSecurity
 @RequiredArgsConstructor
 public class    SecurityConfig {
 

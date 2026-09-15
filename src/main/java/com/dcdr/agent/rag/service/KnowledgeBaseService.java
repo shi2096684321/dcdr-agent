@@ -1,5 +1,7 @@
 package com.dcdr.agent.rag.service;
 
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.DocumentEntity;
 import com.dcdr.agent.entity.KnowledgeBaseEntity;
@@ -43,6 +45,8 @@ public class KnowledgeBaseService {
     private final DocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
     private final RagProperties properties;
+    /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard(与此前手写口径等价, 越权返回 404) */
+    private final OwnershipGuard ownershipGuard;
 
     @Transactional
     public KnowledgeBaseEntity create(String name, String description, String userId, String visibility) {
@@ -80,31 +84,23 @@ public class KnowledgeBaseService {
 
     /**
      * 校验用户对知识库的访问权并返回知识库(防越权统一入口)。
+     * <p>
+     * V3.1 F-41: 判定逻辑已<b>收敛到 {@link OwnershipGuard}</b>, 本方法只负责"校验 + 返回实体",
+     * 口径(admin 放行 / PLATFORM 只读 / USER 级仅创建者 / 越权即 404)由
+     * {@code KnowledgeBaseOwnershipProvider} 单点定义。
      * <ul>
      *   <li>admin: 任意知识库可访问/可写</li>
-     *   <li>普通用户(userId != null 且非 admin):
-     *       USER 级仅可访问/写自己的; PLATFORM 级只读(write=true 时拒绝)</li>
-     *   <li>匿名(userId == null, 认证关闭): 兼容 V2.1, 可访问任意 USER 级(写由上层决定)</li>
+     *   <li>普通用户: USER 级仅可访问/写自己的; PLATFORM 级只读(写操作拒绝)</li>
+     *   <li>匿名: 仅认证关闭时兼容放行(V2.1 单用户部署)</li>
      * </ul>
      *
      * @param write true 表示写操作(创建文档/更新/删除), false 表示读操作(查看/检索/上传受限)
      */
     public KnowledgeBaseEntity getAccessible(String kbId, String userId, boolean isAdmin, boolean write) {
-        KnowledgeBaseEntity kb = get(kbId);
-        if (isAdmin) return kb;
-        boolean platform = "PLATFORM".equals(kb.getVisibility());
-        // 平台级: 对所有登录用户只读可见; 写操作仅 admin 可做
-        if (platform) {
-            if (write) {
-                throw new BusinessException(403, "平台级知识库仅管理员可修改", "FORBIDDEN");
-            }
-            return kb;
-        }
-        // 用户级: 仅创建者可访问(未登录/匿名退化为放行, 兼容 V2.1 单用户)
-        if (userId != null && !userId.equals(kb.getUserId())) {
-            throw new BusinessException(404, "知识库不存在: " + kbId, "KB_NOT_FOUND");
-        }
-        return kb;
+        validateEnabled();
+        ownershipGuard.check(ResourceType.KNOWLEDGE_BASE, kbId, userId, isAdmin, write);
+        return kbRepository.findById(kbId)
+                .orElseThrow(() -> new BusinessException(404, "知识库不存在: " + kbId, "KB_NOT_FOUND"));
     }
 
     public List<KnowledgeBaseEntity> list(String userId) {

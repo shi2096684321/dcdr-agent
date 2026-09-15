@@ -20,11 +20,12 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "用户自定义模型配置 (V3.1 新增)")
 @Table(name = "user_model_configs", indexes = {
         @Index(name = "idx_umc_user", columnList = "userId")
 })
-public class UserModelConfigEntity {
+public class UserModelConfigEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (UUID)")
     @Id

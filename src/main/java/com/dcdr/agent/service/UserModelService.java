@@ -1,5 +1,7 @@
 package com.dcdr.agent.service;
 
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.constant.ModelType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.common.util.ApiKeyCipher;
@@ -41,6 +43,8 @@ public class UserModelService {
     private final ApiKeyCipher cipher;
     private final LlmCircuitBreaker circuitBreaker;
     private final LlmMetrics metrics;
+    /** V3.1 F-41: 管理入口的归属判定统一收敛到 OwnershipGuard (越权返回 404) */
+    private final OwnershipGuard ownershipGuard;
 
     // ===== CRUD =====
 
@@ -59,10 +63,11 @@ public class UserModelService {
     }
 
     @Transactional
-    public UserModelConfigDTO update(String userId, String id, UserModelConfigDTO dto) {
+    public UserModelConfigDTO update(String userId, String id, UserModelConfigDTO dto, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.USER_MODEL, id, userId, isAdmin, true);
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime touched = updatedAt(dto, now);
-        UserModelConfigEntity e = repository.findByIdAndUserId(id, userId)
+        UserModelConfigEntity e = repository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "自定义模型不存在: " + id, "USER_MODEL_NOT_FOUND"));
         String prevName = e.getName();
         // apiKey 为空视为保留原值(不支持置空, 湖: 变更 key 需重新提交新 key)
@@ -74,11 +79,9 @@ public class UserModelService {
     }
 
     @Transactional
-    public void delete(String userId, String id) {
-        if (repository.findByIdAndUserId(id, userId).isEmpty()) {
-            throw new BusinessException(404, "自定义模型不存在: " + id, "USER_MODEL_NOT_FOUND");
-        }
-        repository.deleteByIdAndUserId(id, userId);
+    public void delete(String userId, String id, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.USER_MODEL, id, userId, isAdmin, true);
+        repository.deleteById(id);
         log.info("用户 {} 删除自定义模型: {}", userId, id);
     }
 
@@ -89,10 +92,17 @@ public class UserModelService {
                 .toList();
     }
 
-    /** 管理页展示用: 返回配置 DTO 列表 (apiKey 掩码) */
+    /**
+     * 管理页展示用: 返回配置 DTO 列表 (apiKey 掩码)。
+     * <p>
+     * V3.1 F-41: 管理员返回全部用户的配置; 普通用户仅自己的。
+     */
     @Transactional(readOnly = true)
-    public List<UserModelConfigDTO> listConfigs(String userId) {
-        return repository.findByUserIdOrderByCreatedAtDesc(userId).stream()
+    public List<UserModelConfigDTO> listConfigs(String userId, boolean isAdmin) {
+        List<UserModelConfigEntity> entities = isAdmin
+                ? repository.findAllByOrderByCreatedAtDesc()
+                : repository.findByUserIdOrderByCreatedAtDesc(userId);
+        return entities.stream()
                 .map(this::toDto)
                 .toList();
     }

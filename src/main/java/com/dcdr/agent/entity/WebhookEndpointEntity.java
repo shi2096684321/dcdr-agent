@@ -13,11 +13,12 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "V3.0 Webhook 端点 (F-31)")
 @Table(name = "webhook_endpoints", indexes = {
         @Index(name = "idx_webhook_user", columnList = "userId")
 })
-public class WebhookEndpointEntity {
+public class WebhookEndpointEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID")
     @Id

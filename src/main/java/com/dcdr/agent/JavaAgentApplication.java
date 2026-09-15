@@ -20,6 +20,12 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class JavaAgentApplication {
 
     public static void main(String[] args) {
+        // 注(V3.1 F-41): 归属校验最终采用 Spring Security 官方的响应式方法级安全
+        // (@EnableReactiveMethodSecurity + @PreAuthorize): 上下文由框架从 Reactor Context 提供,
+        // 因此 Controller 方法无需声明 ServerWebExchange 参数, 也无需在此启用全局
+        // Hooks.enableAutomaticContextPropagation() —— 那条 ThreadLocal 路线经实测不可行,
+        // 原因与结论见 com.dcdr.agent.auth.ownership.OwnershipGuard 类注释。
+        //
         // V3.0 框架化改造: LangChain4j 底层使用 JDK HttpClient 连接池(不经过 WebClientFactory),
         // 限制空闲 keep-alive 连接存活时间, 避免上游网关(DashScope 等)关闭空闲连接后
         // 复用死连接抛 Connection reset。

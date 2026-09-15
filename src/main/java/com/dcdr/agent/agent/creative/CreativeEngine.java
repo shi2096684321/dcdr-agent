@@ -55,7 +55,7 @@ public class CreativeEngine {
      * 立即创建一条 pending 记录并返回, 真正的模型调用在后台线程池执行,
      * 完成后回写状态。前端凭返回的记录 ID 轮询 {@code GET /api/generations/{id}} 获取结果。
      */
-    public List<GenerationDTO> generateImage(ImageRequest request) {
+    public List<GenerationDTO> generateImage(ImageRequest request, String userId) {
         log.info("提交图片生成任务, 模型: {}, 提示词: {}", request.getModel(), request.getPrompt());
 
         if (request.getPrompt() == null || request.getPrompt().isBlank()) {
@@ -72,7 +72,7 @@ public class CreativeEngine {
 
         String projectId = request.getProjectId();
         if (projectId == null) {
-            projectId = projectManager.createProject("未命名项目", "image", request.getModel()).getId();
+            projectId = projectManager.createProject("未命名项目", "image", request.getModel(), userId).getId();
         }
 
         // 官方接口仅支持单次单张生成, 应用层将 n>1 拆分为 n 个互相独立的任务,
@@ -135,7 +135,7 @@ public class CreativeEngine {
     }
 
     /** 生成视频 */
-    public GenerationDTO generateVideo(VideoRequest request) {
+    public GenerationDTO generateVideo(VideoRequest request, String userId) {
         long start = System.currentTimeMillis();
         log.info("开始生成视频, 模型: {}", request.getModel());
 
@@ -153,7 +153,7 @@ public class CreativeEngine {
 
         String projectId = request.getProjectId();
         if (projectId == null) {
-            projectId = projectManager.createProject("未命名项目", "video", request.getModel()).getId();
+            projectId = projectManager.createProject("未命名项目", "video", request.getModel(), userId).getId();
         }
         result.setProjectId(projectId);
         projectManager.addGeneration(projectId, result);
@@ -168,7 +168,7 @@ public class CreativeEngine {
      * 立即创建一条 pending 记录并返回, 真正的模型调用在后台线程池执行,
      * 完成后回写状态。前端凭返回的记录 ID 轮询 {@code GET /api/videos/{id}/status} 获取结果。
      */
-    public GenerationDTO submitVideo(VideoRequest request) {
+    public GenerationDTO submitVideo(VideoRequest request, String userId) {
         log.info("提交视频生成任务, 模型: {}, 提示词: {}", request.getModel(), request.getPrompt());
 
         if (request.getPrompt() == null || request.getPrompt().isBlank()) {
@@ -177,7 +177,7 @@ public class CreativeEngine {
 
         String projectId = request.getProjectId();
         if (projectId == null) {
-            projectId = projectManager.createProject("未命名项目", "video", request.getModel()).getId();
+            projectId = projectManager.createProject("未命名项目", "video", request.getModel(), userId).getId();
         }
 
         String referImageUrl = referImageStorage.save(request.getReferImage());

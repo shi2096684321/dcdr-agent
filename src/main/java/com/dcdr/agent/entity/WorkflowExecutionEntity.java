@@ -24,13 +24,14 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "V3.0 工作流执行记录 (F-33)")
 @Table(name = "workflow_executions", indexes = {
         @Index(name = "idx_wfexec_workflow", columnList = "workflowId"),
         @Index(name = "idx_wfexec_user", columnList = "userId"),
         @Index(name = "idx_wfexec_status", columnList = "status")
 })
-public class WorkflowExecutionEntity {
+public class WorkflowExecutionEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID")
     @Id

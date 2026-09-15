@@ -1,6 +1,8 @@
 package com.dcdr.agent.agent.definition;
 
 import com.dcdr.agent.agent.tenant.TenantService;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.AgentDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
@@ -38,11 +40,18 @@ public class AgentDefinitionService {
 
     private final AgentDefinitionRepository repository;
     private final TenantService tenantService;
+    /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (可见性口径见 AgentOwnershipProvider) */
+    private final OwnershipGuard ownershipGuard;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** 列出当前用户可见的 Agent: 自己的 + 公开的 + 预设模板 */
-    public List<AgentDtos.AgentView> list(String userId) {
-        List<AgentDefinitionEntity> entities = repository.findVisible(userId);
+    /**
+     * 列出 Agent: 管理员返回全部(含他人私有); 普通用户返回自己可见的
+     * (自己的 + 公开的 + 预设模板)。
+     */
+    public List<AgentDtos.AgentView> list(String userId, boolean isAdmin) {
+        List<AgentDefinitionEntity> entities = isAdmin
+                ? repository.findAllByOrderByIsTemplateDescUpdatedAtDesc()
+                : repository.findVisible(userId);
         List<AgentDtos.AgentView> views = new ArrayList<>(entities.size());
         for (AgentDefinitionEntity e : entities) {
             views.add(toView(e, userId));
@@ -60,14 +69,10 @@ public class AgentDefinitionService {
         return views;
     }
 
-    /** 详情 (可见性校验: 仅创建者或公开/模板可读) */
-    public AgentDtos.AgentView get(String id, String userId) {
-        AgentDefinitionEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        if (!isVisible(e, userId)) {
-            throw new BusinessException(403, "无权访问该 Agent", "FORBIDDEN");
-        }
-        return toView(e, userId);
+    /** 详情 (归属校验: 创建者 / 公开 / 模板可读, 越权统一返回 404) */
+    public AgentDtos.AgentView get(String id, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.AGENT, id, userId, isAdmin, false);
+        return toView(loadEntity(id), userId);
     }
 
     /** 内部加载实体 (供 Orchestrator/WorkflowEngine 调用, 不做可见性校验) */
@@ -101,15 +106,9 @@ public class AgentDefinitionService {
 
     @Transactional
     public AgentDtos.AgentView update(String id, AgentDtos.SaveAgentRequest req, String userId, boolean isAdmin) {
-        AgentDefinitionEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        // 模板: 仅管理员可修改; 普通 Agent: 仅创建者可改
-        if (e.isTemplate() && !isAdmin) {
-            throw new BusinessException(403, "预设模板仅管理员可修改, 普通用户请克隆后再编辑", "FORBIDDEN");
-        }
-        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权修改他人创建的 Agent", "FORBIDDEN");
-        }
+        // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
+        ownershipGuard.check(ResourceType.AGENT, id, userId, isAdmin, true);
+        AgentDefinitionEntity e = loadEntity(id);
         validateName(req.getName());
         applyRequest(e, req);
         // 管理员可在更新时切换模板标记 (普通用户不允许, 上面已拦截)
@@ -124,15 +123,9 @@ public class AgentDefinitionService {
 
     @Transactional
     public void delete(String id, String userId, boolean isAdmin) {
-        AgentDefinitionEntity e = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        // 模板: 仅管理员可删; 普通 Agent: 仅创建者可删
-        if (e.isTemplate() && !isAdmin) {
-            throw new BusinessException(403, "预设模板仅管理员可删除", "FORBIDDEN");
-        }
-        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权删除他人创建的 Agent", "FORBIDDEN");
-        }
+        // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
+        ownershipGuard.check(ResourceType.AGENT, id, userId, isAdmin, true);
+        AgentDefinitionEntity e = loadEntity(id);
         repository.delete(e);
         log.info("删除 Agent: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
     }
@@ -141,12 +134,10 @@ public class AgentDefinitionService {
      * 克隆模板或他人公开 Agent 为自己的副本 (F-24-001 验收 2: 支持克隆预设模板)。
      */
     @Transactional
-    public AgentDtos.AgentView clone(String id, String userId) {
-        AgentDefinitionEntity src = repository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "Agent 不存在: " + id, "AGENT_NOT_FOUND"));
-        if (!isVisible(src, userId)) {
-            throw new BusinessException(403, "无权克隆该 Agent", "FORBIDDEN");
-        }
+    public AgentDtos.AgentView clone(String id, String userId, boolean isAdmin) {
+        // 归属校验(读): 仅可克隆自己 / 公开 / 模板的 Agent
+        ownershipGuard.check(ResourceType.AGENT, id, userId, isAdmin, false);
+        AgentDefinitionEntity src = loadEntity(id);
         AgentDtos.SaveAgentRequest req = new AgentDtos.SaveAgentRequest();
         req.setName(src.getName() + " (副本)");
         req.setDescription(src.getDescription());
@@ -162,11 +153,6 @@ public class AgentDefinitionService {
     }
 
     // ===== 内部辅助 =====
-
-    private boolean isVisible(AgentDefinitionEntity e, String userId) {
-        return e.isTemplate() || e.isPublic()
-                || (userId != null && userId.equals(e.getUserId()));
-    }
 
     private void applyRequest(AgentDefinitionEntity e, AgentDtos.SaveAgentRequest req) {
         e.setName(req.getName().trim());

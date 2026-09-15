@@ -2,6 +2,8 @@ package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.creative.CreativeEngine;
 import com.dcdr.agent.agent.session.ProjectManager;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.GenerationDTO;
 import com.dcdr.agent.dto.ImageRequest;
@@ -18,8 +20,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 /**
  * 图片生成接口 (创作模式)。
@@ -35,6 +39,8 @@ import reactor.core.publisher.Flux;
 public class ImageController {
     private final CreativeEngine creativeEngine;
     private final ProjectManager projectManager;
+    /** V3.1 F-41: 响应式读取当前登录用户 + 归属校验 */
+    private final OwnershipGuard ownershipGuard;
 
     /** 进度轮询间隔 (ms) */
     private static final long POLL_INTERVAL_MS = 500;
@@ -48,9 +54,10 @@ public class ImageController {
                     + "V2.3: 前端可改用 GET /api/images/stream/{id} (SSE) 实时接收进度, 无需轮询。")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = GenerationDTO.class)))
     @PostMapping("/generate")
-    public Result<List<GenerationDTO>> generate(@RequestBody ImageRequest request) {
+    public Mono<Result<List<GenerationDTO>>> generate(@RequestBody ImageRequest request) {
         log.info("图片生成任务提交: model={}", request.getModel());
-        return Result.success(creativeEngine.generateImage(request));
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(creativeEngine.generateImage(request, ctx.userId())));
     }
 
     /**
@@ -78,6 +85,17 @@ public class ImageController {
     )
     @GetMapping(value = "/stream/{id}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<Object>> streamProgress(@PathVariable String id) {
+        // 流式端点返回 Flux, 无法使用 @PreAuthorize(@EnableReactiveMethodSecurity 仅支持 Mono 返回值),
+        // 故在订阅链上先做一次归属校验 —— 失败时抛 404, 由全局异常处理保持既有 JSON 契约。
+        return ownershipGuard.currentContext()
+                .flatMapMany(ctx -> {
+                    ownershipGuard.check(ResourceType.GENERATION, id, ctx, false);
+                    return progressStream(id);
+                });
+    }
+
+    /** 进度事件流(归属校验通过后调用) */
+    private Flux<ServerSentEvent<Object>> progressStream(String id) {
         log.info("F-31 流式图片生成进度: id={}", id);
         long startTime = System.currentTimeMillis();
         return Flux.interval(java.time.Duration.ofMillis(POLL_INTERVAL_MS), reactor.core.scheduler.Schedulers.boundedElastic())

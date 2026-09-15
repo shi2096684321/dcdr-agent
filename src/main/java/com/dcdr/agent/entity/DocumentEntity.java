@@ -11,12 +11,13 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "文档实体 (V2.0 新增, 支撑 V2.1 RAG 入库)")
 @Table(name = "documents", indexes = {
         @Index(name = "idx_doc_kb", columnList = "kbId"),
         @Index(name = "idx_doc_user", columnList = "userId")
 })
-public class DocumentEntity {
+public class DocumentEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (字符串型 UUID)")
     @Id

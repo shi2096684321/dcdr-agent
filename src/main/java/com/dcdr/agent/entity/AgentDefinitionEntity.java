@@ -12,12 +12,13 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "智能体定义实体 (V2.0 新增, V2.2 自定义 Agent, V2.3 增加 temperature/avatar/is_template)")
 @Table(name = "agent_definitions", indexes = {
         @Index(name = "idx_agent_user", columnList = "userId"),
         @Index(name = "idx_agent_template", columnList = "isTemplate")
 })
-public class AgentDefinitionEntity {
+public class AgentDefinitionEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (字符串型 UUID)")
     @Id

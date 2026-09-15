@@ -15,13 +15,14 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "V2.3 定时任务实体 (F-26 定时触发 Agent)")
 @Table(name = "scheduled_tasks", indexes = {
         @Index(name = "idx_sched_user", columnList = "userId"),
         @Index(name = "idx_sched_enabled", columnList = "enabled"),
         @Index(name = "idx_sched_next", columnList = "nextRunAt")
 })
-public class ScheduledTaskEntity {
+public class ScheduledTaskEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID")
     @Id

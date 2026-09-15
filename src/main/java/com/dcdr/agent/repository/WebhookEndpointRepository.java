@@ -15,4 +15,7 @@ public interface WebhookEndpointRepository extends JpaRepository<WebhookEndpoint
 
     /** 列出用户自己的 Webhook */
     List<WebhookEndpointEntity> findByUserIdOrderByCreatedAtDesc(String userId);
+
+    /** V3.1 F-41: 管理员查看全部 Webhook (含他人), 归属框架的管理员可见性用 */
+    List<WebhookEndpointEntity> findAllByOrderByCreatedAtDesc();
 }

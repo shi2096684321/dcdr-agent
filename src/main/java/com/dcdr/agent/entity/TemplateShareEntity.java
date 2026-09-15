@@ -14,13 +14,14 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "V3.0-beta 模板市场分享记录 (F-35)")
 @Table(name = "template_shares", uniqueConstraints = {
         @UniqueConstraint(name = "uk_tplshare_type_target", columnNames = {"type", "targetId"})
 }, indexes = {
         @Index(name = "idx_tplshare_category", columnList = "category")
 })
-public class TemplateShareEntity {
+public class TemplateShareEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID")
     @Id

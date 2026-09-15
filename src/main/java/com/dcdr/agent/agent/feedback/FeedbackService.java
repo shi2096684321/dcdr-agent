@@ -1,5 +1,7 @@
 package com.dcdr.agent.agent.feedback;
 
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.FeedbackDtos;
 import com.dcdr.agent.entity.MessageEntity;
@@ -76,6 +78,8 @@ public class FeedbackService {
     private final MessageFeedbackRepository feedbackRepository;
     private final MessageRepository messageRepository;
     private final SessionRepository sessionRepository;
+    /** V3.1 F-41: 反馈落库前校验会话归属, 统一走 OwnershipGuard */
+    private final OwnershipGuard ownershipGuard;
 
     // ==================== 收集 ====================
 
@@ -260,18 +264,9 @@ public class FeedbackService {
 
     // ==================== 内部工具 ====================
 
-    /** 归属校验: 只能对自己可访问的会话提交反馈 (越权即不存在, 避免资源枚举) */
+    /** 归属校验: 只能对自己可访问的会话提交反馈 (V3.1 F-41: 统一走 OwnershipGuard, 越权即不存在) */
     private void assertSessionAccessible(String sessionId, String userId) {
-        if (userId == null) {
-            // 认证关闭(单用户模式): 退化为主键存在性校验
-            if (!sessionRepository.existsById(sessionId)) {
-                throw new BusinessException(404, "会话不存在");
-            }
-            return;
-        }
-        if (sessionRepository.findByIdAndUserId(sessionId, userId).isEmpty()) {
-            throw new BusinessException(404, "会话不存在");
-        }
+        ownershipGuard.check(ResourceType.SESSION, sessionId, userId, false, false);
     }
 
     /** 无用户体系时用哨兵值占位, 使唯一约束 (session_id, message_seq, user_id) 依然生效 */

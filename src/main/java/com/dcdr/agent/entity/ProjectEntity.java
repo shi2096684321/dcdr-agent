@@ -11,14 +11,19 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
+@EntityListeners(OwnershipFillListener.class)
 @Schema(description = "创作项目实体 (创作模式)")
 @Table(name = "projects")
-public class ProjectEntity {
+public class ProjectEntity implements OwnedEntity {
 
     @Schema(description = "主键 ID (字符串型 UUID)")
     @Id
     @Column(length = 64)
     private String id;
+
+    @Schema(description = "所属用户 ID (V3.1 F-41 补齐归属校验; 可空以兼容存量数据)")
+    @Column(length = 64)
+    private String userId;
 
     @Schema(description = "项目名称")
     @Column(nullable = false)

@@ -21,6 +21,9 @@ public interface AgentDefinitionRepository extends JpaRepository<AgentDefinition
     /** 仅预设模板 (V2.3 模板库) */
     List<AgentDefinitionEntity> findByIsTemplateTrueOrderByCreatedAtDesc();
 
+    /** V3.1 F-41: 管理员查看全部 Agent (含他人私有), 归属框架的管理员可见性用 */
+    List<AgentDefinitionEntity> findAllByOrderByIsTemplateDescUpdatedAtDesc();
+
     /** 兼容旧调用: 用户自己的 + 公开 */
     @Query("SELECT a FROM AgentDefinitionEntity a WHERE a.userId = :userId OR a.isPublic = true ORDER BY a.updatedAt DESC")
     List<AgentDefinitionEntity> findByUserIdOrIsPublicTrueOrderByUpdatedAtDesc(@Param("userId") String userId);

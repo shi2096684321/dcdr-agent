@@ -5,6 +5,8 @@ import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
+import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.config.V3Properties;
 import com.dcdr.agent.dto.ChatRequest;
@@ -82,6 +84,8 @@ public class WorkflowEngine {
     private final V3Properties v3Properties;
     private final CostTracker costTracker;
     private final ModelRegistry modelRegistry;
+    /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (口径见 WorkflowOwnershipProvider / WorkflowExecutionOwnershipProvider) */
+    private final OwnershipGuard ownershipGuard;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 变量占位符正则: ${name} 或 ${name.output} */
@@ -114,9 +118,14 @@ public class WorkflowEngine {
 
     // ===== 工作流 CRUD =====
 
-    /** 列出当前用户可见的工作流: 自己创建的 + 全部预设模板 */
-    public List<WorkflowDtos.WorkflowView> list(String userId) {
-        List<WorkflowDefinitionEntity> entities = workflowRepository.findVisible(userId);
+    /**
+     * 列出工作流: 管理员返回全部(含他人私有); 普通用户返回自己可见的
+     * (自己创建的 + 全部预设模板)。
+     */
+    public List<WorkflowDtos.WorkflowView> list(String userId, boolean isAdmin) {
+        List<WorkflowDefinitionEntity> entities = isAdmin
+                ? workflowRepository.findAllByOrderByUpdatedAtDesc()
+                : workflowRepository.findVisible(userId);
         List<WorkflowDtos.WorkflowView> views = new ArrayList<>(entities.size());
         for (WorkflowDefinitionEntity e : entities) views.add(toView(e, userId));
         return views;
@@ -130,13 +139,10 @@ public class WorkflowEngine {
         return views;
     }
 
-    public WorkflowDtos.WorkflowView get(String id, String userId) {
-        WorkflowDefinitionEntity e = workflowRepository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (!isVisible(e, userId)) {
-            throw new BusinessException(403, "无权访问该工作流", "FORBIDDEN");
-        }
-        return toView(e, userId);
+    public WorkflowDtos.WorkflowView get(String id, String userId, boolean isAdmin) {
+        // 归属校验(读): 创建者 / 模板可见, 越权统一返回 404
+        ownershipGuard.check(ResourceType.WORKFLOW, id, userId, isAdmin, false);
+        return toView(loadEntity(id), userId);
     }
 
     /** 内部加载实体 (供调度器/执行器调用, 不做可见性校验) */
@@ -171,14 +177,9 @@ public class WorkflowEngine {
 
     @Transactional
     public WorkflowDtos.WorkflowView update(String id, WorkflowDtos.SaveWorkflowRequest req, String userId, boolean isAdmin) {
-        WorkflowDefinitionEntity e = workflowRepository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (e.isTemplate() && !isAdmin) {
-            throw new BusinessException(403, "预设模板仅管理员可修改, 普通用户请克隆后再编辑", "FORBIDDEN");
-        }
-        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权修改该工作流", "FORBIDDEN");
-        }
+        // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
+        ownershipGuard.check(ResourceType.WORKFLOW, id, userId, isAdmin, true);
+        WorkflowDefinitionEntity e = loadEntity(id);
         validate(req);
         applyRequest(e, req);
         if (isAdmin && req.getIsTemplate() != null) {
@@ -195,26 +196,19 @@ public class WorkflowEngine {
 
     @Transactional
     public void delete(String id, String userId, boolean isAdmin) {
-        WorkflowDefinitionEntity e = workflowRepository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (e.isTemplate() && !isAdmin) {
-            throw new BusinessException(403, "预设模板仅管理员可删除", "FORBIDDEN");
-        }
-        if (!e.isTemplate() && !java.util.Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权删除该工作流", "FORBIDDEN");
-        }
+        // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
+        ownershipGuard.check(ResourceType.WORKFLOW, id, userId, isAdmin, true);
+        WorkflowDefinitionEntity e = loadEntity(id);
         workflowRepository.delete(e);
         log.info("删除工作流: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
     }
 
     /** 克隆模板或他人公开工作流为自己的副本 */
     @Transactional
-    public WorkflowDtos.WorkflowView clone(String id, String userId) {
-        WorkflowDefinitionEntity src = workflowRepository.findById(id)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + id, "WORKFLOW_NOT_FOUND"));
-        if (!isVisible(src, userId)) {
-            throw new BusinessException(403, "无权克隆该工作流", "FORBIDDEN");
-        }
+    public WorkflowDtos.WorkflowView clone(String id, String userId, boolean isAdmin) {
+        // 归属校验(读): 仅可克隆自己 / 模板的工作流
+        ownershipGuard.check(ResourceType.WORKFLOW, id, userId, isAdmin, false);
+        WorkflowDefinitionEntity src = loadEntity(id);
         WorkflowDtos.SaveWorkflowRequest req = new WorkflowDtos.SaveWorkflowRequest();
         req.setName(src.getName() + " (副本)");
         req.setDescription(src.getDescription());
@@ -229,12 +223,10 @@ public class WorkflowEngine {
     // ===== V3.0-beta F-34 版本管理 =====
 
     /** 版本历史列表 */
-    public List<WorkflowDtos.VersionView> listVersions(String workflowId, String userId) {
-        WorkflowDefinitionEntity wf = workflowRepository.findById(workflowId)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + workflowId, "WORKFLOW_NOT_FOUND"));
-        if (!isVisible(wf, userId)) {
-            throw new BusinessException(403, "无权查看该工作流版本", "FORBIDDEN");
-        }
+    public List<WorkflowDtos.VersionView> listVersions(String workflowId, String userId, boolean isAdmin) {
+        // 归属校验(读): 创建者 / 模板可查看版本
+        ownershipGuard.check(ResourceType.WORKFLOW, workflowId, userId, isAdmin, false);
+        WorkflowDefinitionEntity wf = loadEntity(workflowId);
         List<WorkflowVersionEntity> versions = versionRepository.findByWorkflowIdOrderByVersionDesc(workflowId);
         List<WorkflowDtos.VersionView> views = new ArrayList<>(versions.size());
         for (WorkflowVersionEntity v : versions) views.add(toVersionView(v));
@@ -244,14 +236,9 @@ public class WorkflowEngine {
     /** 回滚到指定历史版本 (回滚动作本身也会生成新版本快照) */
     @Transactional
     public WorkflowDtos.WorkflowView rollback(String workflowId, int version, String userId, boolean isAdmin) {
-        WorkflowDefinitionEntity e = workflowRepository.findById(workflowId)
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + workflowId, "WORKFLOW_NOT_FOUND"));
-        if (e.isTemplate() && !isAdmin) {
-            throw new BusinessException(403, "预设模板仅管理员可回滚", "FORBIDDEN");
-        }
-        if (!e.isTemplate() && !Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权回滚该工作流", "FORBIDDEN");
-        }
+        // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
+        ownershipGuard.check(ResourceType.WORKFLOW, workflowId, userId, isAdmin, true);
+        WorkflowDefinitionEntity e = loadEntity(workflowId);
         WorkflowVersionEntity snap = versionRepository.findByWorkflowIdAndVersion(workflowId, version)
                 .orElseThrow(() -> new BusinessException(404, "版本不存在: v" + version, "VERSION_NOT_FOUND"));
         e.setName(snap.getName());
@@ -352,8 +339,8 @@ public class WorkflowEngine {
     }
 
     /** F-33 断点续跑: 从 failed 步骤继续执行 */
-    public WorkflowDtos.ExecutionResult resume(String executionId, String userId) {
-        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId);
+    public WorkflowDtos.ExecutionResult resume(String executionId, String userId, boolean isAdmin) {
+        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId, isAdmin);
         if (!"failed".equals(ent.getStatus())) {
             throw new BusinessException(400, "仅 failed 状态的执行可续跑, 当前状态: " + ent.getStatus());
         }
@@ -372,8 +359,8 @@ public class WorkflowEngine {
     }
 
     /** F-33 人工审批通过: 从审批节点的下一步继续执行 */
-    public WorkflowDtos.ExecutionResult approve(String executionId, String userId, String comment) {
-        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId);
+    public WorkflowDtos.ExecutionResult approve(String executionId, String userId, String comment, boolean isAdmin) {
+        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId, isAdmin);
         if (!"paused".equals(ent.getStatus())) {
             throw new BusinessException(400, "仅 paused 状态的执行可审批, 当前状态: " + ent.getStatus());
         }
@@ -404,8 +391,8 @@ public class WorkflowEngine {
 
     /** F-33 取消执行 */
     @Transactional
-    public void cancel(String executionId, String userId) {
-        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId);
+    public void cancel(String executionId, String userId, boolean isAdmin) {
+        WorkflowExecutionEntity ent = loadExecutionForUser(executionId, userId, isAdmin);
         if ("success".equals(ent.getStatus()) || "cancelled".equals(ent.getStatus())) {
             throw new BusinessException(400, "已完成/已取消的执行不可取消");
         }
@@ -428,18 +415,22 @@ public class WorkflowEngine {
     /**
      * V3.0 分页查询执行记录 (执行历史搜索/筛选/分页)。
      *
-     * @param userId      用户 ID (必填, 数据隔离)
+     * @param userId      用户 ID (数据隔离; 管理员传 isAdmin=true 时不按用户过滤)
+     * @param isAdmin     V3.1 F-41: 管理员返回全部用户的执行记录
      * @param status      状态筛选 (running/paused/success/failed/cancelled, 可空)
      * @param workflowId  工作流筛选 (可空)
      * @param triggerType 触发方式筛选 (manual/api/webhook/event/schedule/chat, 可空)
      * @param keyword     关键词, 模糊匹配输入内容/错误信息 (可空)
      * @param pageable    分页参数
      */
-    public WorkflowDtos.ExecutionPageView listExecutionsPaged(String userId, String status, String workflowId,
-                                                              String triggerType, String keyword, Pageable pageable) {
+    public WorkflowDtos.ExecutionPageView listExecutionsPaged(String userId, boolean isAdmin, String status,
+                                                              String workflowId, String triggerType,
+                                                              String keyword, Pageable pageable) {
         String kw = (keyword == null || keyword.isBlank()) ? null : keyword.trim();
+        // queryByConditions 的 :userId IS NULL 语义即"不过滤用户", 管理员据此查看全局
+        String scopeUserId = isAdmin ? null : userId;
         Page<WorkflowExecutionEntity> page = executionRepository.queryByConditions(
-                userId, normalizeOrNull(status), normalizeOrNull(workflowId),
+                scopeUserId, normalizeOrNull(status), normalizeOrNull(workflowId),
                 normalizeOrNull(triggerType), kw, pageable);
         WorkflowDtos.ExecutionPageView v = new WorkflowDtos.ExecutionPageView();
         v.setContent(page.getContent().stream().map(e -> toExecutionView(e, userId)).toList());
@@ -456,18 +447,15 @@ public class WorkflowEngine {
     }
 
     /** 执行详情 */
-    public WorkflowDtos.ExecutionView getExecution(String id, String userId) {
-        return toExecutionView(loadExecutionForUser(id, userId), userId);
+    public WorkflowDtos.ExecutionView getExecution(String id, String userId, boolean isAdmin) {
+        return toExecutionView(loadExecutionForUser(id, userId, isAdmin), userId);
     }
 
-    /** 加载执行记录并校验归属 (创建者本人) */
-    private WorkflowExecutionEntity loadExecutionForUser(String id, String userId) {
-        WorkflowExecutionEntity e = executionRepository.findById(id)
+    /** 加载执行记录并校验归属 (V3.1 F-41: 统一走 OwnershipGuard, 越权返回 404; admin 可见全部) */
+    private WorkflowExecutionEntity loadExecutionForUser(String id, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.WORKFLOW_EXECUTION, id, userId, isAdmin, false);
+        return executionRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "执行记录不存在: " + id, "EXECUTION_NOT_FOUND"));
-        if (userId != null && !userId.equals(e.getUserId())) {
-            throw new BusinessException(403, "无权访问该执行记录", "FORBIDDEN");
-        }
-        return e;
     }
 
     // ===== 编排核心 =====
@@ -1390,8 +1378,5 @@ public class WorkflowEngine {
         return v;
     }
 
-    /** 可见性: 模板对所有人可见, 或为创建者本人 */
-    private boolean isVisible(WorkflowDefinitionEntity e, String userId) {
-        return e.isTemplate() || (userId != null && userId.equals(e.getUserId()));
-    }
+    /** 可见性判定已统一收敛到 {@code WorkflowOwnershipProvider} (V3.1 F-41) */
 }

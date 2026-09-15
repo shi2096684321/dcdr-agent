@@ -1,7 +1,7 @@
 package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.workflow.WorkflowEngine;
-import com.dcdr.agent.auth.SecurityContext;
+import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.config.V3Properties;
@@ -20,8 +20,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -47,6 +47,10 @@ import java.util.UUID;
  * 权限: 管理端点(CRUD) 走 {@code workflow:execute} (与工作流管理同权限);
  * 触发端点 {@code /api/webhooks/trigger/**} 在 SecurityConfig 中放行(无需认证, 靠 token 鉴权)。
  * <p>
+ * V3.1 F-41: 管理端点的归属校验用 {@code @PreAuthorize} 声明式完成
+ * (当前用户由 SpEL 变量 {@code principal} 提供, <b>无需</b>声明 {@code ServerWebExchange} 参数),
+ * 越权与不存在统一返回 404。
+ * <p>
  * <b>线程模型</b>: 触发端点会同步执行工作流(LLM 阻塞), 必须切到 boundedElastic 线程池,
  * 避免阻塞 reactor-http-nio (项目硬约束)。
  */
@@ -58,6 +62,8 @@ import java.util.UUID;
 public class WebhookController {
 
     private final WebhookEndpointRepository webhookRepository;
+    /** V3.1 F-41: 响应式读取当前登录用户 + 归属校验 */
+    private final OwnershipGuard ownershipGuard;
     private final WorkflowDefinitionRepository workflowRepository;
     private final WorkflowEngine workflowEngine;
     private final LlmCircuitBreaker circuitBreaker;
@@ -68,91 +74,92 @@ public class WebhookController {
     @Operation(summary = "Webhook 列表", description = "返回当前用户创建的 Webhook 端点")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WebhookDtos.WebhookView.class)))
     @GetMapping
-    public Result<List<WebhookDtos.WebhookView>> list(ServerWebExchange exchange) {
-        String userId = SecurityContext.getUserId(exchange);
-        List<WebhookEndpointEntity> entities = webhookRepository.findByUserIdOrderByCreatedAtDesc(userId);
-        List<WebhookDtos.WebhookView> views = entities.stream().map(e -> toView(e, userId)).toList();
-        return Result.success(views);
+    public Mono<Result<List<WebhookDtos.WebhookView>>> list() {
+        return ownershipGuard.currentContext().map(ctx -> {
+            String userId = ctx.userId();
+            // V3.1 F-41: 管理员返回全部 Webhook; 普通用户仅自己的
+            List<WebhookEndpointEntity> entities = ctx.admin()
+                    ? webhookRepository.findAllByOrderByCreatedAtDesc()
+                    : webhookRepository.findByUserIdOrderByCreatedAtDesc(userId);
+            return Result.success(entities.stream().map(e -> toView(e, userId)).toList());
+        });
     }
 
     @Operation(summary = "Webhook 详情")
+    @ApiResponse(responseCode = "404", description = "Webhook 不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'WEBHOOK', principal)")
     @GetMapping("/{id}")
-    public Result<WebhookDtos.WebhookView> get(@Parameter(description = "Webhook ID", required = true)
-                                                @PathVariable String id,
-                                                ServerWebExchange exchange) {
-        String userId = SecurityContext.getUserId(exchange);
-        WebhookEndpointEntity e = loadOwned(id, userId);
-        return Result.success(toView(e, userId));
+    public Mono<Result<WebhookDtos.WebhookView>> get(
+            @Parameter(description = "Webhook ID", required = true) @PathVariable String id) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(toView(load(id), ctx.userId())));
     }
 
     @Operation(summary = "创建 Webhook",
             description = "为指定工作流创建一个 Webhook 触发端点。返回的 URL 可被外部系统 POST 调用以触发该工作流。"
                     + "仅可绑定自己创建的工作流(预设模板不可绑定, 因执行时会以 Webhook 所属用户身份运行)。")
     @PostMapping
-    public Result<WebhookDtos.WebhookView> create(@RequestBody WebhookDtos.SaveWebhookRequest req,
-                                                  ServerWebExchange exchange) {
-        String userId = SecurityContext.getUserId(exchange);
-        if (req.getWorkflowId() == null || req.getWorkflowId().isBlank()) {
-            throw new BusinessException(400, "workflowId 不能为空");
-        }
-        // 校验工作流归属: 只能绑定自己的工作流 (模板不可绑定)
-        WorkflowDefinitionEntity wf = workflowRepository.findById(req.getWorkflowId())
-                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + req.getWorkflowId(), "WORKFLOW_NOT_FOUND"));
-        if (wf.isTemplate() || !Objects.equals(wf.getUserId(), userId)) {
-            throw new BusinessException(403, "只能为自己的工作流创建 Webhook", "FORBIDDEN");
-        }
+    public Mono<Result<WebhookDtos.WebhookView>> create(@RequestBody WebhookDtos.SaveWebhookRequest req) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            String userId = ctx.userId();
+            if (req.getWorkflowId() == null || req.getWorkflowId().isBlank()) {
+                throw new BusinessException(400, "workflowId 不能为空");
+            }
+            // 关联资源校验: 只能绑定自己的工作流(模板不可绑定) —— 越权统一 404, 防资源枚举
+            WorkflowDefinitionEntity wf = requireOwnWorkflow(req.getWorkflowId(), userId);
 
-        WebhookEndpointEntity e = new WebhookEndpointEntity();
-        e.setId("wh_" + UUID.randomUUID().toString().replace("-", ""));
-        e.setUserId(userId);
-        e.setWorkflowId(wf.getId());
-        e.setName(req.getName());
-        e.setToken(UUID.randomUUID().toString().replace("-", ""));
-        e.setSecret(req.getSecret());
-        e.setEnabled(req.getEnabled() == null ? true : req.getEnabled());
-        e.setTriggerCount(0);
-        e.setCreatedAt(LocalDateTime.now());
-        webhookRepository.save(e);
-        log.info("创建 Webhook: id={}, workflow={}, user={}", e.getId(), wf.getId(), userId);
-        return Result.success(toView(e, userId));
+            WebhookEndpointEntity e = new WebhookEndpointEntity();
+            e.setId("wh_" + UUID.randomUUID().toString().replace("-", ""));
+            e.setUserId(userId);
+            e.setWorkflowId(wf.getId());
+            e.setName(req.getName());
+            e.setToken(UUID.randomUUID().toString().replace("-", ""));
+            e.setSecret(req.getSecret());
+            e.setEnabled(req.getEnabled() == null ? true : req.getEnabled());
+            e.setTriggerCount(0);
+            e.setCreatedAt(LocalDateTime.now());
+            webhookRepository.save(e);
+            log.info("创建 Webhook: id={}, workflow={}, user={}", e.getId(), wf.getId(), userId);
+            return Result.success(toView(e, userId));
+        });
     }
 
     @Operation(summary = "更新 Webhook",
             description = "更新 Webhook 名称/secret/启用状态/绑定工作流。token 不可更改。")
+    @ApiResponse(responseCode = "404", description = "Webhook 不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'WEBHOOK', principal)")
     @PutMapping("/{id}")
-    public Result<WebhookDtos.WebhookView> update(@Parameter(description = "Webhook ID", required = true)
-                                                   @PathVariable String id,
-                                                   @RequestBody WebhookDtos.SaveWebhookRequest req,
-                                                   ServerWebExchange exchange) {
-        String userId = SecurityContext.getUserId(exchange);
-        WebhookEndpointEntity e = loadOwned(id, userId);
-        if (req.getWorkflowId() != null && !req.getWorkflowId().isBlank()
-                && !Objects.equals(req.getWorkflowId(), e.getWorkflowId())) {
-            WorkflowDefinitionEntity wf = workflowRepository.findById(req.getWorkflowId())
-                    .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + req.getWorkflowId(), "WORKFLOW_NOT_FOUND"));
-            if (wf.isTemplate() || !Objects.equals(wf.getUserId(), userId)) {
-                throw new BusinessException(403, "只能绑定自己的工作流", "FORBIDDEN");
+    public Mono<Result<WebhookDtos.WebhookView>> update(
+            @Parameter(description = "Webhook ID", required = true) @PathVariable String id,
+            @RequestBody WebhookDtos.SaveWebhookRequest req) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            String userId = ctx.userId();
+            WebhookEndpointEntity e = load(id);
+            if (req.getWorkflowId() != null && !req.getWorkflowId().isBlank()
+                    && !Objects.equals(req.getWorkflowId(), e.getWorkflowId())) {
+                e.setWorkflowId(requireOwnWorkflow(req.getWorkflowId(), userId).getId());
             }
-            e.setWorkflowId(wf.getId());
-        }
-        if (req.getName() != null) e.setName(req.getName());
-        if (req.getSecret() != null) e.setSecret(req.getSecret());
-        if (req.getEnabled() != null) e.setEnabled(req.getEnabled());
-        webhookRepository.save(e);
-        log.info("更新 Webhook: id={}", e.getId());
-        return Result.success(toView(e, userId));
+            if (req.getName() != null) e.setName(req.getName());
+            if (req.getSecret() != null) e.setSecret(req.getSecret());
+            if (req.getEnabled() != null) e.setEnabled(req.getEnabled());
+            webhookRepository.save(e);
+            log.info("更新 Webhook: id={}", e.getId());
+            return Result.success(toView(e, userId));
+        });
     }
 
     @Operation(summary = "删除 Webhook")
+    @ApiResponse(responseCode = "404", description = "Webhook 不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'WEBHOOK', principal)")
     @DeleteMapping("/{id}")
-    public Result<Void> delete(@Parameter(description = "Webhook ID", required = true)
-                                @PathVariable String id,
-                                ServerWebExchange exchange) {
-        String userId = SecurityContext.getUserId(exchange);
-        WebhookEndpointEntity e = loadOwned(id, userId);
-        webhookRepository.delete(e);
-        log.info("删除 Webhook: id={}", e.getId());
-        return Result.success();
+    public Mono<Result<Void>> delete(
+            @Parameter(description = "Webhook ID", required = true) @PathVariable String id) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            WebhookEndpointEntity e = load(id);
+            webhookRepository.delete(e);
+            log.info("删除 Webhook: id={}", e.getId());
+            return Result.success();
+        });
     }
 
     // ===== 触发 API (公开端点, 靠 token 鉴权; SecurityConfig 中放行 /api/webhooks/trigger/**) =====
@@ -167,8 +174,7 @@ public class WebhookController {
             @PathVariable String token,
             @RequestBody(required = false) Map<String, Object> body,
             @RequestHeader(value = "X-Webhook-Secret", required = false) String secret,
-            @RequestHeader(value = "X-Webhook-Id", required = false) String webhookId,
-            ServerWebExchange exchange) {
+            @RequestHeader(value = "X-Webhook-Id", required = false) String webhookId) {
         // 工作流执行为阻塞 LLM 调用, 必须切到 boundedElastic
         return Mono.fromCallable(() -> doTrigger(token, body, secret, webhookId))
                 .subscribeOn(Schedulers.boundedElastic())
@@ -202,8 +208,7 @@ public class WebhookController {
             throw new BusinessException(409, "重复的 Webhook 请求 (X-Webhook-Id 已成功处理)", "WEBHOOK_DUPLICATE");
         }
         evictWebhookIds();
-        // F-40.4 熔断降级: 以工作流为粒度保护 Webhook 触发的执行链路(工作流内含的 LLM 调用
-        // 已由 CircuitBreakerChatProvider 各自熔断, 这里覆盖工作流整体执行的偶发异常)
+        // F-40.4 熔断降级: 以工作流为粒度保护 Webhook 触发的执行链路
         String breakerKey = "webhook:" + e.getWorkflowId();
         circuitBreaker.check(breakerKey);
         try {
@@ -251,14 +256,24 @@ public class WebhookController {
 
     // ===== 辅助方法 =====
 
-    /** 加载并校验归属 (仅创建者本人可管理) */
-    private WebhookEndpointEntity loadOwned(String id, String userId) {
-        WebhookEndpointEntity e = webhookRepository.findById(id)
+    /**
+     * 加载 Webhook 实体。
+     * <p>归属校验已由 {@code @PreAuthorize} 在方法入口完成(越权 404), 此处只负责"取实体"。
+     */
+    private WebhookEndpointEntity load(String id) {
+        return webhookRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "Webhook 不存在: " + id, "WEBHOOK_NOT_FOUND"));
-        if (!Objects.equals(e.getUserId(), userId)) {
-            throw new BusinessException(403, "无权访问该 Webhook", "FORBIDDEN");
+    }
+
+    /** 关联资源校验: 目标工作流必须存在且属于当前用户, 且不是预设模板 */
+    private WorkflowDefinitionEntity requireOwnWorkflow(String workflowId, String userId) {
+        WorkflowDefinitionEntity wf = workflowRepository.findById(workflowId)
+                .orElseThrow(() -> new BusinessException(404, "工作流不存在: " + workflowId, "WORKFLOW_NOT_FOUND"));
+        if (wf.isTemplate() || !Objects.equals(wf.getUserId(), userId)) {
+            // 统一口径: 越权即不存在(404), 避免暴露他人工作流的存在性
+            throw new BusinessException(404, "工作流不存在: " + workflowId, "WORKFLOW_NOT_FOUND");
         }
-        return e;
+        return wf;
     }
 
     /** 实体转视图 */

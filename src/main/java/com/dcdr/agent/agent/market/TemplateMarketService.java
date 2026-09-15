@@ -107,12 +107,12 @@ public class TemplateMarketService {
         // 权限: 自己的目标, 或管理员分享任意目标
         if (!isAdmin) {
             if ("agent".equals(type)) {
-                AgentDtos.AgentView a = agentDefinitionService.get(req.getTargetId(), userId);
+                AgentDtos.AgentView a = agentDefinitionService.get(req.getTargetId(), userId, false);
                 if (!userId.equals(a.getUserId())) {
                     throw new BusinessException(403, "仅可分享自己的 Agent", "FORBIDDEN");
                 }
             } else {
-                WorkflowDtos.WorkflowView w = workflowEngine.get(req.getTargetId(), userId);
+                WorkflowDtos.WorkflowView w = workflowEngine.get(req.getTargetId(), userId, false);
                 if (!userId.equals(w.getUserId()) && !w.isTemplate()) {
                     throw new BusinessException(403, "仅可分享自己的工作流", "FORBIDDEN");
                 }
@@ -139,11 +139,11 @@ public class TemplateMarketService {
         String desc = blankToNull(req.getDescription());
         if (title == null || desc == null) {
             if ("agent".equals(type)) {
-                AgentDtos.AgentView a = agentDefinitionService.get(req.getTargetId(), userId);
+                AgentDtos.AgentView a = agentDefinitionService.get(req.getTargetId(), userId, isAdmin);
                 if (title == null) title = a.getName();
                 if (desc == null) desc = a.getDescription();
             } else {
-                WorkflowDtos.WorkflowView w = workflowEngine.get(req.getTargetId(), userId);
+                WorkflowDtos.WorkflowView w = workflowEngine.get(req.getTargetId(), userId, isAdmin);
                 if (title == null) title = w.getName();
                 if (desc == null) desc = w.getDescription();
             }
@@ -181,12 +181,12 @@ public class TemplateMarketService {
     private TemplateDtos.CloneResult cloneTarget(String type, String targetId, String userId) {
         TemplateDtos.CloneResult r = new TemplateDtos.CloneResult();
         if ("agent".equals(type)) {
-            AgentDtos.AgentView copy = agentDefinitionService.clone(targetId, userId);
+            AgentDtos.AgentView copy = agentDefinitionService.clone(targetId, userId, false);
             r.setType("agent");
             r.setNewId(copy.getId());
             r.setNewName(copy.getName());
         } else {
-            WorkflowDtos.WorkflowView copy = workflowEngine.clone(targetId, userId);
+            WorkflowDtos.WorkflowView copy = workflowEngine.clone(targetId, userId, false);
             r.setType("workflow");
             r.setNewId(copy.getId());
             r.setNewName(copy.getName());

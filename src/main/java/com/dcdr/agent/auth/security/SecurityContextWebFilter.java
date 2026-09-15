@@ -1,5 +1,6 @@
 package com.dcdr.agent.auth.security;
 
+import com.dcdr.agent.auth.CurrentUserHolder;
 import com.dcdr.agent.auth.SecurityContext;
 import com.dcdr.agent.auth.config.AuthProperties;
 import com.dcdr.agent.auth.jwt.JwtUtil;
@@ -58,6 +59,11 @@ public class SecurityContextWebFilter implements WebFilter {
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
+        // V3.1 F-41: 每个请求进入时先清空线程局部用户, 消除上一请求可能遗留的残留。
+        // 这是「防 nio 线程复用导致身份串号」的第二道保险 —— 即便链尾清理因跨线程未命中,
+        // 下一个请求进入时也会被这里清掉。
+        CurrentUserHolder.clear();
+
         // 认证关闭: 直接放行 (V2.1 兼容模式)
         if (!authProperties.isEnabled()) {
             return chain.filter(exchange);
@@ -114,15 +120,29 @@ public class SecurityContextWebFilter implements WebFilter {
             authorities.add(new SimpleGrantedAuthority(perm));
         }
 
+        // V3.1 F-41: 统一构造当前用户对象(含 userId), 供 exchange attributes 与 Authentication 复用
+        SecurityContext.CurrentUser principal = new SecurityContext.CurrentUser(userId, username, role);
+
         // 1. 将用户信息写入 exchange attributes (Controller 通过 SecurityContext.fromExchange 获取)
         //    不使用 ThreadLocal, 因为 WebFlux DispatcherHandler 会切换线程池导致 ThreadLocal 丢失
-        SecurityContext.setToExchange(exchange, new SecurityContext.CurrentUser(userId, username, role));
+        SecurityContext.setToExchange(exchange, principal);
 
-        // 2. 构造 Spring Security Authentication, 写入 Reactor Context (供 authorizeExchange 使用)
-        Authentication authentication = new UsernamePasswordAuthenticationToken(username, null, authorities);
+        // 2. 构造 Spring Security Authentication, 写入 Reactor Context (供 authorizeExchange 与
+        //    响应式方法级安全 @PreAuthorize 使用)。principal 携带 CurrentUser(含 userId),
+        //    使 @PreAuthorize 表达式能直接以 principal 做归属判定。
+        Authentication authentication = new UsernamePasswordAuthenticationToken(principal, null, authorities);
+
+        // 3. V3.1 F-41: 写入线程局部用户, 供 Service / JPA 层做「归属自动填充」
+        //    (见 com.dcdr.agent.entity.OwnershipFillListener)。
+        //    仅对同步链路有效 —— WebFilter → 同步 Controller → Service → JPA 全程同一线程,
+        //    与 JPA 自身基于 ThreadLocal 的事务模型一致; 跨异步边界的链路读不到, 需显式传 userId。
+        CurrentUserHolder.set(userId);
 
         return chain.filter(exchange)
-                .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication));
+                .contextWrite(ReactiveSecurityContextHolder.withAuthentication(authentication))
+                // 链尾清理: 同步链路下与写入同线程, 可正常回收; 万一是跨线程链(清理未命中),
+                // 由下一个请求进入时的「先清」兜底, 不会造成身份串号。
+                .doFinally(signal -> CurrentUserHolder.clear());
     }
 
     /**

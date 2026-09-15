@@ -20,6 +20,9 @@ public interface WorkflowDefinitionRepository extends JpaRepository<WorkflowDefi
     /** 列出全部预设模板 (按创建时间倒序) */
     List<WorkflowDefinitionEntity> findByIsTemplateTrueOrderByCreatedAtDesc();
 
+    /** V3.1 F-41: 管理员查看全部工作流 (含他人私有), 归属框架的管理员可见性用 */
+    List<WorkflowDefinitionEntity> findAllByOrderByUpdatedAtDesc();
+
     /**
      * 列出当前用户可见的工作流: 自己创建的 + 全部预设模板。
      * 用于前端列表展示 (用户能看到模板并能克隆)。

@@ -95,9 +95,14 @@ public class SessionManager {
                 .toList();
     }
 
-    /** 获取当前用户的会话列表(V2.2 数据隔离) */
-    public List<SessionDTO> listSessions(String userId) {
-        if (userId == null) return listSessions();
+    /**
+     * 获取会话列表(V2.2 数据隔离)。
+     * <p>
+     * V3.1 F-41: 管理员返回全部会话; 普通用户仅自己的。
+     * {@code userId == null}(认证关闭)退化为全部, 兼容 V2.1 单用户部署。
+     */
+    public List<SessionDTO> listSessions(String userId, boolean isAdmin) {
+        if (isAdmin || userId == null) return listSessions();
         return sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
                 .map(SessionManager::toDTO)
                 .toList();

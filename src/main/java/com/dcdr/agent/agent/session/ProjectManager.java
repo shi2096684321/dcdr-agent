@@ -32,13 +32,14 @@ public class ProjectManager {
     private final ProjectRepository projectRepository;
     private final GenerationRepository generationRepository;
 
-    /** 创建项目 */
+    /** 创建项目 (V3.1 F-41: 记录归属用户, 供统一归属框架校验) */
     @Transactional
-    public ProjectDTO createProject(String name, String mode, String defaultModel) {
+    public ProjectDTO createProject(String name, String mode, String defaultModel, String userId) {
         String id = "proj_" + System.currentTimeMillis();
         LocalDateTime now = LocalDateTime.now();
         ProjectEntity entity = new ProjectEntity();
         entity.setId(id);
+        entity.setUserId(userId);
         entity.setName(name != null ? name : "新项目");
         entity.setMode(mode != null ? mode : "image");
         entity.setDefaultModel(defaultModel);
@@ -55,9 +56,17 @@ public class ProjectManager {
         return projectRepository.findById(id).map(ProjectManager::toDTO).orElse(null);
     }
 
-    /** 列出所有项目 */
-    public List<ProjectDTO> listProjects() {
-        return projectRepository.findAllByOrderByUpdatedAtDesc().stream()
+    /**
+     * 列出项目。
+     * <p>
+     * V3.1 F-41: 管理员返回全部项目(含历史无主数据); 普通用户仅自己的。
+     * {@code userId == null}(认证关闭/匿名)退化为全部, 兼容 V2.1 单用户部署。
+     */
+    public List<ProjectDTO> listProjects(String userId, boolean isAdmin) {
+        List<ProjectEntity> entities = (isAdmin || userId == null)
+                ? projectRepository.findAllByOrderByUpdatedAtDesc()
+                : projectRepository.findByUserIdOrderByUpdatedAtDesc(userId);
+        return entities.stream()
                 .map(ProjectManager::toDTO)
                 .toList();
     }

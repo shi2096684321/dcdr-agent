@@ -15,6 +15,9 @@ public interface UserModelConfigRepository extends JpaRepository<UserModelConfig
 
     List<UserModelConfigEntity> findByUserIdOrderByCreatedAtDesc(String userId);
 
+    /** V3.1 F-41: 管理员查看全部用户的模型配置 (apiKey 仍掩码) */
+    List<UserModelConfigEntity> findAllByOrderByCreatedAtDesc();
+
     Optional<UserModelConfigEntity> findByIdAndUserId(String id, String userId);
 
     void deleteByIdAndUserId(String id, String userId);
