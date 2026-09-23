@@ -1,4 +1,6 @@
-# dcdr-agent
+# 一人公司多模态 AI 助手工作台
+
+**One-Person Company Multimodal AI Assistant Workbench**
 
 A production-grade Agent orchestration platform based on Spring Boot + Java 17 + LangChain4j, featuring intelligent routing, visual DAG workflow orchestration, fault-tolerant execution, knowledge base RAG, multimodal generation, and full observability (tracing / metrics / audit).
 
