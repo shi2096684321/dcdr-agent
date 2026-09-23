@@ -32,7 +32,9 @@ import java.util.List;
  *   <li>POST   /api/agents/{id}/clone     克隆模板/公开 Agent 为自己的副本</li>
  * </ul>
  * <p>
- * 权限: agent:create (user/admin 均可创建自己的 Agent); 修改/删除仅限创建者本人。
+ * 权限: agent:create (user/admin 均可创建自己的 Agent); 普通用户修改/删除仅限创建者本人,
+ * <b>管理员可修改/删除任意用户的 Agent 及预设模板</b>(归属判定见 {@code OwnershipGuard#canAccess},
+ * admin 恒放行)。列表口径: 普通用户为自己 + 公开 + 模板, 管理员为全部(含他人私有)。
  * <p>
  * V3.1 F-41: 涉及具体 Agent 的端点用 {@code @PreAuthorize} 声明式校验归属(当前用户由 SpEL 变量
  * {@code principal} 提供, 无需任何上下文参数), 越权与不存在统一返回 404;
@@ -83,7 +85,7 @@ public class AgentController {
     }
 
     @Operation(summary = "更新 Agent",
-            description = "更新 Agent 配置。普通用户仅能改自己的 Agent; 管理员可修改预设模板。")
+            description = "更新 Agent 配置。普通用户仅能改自己的 Agent; 管理员可修改任意用户的 Agent 与预设模板。")
     @ApiResponse(responseCode = "404", description = "Agent 不存在或无权访问")
     @PreAuthorize("@ownershipGuard.requireWrite(#id, 'AGENT', principal)")
     @PutMapping("/{id}")

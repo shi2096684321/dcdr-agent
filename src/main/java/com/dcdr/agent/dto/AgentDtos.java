@@ -64,7 +64,12 @@ public class AgentDtos {
         private boolean isTemplate;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
-        /** 是否可被当前用户编辑 (创建者本人; 模板和他人公开 Agent 仅可克隆) */
+        /**
+         * 是否可被当前用户编辑。
+         * <p>
+         * 口径: 管理员恒为 true(可编辑所有用户的 Agent, 含预设模板);
+         * 普通用户仅当自己是创建者且该 Agent 非预设模板时为 true(模板与他人公开 Agent 仅可克隆)。
+         */
         private boolean editable;
     }
 }

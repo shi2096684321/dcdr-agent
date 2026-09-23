@@ -17,6 +17,7 @@
               <el-tag v-if="a.isTemplate" size="small" type="warning" class="tag">模板</el-tag>
               <el-tag v-else-if="a.isPublic" size="small" type="success" class="tag">公开</el-tag>
               <el-tag v-else size="small" type="info" class="tag">私有</el-tag>
+              <el-tag v-if="isOthersAgent(a)" size="small" type="danger" effect="plain" class="tag">他人</el-tag>
             </div>
             <div class="agent-meta">
               <span v-if="a.model">{{ a.model }}</span>
@@ -24,6 +25,7 @@
               <span>·</span>
               <span>{{ (a.tools && a.tools.length) ? a.tools.length + ' 工具' : '无工具' }}</span>
             </div>
+            <div class="agent-owner" v-if="isOthersAgent(a)">归属: {{ ownerLabel(a) }}</div>
             <div class="agent-desc" v-if="a.description" :title="a.description">{{ a.description }}</div>
           </div>
         </div>
@@ -49,12 +51,20 @@
               </div>
               <div class="detail-actions">
                 <el-button v-if="currentAgent.editable" type="primary" size="small" @click="openEditDialog">编辑</el-button>
-                <el-button v-if="!currentAgent.editable || currentAgent.isTemplate" size="small" @click="cloneAgent(currentAgent)">克隆</el-button>
+                <el-button v-if="!currentAgent.editable || currentAgent.isTemplate || isOthersAgent(currentAgent)"
+                           size="small" @click="cloneAgent(currentAgent)">克隆</el-button>
                 <el-button v-if="currentAgent.editable" type="danger" size="small" @click="removeAgent(currentAgent)">删除</el-button>
               </div>
             </div>
 
             <div class="detail-body">
+              <div class="detail-row" v-if="authStore.isAdmin">
+                <div class="detail-label">归属用户</div>
+                <div class="detail-value">
+                  {{ ownerLabel(currentAgent) }}
+                  <el-tag v-if="isOthersAgent(currentAgent)" size="small" type="danger" effect="plain">他人</el-tag>
+                </div>
+              </div>
               <div class="detail-row">
                 <div class="detail-label">描述</div>
                 <div class="detail-value">{{ currentAgent.description || '—' }}</div>
@@ -114,7 +124,11 @@
     </div>
 
     <!-- 创建/编辑 Agent 对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑 Agent' : '新建 Agent'" width="640px" @closed="resetForm">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="640px" @closed="resetForm">
+      <el-alert v-if="editing && isOthersAgent(editingTarget)" type="warning" :closable="false" show-icon
+                class="owner-alert"
+                title="正在编辑他人 Agent"
+                :description="`该 Agent 归属于 ${ownerLabel(editingTarget)}, 保存后将直接改变其使用效果。`" />
       <el-form :model="form" label-width="100px" label-position="right">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如: 翻译助手" maxlength="100" show-word-limit />
@@ -167,7 +181,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
 import {
   getAgents, getAgentTemplates, createAgent, updateAgent, deleteAgent, cloneAgent as cloneAgentApi,
-  getKnowledgeBases, extractMessage
+  getKnowledgeBases, extractMessage, adminListUsers
 } from '@/api'
 
 const authStore = useAuthStore()
@@ -196,10 +210,33 @@ const form = reactive({
 const chatModels = computed(() => modelStore.chatModels)
 const knowledgeBases = ref([])
 // 常见工具名建议 (实际可用工具以后端 ToolRegistry 注册为准)
-const suggestedTools = ['calculator', 'time', 'web_search', 'knowledge_base_search']
+const suggestedTools = ['calculator', 'time', 'web_search', 'knowledge_base_search', 'code_interpreter']
+
+// userId → username 映射 (仅管理员加载, 用于展示 Agent 归属用户)
+const userNames = ref({})
+const currentUserId = computed(() => authStore.user?.id || '')
+// 正在编辑的 Agent (用于判断是否在编辑他人 Agent)
+const editingTarget = computed(() => agents.value.find(a => a.id === form.id) || null)
+const dialogTitle = computed(() => {
+  if (!editing.value) return '新建 Agent'
+  return isOthersAgent(editingTarget.value) ? '编辑他人 Agent' : '编辑 Agent'
+})
 
 function avatarLetter(name) {
   return (name || '?').charAt(0).toUpperCase()
+}
+
+/** 是否为「他人」的 Agent (仅管理员场景有意义; 无归属的存量数据不算) */
+function isOthersAgent(agent) {
+  if (!authStore.isAdmin || !agent || !agent.userId) return false
+  return agent.userId !== currentUserId.value
+}
+
+/** 归属用户展示名: 优先用户名, 兜底用户 ID */
+function ownerLabel(agent) {
+  if (!agent || !agent.userId) return '无归属(平台)'
+  if (agent.userId === currentUserId.value) return '自己'
+  return userNames.value[agent.userId] || agent.userId
 }
 
 async function loadAgents() {
@@ -234,6 +271,21 @@ async function loadKnowledgeBases() {
   } catch (e) {
     // 静默失败, 不阻塞 Agent 管理
     console.warn('[AgentView] 加载知识库列表失败:', e)
+  }
+}
+
+// 管理员: 加载用户列表用于展示 Agent 归属 (失败仅退化为展示 userId)
+async function loadUserNames() {
+  if (!authStore.isAdmin) return
+  try {
+    const resp = await adminListUsers(0, 200)
+    const map = {}
+    for (const u of (resp.content || [])) {
+      if (u && u.id) map[u.id] = u.username || u.id
+    }
+    userNames.value = map
+  } catch (e) {
+    console.warn('[AgentView] 加载用户列表失败:', e)
   }
 }
 
@@ -319,7 +371,8 @@ async function submitForm() {
 
 async function removeAgent(agent) {
   try {
-    await ElMessageBox.confirm(`确定删除 Agent "${agent.name}" 吗?`, '提示', { type: 'warning' })
+    const ownerTip = isOthersAgent(agent) ? `(归属: ${ownerLabel(agent)}) ` : ''
+    await ElMessageBox.confirm(`确定删除${ownerTip}Agent "${agent.name}" 吗?`, '提示', { type: 'warning' })
     await deleteAgent(agent.id)
     ElMessage.success('已删除')
     if (currentAgentId.value === agent.id) currentAgentId.value = ''
@@ -346,6 +399,7 @@ onMounted(() => {
   modelStore.loadModels()
   loadAgents()
   loadKnowledgeBases()
+  loadUserNames()
 })
 </script>
 
@@ -366,6 +420,7 @@ onMounted(() => {
 .agent-name { font-size: 13px; font-weight: 500; color: #303133; display: flex; align-items: center; gap: 4px; }
 .agent-name .tag { transform: scale(0.85); }
 .agent-meta { font-size: 11px; color: #86909c; margin-top: 2px; display: flex; gap: 4px; }
+.agent-owner { font-size: 11px; color: #f56c6c; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-desc { font-size: 11px; color: #a0a4ab; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-tip { text-align: center; color: #a0a4ab; font-size: 13px; padding: 40px 12px; line-height: 1.8; }
 
@@ -377,6 +432,7 @@ onMounted(() => {
 .detail-title { display: flex; align-items: center; gap: 8px; }
 .detail-title h2 { margin: 0; font-size: 18px; }
 .detail-actions { display: flex; gap: 8px; }
+.owner-alert { margin-bottom: 14px; }
 
 .detail-body { padding-bottom: 20px; }
 .detail-row { display: flex; padding: 10px 0; border-bottom: 1px dashed #f5f5f5; }
