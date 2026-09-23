@@ -40,13 +40,13 @@ public class OpenApiConfig {
 
         return new OpenAPI()
                 .info(new Info()
-                        .title("Java AI Agent API")
-                        .description("多模态智能对话助手 - 接口文档\n\n" +
+                        .title("一人公司多模态 AI 助手工作台 API")
+                        .description("一人公司多模态 AI 助手工作台 - 接口文档\n\n" +
                                 "支持对话模式（多轮聊天）与创作模式（图片/视频生成），\n" +
                                 "提供 SSE 流式输出、工具调用、多模型切换等能力。")
                         .version("3.0.0")
                         .contact(new Contact()
-                                .name("JavaAgent")
+                                .name("一人公司多模态 AI 助手工作台")
                                 .url("https://gitee.com/shi-zhun/dcdr-agent"))
                         .license(new License()
                                 .name("MIT")
