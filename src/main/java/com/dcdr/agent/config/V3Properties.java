@@ -50,6 +50,12 @@ public class V3Properties {
         private long monthlyTokens = 2_000_000;
         /** 工作流级: 单次执行 token 上限 (0 = 不限); 超出时该执行标记 failed */
         private long workflowMaxTokensPerExecution = 50_000;
+        /**
+         * 对话/Agent 级: 单次任务 token 上限 (0 = 不限)。
+         * <p>一次对话请求全生命周期(含多轮工具循环)的累计 token 达到该值后,
+         * 在「轮次边界」停止派生下一轮并收尾, 已生成内容正常下发/落库。
+         */
+        private long taskMaxTokens = 50_000;
     }
 
     @Data

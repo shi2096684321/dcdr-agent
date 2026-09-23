@@ -33,6 +33,12 @@ services:
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       # 分布式追踪: 上报地址指向 compose 内的 zipkin 服务, 替换默认的 localhost
       ZIPKIN_ENDPOINT: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
+      # V3.1 F-43 代码执行沙箱: 业务应用只连 Sandbox Server 的 HTTP, 不挂 docker.sock
+      # (沙箱能力默认关闭: agent-tools.sandbox.enabled=false, 需显式打开)
+      # 本组件用 Docker 默认 bridge 网络(见下方 network_mode 说明), 不在 compose 网络内,
+      # 故经宿主映射端口访问(容器内可用 host.docker.internal 指向宿主)
+      OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
+      OPEN_SANDBOX_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
     volumes:
       # 上传文件/生成图片视频/知识库文档落盘持久化, 容器重建不丢
       - ./data:/app/data
@@ -42,6 +48,46 @@ services:
       redis:
         condition: service_healthy
     restart: unless-stopped
+
+  # V3.1 F-43 代码执行沙箱中间件(自托管, 非第三方 SaaS)
+  # 架构: agent(业务) --HTTP--> 本组件 --docker--> 沙箱容器
+  # 关键: docker.sock 只挂给本组件, 业务应用零特权(见 TODO.md 的选型理由)
+  opensandbox-server:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    image: dcdr-opensandbox-server:1.1.0
+    container_name: dcdr-opensandbox-server
+    ports:
+      # 宿主 18080 -> 容器 8080 (避开 agent 已占用的 8080)
+      - "18080:8080"
+    environment:
+      # API Key: 优先于配置文件中的 [server] api_key; 生产环境务必通过 .env 覆盖
+      OPENSANDBOX_SERVER_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
+      # 显式声明 docker 守护进程地址(unix socket)
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      # 本组件需要指挥宿主 docker 拉起沙箱容器; 沙箱逃逸的最坏影响限于本组件与宿主 docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 服务端元数据(snapshot / 模板目录, SQLite)持久化
+      - opensandbox-data:/var/lib/opensandbox
+      # 配置以挂载方式提供: 改配置只需重启容器, 无需重建镜像
+      - ./sandbox/sandbox.toml:/etc/opensandbox/config.toml:ro
+    # 必须用 Docker 默认 bridge, 两个硬约束(都实测过):
+    #   ① networkPolicy(禁网) 仅在 network_mode='bridge' 下被支持, 自定义网络会直接
+    #      400 SANDBOX::INVALID_PARAMETER;
+    #   ② server 与沙箱必须同处 docker0 才能直连 execd 端口, 否则健康检查 502
+    #      BACKEND_CONNECTION_FAILED。
+    # 代价: 脱离 compose 自定义网络 → agent 改为经宿主端口访问本服务。
+    network_mode: "bridge"
+    # 同 postgres 的原因: Docker 20.10.8 旧 seccomp profile 拦截 glibc 的 clone3,
+    # 导致容器内 pthread_create 失败("can't start new thread") —— Python 服务端必需线程,
+    # 故必须 seccomp=unconfined; 升级 Docker 到 20.10.10+ 后可去掉。
+    security_opt:
+      - seccomp=unconfined
+    restart: unless-stopped
+    # 注意: 沙箱是可选能力(默认关闭), 故 agent 不依赖本服务启动 ——
+    # 即使沙箱组件起不来, 主应用仍应正常提供服务。
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -100,3 +146,8 @@ volumes:
     driver: local
   pgdata:
     driver: local
+  # V3.1 F-43: Sandbox Server 元数据(snapshot / 模板目录)
+  opensandbox-data:
+    driver: local
+
+

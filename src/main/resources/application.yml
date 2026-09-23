@@ -39,7 +39,7 @@ spring:
 
 # ===== Agent 核心配置 =====
 agent:
-  name: "JavaAgent"
+  name: "一人公司多模态 AI 助手工作台"
 
   # ── System Prompt 架构（两个正交维度）──────────────────────────────
   # 维度一 · Base System Prompt（静态基线）：L1 全局 < L2 场景级 < L3 会话级
@@ -391,6 +391,8 @@ agent:
       monthly-tokens: 2000000
       # 工作流级: 单次执行 token 上限 (0 = 不限); 超出时该执行标记 failed
       workflow-max-tokens-per-execution: 50000
+      # 对话/Agent 级: 单次任务 token 上限 (0 = 不限); 跨工具轮累计达到后在轮次边界停止并收尾
+      task-max-tokens: 50000
 
     # ===== V3.0-rc 生产化加固 (F-40.3/F-40.4) =====
     # F-40.3 API 限流: 固定窗口计数, 用户+IP 双维度 (未登录按 IP)
@@ -434,6 +436,34 @@ agent-tools:
     enabled: true
   time:
     enabled: true
+  # V3.1 F-43 代码执行沙箱(OpenSandbox 自托管沙箱中间件客户端)
+  # 本机开发默认: 直连宿主 18080 的 opensandbox-server(端口映射见 docker-compose.yml)。
+  # 三项均支持环境变量覆盖, 且环境变量优先级高于此处默认值:
+  #   AGENT_TOOLS_SANDBOX_ENABLED / OPEN_SANDBOX_DOMAIN / OPEN_SANDBOX_API_KEY
+  # 注意: enabled 默认 true 仅为免去本机每次注入变量。『沙箱默认关闭』是 F-43 安全设计的
+  #       一部分(见 TODO.md); 若该仓库要对外交付/部署, 请改回 false, 或在部署环境用
+  #       环境变量 AGENT_TOOLS_SANDBOX_ENABLED=false 覆盖。
+  sandbox:
+    enabled: ${AGENT_TOOLS_SANDBOX_ENABLED:true}
+    domain: ${OPEN_SANDBOX_DOMAIN:localhost:18080}
+    api-key: ${OPEN_SANDBOX_API_KEY:dev-local-key-2026}
+    protocol: http
+    # 经由 Server 代理访问沙箱(客户端无法直连 docker bridge 内网 IP, 必须为 true)
+    use-server-proxy: true
+    python-image: python:3.12-slim
+    # 沙箱存活超时(秒), 到期由服务端自动终止(兜底防泄漏)
+    timeout-seconds: 30
+    ready-timeout-seconds: 30
+    # 单条命令执行超时(秒), 应小于 timeout-seconds
+    execution-timeout-seconds: 10
+    cpus: "1"
+    memory: 512Mi
+    # 代码长度上限 / 输出截断上限(与工具结果口径一致)
+    max-code-length: 8000
+    max-output-length: 6000
+    max-concurrent: 2
+    # 禁止沙箱出网(NetworkPolicy 默认 DENY)
+    network-disabled: true
 
 # ===== MCP Server 连接配置 (本应用作为 Host, 连接外部 MCP Server) =====
 # 只需写 Client 去访问别人提供的 MCP Server, 不需要自己起 Server。

@@ -22,6 +22,7 @@ import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
+import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.ToolInfo;
 import com.dcdr.agent.tool.FrameworkToolExecutorBridge;
@@ -50,6 +51,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
@@ -274,6 +276,12 @@ public class AgentOrchestrator {
                         // 捕获模型真实返回的 token 消耗与结束原因, 用于回填 done 块
                         final ChatResponse.TokenUsage[] usageHolder = new ChatResponse.TokenUsage[1];
                         final String[] finishReasonHolder = new String[1];
+                        // V3.1 单任务 token 上限: 跨工具轮累计消耗。
+                        // 注意 usageHolder 每轮被整体覆盖(只保留最后一轮), 故累计量必须独立计数。
+                        final long taskMaxTokens = costTracker.taskMaxTokens();
+                        final AtomicLong taskTokens = new AtomicLong();
+                        // 是否因单任务 token 上限而提前收尾(收尾时补一个提示块告知用户)
+                        final AtomicBoolean taskTokenExceeded = new AtomicBoolean(false);
                         // 收集模型发起的工具调用(自动文生图)与生成结果
                         // 用 holder 以支持工具循环: 每轮重置换新列表, 快照供该轮回灌使用
                         final List<ChatChunk>[] toolCallsHolder = new List[1];
@@ -304,6 +312,14 @@ public class AgentOrchestrator {
                         Consumer<ChatChunk> collector = chunk -> {
                             if ("usage".equals(chunk.getType()) && chunk.getTokenUsage() != null) {
                                 usageHolder[0] = chunk.getTokenUsage();
+                                // V3.1 单任务 token 上限: 逐轮累加本任务真实消耗(无法拿到 usage 时以 0 计, 由收尾估算兜底)
+                                ChatResponse.TokenUsage roundUsage = chunk.getTokenUsage();
+                                long roundTotal = roundUsage.getTotal() > 0
+                                        ? roundUsage.getTotal()
+                                        : roundUsage.getPrompt() + roundUsage.getCompletion();
+                                if (roundTotal > 0) {
+                                    taskTokens.addAndGet(roundTotal);
+                                }
                                 // 仅在模型明确给出非工具结束原因时覆盖(工具调用优先级最高)
                                 if (chunk.getFinishReason() != null && !"tool_calls".equals(chunk.getFinishReason())) {
                                     finishReasonHolder[0] = chunk.getFinishReason();
@@ -345,6 +361,14 @@ public class AgentOrchestrator {
                             // 回灌轮需重新捕获本轮新产生的工具调用(多步: 模型在第 2 轮可能又发起工具)
                             List<ChatChunk> currentRound = new ArrayList<>(toolCallsHolder[0]);
                             boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !currentRound.isEmpty();
+                            // V3.1 单任务 token 上限: 轮次边界判定(此时本轮正文已完整生成, 掐掉的是"下一轮")。
+                            // 累计达上限则不再派生下一轮, 直接收尾 —— 避免工具结果回灌使 prompt 逐轮膨胀而失控烧 token。
+                            if (needTool && taskMaxTokens > 0 && taskTokens.get() >= taskMaxTokens) {
+                                needTool = false;
+                                taskTokenExceeded.set(true);
+                                log.info("会话 {} 单任务 token 上限触发: 累计 {} >= {} (已完成 {} 轮), 停止工具循环并收尾",
+                                        sessId, taskTokens.get(), taskMaxTokens, toolRound[0] + 1);
+                            }
                             if (needTool && toolRound[0] < MAX_TOOL_ROUNDS) {
                                 toolRound[0]++;
                                 // assistant(tool_calls) 消息不依赖执行结果, 先行回填 history
@@ -370,7 +394,7 @@ public class AgentOrchestrator {
                                 // 下一轮执行本轮新工具(多步 agentic); tracedTool 对整批工具执行计时
                                 Flux<ChatChunk> nextTool = tracedTool(Flux
                                         .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, t))
+                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId, t))
                                         .subscribeOn(Schedulers.boundedElastic()),
                                         t, currentRound, resultsById);
                                 // 关键时序: 先执行工具拿到真实结果, 再构造 tool 消息回灌 history 并发起下一轮生成。
@@ -412,7 +436,8 @@ public class AgentOrchestrator {
                             // 无需工具(或已达上限): 收尾并保存
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
                                     accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
-                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t));
+                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t,
+                                    taskTokenExceeded.get(), taskTokens.get()));
                         });
                         tailRef.set(tailFlux);
 
@@ -712,6 +737,7 @@ public class AgentOrchestrator {
                                         List<String> outToolResults, List<Map<String, Object>> collectedSources,
                                         String userQuery, List<String> knowledgeBaseIds,
                                         Map<String, String> outResultsById,
+                                        String userId, String sessId,
                                         com.dcdr.agent.common.log.LlmCallTrace t) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
@@ -747,6 +773,8 @@ public class AgentOrchestrator {
             // Agentic RAG: 在 Flux 订阅时(boundedElastic 线程)注入知识库 ID,
             // 与工具执行在同一线程, finally 清除防止线程复用泄漏
             KnowledgeSearchContextHolder.set(knowledgeBaseIds);
+            // F-43: 沙箱工具的审计需要 userId/sessionId, 同线程注入, finally 清除防串号
+            SandboxContextHolder.set(userId, sessId);
             try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
@@ -887,6 +915,7 @@ public class AgentOrchestrator {
             } finally {
                 // 清除 ThreadLocal, 防止线程池线程复用导致知识库 ID 泄漏到下一轮无关对话
                 KnowledgeSearchContextHolder.clear();
+                SandboxContextHolder.clear();
             }
         }));
     }
@@ -1345,7 +1374,8 @@ public class AgentOrchestrator {
                                              ChatResponse.TokenUsage[] usageHolder, String[] finishReasonHolder,
                                              long startNanos, List<Message> contextForEstimate,
                                              AtomicBoolean assistantSaved, AtomicBoolean costRecorded, String userId,
-                                             ChatRequest request, com.dcdr.agent.common.log.LlmCallTrace trace) {
+                                             ChatRequest request, com.dcdr.agent.common.log.LlmCallTrace trace,
+                                             boolean taskTokenExceeded, long taskTokens) {
         // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
         ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
                 usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
@@ -1429,7 +1459,12 @@ public class AgentOrchestrator {
         } else {
             tail.add(ChatChunk.done(p, c, t, durationMs));
         }
-        if ("length".equals(fr)) {
+        if (taskTokenExceeded) {
+            // V3.1 单任务 token 上限: 内容已随 done 正常下发/落库, 此处仅补充"为何停在这里"
+            tail.add(ChatChunk.contextWarning(String.format(
+                    "本次任务已达 token 上限（累计约 %d token），已生成部分如上。如需继续，请针对结果追问或开启新对话。",
+                    taskTokens)));
+        } else if ("length".equals(fr)) {
             tail.add(ChatChunk.contextWarning("回答已达长度上限(max_tokens)被截断，可尝试简化问题或开启新对话。"));
         } else if ("insufficient_system_resource".equals(fr)) {
             tail.add(ChatChunk.error("生成因后端推理资源不足被打断", "RESOURCE_LIMIT"));

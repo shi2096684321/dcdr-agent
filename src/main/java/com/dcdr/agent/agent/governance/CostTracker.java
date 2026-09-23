@@ -105,6 +105,16 @@ public class CostTracker {
         return quota.isEnabled() ? quota.getWorkflowMaxTokensPerExecution() : 0;
     }
 
+    /**
+     * 对话/Agent 单次任务 token 上限 (0 = 不限)。
+     * <p>一次对话请求(含多轮工具循环)的跨轮累计消耗达到该值后, AgentOrchestrator
+     * 在轮次边界停止派生下一轮并正常收尾。配额关闭时为 0(不限制)。
+     */
+    public long taskMaxTokens() {
+        V3Properties.Quota quota = v3Properties.getQuota();
+        return quota.isEnabled() ? quota.getTaskMaxTokens() : 0;
+    }
+
     /** 当前用户配额使用情况 (前端展示) */
     public MonitorDtos.QuotaUsage getQuotaUsage(String userId) {
         V3Properties.Quota quota = v3Properties.getQuota();

@@ -68,6 +68,177 @@
 
 ---
 
+## V3.1 F-43 代码执行沙箱（进行中，2026-09-23）
+
+### 选型决策
+- **采用 OpenSandbox**（阿里开源，Apache 2.0，CNCF Landscape，GitHub `alibaba/OpenSandbox`）。
+  理由：Java SDK 现成（`com.alibaba.opensandbox:sandbox:1.1.0`）；**自托管**（不是第三方 SaaS，
+  Server 与业务同 compose / 同内网）；**业务应用零特权**（不挂 docker.sock，docker 权限只在 Server 侧）；
+  网络策略 / 资源配额 / 沙箱池 / 凭证保险箱均为现成能力；隔离可平滑升级
+  （Docker → gVisor / Kata / Firecracker，**业务代码不动**）。
+- **已排除的方案**：
+  - 自研 `ProcessBuilder` + `docker run`：应用需挂 socket（等于把宿主 root 交给应用容器），
+    且资源 / 网络 / 隔离全要自己拼装；
+  - `langchain4j-community-code-execution-engine-docker`：同样需挂 socket，且
+    `DockerExecutionConfig` 与 `DockerContainerManager.buildHostConfig()` **均无 pidsLimit**
+    （第 2 层受控维度少一维，fork 炸弹无防护）；
+  - `Piston`：需 `--privileged` 容器 + cgroup v2 + 语言运行时自装，同样是自建服务但能力弱于 OpenSandbox；
+  - 本地进程级 OS 沙箱（bubblewrap / Seatbelt）：属"本机形态"，服务端不适用。
+- **场景收敛**：一期只做**纯计算**（代码经文件投递，**不挂载数据目录**）。
+  依据：真需求是"让模型能精确算数"——现有 `CalculatorTool` 在 Java 17 下**已失效**
+  （Nashorn 在 Java 15 被移除，`getEngineByName("js")` 恒为 null，只剩"两操作数"降级分支）；
+  "表格数据分析"虽是真实痛点，但 `docs/15-产品定位.md` §4.3 明确暂不纳入财务 / 票据场景。
+
+### 架构
+```
+CodeInterpreterTool (com.dcdr.agent.tool.Tool)
+  → OpenSandbox Java SDK (HTTP)
+    → opensandbox-server (自托管中间件，唯一持有 docker 权限的组件)
+      → Docker runtime(一期) / Kubernetes / Firecracker microVM(升级路径)
+```
+
+### 实施进度（2026-09-23）
+- [x] 1. 修复 Maven http-blocker → 引入 SDK 依赖并验证可编译
+- [x] 2. `ToolsProperties.SandboxConfig` + `application.yml`（`agent-tools.sandbox.*`，默认 `enabled=false`）
+- [x] 3. `CodeInterpreterTool` + `OpenSandboxService` + `CodeGuard` + `SandboxContextHolder`
+      （代码经文件投递避免转义 + NetworkPolicy DENY 禁网 + 单命令超时 + 非 root(65534) 执行
+       + 输出截断 + 审计只记摘要）
+- [x] 4. `AgentOrchestrator.executeTools` 接入 userId / sessionId
+      （方法签名补 2 参数 + 与 `KnowledgeSearchContextHolder` 同点 set / finally clear）
+- [x] 5. 前端 `AgentView.vue` 的 `suggestedTools` 补 `code_interpreter`
+- [x] 6. `AgentDefinitionService` 白名单收口：`validateTools`（非 admin 写入受限工具 → 403）
+      + `filterAdminOnlyTools`（克隆时静默剔除 —— 克隆产物始终是普通 Agent，
+      若按传入的 isAdmin 过滤，管理员克隆含沙箱工具的模板会被 create 的 403 卡住）
+- [x] 7. 端到端验收（2026-09-23 全部通过，结果见下方「已验收通过的能力」）
+
+### 已改动文件
+- 新增（Java）：`tool/sandbox/{CodeInterpreterTool,OpenSandboxService,CodeGuard,SandboxContextHolder}.java`
+- 新增（部署）：`sandbox/Dockerfile`（Server 镜像，装 PyPI `opensandbox-server==1.1.0`）、
+  `sandbox/sandbox.toml`（Server 运行时配置）
+- 修改：`pom.xml`、`config/ToolsProperties.java`、`application.yml`、
+  `AgentOrchestrator.java`、`agent/definition/AgentDefinitionService.java`、
+  `frontend/src/views/AgentView.vue`、`docker-compose.yml`
+- 编译状态：`mvn -o test-compile` 通过（依赖已补齐，离线编译恢复正常）
+- compose 校验：`docker-compose config --quiet` 通过
+
+### 运行方式（组件已进 compose）
+- 组件 `opensandbox-server` 已加入 `docker-compose.yml`（与业务同 compose / 同内网）；
+  **docker.sock 只挂给它**，业务应用零特权，通过 `OPEN_SANDBOX_DOMAIN=opensandbox-server:8080` 访问。
+- 宿主端口映射 **`18080:8080`**（避开 agent 已占用的 8080）。
+  → IDE 里直跑应用时需设 `OPEN_SANDBOX_DOMAIN=localhost:18080`（yml 默认是 localhost:8080）。
+- 启动：`docker compose up -d opensandbox-server`
+  （首次构建 Server 镜像，并会拉取 `opensandbox/execd:v1.1.0`、`opensandbox/egress:release-1.1.0` 与沙箱基础镜像）
+- **必须设置 API Key**：`.env` 中提供 `SANDBOX_API_KEY=<强随机值>`；
+  未设置时 compose 用占位值 `change-me-in-env`（仅本机调试可用，服务端不允许空 Key 启动）。
+- 三个已处理的配置约束（写在 `sandbox/sandbox.toml`）：
+  1. `[runtime] execd_image` **必填且无默认值** → `opensandbox/execd:v1.1.0`
+  2. `[docker] network_mode` 默认 `host`，但 `networkPolicy` 与 egress sidecar **要求 bridge** → 已设 `bridge`
+  3. `[egress] image` 在客户端携带 `networkPolicy` 时**必需** → `opensandbox/egress:release-1.1.0`
+     （CodeInterpreterTool 正是用 DENY 策略，故必须配）
+
+### 联调踩坑记录（2026-09-23，全部来自真实报错）
+1. **Docker 20.10.8 旧 seccomp profile 拦 glibc `clone3`**（本项目 postgres 早就踩过同一个坑）：
+   - 构建阶段：pip 的 rich 进度条依赖线程 → `can't start new thread`；解法：Dockerfile 设
+     `PIP_PROGRESS_BAR=off` / `--progress-bar off`。
+   - 运行阶段：Python 服务端必须有线程 → 容器加 `security_opt: seccomp=unconfined`（已加）。
+   - **升级 Docker 到新版本后可移除该 workaround**。
+2. **PyPI 的 `opensandbox-server` 包不完整**：wheel 与 sdist **都缺**
+   `opensandbox_server/services/fast_sandbox/generated`（3 个 protobuf/gRPC 生成文件，共 51KB），
+   启动即 `ModuleNotFoundError`；官方镜像走整仓源码安装所以没事。解法：装完包后用 CDN 补齐该目录。
+3. **github.com 与 raw.githubusercontent.com 在本网络不可达**（宿主/容器实测 443 超时）：
+   改用 `cdn.jsdelivr.net/gh/<owner>/<repo>@<ref>/<path>`（实测 200）。
+4. **SDK 必须开 `useServerProxy`**：客户端（宿主应用 / compose 容器）与沙箱不在同一网络，
+   直连沙箱 `172.x` 内网 IP 会导致健康检查 **300s 超时** → `SandboxReadyTimeoutException`。
+5. **`[docker] network_mode` 必须 `bridge`，且 server 容器也要 `network_mode: "bridge"`**：
+   - `networkPolicy`（禁网）仅在 `network_mode='bridge'` 下被支持，自定义网络直接
+     400 `SANDBOX::INVALID_PARAMETER`；
+   - server 与沙箱必须同处 docker0，否则 server 代理转发 execd 端口报
+     502 `BACKEND_CONNECTION_FAILED`。
+6. **server 用 `network_mode: "bridge"` 后脱离 compose 网络** → agent 改用
+   `host.docker.internal:18080` 访问（bridge 模式下端口映射仍生效）。
+7. **`docker compose down <service>` 在 compose v2 下会停掉全部服务**（实测 pg/redis/zipkin 被一并停止）：
+   只想重启单个服务请用 `docker compose up -d --force-recreate <service>`。
+8. **禁网（networkPolicy）排查进展：egress 已能运行、nftables 规则已应用，但沙箱流量仍未受控**。
+   以下均为实测结论：
+   - **缺 `[docker] host_ip`**：server 跑在容器内且 `server.host=0.0.0.0` 时，
+     探测 egress 用的是 `127.0.0.1`（源码 `_resolve_proxy_host()`），而容器内的 127.0.0.1
+     是它自己 → `Connection refused` → 沙箱创建 500。**已修**：`host_ip = "172.17.0.1"`。
+   - **默认 `[egress] mode = "dns"` 只做 DNS 代理，不拦 IP 直连**（实测沙箱内
+     `socket.create_connection(('8.8.8.8', 53))` 可通）。**已改为 `dns+nft`**。
+   - **Windows 保留端口段**导致 Docker 绑定失败（Winsock 10013
+     "An attempt was made to access a socket in a way forbidden by its access permissions"）：
+     沙箱随机端口 `59587` 落在保留段 `59583-59682` 内 → egress 启动 500。
+     **已修**：端口范围收缩到 `40000-49800`（本机保留段见命令
+     `netsh int ipv4 show excludedportrange protocol=tcp`；该段会随 Hyper-V/WSL 重启变化）。
+   - **仍存在的卡点**：改用 `dns+nft` 后 egress 日志确认
+     `nftables static policy applied (table inet opensandbox)`，
+     **但沙箱内网络依然可通** → 判断为 egress 的 nft 规则未覆盖到沙箱的网络命名空间
+     （egress 自身 `NetworkMode=bridge`，与沙箱疑似各自独立 netns；
+     上游源码注释提到 "shared namespace"，**待确认沙箱容器的 NetworkMode 是否应为
+     `container:<egress容器>`，以及由哪个配置项决定**）。
+   - 结论：**禁网尚未真正生效**，当前防线为 `CodeGuard` 静态审查（可被绕过）。
+     F-43 上线前此项必须闭环。
+
+### 禁网（networkPolicy）闭环结论（2026-09-23 实测通过）
+- **状态：✅ 已生效**。同一沙箱内实测：
+  `1.1.1.1:80` 与 `8.8.8.8:443` 直连 → `TimeoutError`；`example.com` DNS 解析 → `gaierror`；
+  同沙箱内 `print(sum(range(100)))` → `4950`（功能不受影响）。
+- **缺任一项都会失败的配置（`sandbox/sandbox.toml`）**：
+  1. `[docker] host_ip = "172.17.0.1"` —— 否则 server 在容器内用 `127.0.0.1` 探测 egress 的
+     宿主映射端口 → `Connection refused` → 沙箱创建 500。
+  2. `[egress] mode = "dns+nft"` —— 默认 `dns` 只劫持 DNS 解析，**不拦 IP 直连**。
+  3. `[docker] port_range_max = 49800` —— 避开 Windows 保留端口段，否则 Docker 绑定失败
+     （Winsock 10013）。核查：`netsh int ipv4 show excludedportrange protocol=tcp`
+     （**该段随 Hyper-V/WSL 重启会变化，换机器/重启后需重新核对**）。
+  4. `[docker] network_mode = "bridge"` —— `networkPolicy` 仅在 Docker 默认 bridge 下被支持
+     （自定义网络直接 400）。
+- **工作原理（排查参考）**：沙箱容器以 `network_mode=container:<egress容器>` 与 egress
+  **共享网络命名空间**；egress 在其中装 `table inet opensandbox`（`allow_v4` / `deny_v4` /
+  `dyn_allow_v4` 动态集合）与 `table ip nat` 的 OUTPUT 链（把 53 端口重定向到本地 DNS 代理）。
+- **⚠️ 验收陷阱（曾因此误判为"禁网无效"）**：用
+  `socket.create_connection(('8.8.8.8', 53))` 测网络是**错的** —— 53 端口被 nft 规则
+  `redirect to :15353` 劫持到 egress 的本地 DNS 代理，TCP 握手因此"成功"，看起来像网络可达。
+  **必须用非 53 端口（`:80` / `:443`）或 DNS 解析结果来验证。**
+
+### 已验收通过的能力（2026-09-23 实机验证）
+- 沙箱创建 → 代码投递 → 执行 → 取输出 → 销毁 全链路正常，**单次约 2~4 秒**（镜像已缓存）。
+- `print(sum(range(100)))` → `4950`（真执行，非模型口算）。
+- `print((1+2)*3, round(1234*5678/7, 2))` → `9 1000950.29`
+  （注：我注释里心算写成 `1001312.86`，**实际值不同** —— 正好印证 F-43 要解决的"模型口算不可靠"问题）。
+- `CodeGuard` 静态审查 4 条用例全部符合预期（`os.system` / `subprocess` / `eval` 拒绝，正常计算放行）。
+- Server 鉴权正常：`/health` 无需 Key 返回 200；业务接口无 Key 401、带 Key 200。
+- **禁网生效**：沙箱内 `1.1.1.1:80` / `8.8.8.8:443` 直连 → `TimeoutError`；
+  `example.com` DNS 解析 → `gaierror`；同沙箱内计算不受影响。
+- **执行超时生效**：`while True: pass` → `ok=false, exitCode=-1`，端到端约 12s
+  （单命令超时 10s + 沙箱创建/销毁开销）。
+- **并发闸生效**：`maxConcurrent=2` 下并发发起 3 次 → `ok=2, rejected=1`。
+- **审计落库路径生效**：经 `CodeInterpreterTool` 执行代码后，`AuditLogRepository.save()`
+  被调用（用 Mockito 伪 repository 验证；实际落表需启动应用后在 `audit_logs` 查 `sandbox_exec`）。
+- 验收脚本：`target/sandbox-check/SandboxCheck.java`（临时程序，`mvn clean` 会一并删除；
+  需要时按本文件描述重建即可）。
+
+### 已识别的坑（实现时必须遵守）
+- **`sandbox.close()` 只释放本地句柄，必须显式 `sandbox.kill()`** 才终止远端沙箱 →
+  放 `finally` 中调用，否则沙箱容器堆积（有 `timeout` 兜底但会浪费资源）。
+- **不要用 `python -c <code>` 传代码**（引号 / 换行转义地狱）：先 `sandbox.files().write(...)`
+  写文件，再 `commands().run("python -I -B /tmp/code.py")`。
+- `NetworkPolicy.defaultAction = DENY` 即为禁网（无需额外配置）；将来需要装包时再按 target 加 egress 白名单。
+- 审计只记 `codeHash` + 前 200 字符，**不落全文代码**（防敏感内容进审计表）。
+- 输出截断与 `TOOL_RESULT_MAX_LEN=6000` 同口径，保证模型上下文 / 落库 / 前端三处一致。
+
+### 环境阻塞与处置（2026-09-23）
+- ✅ **已解决 —— Maven 无法下载任何新依赖**：`D:\Maven\apache-maven-3.9.0\conf\settings.xml` 中
+  `alimaven` 镜像原为 **http**（`http://maven.aliyun.com/nexus/content/repositories/central/`），
+  被 Maven 3.9 内置的 `maven-default-http-blocker`（`mirrorOf=external:http:*`）阻断
+  （实测报 `Blocked mirror for repositories: [alimaven ...]`；**这也是本项目长期只能离线编译的原因**）。
+  已改为 `https://maven.aliyun.com/repository/public`，依赖下载恢复正常。
+  注：原文件未单独留备份，原值即上行括号内地址，需要回退直接改回即可。
+- ⏳ **未解决 —— 沙箱运行环境**：本机 docker 为 **20.10.8**，本地镜像仅有 `redis:7-alpine`；
+  需 `docker pull` OpenSandbox server 镜像与沙箱基础镜像（如 `python:3.12-slim`），
+  否则功能只能停在"编译通过"，无法端到端验收（含 `NetworkPolicy` 生效性、非 root 写文件权限等）。
+
+---
+
 ## 待优化 BUG
 
 ### [BUG] 多轮对话时 agent 重复回答历史内容

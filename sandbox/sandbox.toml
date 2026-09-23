@@ -1,0 +1,68 @@
+# OpenSandbox Sandbox Server 配置 (V3.1 F-43)
+#
+# 字段定义以 server/configuration.md 为准, 权威默认值见 opensandbox_server/config.py。
+# 本项目只用到 Docker runtime + 纯计算场景(不挂载数据目录, 不暴露沙箱端口)。
+
+[server]
+host = "0.0.0.0"
+port = 8080
+# API Key: 请求头 OPEN-SANDBOX-API-KEY。
+# 环境变量 OPENSANDBOX_SERVER_API_KEY 优先于本字段(由 docker-compose 注入)。
+# 注意: 非交互环境下未配置 API Key 时, 服务端会拒绝启动。
+max_sandbox_timeout_seconds = 600
+
+[runtime]
+type = "docker"
+# execd 是沙箱内的执行代理(可选作为 PID 1), 此项「必填且无默认值」;
+# tag 与 release 对齐(官方 release 明确给出 opensandbox/execd:v1.1.0)
+execd_image = "opensandbox/execd:v1.1.0"
+
+[docker]
+# 必须是 Docker 默认 bridge, 两个硬约束(均实测):
+#   ① networkPolicy(禁网) 仅在 network_mode='bridge' 下被支持, 自定义网络会直接
+#      400 SANDBOX::INVALID_PARAMETER;
+#   ② server 容器与沙箱容器必须同处 docker0 才能直连 execd 端口, 否则健康检查
+#      会 502 BACKEND_CONNECTION_FAILED。
+# 因此 docker-compose.yml 中的 server 也用 network_mode: "bridge"(host 模式虽也能
+# 互通, 但 networkPolicy/egress 不支持 host)。
+network_mode = "bridge"
+# 关键配置: server 探测/代理「宿主映射端口」时使用的地址。
+# 源码 `_resolve_proxy_host()` 的规则: 当 server.host 为 0.0.0.0 且进程运行在容器内时
+# 优先取本项; 未设置则回退 127.0.0.1 —— 而容器内的 127.0.0.1 指向它自己,
+# 导致 egress 就绪探测 Connection refused(实测, 表现为沙箱创建 500)。
+# 172.17.0.1 = docker0 网关(宿主在 bridge 网络中的地址)。
+host_ip = "172.17.0.1"
+# 进程数上限(默认值), 抵御 fork 炸弹
+pids_limit = 4096
+# 不允许提权
+no_new_privileges = true
+# 沙箱宿主端口范围: 必须避开 Windows 的保留端口段。
+# 否则 Docker 绑定失败并报 Winsock 10013:
+#   "listen tcp 0.0.0.0:xxxxx: bind: An attempt was made to access a socket
+#    in a way forbidden by its access permissions" → 沙箱创建 500。
+# 本机实测保留段(命令: netsh int ipv4 show excludedportrange protocol=tcp):
+#   50000-50059、59583-59682、59683-59782、59783-59882、59883-59982、59983-60082
+# 故收缩到 40000-49800(该区间实测无保留)。
+# 注意: 保留段会随 Hyper-V/WSL/Docker 重启而变动, 若再次遇到端口绑定失败需重新核查。
+port_range_min = 40000
+port_range_max = 49800
+
+[log]
+level = "INFO"
+
+# 客户端 create 请求携带 networkPolicy 时必需(CodeInterpreterTool 使用 DENY 策略)
+[egress]
+image = "opensandbox/egress:release-1.1.0"
+# 关键: 默认 mode=dns 只做 DNS 代理, **不拦 IP 直连**
+# (实测: 沙箱内 socket.create_connection(('8.8.8.8', 53)) 仍可通);
+# 要真正禁网必须用 dns+nft, 启用 nftables 做 IP 层过滤。
+mode = "dns+nft"
+
+[store]
+# 服务端自身元数据(snapshot / 模板目录); 沙箱本体不入库, 以容器为准
+type = "sqlite"
+path = "/var/lib/opensandbox/opensandbox.db"
+
+[storage]
+# 安全默认: 拒绝所有宿主 bind mount; 本项目不挂载数据目录, 保持为空
+allowed_host_paths = []
