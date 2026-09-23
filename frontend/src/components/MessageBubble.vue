@@ -28,7 +28,7 @@
       <div v-if="msg.reasoningContent" class="msg-reasoning">
         <details>
           <summary>💭 推理过程</summary>
-          <div v-html="renderMarkdown(msg.reasoningContent)"></div>
+          <div v-html="renderReasoning(msg.reasoningContent)" @click="onBubbleClick"></div>
         </details>
       </div>
 
@@ -159,6 +159,7 @@
 import { ref, computed, onBeforeUpdate } from 'vue'
 import logoUrl from '@/assets/dcdr-logo.png'
 import { useMarkdown } from '@/composables/useMarkdown'
+import { useCodeBlock } from '@/composables/useCodeBlock'
 import { submitFeedback, withdrawFeedback, getFeedbackReasonTags, extractMessage } from '@/api'
 import { ElMessage } from 'element-plus'
 
@@ -168,9 +169,13 @@ const props = defineProps({
   editing: { type: Boolean, default: false },
   editBuffer: { type: String, default: '' }
 })
-const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'cite-click', 'feedback'])
+const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
+// 推理过程同样允许复制代码块(与正文共用同一套按钮与处理逻辑)
+const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
+// 代码块按钮实现「复制 / 运行预览」: 预览交给父级统一弹窗
+const { handleCodeClick } = useCodeBlock((payload) => emit('preview-code', payload))
 
 const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
 // 是否全部为知识库片段来源(RAG): 决定汇总行文案与是否显示网页 favicon
@@ -283,6 +288,11 @@ function toggleSource(idx) {
 // 点击正文内角标: 角标本身是 <a href> 已能跳转, 这里额外展开来源面板并高亮(便于用户回看)
 let citeTimer = null
 function onBubbleClick(e) {
+  // 代码块上的「复制 / 运行预览」按钮优先处理(与角标互斥)
+  if (e.target instanceof Element && e.target.closest('.code-copy, .code-preview')) {
+    handleCodeClick(e)
+    return
+  }
   const el = e.target.closest('.cite')
   if (!el) return
   const idx = Number(el.dataset.cite)
@@ -457,6 +467,15 @@ async function withdraw() {
 .msg-bubble :deep(code) { background: #f5f7fa; padding: 3px 8px; border-radius: 5px; font-size: 13px; color: #e83e8c; }
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+/* 代码块: 语言标签 + 复制 / 运行预览 工具条(正文与推理过程共用) */
+.msg-bubble :deep(.code-block), .msg-reasoning details > div :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid #2b3654; }
+.msg-bubble :deep(.code-block pre), .msg-reasoning details > div :deep(.code-block pre) { margin: 0; border-radius: 0; }
+.msg-bubble :deep(.code-block-bar), .msg-reasoning details > div :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #101a2e; border-bottom: 1px solid #2b3654; }
+.msg-bubble :deep(.code-lang), .msg-reasoning details > div :deep(.code-lang) { font-size: 11px; color: #8fa3c8; font-family: monospace; letter-spacing: 0.5px; }
+.msg-bubble :deep(.code-actions), .msg-reasoning details > div :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
+.msg-bubble :deep(.code-action), .msg-reasoning details > div :deep(.code-action) { border: 1px solid #33415c; background: transparent; color: #a9bbdc; font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
+.msg-bubble :deep(.code-action:hover), .msg-reasoning details > div :deep(.code-action:hover) { border-color: #667eea; color: #cbd5ff; background: #667eea22; }
+.msg-bubble :deep(.code-action.is-done), .msg-reasoning details > div :deep(.code-action.is-done) { border-color: #2e9e6b; color: #6ee7a8; }
 .msg-bubble :deep(h1) { font-size: 20px; font-weight: 700; margin: 16px 0 10px; color: #1f2937; border-bottom: 2px solid #eef0f5; padding-bottom: 6px; }
 .msg-bubble :deep(h2) { font-size: 17px; font-weight: 700; margin: 14px 0 8px; color: #1f2937; }
 .msg-bubble :deep(h3) { font-size: 15px; font-weight: 600; margin: 12px 0 6px; color: #374151; }

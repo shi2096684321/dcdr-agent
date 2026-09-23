@@ -73,6 +73,7 @@
           @cancel-edit="cancelEdit"
           @retry="retry"
           @preview-image="previewImage"
+          @preview-code="openCodePreview"
           @feedback="onFeedbackChange"
         />
 
@@ -84,7 +85,7 @@
             <div v-if="reasoningContent" class="msg-reasoning">
               <details open>
                 <summary>💭 推理过程</summary>
-                <div v-html="renderMarkdown(reasoningContent)"></div>
+                <div v-html="renderReasoning(reasoningContent)" @click="onCodeClick"></div>
               </details>
             </div>
             <div v-if="streamImages.length" class="msg-images">
@@ -117,8 +118,25 @@
             <div v-else-if="statusHint" class="msg-status">
               <span class="status-dot"></span>{{ statusHint }}
             </div>
+            <!-- 工具调用过程(实时): 收到 tool_call 块即累积展示, 无需刷新页面 -->
+            <div v-if="streamToolInvocations.length" class="tool-invoke">
+              <button class="tool-invoke-toggle" @click="streamToolOpen = !streamToolOpen">
+                <span class="tool-icon">🔧</span>
+                <span>已调用 {{ streamToolInvocations.length }} 个工具</span>
+                <span class="tool-caret">{{ streamToolOpen ? '▲' : '▼' }}</span>
+              </button>
+              <div v-if="streamToolOpen" class="tool-invoke-list">
+                <div v-for="(t, i) in streamToolInvocations" :key="t.id || i" class="tool-item">
+                  <div class="tool-item-head">
+                    <span class="tool-badge">{{ t.name || 'tool' }}</span>
+                    <span v-if="t.id" class="tool-id">{{ t.id }}</span>
+                  </div>
+                  <pre v-if="t.arguments" class="tool-args">{{ t.arguments }}</pre>
+                </div>
+              </div>
+            </div>
             <!-- 等待首个内容块期间的思考动画: 覆盖准备阶段(记忆召回/知识库检索/图片识别/路由)与首 token 等待 -->
-            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)"></div>
+            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)" @click="onCodeClick"></div>
             <div v-else-if="!statusHint && !pipeline" class="msg-thinking">
               <span class="think-dots"><i></i><i></i><i></i></span>
               <span class="think-label">思考中<template v-if="thinkSeconds > 0">（{{ thinkSeconds }}s）</template></span>
@@ -208,6 +226,13 @@
 
     <!-- 图片预览弹窗 -->
     <ImagePreviewModal v-model:url="previewImageUrl" />
+
+    <!-- 代码运行预览弹窗(沙箱 iframe) -->
+    <CodePreviewModal
+      v-model:visible="codePreview.visible"
+      :code="codePreview.code"
+      :lang="codePreview.lang"
+    />
   </div>
 </template>
 
@@ -223,12 +248,22 @@ import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
+import CodePreviewModal from '@/components/CodePreviewModal.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
+import { useCodeBlock } from '@/composables/useCodeBlock'
 import { useAuthStore } from '@/stores/auth'
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
 const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
+// 流式态推理过程: 代码块同样带「复制 / 运行预览」按钮
+const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
+// 代码块「复制 / 运行预览」: 复制就地完成, 预览弹窗由本组件统一承载
+const codePreview = ref({ visible: false, code: '', lang: '' })
+function openCodePreview({ code, lang }) {
+  codePreview.value = { visible: true, code: code || '', lang: lang || '' }
+}
+const { handleCodeClick: onCodeClick } = useCodeBlock(openCodePreview)
 const vFocus = { mounted: (el) => el.focus() }
 const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false }, thinkingEnabled: { type: Boolean, default: true } })
 const authStore = useAuthStore()
@@ -265,6 +300,12 @@ onUnmounted(() => {
 // 联网搜索三步流水线状态: null 表示非搜索; {stage:1|2|3, done:bool}
 const pipeline = ref(null)
 const streamSources = ref([])
+// 本轮流式回答中已发生的工具调用清单(实时累积)。
+// 后端把 tool_call 块实时下发, 但历史接口只以聚合的 toolInvocations 返回,
+// 若不在此累积, 工具调用面板要等刷新(重新拉取历史)才出现 —— 表现为"不实时"。
+const streamToolInvocations = ref([])
+// 流式态工具调用面板是否展开(默认收起, 与历史消息一致)
+const streamToolOpen = ref(false)
 const msgBox = ref(null)
 const editingId = ref(null)
 const editText = ref('')
@@ -516,6 +557,8 @@ async function send(opts = {}) {
   reasoningContent.value = ''
   streamImages.value = []
   streamSources.value = []
+  streamToolInvocations.value = []
+  streamToolOpen.value = false
   statusHint.value = ''
   pipeline.value = null
   interruptedRef.value = false
@@ -547,6 +590,12 @@ async function send(opts = {}) {
       if (chunk.type === 'interrupted') { statusHint.value = ''; pipeline.value = null; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
       if (chunk.type === 'tool_call') {
+        // 实时累积工具调用明细, 供"已调用 N 个工具"面板边流边展示(否则只能刷新后从历史拿到)
+        streamToolInvocations.value.push({
+          name: chunk.tool,
+          id: chunk.id,
+          arguments: chunk.args
+        })
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在调用工具生成图片…'
         } else if (chunk.tool === 'web_search') {
@@ -591,6 +640,8 @@ async function send(opts = {}) {
       // 方案 B: 仅当当前展示的会话就是该流归属会话时, 才把回答写入本地 messages;
       // 若期间已切到其他会话, 不污染当前列表(返回归属会话时靠 getMessages 拉取后端已落库的完整回答)
       const stillOnOwnerSession = streamSessionId.value === currentSessionId.value
+      // 本轮流式累积的工具调用清单, 随回答一起落到本地消息上(与后端 getMessages 的聚合结果结构一致)
+      const roundInvocations = streamToolInvocations.value.slice()
       if (stillOnOwnerSession && (streamContent.value || reasoningContent.value || streamImages.value.length)) {
         messages.value.push({
           id: Date.now(),
@@ -599,6 +650,7 @@ async function send(opts = {}) {
           reasoningContent: reasoningContent.value,
           images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
           sources: streamSources.value.length ? streamSources.value.slice() : undefined,
+          toolInvocations: roundInvocations.length ? roundInvocations : undefined,
           type: streamImages.value.length ? 'image' : 'text',
           interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
@@ -608,6 +660,8 @@ async function send(opts = {}) {
       streamContent.value = ''
       reasoningContent.value = ''
       streamImages.value = []
+      streamToolInvocations.value = []
+      streamToolOpen.value = false
       statusHint.value = ''
       pipeline.value = null
       streamSessionId.value = null
@@ -627,6 +681,10 @@ async function send(opts = {}) {
                 // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
                 messages.value[i].sessionId = m.sessionId
                 messages.value[i].feedback = m.feedback || undefined
+                // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
+                if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
+                  messages.value[i].toolInvocations = m.toolInvocations
+                }
               })
             }
           })
@@ -657,6 +715,8 @@ async function sendImage() {
   streamContent.value = ''
   reasoningContent.value = ''
   streamImages.value = []
+  streamToolInvocations.value = []
+  streamToolOpen.value = false
   statusHint.value = '正在生成图片，请稍候…'
   interruptedRef.value = false
   scrollBottom()
@@ -674,6 +734,11 @@ async function sendImage() {
         scrollBottom(); return
       }
       if (chunk.type === 'tool_call') {
+        streamToolInvocations.value.push({
+          name: chunk.tool,
+          id: chunk.id,
+          arguments: chunk.args
+        })
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在生成图片…'
         } else if (chunk.tool === 'web_search') {
@@ -711,6 +776,7 @@ async function sendImage() {
     () => {
       // 方案 B: 仅当当前展示会话是该流归属会话时才写入本地 messages
       const stillOnOwnerSession = streamSessionId.value === currentSessionId.value
+      const roundInvocations = streamToolInvocations.value.slice()
       if (stillOnOwnerSession && (streamImages.value.length || streamContent.value || reasoningContent.value)) {
         messages.value.push({
           id: Date.now(),
@@ -718,6 +784,7 @@ async function sendImage() {
           content: streamContent.value,
           reasoningContent: reasoningContent.value,
           images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
+          toolInvocations: roundInvocations.length ? roundInvocations : undefined,
           type: streamImages.value.length ? 'image' : 'text',
           interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
@@ -744,6 +811,10 @@ async function sendImage() {
                 // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
                 messages.value[i].sessionId = m.sessionId
                 messages.value[i].feedback = m.feedback || undefined
+                // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
+                if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
+                  messages.value[i].toolInvocations = m.toolInvocations
+                }
               })
             }
           })
@@ -902,9 +973,30 @@ onMounted(() => { loadSessions() })
 .msg-bubble :deep(code) { background: #f5f7fa; padding: 3px 8px; border-radius: 5px; font-size: 13px; color: #e83e8c; }
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+/* 代码块: 语言标签 + 复制 / 运行预览 工具条(与 MessageBubble 内的历史消息保持一致) */
+.msg-bubble :deep(.code-block), .msg-reasoning details > div :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid #2b3654; }
+.msg-bubble :deep(.code-block pre), .msg-reasoning details > div :deep(.code-block pre) { margin: 0; border-radius: 0; }
+.msg-bubble :deep(.code-block-bar), .msg-reasoning details > div :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #101a2e; border-bottom: 1px solid #2b3654; }
+.msg-bubble :deep(.code-lang), .msg-reasoning details > div :deep(.code-lang) { font-size: 11px; color: #8fa3c8; font-family: monospace; letter-spacing: 0.5px; }
+.msg-bubble :deep(.code-actions), .msg-reasoning details > div :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
+.msg-bubble :deep(.code-action), .msg-reasoning details > div :deep(.code-action) { border: 1px solid #33415c; background: transparent; color: #a9bbdc; font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
+.msg-bubble :deep(.code-action:hover), .msg-reasoning details > div :deep(.code-action:hover) { border-color: #667eea; color: #cbd5ff; background: #667eea22; }
+.msg-bubble :deep(.code-action.is-done), .msg-reasoning details > div :deep(.code-action.is-done) { border-color: #2e9e6b; color: #6ee7a8; }
 .msg-status { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 12px; background: #667eea11; color: #667eea; font-size: 14px; }
 .msg-status .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #667eea; animation: statusPulse 1s ease-in-out infinite; }
 @keyframes statusPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
+/* 流式态工具调用面板(样式与 MessageBubble 内的历史消息面板保持一致) */
+.tool-invoke { margin-top: 8px; border: 1px solid #e8ecf4; border-radius: 10px; background: #f7f9fc; overflow: hidden; }
+.tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: #5a6b8c; text-align: left; }
+.tool-invoke-toggle:hover { background: #eef2f9; }
+.tool-invoke .tool-icon { font-size: 13px; }
+.tool-invoke .tool-caret { margin-left: auto; color: #9aa7c2; }
+.tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
+.tool-invoke .tool-item { border: 1px solid #e3e8f2; border-radius: 8px; background: #fff; padding: 8px 10px; }
+.tool-invoke .tool-item-head { display: flex; align-items: center; gap: 8px; }
+.tool-invoke .tool-badge { font-size: 12px; font-weight: 600; color: #2563eb; background: #e8f0ff; border-radius: 6px; padding: 2px 8px; }
+.tool-invoke .tool-id { font-size: 11px; color: #9aa7c2; font-family: monospace; }
+.tool-invoke .tool-args { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: #4a5568; background: #f6f8fb; border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 /* 联网搜索三步流水线面板 */
 .search-pipeline { background: linear-gradient(135deg, #f5f7ff 0%, #eef1fb 100%); border: 1px solid #d9e0f7; border-radius: 14px; padding: 14px 16px; margin-bottom: 4px; }
 .pipeline-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
