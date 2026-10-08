@@ -3,6 +3,10 @@ package com.dcdr.agent.config;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * V3.0 配置属性 (对应 V3.0 规划文档 §1.3 功能开关 / §4.4 / §7.2 / §13.3)。
  * <p>
@@ -39,6 +43,49 @@ public class V3Properties {
 
     /** F-36 多租户 SaaS 化 (V3.0-rc) */
     private Tenant tenant = new Tenant();
+
+    /** V3.1 F-44.2 成本计价 (报表金额来源) */
+    private Cost cost = new Cost();
+
+    /**
+     * V3.1 F-44.2 模型计价表。
+     * <p>
+     * 为什么需要它: {@code llm_usage_logs.cost_amount} 自 V3.0 起就存在但从未赋值 ——
+     * 没有单价就无法把 token 折算成金额, 而"模型成本占比"在混合模型下与 token 占比并不等价
+     * (贵模型 1 token ≠ 便宜模型 1 token)。
+     * <p>
+     * 未配置单价的模型: 落库金额为 null, 报表以 token 口径为准、金额列降级显示, 不臆造 0 元。
+     */
+    @Data
+    public static class Cost {
+        /** 模型计价表: key = 模型名, value = 单价(元 / 千 token) */
+        private Map<String, ModelPrice> pricing = new LinkedHashMap<>();
+
+        /**
+         * 取模型单价: 精确匹配优先, 否则按<b>前缀</b>匹配
+         * (配置 {@code qwen} 可命中 {@code qwen-max} / {@code qwen-plus} 等变体);
+         * 未配置返回 {@code null}。
+         */
+        public ModelPrice priceOf(String model) {
+            if (model == null || pricing == null || pricing.isEmpty()) return null;
+            ModelPrice exact = pricing.get(model);
+            if (exact != null) return exact;
+            for (Map.Entry<String, ModelPrice> entry : pricing.entrySet()) {
+                if (!model.startsWith(entry.getKey())) continue;
+                return entry.getValue();
+            }
+            return null;
+        }
+    }
+
+    /** 单个模型的单价 (元 / 千 token) */
+    @Data
+    public static class ModelPrice {
+        /** 输入单价 (元 / 千 token) */
+        private BigDecimal input = BigDecimal.ZERO;
+        /** 输出单价 (元 / 千 token) */
+        private BigDecimal output = BigDecimal.ZERO;
+    }
 
     @Data
     public static class Quota {

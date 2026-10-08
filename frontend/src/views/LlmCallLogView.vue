@@ -35,6 +35,10 @@
           <span class="rl">链路:</span> {{ log.chain }}
           <span class="log-dur">⏱ {{ fmtDur(log.totalDurationMs) }}</span>
         </div>
+        <!-- 模型输出: 取最后一轮 LLM 的本轮输出(即该次请求的最终回答), 默认可见, 无需展开步骤 -->
+        <div class="log-output" v-if="finalOutput(log)">
+          <span class="rl">模型输出:</span> {{ finalOutput(log) }}
+        </div>
         <div v-if="log.steps && log.steps.length" class="log-steps-wrap">
           <button class="steps-toggle" @click="toggle(log.id)">
             <span>步骤明细 ({{ log.steps.length }})</span>
@@ -53,8 +57,11 @@
                 <span v-if="s.hits !== undefined && s.hits !== null" class="step-tokens">命中 {{ s.hits }} 条</span>
                 <span v-if="s.kbCount !== undefined && s.kbCount !== null" class="step-tokens">· {{ s.kbCount }} 库</span>
                 <span v-if="s.costMs !== undefined && s.costMs !== null" class="step-cost">{{ fmtDur(s.costMs) }}</span>
+                <span v-if="s.outputChars" class="step-tokens" title="本轮模型输出字符数">📝 {{ fmtTokens(s.outputChars) }} 字</span>
                 <span v-if="s.interrupted" class="step-interrupted">已中断</span>
               </div>
+              <!-- 本轮输出预览(列表接口已返回, 截断 500 字符): 多轮时可逐轮对照 -->
+              <div v-if="s.outputPreview" class="step-output">{{ s.outputPreview }}</div>
             </div>
           </div>
         </div>
@@ -112,6 +119,15 @@
             <div class="d-k">工具调用 {{ ci + 1 }}: {{ c.name }}</div>
             <pre class="d-pre" v-if="c.args">参数: {{ c.args }}</pre>
             <pre class="d-pre" v-if="c.resultPreview">结果摘要: {{ c.resultPreview }}</pre>
+          </div>
+          <!-- 本轮模型输出: 中断/出错时记录的是"已产出的部分", 是判断模型吐到哪一步的唯一现场 -->
+          <div class="d-block" v-if="s.outputPreview">
+            <div class="d-k">
+              本轮模型输出
+              <span v-if="s.outputChars" class="d-hint">· {{ fmtTokens(s.outputChars) }} 字</span>
+              <span v-if="s.outputChars > 500" class="d-hint">· 仅显示前 500 字, 完整正文见该会话消息</span>
+            </div>
+            <pre class="d-pre">{{ s.outputPreview }}</pre>
           </div>
           <details class="d-raw" v-if="s.systemPrompt">
             <summary>本次提交的 System Prompt</summary>
@@ -192,7 +208,7 @@ const STEP_LABELS = {
   messageCount: '上下文消息数', toolSpecCount: '注入工具数',
   inTokens: '输入 token', outTokens: '输出 token', costMs: '耗时',
   interrupted: '是否中断', tools: '工具', query: '检索词',
-  kbCount: '知识库数', hits: '命中条数'
+  kbCount: '知识库数', hits: '命中条数', outputChars: '输出字数'
 }
 
 /** 请求体 JSON 字符串 → 缩进美化(解析失败则原样返回, 不阻断展示) */
@@ -200,11 +216,11 @@ function prettyJson(raw) {
   try { return JSON.stringify(JSON.parse(raw), null, 2) } catch { return raw }
 }
 
-/** 把步骤 Map 转为键值对列表(kind/seq 已在标题, calls 单独渲染) */
+/** 把步骤 Map 转为键值对列表(kind/seq 已在标题, calls 单独渲染, 输出预览单独成块) */
 function stepEntries(s) {
   const out = []
   for (const k of Object.keys(s)) {
-    if (k === 'kind' || k === 'seq' || k === 'calls' || k === 'systemPrompt' || k === 'messages' || k === 'wireRequest') continue
+    if (k === 'kind' || k === 'seq' || k === 'calls' || k === 'systemPrompt' || k === 'messages' || k === 'wireRequest' || k === 'outputPreview') continue
     const v = s[k]
     let label = STEP_LABELS[k] || k
     let value = v
@@ -212,6 +228,7 @@ function stepEntries(s) {
     if (k === 'costMs') value = fmtDur(v)
     else if (k === 'inTokens' || k === 'outTokens') value = v == null ? '-' : fmtTokens(v)
     else if (k === 'interrupted') value = v ? '是' : '否'
+    else if (k === 'outputChars') value = fmtTokens(v) + ' 字'
     else if (typeof v === 'object') value = JSON.stringify(v)
     out.push({ label, value: value == null || value === '' ? '-' : value, mono })
   }
@@ -223,6 +240,19 @@ function stepBadgeLabel(s, i) {
   if (s.kind === 'tool') return `#${s.seq} 工具执行 · ${s.tools}`
   if (s.kind === 'rag') return `#${s.seq} RAG 检索`
   return `步骤 ${i + 1}`
+}
+
+/**
+ * 最终回答预览: 取最后一个 LLM 步骤的本轮输出。
+ * 列表接口已返回(截断 500 字符), 故无需展开步骤/打开详情即可看到"这次答了什么";
+ * 多轮时前面的轮次输出在「步骤明细」里逐轮可见。
+ */
+function finalOutput(log) {
+  const steps = (log && log.steps) || []
+  for (let i = steps.length - 1; i >= 0; i--) {
+    if (steps[i].kind === 'llm' && steps[i].outputPreview) return steps[i].outputPreview
+  }
+  return ''
 }
 
 const avgLlmCalls = computed(() => {
@@ -320,6 +350,9 @@ onMounted(() => {
 .log-message .rl, .log-chain .rl { color: #86909c; font-size: 12px; }
 .log-chain { font-size: 12px; color: #606266; margin-top: 6px; line-height: 1.6; word-break: break-word; }
 .log-chain .log-dur { color: #86909c; margin-left: 6px; }
+/* 模型输出预览: 默认最多 4 行, 超出省略(正文见详情抽屉), 避免长回答撑爆卡片 */
+.log-output { font-size: 13px; color: #1d2129; margin-top: 6px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.log-output .rl { color: #86909c; font-size: 12px; }
 
 .log-steps-wrap { margin-top: 8px; }
 .steps-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #667eea; background: #f2f4ff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
@@ -335,6 +368,8 @@ onMounted(() => {
 .step-purpose { color: #606266; }
 .step-tokens, .step-cost { font-size: 11px; color: #86909c; }
 .step-interrupted { font-size: 11px; color: #e6a23c; }
+/* 步骤内本轮输出预览: 最多 3 行, 多轮时可逐轮对照 */
+.step-output { font-size: 12px; color: #4a5568; margin-top: 4px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 
 .empty-tip { text-align: center; color: #a0a4ab; padding: 60px 20px; font-size: 13px; line-height: 1.8; }
 .pager { margin-top: 20px; display: flex; justify-content: center; }
@@ -350,6 +385,7 @@ onMounted(() => {
 .d-title { font-weight: 600; font-size: 13px; color: #1d2129; margin-bottom: 8px; }
 .d-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 12px; align-items: baseline; }
 .d-k { color: #86909c; }
+.d-hint { color: #a0a4ab; font-weight: 400; margin-left: 2px; }
 .d-v { color: #1d2129; word-break: break-all; }
 .d-v.mono { font-family: monospace; }
 .d-block { margin-top: 10px; }

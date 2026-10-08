@@ -27,6 +27,8 @@ public class TemplateDtos {
         /** 标签列表 (逗号拆分后) */
         private List<String> tags;
         private String ownerId;
+        @Schema(description = "V3.1 F-44.1: 发布钉住的源版本号 (为空=按当前定义克隆)")
+        private Integer sourceVersion;
         private int cloneCount;
         private double ratingAvg;
         private int ratingCount;
@@ -49,6 +51,8 @@ public class TemplateDtos {
         private String category;
         @Schema(description = "标签 (逗号分隔)")
         private String tags;
+        @Schema(description = "V3.1 F-44.1: 发布钉住的源版本号; 留空取当前最新版本。克隆将按该版本还原")
+        private Integer version;
     }
 
     /** 克隆结果 */

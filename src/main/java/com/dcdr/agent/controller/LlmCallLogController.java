@@ -78,7 +78,7 @@ public class LlmCallLogController {
 
     @Operation(summary = "调用链日志详情",
             description = "按 ID 返回单条日志的**完整**步骤明细(含实际提交的 System Prompt 与完整消息列表, 不做截断)。"
-                    + "列表接口只返回步骤元数据, 这两个重字段仅此处返回。")
+                    + "列表接口只返回步骤元数据与**已截断**的本轮模型输出, 上述重字段仅此处返回。")
     @GetMapping("/logs/{id}")
     public Result<LlmCallLogDtos.LlmCallLogView> detail(
             @Parameter(description = "日志 ID", required = true) @PathVariable String id,
@@ -112,7 +112,7 @@ public class LlmCallLogController {
         return v;
     }
 
-    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 体积大, 仅详情接口返回 */
+    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 单条可达数十 KB, 仅详情接口返回 */
     private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
     private static final String STEP_MESSAGES = "messages";
     private static final String STEP_WIRE_REQUEST = "wireRequest";
@@ -121,8 +121,11 @@ public class LlmCallLogController {
      * 解析步骤 JSON。
      * <p>
      * 快照落库时<b>不截断</b>(调用链的意义是完整复盘), 因此体积控制在读取侧做:
-     * 列表分页只保留步骤元数据(模型/token/耗时/工具名), 剔除 {@code systemPrompt} 与
-     * {@code messages} 两个重字段; 需要看全量原文时走详情接口。
+     * 列表分页剔除上面三个"完整原文"重字段(单条可达数十 KB); 需要看全量原文时走详情接口。
+     * <p>
+     * 注意 {@code outputPreview} / {@code outputChars}(本轮模型输出) **列表也保留**:
+     * 预览已截断至 500 字符, 与三个重字段不是一个量级; 若一并剔除, 列表里就只剩 token/耗时数字,
+     * 恰恰看不到"这一轮答了什么" —— 而看输出正是本页面的主要用途。
      *
      * @param full true = 完整明细(详情接口); false = 剔除重字段(列表接口)
      */

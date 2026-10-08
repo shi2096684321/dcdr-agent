@@ -190,6 +190,8 @@ public class IntentRouter {
                 params.put("messages", java.util.List.of(
                         java.util.Map.of("role", "system", "content", SYSTEM_PROMPT.length() > 1000
                                 ? SYSTEM_PROMPT.substring(0, 1000) + "…(截断)" : SYSTEM_PROMPT)));
+                // 路由输出(决策 JSON): 路由是链路第一步, 记录其输出才能直接验证"为什么路由到此目标"
+                com.dcdr.agent.common.log.LlmCallTrace.putOutput(params, resp.getContent());
                 trace.recordLlm("routing", provider.getName(),
                         u != null ? u.getPrompt() : null, u != null ? u.getCompletion() : null,
                         (System.nanoTime() - routeStartNanos) / 1_000_000, false, params);

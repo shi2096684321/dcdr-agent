@@ -5,6 +5,7 @@ import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.agent.version.WorkflowVersionDiffer;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
@@ -12,6 +13,7 @@ import com.dcdr.agent.config.V3Properties;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.SessionDTO;
+import com.dcdr.agent.dto.VersionDiffDtos;
 import com.dcdr.agent.dto.WorkflowDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
 import com.dcdr.agent.entity.WorkflowDefinitionEntity;
@@ -289,6 +291,64 @@ public class WorkflowEngine {
         view.setCreatedBy(v.getCreatedBy());
         view.setCreatedAt(v.getCreatedAt());
         return view;
+    }
+
+    /**
+     * V3.1 F-44.1: 结构化对比两个历史版本 (标量字段 + 编排结构)。
+     * <p>编排结构统一按"节点/边"比较, 因此 dag_json 与 steps_json 两种格式都能出差异
+     * (steps 无显式连线, 边为空)。
+     */
+    public VersionDiffDtos.View diff(String workflowId, int leftVersion, int rightVersion,
+                                     String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.WORKFLOW, workflowId, userId, isAdmin, false);
+        WorkflowVersionEntity left = requireVersion(workflowId, leftVersion);
+        WorkflowVersionEntity right = requireVersion(workflowId, rightVersion);
+        VersionDiffDtos.View view = new VersionDiffDtos.View();
+        view.setResourceType("workflow");
+        view.setResourceId(workflowId);
+        view.setLeftVersion(leftVersion);
+        view.setRightVersion(rightVersion);
+        view.setLeftCreatedAt(left.getCreatedAt());
+        view.setRightCreatedAt(right.getCreatedAt());
+        view.setFields(WorkflowVersionDiffer.diffFields(left, right));
+        view.setGraph(WorkflowVersionDiffer.diffGraph(mapper, left, right));
+        return view;
+    }
+
+    /**
+     * V3.1 F-44.1: 按指定版本快照克隆为新工作流
+     * (模板市场: 发布时钉住版本, 克隆按该版本还原, 源后续改动不影响已发布内容)。
+     */
+    @Transactional
+    public WorkflowDtos.WorkflowView cloneFromVersion(String workflowId, int version, String userId) {
+        WorkflowVersionEntity snapshot = requireVersion(workflowId, version);
+        WorkflowDtos.SaveWorkflowRequest req = new WorkflowDtos.SaveWorkflowRequest();
+        // 命名与 clone() 保持一致; 名称取该版本快照内的值(而非当前名称)
+        req.setName(snapshot.getName() + " (副本)");
+        req.setDescription(snapshot.getDescription());
+        req.setMode(snapshot.getMode() == null ? "sequential" : snapshot.getMode());
+        req.setSteps(parseSteps(snapshot.getStepsJson()));
+        req.setDag(parseDag(snapshot.getDagJson()));
+        req.setEnabled(true);
+        req.setIsTemplate(false);
+        req.setChangeNote("克隆自 v" + version);
+        return create(req, userId, false);
+    }
+
+    /** 最新版本号 (无版本时返回 0) */
+    public int latestVersion(String workflowId) {
+        return versionRepository.findFirstByWorkflowIdOrderByVersionDesc(workflowId)
+                .map(WorkflowVersionEntity::getVersion).orElse(0);
+    }
+
+    /** 版本号是否存在 (模板市场分享时校验用) */
+    public boolean versionExists(String workflowId, int version) {
+        return versionRepository.findByWorkflowIdAndVersion(workflowId, version).isPresent();
+    }
+
+    private WorkflowVersionEntity requireVersion(String workflowId, int version) {
+        return versionRepository.findByWorkflowIdAndVersion(workflowId, version)
+                .orElseThrow(() -> new BusinessException(404, "版本不存在: v" + version, "VERSION_NOT_FOUND"));
     }
 
     // ===== 工作流执行 (F-25 + F-33) =====

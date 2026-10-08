@@ -51,6 +51,7 @@
               </div>
               <div class="detail-actions">
                 <el-button v-if="currentAgent.editable" type="primary" size="small" @click="openEditDialog">编辑</el-button>
+                <el-button size="small" @click="openVersions">版本历史</el-button>
                 <el-button v-if="!currentAgent.editable || currentAgent.isTemplate || isOthersAgent(currentAgent)"
                            size="small" @click="cloneAgent(currentAgent)">克隆</el-button>
                 <el-button v-if="currentAgent.editable" type="danger" size="small" @click="removeAgent(currentAgent)">删除</el-button>
@@ -165,10 +166,66 @@
         <el-form-item label="公开">
           <el-switch v-model="form.isPublic" active-text="其他用户可使用此 Agent" inactive-text="仅自己可见" />
         </el-form-item>
+        <el-form-item label="变更说明" v-if="editing">
+          <el-input v-model="form.changeNote" placeholder="本次改动说明 (存入版本历史, 便于回滚时辨认)" maxlength="255" show-word-limit />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitForm">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- V3.1 F-44.1 版本历史 / 对比 / 回滚 -->
+    <el-dialog v-model="versionsVisible" title="版本历史" width="700px">
+      <div class="version-hint">
+        每次创建 / 修改 / 回滚都会生成一版完整快照。勾选任意两版点「对比」查看字段级差异;
+        「回滚」会把当前定义还原到该版本, 并再生成一版新快照 —— 历史不会被覆盖, 可继续回滚。
+      </div>
+      <el-table :data="versions" size="small" v-loading="versionsLoading" @selection-change="onVersionSelect">
+        <el-table-column type="selection" width="42" />
+        <el-table-column label="版本" width="68">
+          <template #default="{ row }">v{{ row.version }}</template>
+        </el-table-column>
+        <el-table-column prop="name" label="名称" min-width="110" show-overflow-tooltip />
+        <el-table-column label="变更说明" min-width="150" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.changeNote || '—' }}</template>
+        </el-table-column>
+        <el-table-column label="时间" width="150">
+          <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="76" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" type="warning" text @click="doRollback(row)">回滚</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="!versions.length && !versionsLoading" class="empty-tip">暂无版本记录</div>
+
+      <div class="version-actions">
+        <el-button size="small" :disabled="selectedVersions.length !== 2" @click="doDiff">
+          对比选中两版 (已选 {{ selectedVersions.length }}/2, 左=较旧)
+        </el-button>
+      </div>
+
+      <div v-if="diff" class="diff-box">
+        <div class="diff-head">
+          <span>v{{ diff.leftVersion }} → v{{ diff.rightVersion }}</span>
+          <span class="diff-sub">{{ fmtTime(diff.leftCreatedAt) }} → {{ fmtTime(diff.rightCreatedAt) }}</span>
+        </div>
+        <div v-if="changedFields.length" class="diff-list">
+          <div v-for="f in changedFields" :key="f.field" class="diff-row">
+            <div class="diff-label">{{ f.label }}</div>
+            <div class="diff-boxes">
+              <pre class="diff-cell old">{{ f.left || '—' }}</pre>
+              <pre class="diff-cell new">{{ f.right || '—' }}</pre>
+            </div>
+          </div>
+        </div>
+        <div v-else class="empty-tip">两版内容完全一致</div>
+      </div>
+      <template #footer>
+        <el-button @click="versionsVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -181,6 +238,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
 import {
   getAgents, getAgentTemplates, createAgent, updateAgent, deleteAgent, cloneAgent as cloneAgentApi,
+  getAgentVersions, rollbackAgentVersion, diffAgentVersions,
   getKnowledgeBases, extractMessage, adminListUsers
 } from '@/api'
 
@@ -203,14 +261,15 @@ const editing = ref(false)
 const saving = ref(false)
 const form = reactive({
   id: '', name: '', description: '', avatar: '', persona: '',
-  model: '', temperature: 0.7, tools: [], kbIds: [], isPublic: false
+  model: '', temperature: 0.7, tools: [], kbIds: [], isPublic: false,
+  changeNote: ''
 })
 
 // 模型列表 (全局共享, 从 modelStore 读取; 留空代表使用系统默认模型)
 const chatModels = computed(() => modelStore.chatModels)
 const knowledgeBases = ref([])
 // 常见工具名建议 (实际可用工具以后端 ToolRegistry 注册为准)
-const suggestedTools = ['calculator', 'time', 'web_search', 'knowledge_base_search', 'code_interpreter']
+const suggestedTools = ['calculator', 'time', 'web_search', 'knowledge_base_search', 'code_interpreter', 'tool_result_read']
 
 // userId → username 映射 (仅管理员加载, 用于展示 Agent 归属用户)
 const userNames = ref({})
@@ -318,6 +377,7 @@ function openEditDialog() {
   form.tools = [...(a.tools || [])]
   form.kbIds = [...(a.kbIds || [])]
   form.isPublic = !!a.isPublic
+  form.changeNote = '' // 每次编辑都是新版本, 说明不复用上一版
   dialogVisible.value = true
 }
 
@@ -332,6 +392,7 @@ function resetForm() {
   form.tools = []
   form.kbIds = []
   form.isPublic = false
+  form.changeNote = ''
 }
 
 async function submitForm() {
@@ -350,7 +411,8 @@ async function submitForm() {
       temperature: form.temperature != null ? Number(form.temperature) : null,
       tools: form.tools || [],
       kbIds: form.kbIds || [],
-      isPublic: !!form.isPublic
+      isPublic: !!form.isPublic,
+      changeNote: form.changeNote || null
     }
     if (editing.value) {
       await updateAgent(form.id, payload)
@@ -392,6 +454,73 @@ async function cloneAgent(agent) {
   } catch (e) {
     ElMessage.error(extractMessage(e) || '克隆失败')
   }
+}
+
+// ===== V3.1 F-44.1 版本历史 / 对比 / 回滚 =====
+const versionsVisible = ref(false)
+const versionsLoading = ref(false)
+const versions = ref([])
+const selectedVersions = ref([])
+const diff = ref(null)
+/** 只展示发生变化的字段: 未变化的字段对"看改了什么"没有信息量 */
+const changedFields = computed(() => (diff.value?.fields || []).filter(f => f.changed))
+
+async function openVersions() {
+  if (!currentAgent.value) return
+  versionsVisible.value = true
+  diff.value = null
+  selectedVersions.value = []
+  versionsLoading.value = true
+  try {
+    versions.value = await getAgentVersions(currentAgent.value.id)
+  } catch (e) {
+    versions.value = []
+    ElMessage.error(extractMessage(e) || '加载版本历史失败')
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
+function onVersionSelect(rows) {
+  selectedVersions.value = rows || []
+}
+
+async function doDiff() {
+  if (selectedVersions.value.length !== 2 || !currentAgent.value) return
+  // 左固定为较旧版本: 避免"反向对比"让红/绿含义反转
+  const [older, newer] = [...selectedVersions.value].sort((x, y) => x.version - y.version)
+  try {
+    diff.value = await diffAgentVersions(currentAgent.value.id, older.version, newer.version)
+  } catch (e) {
+    diff.value = null
+    ElMessage.error(extractMessage(e) || '版本对比失败')
+  }
+}
+
+async function doRollback(row) {
+  if (!currentAgent.value) return
+  try {
+    await ElMessageBox.confirm(
+      `将 Agent「${currentAgent.value.name}」回滚到 v${row.version}?\n回滚会再生成一版新快照, 历史不会被覆盖。`,
+      '回滚确认', { type: 'warning' }
+    )
+  } catch {
+    return // 用户取消
+  }
+  try {
+    await rollbackAgentVersion(currentAgent.value.id, row.version)
+    ElMessage.success(`已回滚到 v${row.version}`)
+    await loadAgents()
+    versions.value = await getAgentVersions(currentAgent.value.id)
+    diff.value = null
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '回滚失败')
+  }
+}
+
+/** 时间展示 (后端 LocalDateTime 无时区, 直接本地化即可) */
+function fmtTime(t) {
+  return t ? new Date(t).toLocaleString('zh-CN') : '—'
 }
 
 onMounted(() => {
@@ -451,4 +580,18 @@ onMounted(() => {
 .template-name { font-size: 15px; font-weight: 600; }
 .template-desc { font-size: 12px; color: #86909c; line-height: 1.5; min-height: 36px; }
 .template-meta { font-size: 11px; color: #a0a4ab; }
+
+/* ===== V3.1 F-44.1 版本历史 / 对比 ===== */
+.version-hint { font-size: 12px; color: #86909c; line-height: 1.7; margin-bottom: 10px; }
+.version-actions { margin-top: 12px; }
+.diff-box { margin-top: 14px; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px; background: #fafbfc; }
+.diff-head { font-size: 13px; font-weight: 600; color: #303133; margin-bottom: 10px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.diff-sub { font-weight: 400; font-size: 12px; color: #a0a4ab; }
+.diff-list { display: flex; flex-direction: column; gap: 10px; max-height: 320px; overflow-y: auto; }
+.diff-row { display: flex; gap: 10px; }
+.diff-label { width: 74px; flex-shrink: 0; font-size: 12px; color: #606266; text-align: right; padding-top: 6px; }
+.diff-boxes { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; min-width: 0; }
+.diff-cell { margin: 0; font-size: 12px; line-height: 1.6; padding: 8px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; font-family: inherit; }
+.diff-cell.old { background: #fef0f0; border: 1px solid #fde2e2; color: #909399; }
+.diff-cell.new { background: #f0f9eb; border: 1px solid #e1f3d8; color: #303133; }
 </style>

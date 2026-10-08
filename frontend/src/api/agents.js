@@ -22,3 +22,16 @@ export const deleteAgent = (id) => api.delete(`/api/agents/${id}`).then((r) => r
 
 // 克隆模板/公开 Agent 为自己的副本
 export const cloneAgent = (id) => unwrap(api.post(`/api/agents/${id}/clone`))
+
+// ===== V3.1 F-44.1 版本管理 =====
+
+// 版本历史 (按版本号倒序)
+export const getAgentVersions = (id) => unwrap(api.get(`/api/agents/${id}/versions`))
+
+// 回滚到指定版本 (回滚动作本身会生成新版本, 历史不被覆盖)
+export const rollbackAgentVersion = (id, version) =>
+  unwrap(api.post(`/api/agents/${id}/versions/${version}/rollback`))
+
+// 版本对比 (结构化 diff: 字段级差异; 列表字段忽略顺序)
+export const diffAgentVersions = (id, left, right) =>
+  unwrap(api.get(`/api/agents/${id}/versions/${left}/diff/${right}`))

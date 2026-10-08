@@ -84,6 +84,35 @@ public final class LlmCallTrace {
         return new LlmCallTrace();
     }
 
+    /** 步骤字段: 本轮模型输出预览(调用链详情页展示"这一轮答了什么") */
+    public static final String PARAM_OUTPUT_PREVIEW = "outputPreview";
+    /** 步骤字段: 本轮模型输出原始字符数(预览被截断后仍可判断完整长度) */
+    public static final String PARAM_OUTPUT_CHARS = "outputChars";
+    /** 输出预览截断长度(与工具参数/结果摘要的 500 保持一致) */
+    public static final int OUTPUT_PREVIEW_LIMIT = 500;
+
+    /**
+     * 把本轮模型输出写入步骤参数(截断留预览 + 保留原始字符数)。
+     * <p>
+     * 由各调用点(流式各轮 / chatSync / 路由判断)在记录步骤前调用, 键值随
+     * {@code recordLlm} 里的 {@code step.putAll(params)} 落进 {@code llm_call_logs.steps_json}。
+     * 空输出不写字段(纯工具轮的正文为空), 避免详情页出现空块。
+     * <p>
+     * 落在 params 而非新增表列的原因: {@code steps_json} 是 TEXT 天然可扩展, 且列表接口
+     * 已有"剔除重字段"机制, 无需 DDL 变更即可控制列表体积。
+     *
+     * @param params 步骤参数(为 null 时不写, 允许调用点无参数场景)
+     * @param output 本轮已产出的正文；异常/中断时传入已产出的部分(可能为 null)
+     */
+    public static void putOutput(java.util.Map<String, Object> params, CharSequence output) {
+        if (params == null || output == null) return;
+        String text = output.toString();
+        if (text.isEmpty()) return;
+        params.put(PARAM_OUTPUT_CHARS, text.length());
+        params.put(PARAM_OUTPUT_PREVIEW, text.length() > OUTPUT_PREVIEW_LIMIT
+                ? text.substring(0, OUTPUT_PREVIEW_LIMIT) + "…(截断)" : text);
+    }
+
     /** 记录一次 LLM 调用完成(purpose 如 routing / round-1 / round-2 / chatSync) */
     public synchronized void recordLlm(String purpose, String model, Integer inTokens, Integer outTokens,
                                         long costMs, boolean interrupted) {

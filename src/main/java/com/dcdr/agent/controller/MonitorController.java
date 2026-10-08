@@ -1,5 +1,6 @@
 package com.dcdr.agent.controller;
 
+import com.dcdr.agent.agent.governance.CostReportService;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.governance.WorkflowMonitorService;
 import com.dcdr.agent.auth.SecurityContext;
@@ -12,12 +13,19 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -44,6 +52,8 @@ public class MonitorController {
 
     private final WorkflowMonitorService monitorService;
     private final CostTracker costTracker;
+    /** V3.1 F-44.2: 成本分析报表 (按 用户/模型/时间 维度聚合, 支持 CSV 导出) */
+    private final CostReportService costReportService;
     private final LlmMetrics llmMetrics;
     private final LlmCircuitBreaker circuitBreaker;
 
@@ -96,6 +106,54 @@ public class MonitorController {
         long tot = calls + errors;
         overview.setOverallErrorRate(tot == 0 ? 0d : Math.round(errors * 1000d / tot) / 1000d);
         return Result.success(overview);
+    }
+
+    // ===== V3.1 F-44.2 成本分析报表 =====
+
+    @Operation(summary = "成本分析报表",
+            description = "按 用户 / 模型 / 时间 维度聚合 token 与金额: 日/周/月消耗趋势、Top 用户、模型占比。"
+                    + "普通用户仅统计自己; 管理员传 scope=global 可看全局并返回 Top 用户。"
+                    + "未配置模型定价(agent.v3.cost.pricing)时 costDataAvailable=false, 金额列应降级展示。")
+    @GetMapping("/cost/report")
+    public Result<MonitorDtos.CostReportView> costReport(
+            @Parameter(description = "起始时间 (yyyy-MM-ddTHH:mm:ss, 含); 缺省近 30 天")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @Parameter(description = "结束时间 (不含); 缺省当前")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
+            @Parameter(description = "趋势粒度: day / week / month") @RequestParam(defaultValue = "day") String granularity,
+            @Parameter(description = "Top 用户条数 (仅全局视图生效)") @RequestParam(defaultValue = "10") int topN,
+            @Parameter(description = "global=全局(仅管理员), 默认仅自己") @RequestParam(required = false) String scope,
+            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean global = "global".equalsIgnoreCase(scope) && SecurityContext.isAdmin(exchange);
+        return Result.success(costReportService.report(global ? null : userId, from, to, granularity, topN));
+    }
+
+    @Operation(summary = "成本报表导出 (CSV)",
+            description = "导出指定维度的 CSV。文件为 UTF-8 带 BOM(Excel 打开中文不乱码), "
+                    + "并对以 = + - @ 开头的单元格做公式注入转义。维度: trend / model / user / source。")
+    @GetMapping("/cost/export")
+    public ResponseEntity<byte[]> exportCost(
+            @Parameter(description = "起始时间 (含); 缺省近 30 天")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @Parameter(description = "结束时间 (不含); 缺省当前")
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
+            @Parameter(description = "趋势粒度: day / week / month") @RequestParam(defaultValue = "day") String granularity,
+            @Parameter(description = "导出维度: trend / model / user / source") @RequestParam(defaultValue = "trend") String dimension,
+            @Parameter(description = "Top 用户条数 (仅 user 维度生效)") @RequestParam(defaultValue = "10") int topN,
+            @Parameter(description = "global=全局(仅管理员), 默认仅自己") @RequestParam(required = false) String scope,
+            ServerWebExchange exchange) {
+        String userId = SecurityContext.getUserId(exchange);
+        boolean global = "global".equalsIgnoreCase(scope) && SecurityContext.isAdmin(exchange);
+        MonitorDtos.CostReportView report =
+                costReportService.report(global ? null : userId, from, to, granularity, topN);
+        byte[] body = costReportService.exportCsv(report, dimension);
+        String dim = dimension == null || dimension.isBlank() ? "trend" : dimension.trim().toLowerCase();
+        String filename = "cost-" + dim + "-" + LocalDate.now() + ".csv";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentType(new MediaType("text", "csv", StandardCharsets.UTF_8))
+                .body(body);
     }
 
     private long num(Object o) {

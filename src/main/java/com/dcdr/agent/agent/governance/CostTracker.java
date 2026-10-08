@@ -10,6 +10,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -32,6 +34,9 @@ import java.util.UUID;
 @Service
 @RequiredArgsConstructor
 public class CostTracker {
+
+    /** 元 / 千 token 换算基数 (与 {@code V3Properties.Cost.pricing} 的计价口径一致) */
+    private static final BigDecimal PER_THOUSAND = new BigDecimal("1000");
 
     private final LlmUsageLogRepository usageRepository;
     private final V3Properties v3Properties;
@@ -61,11 +66,28 @@ public class CostTracker {
             e.setOutputTokens(usage.getCompletion());
             e.setTotalTokens(usage.getTotal() > 0 ? usage.getTotal()
                     : usage.getPrompt() + usage.getCompletion());
+            // V3.1 F-44.2: 按模型定价折算金额(未配置定价的模型留空, 报表金额列降级显示)
+            e.setCostAmount(estimateCost(model, usage));
             e.setCreatedAt(LocalDateTime.now());
             usageRepository.save(e);
         } catch (Exception ex) {
             log.warn("LLM 用量记录失败(不影响主链路): {}", ex.getMessage());
         }
+    }
+
+    /**
+     * V3.1 F-44.2: 按模型定价折算金额 (元)。
+     * <p>未配置该模型单价时返回 {@code null} —— 宁可留空也不落 0,
+     * 否则报表会把"没有定价"误报成"零成本"。
+     */
+    private BigDecimal estimateCost(String model, ChatResponse.TokenUsage usage) {
+        V3Properties.ModelPrice price = v3Properties.getCost().priceOf(model);
+        if (price == null || usage == null) return null;
+        BigDecimal input = price.getInput() == null ? BigDecimal.ZERO : price.getInput();
+        BigDecimal output = price.getOutput() == null ? BigDecimal.ZERO : price.getOutput();
+        return input.multiply(BigDecimal.valueOf(usage.getPrompt()))
+                .add(output.multiply(BigDecimal.valueOf(usage.getCompletion())))
+                .divide(PER_THOUSAND, 6, RoundingMode.HALF_UP);
     }
 
     /**

@@ -3,6 +3,7 @@ package com.dcdr.agent.controller;
 import com.dcdr.agent.agent.workflow.WorkflowEngine;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
+import com.dcdr.agent.dto.VersionDiffDtos;
 import com.dcdr.agent.dto.WorkflowDtos;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -39,6 +40,7 @@ import java.util.List;
  *   <li>POST   /api/workflows/executions/{id}/resume|approve|cancel   断点续跑/审批/取消</li>
  *   <li>GET    /api/workflows/{id}/versions       版本历史</li>
  *   <li>POST   /api/workflows/{id}/versions/{version}/rollback        版本回滚</li>
+ *   <li>GET    /api/workflows/{id}/versions/{v1}/diff/{v2}            版本对比 (V3.1 F-44.1)</li>
  * </ul>
  * <p>
  * 权限: workflow:execute (创建/修改/删除/执行); 模板增删改仅管理员。
@@ -242,5 +244,19 @@ public class WorkflowController {
             @Parameter(description = "目标版本号", required = true) @PathVariable int version) {
         return ownershipGuard.currentContext()
                 .map(ctx -> Result.success(workflowEngine.rollback(id, version, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "版本对比",
+            description = "V3.1 F-44.1: 结构化对比两个历史版本 (标量字段 + 编排结构)。"
+                    + "编排结构按节点/边统一比较: DAG 按节点 id 与连线对齐, steps 按步骤名对齐。")
+    @ApiResponse(responseCode = "404", description = "工作流或版本不存在, 或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'WORKFLOW', principal)")
+    @GetMapping("/{id}/versions/{left}/diff/{right}")
+    public Mono<Result<VersionDiffDtos.View>> diffVersions(
+            @Parameter(description = "工作流 ID", required = true) @PathVariable String id,
+            @Parameter(description = "左侧(较旧)版本号", required = true) @PathVariable int left,
+            @Parameter(description = "右侧(较新)版本号", required = true) @PathVariable int right) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(workflowEngine.diff(id, left, right, ctx.userId(), ctx.admin())));
     }
 }

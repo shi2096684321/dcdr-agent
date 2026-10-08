@@ -239,6 +239,80 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 
 ---
 
+## 环境事故：Docker Desktop 重置导致数据全丢（2026-09-28，已处置）
+
+### 现象
+PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工作流 / 审计 / 用量）一次性消失，
+`docker ps -a` 与 `docker images` 均空，但 `docker volume ls` 仍列出 `java-agent_pgdata`。
+
+### 根因（证据链）
+1. 当日 17:04–17:13 Docker Desktop 的安装/修复流程连续执行 9 次（`install-log.1~9.txt` 轮转），
+   最后一次 `check-for-update` 报 `HttpRequestException`。
+2. 同期 `%APPDATA%\Docker\settings.json` 被**重置为默认值**：`dataFolder` 由
+   `E:\appdata\docker\DockerDesktop` 变回 `C:\ProgramData\DockerDesktop\vm-data`、
+   `memoryMiB` 由 4096 变 2048、`filesharingDirectories` 变空数组，
+   且后端由 Hyper-V 切到了 WSL2（`wslEngineEnabled: true`）。
+3. `E:\appdata\docker\DockerDesktop\DockerDesktop.vhdx`（旧数据盘）随之被删除，目录变空。
+4. `docker volume ls` 里的 `java-agent_pgdata` 是 17:15 新建的**空卷**（`CreatedAt` 为当天），
+   不是原卷 —— 旧卷数据物理上在旧 vhdx 内部，随 vhdx 一起消失。
+5. 恢复路径全部断掉：回收站无大文件、`E:\appdata\docker\docker-data-backup.tar` 为 0 字节、
+   `E:\appdata\docker\{pgdata\pgdata,pgtest,pginit}` 均为空目录、全盘无 `*.dump` 备份。
+   E 盘为 NVMe SSD，删除时 TRIM 已解映射，文件级 carve 无望。
+6. 唯一残留的可读数据是 **H2 开发库**（`data/database/agent.mv.db`，9/20），但其中 18 个用户
+   全是 9/14–9/15 越权测试生成的夹具账号（`ownA1734` / `usrA5565` / `scA5172`…），
+   **不含真实账号** → 真实用户数据无法补救，只能重新注册（`AuthService` 首位注册用户自动为 admin）。
+
+### 结论（关键认知）
+- **命名卷的数据藏在 Docker VM 的 vhdx 里** —— vhdx 一被删，卷数据全没。
+  "把 vhdx 放到 E 盘"只解决 C 盘占用，不解决安全性。
+- **bind mount 的数据在宿主机文件系统上**，Docker 重装/重置/换后端都不受影响。
+  本次事故中 `./data`（上传文件 / 知识库原文）与 `E:/appdata/docker/redisdata` 因是 bind mount
+  而完好无损，正好是反面对照。
+- **备份不能留在容器文件系统内**：`/var/backups/...` 同样活在 vhdx 里，与数据一损俱损。
+
+### 已落地改动
+| 项 | 文件 / 位置 | 内容 |
+|----|------------|------|
+| 备份落点 bind mount | `docker-compose.yml` | `./data/backup:/backup`（宿主机 `<项目>/data/backup`，已被 `.gitignore` 的 `data/` 覆盖） |
+| PG 数据仍用命名卷（**bind mount 方案已实测排除**） | `docker-compose.yml` | 保持 `pgdata:/var/lib/postgresql/data`；数据安全改由「落宿主机备份」兜底 |
+| 备份脚本落点修正 | `scripts/backup-db.sh` | `BACKUP_DIR` 默认由 `/var/backups/dcdr-agent` 改为 `/backup` |
+| Windows 定时备份 | `scripts/backup-db.ps1`（新增） | 容器内 `pg_dump -f /backup/...` 直写 bind mount（规避 PS 二进制重定向损坏），含校验 + 保留策略 |
+| 计划任务 | Windows 任务计划程序 | `dcdr-agent-db-backup`，每日 02:00 |
+| Docker 镜像源 | `~/.docker/daemon.json` | 新增 `registry-mirrors: ["https://docker.m.daocloud.io"]`（Docker Hub 被 SNI 阻断，TLS 握手 EOF） |
+| Docker Desktop 配置 | `%APPDATA%\Docker\settings.json` | 后端改回 Hyper-V、`dataFolder` 回 E 盘、`memoryMiB` 4096、补 `filesharingDirectories`、`disableUpdate: true` |
+| Hyper-V 宿主默认路径 | `Set-VMHost` | VM 配置与 VHD 默认路径改到 `E:\appdata\docker\HyperV\{VM,VHD}` |
+
+### 踩坑记录
+- **PG 数据无法 bind mount 到 Windows 宿主目录**：initdb 启动即报
+  `FATAL: data directory "/var/lib/postgresql/data" has invalid permissions`
+  `DETAIL: Permissions should be u=rwx (0700) or u=rwx,g=rx (0750)`。
+  实测容器内挂载点恒为 `777 root:root`，且 `chmod 700` 后仍为 `777` ——
+  Docker Desktop 的宿主目录共享层不保留 Unix 权限位（历史遗留的
+  `E:\appdata\docker\pgdata\pgdata` 嵌套空目录，正是此前尝试同一方案失败后的残留）。
+  → **结论：Windows 上 PG 数据只能留在命名卷里，安全兜底靠定时 pg_dump 落宿主机目录，
+  而不是试图把数据文件搬出 vhdx。** 该方案已回退，compose 中保留命名卷。
+- **`$PSScriptRoot` 在 `param()` 默认值里是空串**：PS 5.1 求值参数默认值时该变量尚未赋值，
+  `Join-Path (Split-Path -Parent $PSScriptRoot) 'data\backup'` 会报
+  `Cannot bind argument to parameter 'Path' because it is an empty string`。
+  必须改为在脚本体内解析。
+- **`dataFolder` 只管 vhdx，不管 VM 本体**：Hyper-V 的 VM 配置与 4096MB 内存内容文件（`.VMRS`）
+  走 Hyper-V 宿主默认路径（`C:\ProgramData\Microsoft\Windows\Hyper-V`）。C 盘仅剩 3.8GB 时 VM 启动
+  报 `0x80070070 磁盘空间不足`，必须同时 `Set-VMHost -VirtualMachinePath/-VirtualHardDiskPath`。
+- **`filesharingDirectories` 被重置为空会让所有 bind mount 失败**（`FileSharing.DoShareAsync` 异常），
+  Hyper-V 后端必须显式共享宿主目录。
+- **Docker Desktop 的 "system 代理" 读的是 WinHTTP 而非 WinINET**：本机 WinINET 配了
+  `127.0.0.1:7890` 而 WinHTTP 是"直连"，Docker 因此拿不到代理；同时该代理软件当时未运行。
+- **PowerShell 5.1 的 `Invoke-WebRequest` 默认走 WinINET 系统代理**，代理不可用时会**全部**报
+  "无法连接到远程服务器" —— 据此判断"站点不可达"会误判。用
+  `curl.exe --noproxy "*" --ssl-no-revoke` 才准（后者跳过 schannel 的 CRL 检查，
+  否则会看到误导性的 `0x80092013 CRYPT_E_REVOCATION_OFFLINE`）。
+- **`Get-VHD` 对正在运行的 VM 磁盘报 `AccessDenied`**：是文件被占用，不是权限不足。
+- **pg16 的 `PGDATA=/var/lib/postgresql/data`**：bind mount 挂载点必须精确到该目录，
+  挂到父目录会多出一层 `pgdata/`（历史遗留的 `E:\appdata\docker\pgdata\pgdata` 即此坑）；
+  且 initdb 要求目标目录为空，残留空子目录也会导致初始化失败。
+
+---
+
 ## 待优化 BUG
 
 ### [BUG] 多轮对话时 agent 重复回答历史内容
@@ -323,3 +397,114 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 - ✅ `application.yml` 的 chat 场景 prompt 含未填充的 `{user_question}` / `{search_context}` 占位符：移除占位符，system 消息保持静态，用户问题与搜索结果由 history（user 消息 + tool 结果）自然提供。
 - ✅ agentic 多轮工具调用循环失效：修正每轮 tool_calls 快照与 history 回填逻辑。
 - ✅ 工具轮噪声（空气泡）显示在会话记录中：后端过滤 tool 消息、前端聚合为可折叠的「🔧 已调用 N 个工具」。
+- ✅ **V3.1 F-44 治理完善（版本管理 + 成本分析，F-34 收尾项）**（2026-09-28）：
+  - **落地前先纠正两处「规划与代码不符」**（否则会做出重复能力）：
+    ① 规划里的 `cost_records` **不存在** —— F-39 落地用的就是 `llm_usage_logs`，故不新建成本表；
+    ② 规划里的 `workflow_definition_versions` **已存在**（V3.0 建的表叫 `workflow_versions`，已含
+    `WorkflowEngine.snapshotVersion/listVersions/rollback` 与前端版本弹窗）→ 工作流版本**复用现有表**，
+    只新建 Agent 侧同构表。
+  - **F-44.1 版本管理**：
+    - 新增 `agent_definition_versions`（全量快照，`UNIQUE(agent_id, version)`）+ `AgentDefinitionService`
+      的 `snapshotVersion / rollback / listVersions / cloneFromVersion`：创建→v1、更新→max+1、
+      回滚→回写快照并**再生成一版**（历史不被覆盖、可继续回滚）；快照失败仅 warn 不阻断主流程（与工作流侧同策略）。
+    - **结构化 diff**（新增 `agent/version/{DiffSupport,AgentVersionDiffer,WorkflowVersionDiffer}`）：
+      不引 java-diff-utils —— 行级 diff 无法表达"哪个字段/哪个节点改了"。Agent 做字段级；
+      工作流把 `dag_json` 与 `steps_json` **统一成"节点/边"两个维度**比较（节点按 `id`/步骤名对齐，
+      边按 `source->target(label)`），输出用 TreeMap/TreeSet 保证顺序稳定；工具/知识库列表先排序再比，忽略顺序差异。
+    - 端点：`GET /api/agents/{id}/versions`、`POST .../versions/{v}/rollback`、`GET .../versions/{a}/diff/{b}`；
+      工作流补 `GET .../versions/{a}/diff/{b}`。全部复用既有 `@PreAuthorize` + `OwnershipGuard`，
+      **未新增 `ResourceType`** —— 版本是定义的子资源，归属由父资源判定。
+    - 模板市场「发布即钉版本」：`template_shares.source_version` + `ShareRequest.version`（缺省取最新版本，
+      显式传入则校验存在、否则 404）；克隆**按该版本快照还原**（`cloneFromVersion`）；
+      预置模板与存量分享 `source_version` 为 null 时保持 V3.0 行为（按当前定义克隆）。
+  - **F-44.2 成本分析**：
+    - 新增 `V3Properties.Cost.pricing`（元/千 token，精确匹配优先、支持前缀匹配）→ `CostTracker.record`
+      折算并落 `cost_amount`。**未配置定价的模型落 null 而不是 0**，报表用 `costDataAvailable` 标记让前端金额列
+      降级为 `—`（避免把"没定价"显示成"零成本"）。默认 `pricing: {}` 为空 —— 单价是事实数据，
+      预设一组编造值会让错误金额静默入库且事后无法与真实计价区分。
+    - 新增 `CostReportService`：按 用户/模型/时间 聚合。**周/月趋势在 Java 侧 rollup**（数据库只查天粒度）——
+      JPQL 无 `date_trunc`，nativeQuery 会绑死 PostgreSQL 并在 H2（开发/测试）下直接报错（项目已有同类踩坑）。
+      新增 5 个区间聚合 `@Query`（统一左闭右开 `[from, to)`）。
+    - 端点：`GET /api/monitor/cost/report`（`granularity=day|week|month`、`topN`、`scope`）与
+      `GET /api/monitor/cost/export?dimension=trend|model|user|source`（CSV）。
+      **用户维度仅在管理员 `scope=global` 下返回**（否则即跨用户信息泄露）；单次查询区间上限 366 天。
+    - 新增 `common/CsvWriter`：**UTF-8 BOM**（否则 Windows Excel 打开中文乱码）+ **公式注入转义**
+      （`= + - @` 开头加 `'`，用户名/模型名属用户数据）+ RFC4180 转义。不引 Commons CSV（轮子太小，
+      且 BOM/注入防护是本项目特有需求）。
+  - **前端**：`AgentView.vue` 加「版本历史」弹窗（版本表 + 勾选两版对比 + 回滚；diff 只展示变化字段、左右并排高亮）
+    + 编辑框加「变更说明」；`MonitorView.vue` 顶部改为页签（执行监控 / **成本分析** / 回答反馈），
+    成本页含 粒度切换、日期区间、趋势条、模型占比、Top 用户、逐卡导出 CSV（不引 echarts，沿用现有手写 CSS 图）。
+  - **脚本/配置**：`docs/sql/v3.1_f44_governance_schema.sql`（幂等）+ `application.yml` 的 `agent.v3.cost.pricing`。
+  - **端到端实测**（在 18081 端口另起实例验证，未动 8080 上正在运行的应用）：
+    创建→v1、更新→v2、版本列表 2 版；diff 精确列出「描述/角色设定/工具/温度」
+    （`工具: [calculator] -> [calculator, time]`、`温度: [0.30] -> [0.80]`）；回滚 v1 后定义还原且历史变 3 版
+    （v3 说明"回滚到 v1"）；删除 Agent 后版本快照按 FK 级联清空。
+    成本报表插入 3 条临时用量（1/2/8 天前，qwen-max/qwen-plus，chat/workflow/routing）实测：
+    周粒度 `2026-W38=600token` / `2026-W39=4500token`（ISO 周 rollup 正确）、月粒度 `2026-09=5100token`、
+    总额 0.0696 元、Top 用户回填出 `admin`；**模型占比印证了"成本占比 ≠ token 占比"**
+    （qwen-plus 占 58.8% token 但仅 5.2% 金额）；非全局视图 `byUser=null`（权限口径正确）；
+    CSV 前 3 字节 `EF BB BF`、`Content-Disposition` 正常、金额列有值。验证后临时数据与测试 Agent 已清理。
+  - ⚠️ **需重启应用**加载新代码（`ddl-auto=update` 启动时会补表，但索引/外键以
+    `v3.1_f44_governance_schema.sql` 为准）。
+  - ⚠️ 已知限制（沿用工作流侧现状，未引入重试框架）：版本号 `max+1` 存在并发竞态，
+    冲突时靠唯一约束兜底、该次快照被静默丢弃（有 warn 日志）。
+- ✅ **V3.1 F-47 工具结果体积治理**（2026-09-28）：
+  - **落地前纠正原文三处不符**：① `MESSAGE_SNAPSHOT_LIMIT=1000` 在代码中**不存在**
+    （`snapshotMessages` 明确"不做内容截断"）；② 「模型/落库/前端三处同口径」**不成立** ——
+    实际只有"回灌模型"与"`role=tool` 消息落库"两处截断，**前端下发 `ChatChunk.result` 与
+    assistant 正文里拼接的工具结果都没截**（缺口比原文描述更严重）；③ `TokenEstimator` 还承担
+    模型未返回 usage 时的兜底估算，不只是上限提示。另：原有工具配置前缀是 `agent-tools.*`，
+    本项按"回灌治理属编排层行为"落在 **`agent.tools.result.*`**。
+  - **核心：单点收口**。新增 `tool/result/ToolResultCompressor`，在**工具结果产出处**压缩一次，
+    "回灌模型 / 下发前端 / 落库"三处共用同一份文本 —— 避免 V3.0 那种"三处各截、必然漏一处"的漂移。
+  - **三级降级**：① 超 `spill.threshold`(32KB) 全文落盘，回灌"路径 + 规模 + 前 N 行"，
+    模型用新工具 `tool_result_read` 分页取回（**信息不丢**，这是硬截断做不到的）；
+    ② 超 `summary.threshold`(20K) 走 LLM 摘要（失败一律回退硬截断），摘要调用本身计入
+    `llm_usage_logs`（source=`tool_summary`）—— 否则 F-39/F-44 的成本报表会漏掉这笔费用；
+    ③ 超 `max-length`(6000，与 V3.0 同值) 或 token 预算 → **头 70% + 标记 + 尾 30%**（修 F-47.3 只保头部）。
+  - **安全**：落盘读取只允许落盘根目录下**当前会话**目录内的文件（`ToolResultSpillStore.resolveSafe`）：
+    既防 `../` 路径穿越，也防跨会话读取他人工具结果；会话目录名做非字母数字替换防路径注入。
+  - **配套**：`InMemoryChatMemory` 的 `sources` 落库前截断（F-47.6）；`AgentOrchestrator` 删除本地
+    `TOOL_RESULT_MAX_LEN`/`truncate`（消除第二种口径）；配置块见 `application.yml` 的 `agent.tools.result.*`。
+  - **实测**：新增 `ToolResultGovernanceTest` 11 条用例全绿（压缩口径 / token 预算生效 / 落盘内容完整 /
+    窗口预算 / 路径穿越 / 会话隔离 / 分页续读 / 工具契约）。
+  - **过程中修掉自身两个缺陷**：① token 预算原用固定系数 0.6 收缩，预算远小于上限时 4 轮收敛不到
+    （等于预算失效），改为按「预算 / 实际估算」比例收缩；② 落盘文件名仅毫秒时间戳，同毫秒两次落盘会
+    互相覆盖，加序号兜住。
+  - **与规划的三处偏差（显式记录）**：① "超总量预算对最旧结果做摘要"改为"触顶后本轮收紧到下限"
+    （不回溯改写历史，避免额外模型调用）；② F-47.8 只做日志 + 回灌文本内的截断标记，**未写审计**
+    （每次工具调用都写审计会把审计表变成噪声源，与 F-41 口径冲突）；③ 未加摘要超时开关，
+    依赖 Provider 的 HTTP 客户端超时。
+- ✅ **调用链日志补记「本轮模型输出」**（2026-09-28）：
+  - **背景（缺口的真实影响）**：`llm_call_logs` 只有 token/耗时/链路，**没有任何模型输出** ——
+    复盘时看到 `LLM=2次 工具=1步` 却不知道这轮答了什么；更关键的是 `ON_CANCEL` / `ON_ERROR` 下
+    答案可能**根本没落进 `messages`**（流中断/取消/写库失败），此时链路日志是唯一现场却恰好缺了
+    "模型吐到哪一步"，连"中断发生在首 token 之前还是之后"都判断不了。
+    澄清一个易误判点：中间轮的答案其实**已间接存在**（下一轮请求的 `messages` 快照里含上一轮 assistant 输出），
+    真正缺的是**最后一轮的输出**（它不在任何后续请求中）。
+  - **方案：不新增表列，写进既有 `steps_json`**。`LlmCallTrace.recordLlm` 的 `params` 会 `putAll` 进步骤 Map，
+    故新增静态工具 `LlmCallTrace.putOutput(params, output)` 统一产出两个字段：
+    `outputPreview`（截断 500 字符，与工具参数/结果摘要同口径）+ `outputChars`（原始字符数，用于判断是否被截断）。
+    优势：零 DDL 变更、复用既有"列表剔重字段"机制；不足：完整原文只在详情接口可见（这是刻意口径）。
+  - **三个记录点全覆盖**：① 流式每一轮（输出在 `tracedRound` 内**就地累积**，卷在模型流上而非下游消费点，
+    故 `doOnComplete` / `doOnError` / `doOnCancel` 三条终止路径都能拿到**已产出的部分**——这是本改造最大价值）；
+    ② `chatSync` 单轮同步路径（`response.getContent()` 即最终答案）；③ 路由判断（决策 JSON，
+    可直接验证"为什么路由到此目标"）。
+  - **接口口径（含一次上线后修正）**：`outputPreview` / `outputChars` **列表与详情都返回**。
+    最初按"列表只给元数据"的口径把 `outputPreview` 从列表剔除，实测**页面根本看不到输出**
+    （正文只在详情抽屉里，要点两层才见；而"看这一轮答了什么"本就是本页面的主要用途）→ 修正为列表也返回：
+    预览已截断 500 字符，与 `systemPrompt` / `messages` / `wireRequest` 三个"完整原文"字段
+    （单条可达数十 KB）不是一个量级，一并剔除属口径过度。
+  - **明确定位：不做全文留档**。完整答案的权威来源仍是 `messages.content` —— 再存一份即双写，
+    且流式拼接/后处理/重试下有"存的和用户看到的不一致"风险；同时"答案"定义本身也不清晰
+    （是否含 `reasoningContent`、工具轮中间文本等）。故只做**可对账的摘要**，不做内容留档。
+  - **前端**（`LlmCallLogView.vue`）：列表卡片**默认显示**「模型输出」行（取最后一轮 LLM 的本轮输出，
+    最多 4 行省略）；展开「步骤明细」可逐轮对照（每轮最多 3 行）；详情抽屉新增「本轮模型输出」块，
+    超 500 字时提示"完整正文见该会话消息"。
+  - 注意：**存量日志的输出补不回来**（快照写入时生成），只有改造后新产生的日志才有该字段。
+- ⚠️ **构建环境坑：命令行 `mvn` 默认跑在 JDK 8 上**（本机 `JAVA_HOME=D:\jdk1.8.0_202`），
+  而项目要求 Java 17 —— 直接 `mvn compile` 会在 `switch` 箭头语法处（如 `CostReportService`）
+  报一大串 **"需要: / 非法的表达式开始 / 需要 class, interface 或 enum" 的级联假错误**，
+  极易误判成"代码被改坏了"。正确姿势：`$env:JAVA_HOME='D:\app\jdk17'; mvn -DskipTests compile`
+  （IDEA 里用配置好的 JDK 不受影响，所以长期没暴露）。另：`mvn -o` 离线编译会因缺
+  `xml-apis:1.4.01` 失败，需联网。

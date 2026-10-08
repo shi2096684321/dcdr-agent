@@ -41,6 +41,8 @@ public class AgentDtos {
         @Schema(description = "是否为预设模板 (仅 admin 可设置; 模板对所有用户可见, 普通用户仅可克隆)")
         @JsonProperty("isTemplate")
         private Boolean isTemplate;
+        @Schema(description = "变更说明 (V3.1 F-44.1, 更新时存入版本历史)")
+        private String changeNote;
     }
 
     /** Agent 列表项 / 详情视图 */
@@ -71,5 +73,26 @@ public class AgentDtos {
          * 普通用户仅当自己是创建者且该 Agent 非预设模板时为 true(模板与他人公开 Agent 仅可克隆)。
          */
         private boolean editable;
+    }
+
+    // ===== V3.1 F-44.1 版本管理视图 =====
+
+    /** Agent 版本历史视图 */
+    @Data
+    @Schema(description = "Agent 版本历史视图 (F-44.1)")
+    public static class VersionView {
+        private String id;
+        private String agentId;
+        @Schema(description = "版本号 (同一 Agent 内递增)")
+        private int version;
+        @Schema(description = "版本快照: 名称")
+        private String name;
+        @Schema(description = "版本快照: 描述")
+        private String description;
+        @Schema(description = "变更说明")
+        private String changeNote;
+        @Schema(description = "创建人 (快照时的操作者)")
+        private String createdBy;
+        private LocalDateTime createdAt;
     }
 }

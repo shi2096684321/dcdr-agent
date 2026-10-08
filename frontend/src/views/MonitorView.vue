@@ -6,17 +6,21 @@
     </div>
 
     <div class="toolbar">
-      <el-select v-model="days" size="small" style="width:130px" @change="loadAll">
+      <el-select v-model="days" size="small" style="width:130px" @change="reloadAll">
         <el-option label="近 7 天" :value="7" />
         <el-option label="近 30 天" :value="30" />
         <el-option label="近 90 天" :value="90" />
       </el-select>
-      <el-select v-if="authStore.isAdmin" v-model="scope" size="small" style="width:140px" @change="loadAll">
+      <el-select v-if="authStore.isAdmin" v-model="scope" size="small" style="width:140px" @change="reloadAll">
         <el-option label="仅自己" value="" />
         <el-option label="全局 (管理员)" value="global" />
       </el-select>
-      <el-button size="small" @click="loadAll" :loading="loading">刷新</el-button>
+      <el-button size="small" @click="reloadAll" :loading="loading">刷新</el-button>
     </div>
+
+    <!-- V3.1 F-44.2: 顶部按语义分页签, 避免单页纵向堆叠过长 -->
+    <el-tabs v-model="activeTab" class="monitor-tabs">
+      <el-tab-pane label="执行监控" name="exec">
 
     <!-- 配额卡片 (F-39) -->
     <div class="quota-card" v-if="quota">
@@ -175,7 +179,145 @@
       <div v-if="!llmRows.length" class="empty-tip">暂无 LLM 调用记录（发一条对话后出现）</div>
     </div>
 
-    <!-- ===== V3.1 F-48 回答反馈 (点赞/点踩收集): 好评率趋势 + 差评归因 ===== -->
+      </el-tab-pane>
+
+      <!-- ===== V3.1 F-44.2 成本分析报表: 日/周/月趋势 + 模型占比 + Top 用户 + CSV ===== -->
+      <el-tab-pane label="成本分析" name="cost">
+        <div class="toolbar">
+          <el-radio-group v-model="costGranularity" size="small" @change="loadCostReport">
+            <el-radio-button label="day">按天</el-radio-button>
+            <el-radio-button label="week">按周</el-radio-button>
+            <el-radio-button label="month">按月</el-radio-button>
+          </el-radio-group>
+          <el-date-picker v-model="costRange" type="daterange" size="small" value-format="YYYY-MM-DD"
+                          range-separator="~" start-placeholder="开始日期" end-placeholder="结束日期"
+                          :clearable="false" style="width: 250px" @change="loadCostReport" />
+          <el-button size="small" @click="loadCostReport" :loading="costLoading">刷新</el-button>
+          <span class="cost-hint">
+            统计窗口 {{ costReport ? `${costReport.from} ~ ${costReport.to}` : '—' }}
+          </span>
+        </div>
+
+        <div class="stat-cards">
+          <div class="stat-card">
+            <div class="s-value">{{ costReport ? fmt(costReport.totalTokens) : '-' }}</div>
+            <div class="s-label">总 Token</div>
+          </div>
+          <div class="stat-card">
+            <div class="s-value">{{ costReport ? fmt(costReport.inputTokens) : '-' }}</div>
+            <div class="s-label">输入 Token</div>
+          </div>
+          <div class="stat-card">
+            <div class="s-value">{{ costReport ? fmt(costReport.outputTokens) : '-' }}</div>
+            <div class="s-label">输出 Token</div>
+          </div>
+          <div class="stat-card">
+            <div class="s-value">{{ costReport ? costReport.callCount : '-' }}</div>
+            <div class="s-label">调用次数</div>
+          </div>
+          <div class="stat-card" :class="{ warn: costReport && !costReport.costDataAvailable }">
+            <div class="s-value">{{ costReport && costReport.costDataAvailable ? money(costReport.totalCost) : '—' }}</div>
+            <div class="s-label">金额合计</div>
+          </div>
+        </div>
+
+        <el-alert v-if="costReport && !costReport.costDataAvailable" type="info" :closable="false" show-icon
+                  class="cost-alert"
+                  title="未配置模型定价，金额维度不可用"
+                  description="在 application.yml 的 agent.v3.cost.pricing 中按实际单价填写后, 新产生的调用才会记录金额(存量记录不追溯)。当前仅按 token 口径统计。" />
+
+        <div class="charts">
+          <!-- 消耗趋势 (按所选粒度: 日/周/月) -->
+          <div class="chart-card">
+            <div class="c-title">
+              消耗趋势
+              <el-tag size="small" type="info" effect="plain">{{ granularityLabel }}</el-tag>
+              <el-button size="small" text type="primary" style="margin-left:auto"
+                         @click="doExportCsv('trend')" :loading="costExporting">导出 CSV</el-button>
+            </div>
+            <div class="bar-chart" v-if="trendRows.length">
+              <div v-for="p in trendRows" :key="p.period" class="bar-row">
+                <span class="bar-date">{{ p.period }}</span>
+                <div class="bar-track">
+                  <div class="bar-fill in" :style="{ width: pctTrend(p.inputTokens) }" :title="'输入 ' + fmt(p.inputTokens)"></div>
+                  <div class="bar-fill out" :style="{ width: pctTrend(p.outputTokens) }" :title="'输出 ' + fmt(p.outputTokens)"></div>
+                </div>
+                <span class="bar-val">{{ fmt(p.totalTokens) }}</span>
+                <span class="bar-money">{{ money(p.cost) }}</span>
+              </div>
+            </div>
+            <div v-else class="empty-tip">窗口内暂无用量记录</div>
+          </div>
+
+          <!-- 模型成本占比 -->
+          <div class="chart-card">
+            <div class="c-title">
+              模型成本占比
+              <el-button size="small" text type="primary" style="margin-left:auto"
+                         @click="doExportCsv('model')" :loading="costExporting">导出 CSV</el-button>
+            </div>
+            <div class="bar-chart" v-if="(costReport?.byModel || []).length">
+              <div v-for="m in costReport.byModel" :key="m.model" class="bar-row">
+                <span class="bar-date model" :title="m.model">{{ m.model }}</span>
+                <div class="bar-track">
+                  <div class="bar-fill in" :style="{ width: pctCostModel(m.inputTokens) }"></div>
+                  <div class="bar-fill out" :style="{ width: pctCostModel(m.outputTokens) }"></div>
+                </div>
+                <span class="bar-val">{{ fmt(m.totalTokens) }}</span>
+                <span class="bar-money">{{ ratioText(m) }}</span>
+              </div>
+            </div>
+            <div v-else class="empty-tip">窗口内暂无用量记录</div>
+          </div>
+        </div>
+
+        <!-- Top 用户 (仅管理员全局视图) -->
+        <div class="chart-card" v-if="canSeeTopUsers">
+          <div class="c-title">
+            Top 用户
+            <span class="c-hint">按 token 消耗降序; 需要「全局」视角才会展示</span>
+            <el-button size="small" text type="primary" style="margin-left:auto"
+                       @click="doExportCsv('user')" :loading="costExporting">导出 CSV</el-button>
+          </div>
+          <el-table :data="costReport?.byUser || []" size="small">
+            <el-table-column label="#" type="index" width="50" />
+            <el-table-column label="用户" min-width="150">
+              <template #default="{ row }">{{ row.username || row.userId || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="calls" label="调用" width="90" />
+            <el-table-column label="Token" width="110">
+              <template #default="{ row }">{{ fmt(row.totalTokens) }}</template>
+            </el-table-column>
+            <el-table-column label="金额(元)" width="120">
+              <template #default="{ row }">{{ money(row.cost) }}</template>
+            </el-table-column>
+          </el-table>
+          <div v-if="!(costReport?.byUser || []).length" class="empty-tip">窗口内暂无用户维度数据</div>
+        </div>
+
+        <!-- 调用来源 -->
+        <div class="chart-card">
+          <div class="c-title">
+            调用来源
+            <el-button size="small" text type="primary" style="margin-left:auto"
+                       @click="doExportCsv('source')" :loading="costExporting">导出 CSV</el-button>
+          </div>
+          <el-table :data="costReport?.bySource || []" size="small">
+            <el-table-column prop="source" label="来源" width="140" />
+            <el-table-column prop="calls" label="调用" width="100" />
+            <el-table-column label="Token" width="130">
+              <template #default="{ row }">{{ fmt(row.totalTokens) }}</template>
+            </el-table-column>
+            <el-table-column label="金额(元)" width="130">
+              <template #default="{ row }">{{ money(row.cost) }}</template>
+            </el-table-column>
+          </el-table>
+          <div v-if="!(costReport?.bySource || []).length" class="empty-tip">窗口内暂无来源维度数据</div>
+        </div>
+      </el-tab-pane>
+
+      <!-- ===== V3.1 F-48 回答反馈 (点赞/点踩收集): 好评率趋势 + 差评归因 ===== -->
+      <el-tab-pane label="回答反馈" name="feedback">
     <div class="chart-card">
       <div class="c-title">
         回答反馈
@@ -309,6 +451,8 @@
                      :page-size="fbPageSize" :current-page="fbPage + 1" @current-change="onFbPage"
                      style="margin-top: 12px; justify-content: center" />
     </div>
+      </el-tab-pane>
+    </el-tabs>
   </div>
 </template>
 
@@ -317,6 +461,7 @@ import { computed, ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   getWorkflowMonitor, getCostStats, getQuotaUsage, getLlmMonitor, extractMessage,
+  getCostReport, exportCostCsv,
   getFeedbackStats, listFeedback, getFeedbackReasonTags
 } from '@/api'
 import { useAuthStore } from '@/stores/auth'
@@ -434,7 +579,109 @@ async function loadAll() {
   }
 }
 
-onMounted(() => { loadAll() })
+// ===== V3.1 F-44.2 成本分析 =====
+/** 页签: exec 执行监控 / cost 成本分析 / feedback 回答反馈 */
+const activeTab = ref('exec')
+const costGranularity = ref('day')
+const costRange = ref(defaultCostRange())
+const costReport = ref(null)
+const costLoading = ref(false)
+const costExporting = ref(false)
+
+const trendRows = computed(() => (costReport.value?.trend || []).slice().reverse())
+const granularityLabel = computed(
+  () => ({ day: '按天', week: '按周', month: '按月' }[costGranularity.value] || '按天')
+)
+/** Top 用户是跨用户数据, 只有管理员的「全局」视角才展示 */
+const canSeeTopUsers = computed(() => authStore.isAdmin && scope.value === 'global')
+
+const maxTrendTokens = computed(() => Math.max(1, ...trendRows.value.map(p => p.totalTokens)))
+const maxCostModelTokens = computed(
+  () => Math.max(1, ...(costReport.value?.byModel || []).map(m => m.totalTokens))
+)
+const pctTrend = (v) => Math.min(90, (v / maxTrendTokens.value) * 90) + '%'
+const pctCostModel = (v) => Math.min(90, (v / maxCostModelTokens.value) * 90) + '%'
+
+/** 金额展示: 未配置定价时统一降级为 "—", 不把"没有定价"显示成"零成本" */
+function money(v) {
+  if (!costReport.value?.costDataAvailable) return '—'
+  return '¥' + Number(v || 0).toFixed(4)
+}
+
+/** 模型行占比文案: 有金额时给"金额占比 · 金额", 否则退化为 token 占比 */
+function ratioText(m) {
+  if (costReport.value?.costDataAvailable && m.costRatio != null) {
+    return `${(m.costRatio * 100).toFixed(1)}% · ${money(m.cost)}`
+  }
+  return `${(m.tokenRatio * 100).toFixed(1)}%`
+}
+
+/** 默认统计窗口: 近 30 天 (与后端缺省一致) */
+function defaultCostRange() {
+  const to = new Date()
+  const from = new Date(to.getTime() - 29 * 24 * 3600 * 1000)
+  return [fmtDate(from), fmtDate(to)]
+}
+
+/** yyyy-MM-dd (本地时区)。注意不能用 toISOString: 后端字段是 LocalDateTime, 带 Z 会反序列化失败 */
+function fmtDate(d) {
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+/** 组装后端参数: 日期区间转 LocalDateTime, 止日 +1 天以构成左闭右开区间 */
+function costParams() {
+  const [from, to] = costRange.value || []
+  const params = { granularity: costGranularity.value, topN: 10 }
+  if (from) params.from = `${from}T00:00:00`
+  if (to) {
+    const end = new Date(`${to}T00:00:00`)
+    end.setDate(end.getDate() + 1)
+    params.to = `${fmtDate(end)}T00:00:00`
+  }
+  if (authStore.isAdmin && scope.value) params.scope = scope.value
+  return params
+}
+
+async function loadCostReport() {
+  costLoading.value = true
+  try {
+    costReport.value = await getCostReport(costParams())
+  } catch (e) {
+    costReport.value = null
+    ElMessage.error(extractMessage(e) || '加载成本报表失败')
+  } finally {
+    costLoading.value = false
+  }
+}
+
+/** 导出 CSV: 后端返回带 BOM 的二进制流, 前端用 Blob 触发下载(不能走 unwrap) */
+async function doExportCsv(dimension) {
+  costExporting.value = true
+  try {
+    const blob = await exportCostCsv({ ...costParams(), dimension })
+    const url = URL.createObjectURL(new Blob([blob], { type: 'text/csv;charset=utf-8' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `cost-${dimension}-${fmtDate(new Date())}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '导出失败')
+  } finally {
+    costExporting.value = false
+  }
+}
+
+/** 顶部筛选变化时刷新两个页签的数据(执行监控 + 成本分析共用 days/scope) */
+function reloadAll() {
+  loadAll()
+  loadCostReport()
+}
+
+onMounted(() => { reloadAll() })
 </script>
 
 <style scoped>
@@ -486,4 +733,10 @@ onMounted(() => { loadAll() })
 .fb-tag { margin-right: 4px; margin-bottom: 2px; }
 .fb-comment { font-size: 12.5px; color: #606266; word-break: break-word; }
 .fb-dim { font-size: 12px; color: #909399; }
+
+/* ===== V3.1 F-44.2 成本分析页签 ===== */
+.monitor-tabs { margin-top: 4px; }
+.cost-hint { font-size: 12px; color: #909399; }
+.cost-alert { margin-top: 4px; }
+.bar-money { width: 92px; font-size: 12px; color: #909399; text-align: right; flex-shrink: 0; }
 </style>

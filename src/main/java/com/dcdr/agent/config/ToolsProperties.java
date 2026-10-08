@@ -82,7 +82,7 @@ public class ToolsProperties {
         /** 代码最大长度(字符), 超限直接拒绝, 不进入沙箱 */
         private int maxCodeLength = 8000;
 
-        /** 输出最大长度(字符), 与 AgentOrchestrator.TOOL_RESULT_MAX_LEN 同口径 */
+        /** 输出最大长度(字符), 与回灌治理的 agent.tools.result.max-length 口径保持一致 */
         private int maxOutputLength = 6000;
 
         /** 全局并发上限(防单次对话打满宿主) */

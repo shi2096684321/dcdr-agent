@@ -1,12 +1,16 @@
 package com.dcdr.agent.agent.definition;
 
 import com.dcdr.agent.agent.tenant.TenantService;
+import com.dcdr.agent.agent.version.AgentVersionDiffer;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.AgentDtos;
+import com.dcdr.agent.dto.VersionDiffDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
+import com.dcdr.agent.entity.AgentDefinitionVersionEntity;
 import com.dcdr.agent.repository.AgentDefinitionRepository;
+import com.dcdr.agent.repository.AgentDefinitionVersionRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -42,6 +46,8 @@ import java.util.UUID;
 public class AgentDefinitionService {
 
     private final AgentDefinitionRepository repository;
+    /** V3.1 F-44.1: 版本快照仓库 (对应工作流侧的 WorkflowVersionRepository) */
+    private final AgentDefinitionVersionRepository versionRepository;
     private final TenantService tenantService;
     /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (可见性口径见 AgentOwnershipProvider) */
     private final OwnershipGuard ownershipGuard;
@@ -104,6 +110,9 @@ public class AgentDefinitionService {
         e.setCreatedAt(now);
         e.setUpdatedAt(now);
         repository.save(e);
+        // V3.1 F-44.1 版本管理: 创建即生成 v1 快照 (与 WorkflowEngine.create 同口径)
+        snapshotVersion(e, userId, req.getChangeNote() == null || req.getChangeNote().isBlank()
+                ? "初始版本" : req.getChangeNote());
         log.info("创建 Agent: {} (name={}, user={}, template={})", e.getId(), e.getName(), userId, asTemplate);
         return toView(e, userId, isAdmin);
     }
@@ -122,6 +131,9 @@ public class AgentDefinitionService {
         }
         e.setUpdatedAt(LocalDateTime.now());
         repository.save(e);
+        // V3.1 F-44.1: 每次修改生成新版本快照, 可回滚到任意历史版本
+        snapshotVersion(e, userId, req.getChangeNote() == null || req.getChangeNote().isBlank()
+                ? null : req.getChangeNote());
         log.info("更新 Agent: {} (name={}, template={}, operator={}, owner={})",
                 e.getId(), e.getName(), e.isTemplate(), userId, e.getUserId());
         return toView(e, userId, isAdmin);
@@ -157,6 +169,149 @@ public class AgentDefinitionService {
         req.setIsPublic(false);
         req.setIsTemplate(false); // 克隆出来的始终是普通 Agent
         return create(req, userId, false);
+    }
+
+    // ===== V3.1 F-44.1 版本管理 (口径与 WorkflowEngine 对齐) =====
+
+    /** 版本历史列表 (归属校验: 读; 越权与不存在统一 404, 由 OwnershipGuard 裁决) */
+    public List<AgentDtos.VersionView> listVersions(String agentId, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.AGENT, agentId, userId, isAdmin, false);
+        return toVersionViews(versionRepository.findByAgentIdOrderByVersionDesc(agentId));
+    }
+
+    /**
+     * 回滚到指定历史版本。
+     * <p>回滚动作本身也会生成新版本快照, 因此历史不被覆盖、可继续回滚。
+     * {@code isTemplate} 属管理员标记, 故回滚与更新同口径受写权限约束(模板仅 admin 可写)。
+     */
+    @Transactional
+    public AgentDtos.AgentView rollback(String agentId, int version, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.AGENT, agentId, userId, isAdmin, true);
+        AgentDefinitionEntity e = loadEntity(agentId);
+        AgentDefinitionVersionEntity snapshot = requireVersion(agentId, version);
+        applySnapshot(e, snapshot);
+        e.setUpdatedAt(LocalDateTime.now());
+        repository.save(e);
+        snapshotVersion(e, userId, "回滚到 v" + version);
+        log.info("回滚 Agent: {} 到 v{} (operator={})", agentId, version, userId);
+        return toView(e, userId, isAdmin);
+    }
+
+    /** 结构化对比两个历史版本 (归属校验: 读) */
+    public VersionDiffDtos.View diff(String agentId, int leftVersion, int rightVersion,
+                                     String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.AGENT, agentId, userId, isAdmin, false);
+        AgentDefinitionVersionEntity left = requireVersion(agentId, leftVersion);
+        AgentDefinitionVersionEntity right = requireVersion(agentId, rightVersion);
+        VersionDiffDtos.View view = new VersionDiffDtos.View();
+        view.setResourceType("agent");
+        view.setResourceId(agentId);
+        view.setLeftVersion(leftVersion);
+        view.setRightVersion(rightVersion);
+        view.setLeftCreatedAt(left.getCreatedAt());
+        view.setRightCreatedAt(right.getCreatedAt());
+        view.setFields(AgentVersionDiffer.diff(left, right));
+        return view;
+    }
+
+    /**
+     * 按指定版本快照克隆为新 Agent (F-44.1 模板市场: 发布时钉住版本, 克隆按该版本还原)。
+     * <p>回填快照内容后复用 {@link #create}, 模板市场无需了解版本表结构。
+     */
+    @Transactional
+    public AgentDtos.AgentView cloneFromVersion(String agentId, int version, String userId) {
+        AgentDefinitionVersionEntity snapshot = requireVersion(agentId, version);
+        AgentDtos.SaveAgentRequest req = new AgentDtos.SaveAgentRequest();
+        // 命名与 clone() 保持一致; 名称取该版本快照内的值(而非当前名称)
+        req.setName(snapshot.getName() + " (副本)");
+        req.setDescription(snapshot.getDescription());
+        req.setAvatar(snapshot.getAvatar());
+        req.setPersona(snapshot.getSystemPrompt());
+        req.setModel(snapshot.getModel());
+        // 克隆产物始终是普通 Agent(下方 create 传 isAdmin=false), 故按非管理员口径过滤受限工具
+        req.setTools(filterAdminOnlyTools(parseStrList(snapshot.getTools()), false));
+        req.setKbIds(parseStrList(snapshot.getKbIds()));
+        req.setTemperature(snapshot.getTemperature());
+        req.setIsPublic(false);
+        req.setIsTemplate(false);
+        req.setChangeNote("克隆自 v" + version);
+        return create(req, userId, false);
+    }
+
+    /** 当前最新版本号 (无版本时返回 0) */
+    public int latestVersion(String agentId) {
+        return versionRepository.findFirstByAgentIdOrderByVersionDesc(agentId)
+                .map(AgentDefinitionVersionEntity::getVersion).orElse(0);
+    }
+
+    /** 版本号是否存在 (模板市场分享时校验用) */
+    public boolean versionExists(String agentId, int version) {
+        return versionRepository.findByAgentIdAndVersion(agentId, version).isPresent();
+    }
+
+    /** 保存当前定义为新版本快照 (version = max + 1) */
+    private void snapshotVersion(AgentDefinitionEntity e, String userId, String changeNote) {
+        try {
+            int next = versionRepository.findFirstByAgentIdOrderByVersionDesc(e.getId())
+                    .map(AgentDefinitionVersionEntity::getVersion).orElse(0) + 1;
+            AgentDefinitionVersionEntity v = new AgentDefinitionVersionEntity();
+            v.setId("adv_" + UUID.randomUUID().toString().replace("-", ""));
+            v.setAgentId(e.getId());
+            v.setVersion(next);
+            v.setName(e.getName());
+            v.setDescription(e.getDescription());
+            v.setAvatar(e.getAvatar());
+            v.setSystemPrompt(e.getSystemPrompt());
+            v.setModel(e.getModel());
+            v.setTools(e.getTools());
+            v.setKbIds(e.getKbIds());
+            v.setTemperature(e.getTemperature());
+            v.setPublic(e.isPublic());
+            v.setTemplate(e.isTemplate());
+            v.setChangeNote(changeNote);
+            v.setCreatedBy(userId);
+            v.setCreatedAt(LocalDateTime.now());
+            versionRepository.save(v);
+        } catch (Exception ex) {
+            // 版本快照失败不阻断主流程(与 WorkflowEngine.snapshotVersion 同策略)
+            log.warn("Agent 版本快照失败(不影响保存): {}", ex.getMessage());
+        }
+    }
+
+    /** 用快照内容覆盖定义实体 (不含 userId: 归属不随版本变化) */
+    private void applySnapshot(AgentDefinitionEntity e, AgentDefinitionVersionEntity snapshot) {
+        e.setName(snapshot.getName());
+        e.setDescription(snapshot.getDescription());
+        e.setAvatar(snapshot.getAvatar());
+        e.setSystemPrompt(snapshot.getSystemPrompt());
+        e.setModel(snapshot.getModel());
+        e.setTools(snapshot.getTools());
+        e.setKbIds(snapshot.getKbIds());
+        e.setTemperature(snapshot.getTemperature());
+        e.setPublic(snapshot.isPublic());
+        e.setTemplate(snapshot.isTemplate());
+    }
+
+    private AgentDefinitionVersionEntity requireVersion(String agentId, int version) {
+        return versionRepository.findByAgentIdAndVersion(agentId, version)
+                .orElseThrow(() -> new BusinessException(404, "版本不存在: v" + version, "VERSION_NOT_FOUND"));
+    }
+
+    private List<AgentDtos.VersionView> toVersionViews(List<AgentDefinitionVersionEntity> versions) {
+        List<AgentDtos.VersionView> views = new ArrayList<>(versions.size());
+        for (AgentDefinitionVersionEntity v : versions) {
+            AgentDtos.VersionView view = new AgentDtos.VersionView();
+            view.setId(v.getId());
+            view.setAgentId(v.getAgentId());
+            view.setVersion(v.getVersion());
+            view.setName(v.getName());
+            view.setDescription(v.getDescription());
+            view.setChangeNote(v.getChangeNote());
+            view.setCreatedBy(v.getCreatedBy());
+            view.setCreatedAt(v.getCreatedAt());
+            views.add(view);
+        }
+        return views;
     }
 
     // ===== 内部辅助 =====

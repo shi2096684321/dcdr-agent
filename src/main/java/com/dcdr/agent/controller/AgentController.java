@@ -4,6 +4,7 @@ import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.AgentDtos;
+import com.dcdr.agent.dto.VersionDiffDtos;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -118,5 +119,44 @@ public class AgentController {
             @Parameter(description = "源 Agent ID", required = true) @PathVariable String id) {
         return ownershipGuard.currentContext()
                 .map(ctx -> Result.success(agentService.clone(id, ctx.userId(), ctx.admin())));
+    }
+
+    // ===== V3.1 F-44.1 版本管理 =====
+
+    @Operation(summary = "版本历史",
+            description = "V3.1 F-44.1: 返回 Agent 的版本快照列表 (创建/每次更新/回滚均生成版本), 按版本号倒序。")
+    @ApiResponse(responseCode = "404", description = "Agent 不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'AGENT', principal)")
+    @GetMapping("/{id}/versions")
+    public Mono<Result<List<AgentDtos.VersionView>>> listVersions(
+            @Parameter(description = "Agent ID", required = true) @PathVariable String id) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(agentService.listVersions(id, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "回滚到指定版本",
+            description = "V3.1 F-44.1: 将 Agent 定义回滚到指定历史版本; 回滚动作本身会生成新的版本快照, "
+                    + "因此历史不被覆盖, 可继续回滚。普通用户仅可回滚自己的 Agent, 模板仅管理员。")
+    @ApiResponse(responseCode = "404", description = "Agent 或版本不存在, 或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'AGENT', principal)")
+    @PostMapping("/{id}/versions/{version}/rollback")
+    public Mono<Result<AgentDtos.AgentView>> rollback(
+            @Parameter(description = "Agent ID", required = true) @PathVariable String id,
+            @Parameter(description = "目标版本号", required = true) @PathVariable int version) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(agentService.rollback(id, version, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "版本对比",
+            description = "V3.1 F-44.1: 结构化对比两个历史版本 (字段级差异; 列表类字段忽略顺序差异)。")
+    @ApiResponse(responseCode = "404", description = "Agent 或版本不存在, 或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'AGENT', principal)")
+    @GetMapping("/{id}/versions/{left}/diff/{right}")
+    public Mono<Result<VersionDiffDtos.View>> diff(
+            @Parameter(description = "Agent ID", required = true) @PathVariable String id,
+            @Parameter(description = "左侧(较旧)版本号", required = true) @PathVariable int left,
+            @Parameter(description = "右侧(较新)版本号", required = true) @PathVariable int right) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(agentService.diff(id, left, right, ctx.userId(), ctx.admin())));
     }
 }

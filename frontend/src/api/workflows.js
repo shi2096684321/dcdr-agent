@@ -54,3 +54,7 @@ export const getWorkflowVersions = (id) => unwrap(api.get(`/api/workflows/${id}/
 export const rollbackWorkflowVersion = (id, version) =>
   unwrap(api.post(`/api/workflows/${id}/versions/${version}/rollback`))
 
+// V3.1 F-44.1: 版本对比 (结构化 diff: 标量字段 + 编排结构节点/边)
+export const diffWorkflowVersions = (id, left, right) =>
+  unwrap(api.get(`/api/workflows/${id}/versions/${left}/diff/${right}`))
+

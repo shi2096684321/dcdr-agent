@@ -3,6 +3,7 @@ package com.dcdr.agent.dto;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -123,5 +124,92 @@ public class MonitorDtos {
         private List<Map<String, Object>> providers;
         @Schema(description = "熔断器快照 (provider/state/windowCalls/windowFailures)")
         private List<Map<String, Object>> circuitBreaker;
+    }
+
+    // ===== V3.1 F-44.2 成本分析报表 =====
+
+    /** 成本报表总览 (按 用户 / 模型 / 时间 维度聚合) */
+    @Data
+    @Schema(description = "成本报表总览 (F-44.2)")
+    public static class CostReportView {
+        @Schema(description = "统计区间起 (yyyy-MM-dd, 含)")
+        private String from;
+        @Schema(description = "统计区间止 (yyyy-MM-dd, 含)")
+        private String to;
+        @Schema(description = "趋势粒度: day / week / month")
+        private String granularity;
+        private long totalTokens;
+        private long inputTokens;
+        private long outputTokens;
+        private long callCount;
+        @Schema(description = "金额合计 (元); 是否可用见 costDataAvailable")
+        private BigDecimal totalCost;
+        /**
+         * 区间内是否存在带金额的记录。
+         * <p>未配置模型定价时 {@code cost_amount} 全为 null, 聚合结果是 0 —— 直接展示会误导成
+         * "零成本", 故用该标记让前端把金额列降级为 "—"。
+         */
+        @Schema(description = "是否存在金额数据 (false 时前端金额列显示 —)")
+        private boolean costDataAvailable;
+        @Schema(description = "按粒度聚合的用量趋势")
+        private List<TrendPoint> trend;
+        @Schema(description = "模型维度: 调用/用量/金额/占比")
+        private List<ModelUsageCost> byModel;
+        @Schema(description = "Top 用户 (仅管理员全局视图返回)")
+        private List<UserUsageCost> byUser;
+        @Schema(description = "调用来源维度: chat / workflow / routing")
+        private List<SourceUsage> bySource;
+    }
+
+    /** 趋势数据点 */
+    @Data
+    @Schema(description = "成本趋势数据点")
+    public static class TrendPoint {
+        @Schema(description = "粒度标识: 2026-09-28 / 2026-W39 / 2026-09")
+        private String period;
+        private long calls;
+        private long inputTokens;
+        private long outputTokens;
+        private long totalTokens;
+        private BigDecimal cost;
+    }
+
+    /** 模型维度行 */
+    @Data
+    @Schema(description = "模型维度成本")
+    public static class ModelUsageCost {
+        private String model;
+        private long calls;
+        private long inputTokens;
+        private long outputTokens;
+        private long totalTokens;
+        private BigDecimal cost;
+        @Schema(description = "Token 占比 (0~1)")
+        private double tokenRatio;
+        @Schema(description = "金额占比 (0~1); 无金额数据时为 null")
+        private Double costRatio;
+    }
+
+    /** 用户维度行 (Top N) */
+    @Data
+    @Schema(description = "用户维度成本 (Top N)")
+    public static class UserUsageCost {
+        private String userId;
+        @Schema(description = "用户名 (回填; 已删除用户为占位文案)")
+        private String username;
+        private long calls;
+        private long totalTokens;
+        private BigDecimal cost;
+    }
+
+    /** 来源维度行 */
+    @Data
+    @Schema(description = "调用来源维度成本")
+    public static class SourceUsage {
+        @Schema(description = "chat / workflow / routing")
+        private String source;
+        private long calls;
+        private long totalTokens;
+        private BigDecimal cost;
     }
 }

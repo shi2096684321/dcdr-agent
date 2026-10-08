@@ -55,6 +55,10 @@ public class TemplateShareEntity implements OwnedEntity {
     @Column(columnDefinition = "TEXT")
     private String tags;
 
+    @Schema(description = "发布时钉住的源版本号 (V3.1 F-44.1); 为空表示按当前定义克隆")
+    @Column(name = "source_version")
+    private Integer sourceVersion;
+
     @Schema(description = "克隆次数")
     @Column(name = "clone_count", nullable = false)
     private int cloneCount = 0;

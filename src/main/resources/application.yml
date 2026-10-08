@@ -90,6 +90,43 @@ agent:
     context-token-limit: 8000
     context-warn-ratio: 0.8
 
+  # ===== V3.1 F-47 工具结果体积治理 =====
+  # 工具结果在「产出处」压缩一次(ToolResultCompressor), 回灌模型 / 下发前端 / 落库三处共用同一份文本。
+  # max-length 默认与 V3.0 的 TOOL_RESULT_MAX_LEN 一致 → 升级后"上限"行为不变;
+  # 本项修复的是 V3.0 的两个漏点(前端下发与 assistant 正文拼接未截断)与"只保头部"的缺陷。
+  tools:
+    result:
+      # 单条工具结果字符上限(超出后保留头 70% + 尾 30%; 尾部常含结论/总计行/表格末尾)
+      max-length: 6000
+      # 单条 token 预算(0 = 不限); 比 max-length 更紧时生效。中文场景 1 字符 ≈ 1 token,
+      # 6000 字符理论上可吃掉 6000 token, 需要更严时可设 3000 左右
+      max-token-budget: 0
+      # 尾部保留比例(0~0.5); 0 = 退回 V3.0 的纯头截断
+      keep-tail-ratio: 0.3
+      # 落库到 messages.sources 时单个来源正文上限(防 web_extract 整页正文把单行撑大)
+      source-content-max-length: 4000
+      # 回灌窗口内工具结果的 token 总量预算(0 = 不限): 单条已限长, 但多轮工具调用的合计仍可能超窗口
+      window-token-budget: 6000
+      # 窗口预算触顶后, 本轮单条结果的字符上限
+      window-floor-length: 800
+      summary:
+        # LLM 摘要降级: 一次真实模型调用(有费用与延迟), 不需要可关掉 → 该档直接退化为硬截断
+        enabled: true
+        # 超过该字符数(且未达落盘阈值)时做摘要; 建议为 max-length 的 3 倍左右
+        threshold: 20000
+        # 摘要用模型(留空 = 系统默认对话模型; 建议用低成本模型)
+        model: ""
+      spill:
+        enabled: true
+        # 超过该字符数则全文落盘, 回灌只给"路径 + 规模 + 前 N 行", 模型用 tool_result_read 分页取全文
+        threshold: 32768
+        dir: ./data/tool-results
+        head-lines: 30
+        page-size: 200
+        max-page-size: 1000
+        # 落盘文件保留天数(0 = 不清理)
+        retain-days: 7
+
   # ===== V2.2 用户认证配置 =====
   # enabled=false 时所有接口免鉴权(兼容 V2.1 单用户场景); 生产环境务必 enabled=true
   auth:
@@ -393,6 +430,21 @@ agent:
       workflow-max-tokens-per-execution: 50000
       # 对话/Agent 级: 单次任务 token 上限 (0 = 不限); 跨工具轮累计达到后在轮次边界停止并收尾
       task-max-tokens: 50000
+
+    # ===== V3.1 F-44.2 成本计价 (成本报表的金额来源) =====
+    # 单位: 元 / 千 token。
+    # 默认**不配置** (pricing 为空) 时: cost_amount 落 null, 报表以 token 口径为准、金额列显示 "—"。
+    # 为什么不给默认值: 单价是"事实数据", 预设一组编造的价格会让错误的金额静默写进 llm_usage_logs,
+    # 事后无法与真实计价区分 —— 宁可留空。请按实际采购价填写后启用。
+    # 匹配规则: 精确匹配优先, 其次按前缀匹配 (配 "qwen" 可命中 qwen-max / qwen-plus 等变体)。
+    cost:
+      pricing: {}
+      # 填写示例:
+      # pricing:
+      #   qwen-max:   { input: 0.02,   output: 0.06 }
+      #   qwen-plus:  { input: 0.0008, output: 0.002 }
+      #   deepseek:   { input: 0.001,  output: 0.002 }
+      #   gpt-4o:     { input: 0.018,  output: 0.072 }
 
     # ===== V3.0-rc 生产化加固 (F-40.3/F-40.4) =====
     # F-40.3 API 限流: 固定窗口计数, 用户+IP 双维度 (未登录按 IP)

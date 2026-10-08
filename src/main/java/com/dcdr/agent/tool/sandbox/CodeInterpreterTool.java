@@ -175,7 +175,7 @@ public class CodeInterpreterTool extends AbstractTool {
                 : text.substring(0, SNIPPET_MAX_LEN) + "...";
     }
 
-    /** 输出截断: 与 AgentOrchestrator.TOOL_RESULT_MAX_LEN 同口径 */
+    /** 输出截断: 沙箱自身的结果上限, 与回灌治理的 agent.tools.result.max-length 口径保持一致 */
     private static String truncate(String text, int maxLen) {
         if (text == null || text.isEmpty()) {
             return "(无输出)";

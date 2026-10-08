@@ -152,9 +152,12 @@ public class TemplateMarketService {
         e.setDescription(desc);
         e.setCategory(blankToNull(req.getCategory()));
         e.setTags(req.getTags());
+        // V3.1 F-44.1: 发布即钉住版本号 —— 克隆按该版本还原, 源后续改动不影响已发布内容
+        e.setSourceVersion(resolveSourceVersion(type, req.getTargetId(), req.getVersion()));
         e.setCreatedAt(LocalDateTime.now());
         shareRepository.save(e);
-        log.info("分享模板到市场: {} (type={}, target={})", e.getId(), type, req.getTargetId());
+        log.info("分享模板到市场: {} (type={}, target={}, version={})",
+                e.getId(), type, req.getTargetId(), e.getSourceVersion());
         return toView(e);
     }
 
@@ -167,31 +170,61 @@ public class TemplateMarketService {
             if (parts.length != 3) {
                 throw new BusinessException(400, "非法的预置模板 ID: " + shareId);
             }
-            return cloneTarget(parts[1], parts[2], userId);
+            // 预置模板无分享记录 → 无钉住版本, 按当前定义克隆
+            return cloneTarget(parts[1], parts[2], null, userId);
         }
         TemplateShareEntity e = loadShare(shareId);
-        TemplateDtos.CloneResult r = cloneTarget(e.getType(), e.getTargetId(), userId);
+        TemplateDtos.CloneResult r = cloneTarget(e.getType(), e.getTargetId(), e.getSourceVersion(), userId);
         e.setCloneCount(e.getCloneCount() + 1);
         shareRepository.save(e);
         log.info("克隆市场模板: {} (type={}, target={}, user={})", shareId, e.getType(), e.getTargetId(), userId);
         return r;
     }
 
-    /** 按类型克隆目标 (Agent / 工作流), 分享模板与预置模板共用 */
-    private TemplateDtos.CloneResult cloneTarget(String type, String targetId, String userId) {
+    /**
+     * 按类型克隆目标 (Agent / 工作流), 分享模板与预置模板共用。
+     *
+     * @param version V3.1 F-44.1: 分享时钉住的源版本号; 为空(预置模板 / 历史数据 / 无版本记录)时
+     *                按当前定义克隆, 与 V3.0 行为保持一致
+     */
+    private TemplateDtos.CloneResult cloneTarget(String type, String targetId, Integer version, String userId) {
         TemplateDtos.CloneResult r = new TemplateDtos.CloneResult();
+        boolean byVersion = version != null && version > 0;
         if ("agent".equals(type)) {
-            AgentDtos.AgentView copy = agentDefinitionService.clone(targetId, userId, false);
+            AgentDtos.AgentView copy = byVersion
+                    ? agentDefinitionService.cloneFromVersion(targetId, version, userId)
+                    : agentDefinitionService.clone(targetId, userId, false);
             r.setType("agent");
             r.setNewId(copy.getId());
             r.setNewName(copy.getName());
         } else {
-            WorkflowDtos.WorkflowView copy = workflowEngine.clone(targetId, userId, false);
+            WorkflowDtos.WorkflowView copy = byVersion
+                    ? workflowEngine.cloneFromVersion(targetId, version, userId)
+                    : workflowEngine.clone(targetId, userId, false);
             r.setType("workflow");
             r.setNewId(copy.getId());
             r.setNewName(copy.getName());
         }
         return r;
+    }
+
+    /**
+     * 解析"发布钉住的版本号": 显式传入则校验存在(否则 404), 缺省取当前最新版本。
+     * 无任何版本记录时返回 {@code null} —— 兼容本特性上线前已存在的定义(按当前定义克隆)。
+     */
+    private Integer resolveSourceVersion(String type, String targetId, Integer requested) {
+        if ("agent".equals(type)) {
+            if (requested != null && !agentDefinitionService.versionExists(targetId, requested)) {
+                throw new BusinessException(404, "Agent 版本不存在: v" + requested, "VERSION_NOT_FOUND");
+            }
+            int latest = agentDefinitionService.latestVersion(targetId);
+            return requested != null ? requested : (latest > 0 ? latest : null);
+        }
+        if (requested != null && !workflowEngine.versionExists(targetId, requested)) {
+            throw new BusinessException(404, "工作流版本不存在: v" + requested, "VERSION_NOT_FOUND");
+        }
+        int latest = workflowEngine.latestVersion(targetId);
+        return requested != null ? requested : (latest > 0 ? latest : null);
     }
 
     /** 评分 (1~5, 累加式平均) */
@@ -243,6 +276,7 @@ public class TemplateMarketService {
         v.setTags(e.getTags() == null || e.getTags().isBlank()
                 ? List.of() : Arrays.asList(e.getTags().split("[,，]")));
         v.setOwnerId(e.getUserId());
+        v.setSourceVersion(e.getSourceVersion());
         v.setCloneCount(e.getCloneCount());
         v.setRatingAvg(e.getRatingCount() == 0 ? 0
                 : Math.round(e.getRatingSum() * 100.0 / e.getRatingCount()) / 100.0);

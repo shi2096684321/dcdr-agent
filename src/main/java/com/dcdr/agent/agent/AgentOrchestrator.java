@@ -22,6 +22,8 @@ import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
+import com.dcdr.agent.tool.result.ToolResultCompressor;
+import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.ToolInfo;
@@ -86,6 +88,8 @@ public class AgentOrchestrator {
     private final FrameworkToolExecutorBridge frameworkToolExecutorBridge;
     /** V3.1 长期记忆: 跨会话沉淀的用户级/Agent 级记忆, 在 prepareForChat 中召回注入 */
     private final LongTermMemoryService longTermMemoryService;
+    /** V3.1 F-47: 工具结果体积治理(唯一收口点, 见 ToolResultCompressor) */
+    private final ToolResultCompressor toolResultCompressor;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -119,7 +123,8 @@ public class AgentOrchestrator {
                              AgentDefinitionService agentDefinitionService, CostTracker costTracker,
                              RetrievalService retrievalService, KnowledgeBaseRepository kbRepository,
                              FrameworkToolExecutorBridge frameworkToolExecutorBridge,
-                             LongTermMemoryService longTermMemoryService) {
+                             LongTermMemoryService longTermMemoryService,
+                             ToolResultCompressor toolResultCompressor) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -139,6 +144,7 @@ public class AgentOrchestrator {
         this.kbRepository = kbRepository;
         this.frameworkToolExecutorBridge = frameworkToolExecutorBridge;
         this.longTermMemoryService = longTermMemoryService;
+        this.toolResultCompressor = toolResultCompressor;
     }
 
     /**
@@ -394,7 +400,8 @@ public class AgentOrchestrator {
                                 // 下一轮执行本轮新工具(多步 agentic); tracedTool 对整批工具执行计时
                                 Flux<ChatChunk> nextTool = tracedTool(Flux
                                         .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId, t))
+                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
+                                                toolResultCompressor.allowanceForRound(history), t))
                                         .subscribeOn(Schedulers.boundedElastic()),
                                         t, currentRound, resultsById);
                                 // 关键时序: 先执行工具拿到真实结果, 再构造 tool 消息回灌 history 并发起下一轮生成。
@@ -406,9 +413,9 @@ public class AgentOrchestrator {
                                     List<Message> roundMsgs = new ArrayList<>();
                                     roundMsgs.add(assistMsg);
                                     for (ChatChunk tc : currentRound) {
-                                        String raw = resultsById.getOrDefault(tc.getId(), "工具执行失败或未返回结果");
-                                        // 回灌内容截断, 控制 token 开销
-                                        String res = truncate(raw, TOOL_RESULT_MAX_LEN);
+                                        // 体积治理已在工具结果产出处完成(executeTools 中的 ToolResultCompressor),
+                                        // 此处不再二次截断 —— 否则同一份内容会出现两种口径(且头截断会丢掉尾部结论)
+                                        String res = resultsById.getOrDefault(tc.getId(), "工具执行失败或未返回结果");
                                         Message toolMsg = new Message();
                                         toolMsg.setRole("tool");
                                         toolMsg.setToolCallId(tc.getId());
@@ -591,23 +598,35 @@ public class AgentOrchestrator {
         if (wireRequest != null && !wireRequest.isBlank()) {
             params.put("wireRequest", wireRequest);
         }
+        // 本轮模型输出采集(落 steps_json 的 outputPreview/outputChars): 就地累积本轮正文,
+        // 使"这一轮到底答了什么"在调用链里可查 —— 此前链路只有 token/耗时数字, 复盘时看不到任何输出。
+        // 卷在模型流上(而非下游消费点), 三个终止回调都能读到已产出的部分: 异常/中断路径同样有现场。
+        final StringBuilder roundOutput = new StringBuilder();
         return round
+                .doOnNext(c -> {
+                    if ("chunk".equals(c.getType()) && c.getContent() != null) {
+                        roundOutput.append(c.getContent());
+                    }
+                })
                 .doOnSubscribe(s -> start[0] = System.nanoTime())
                 // 必须用 doOnComplete/doOnError/doOnCancel 而非 doFinally —— 两者时机不同:
                 // doFinally 是"终止信号已传给下游之后"才执行, 而 Controller 侧用 doFinally 收尾
                 // summary(触发落库)。若此处用 doFinally, 最后一轮的记录会晚于 summary,
                 // 该轮步骤直接丢失(实测: 单轮对话的日志里只剩 routing)。
                 // 三个 doOnXxx 都在信号向下游传播"之前"执行, 保证记录先于落库。
-                .doOnComplete(() -> recordRound(t, purpose, provider, usageHolder, start, false, params))
-                .doOnError(e -> recordRound(t, purpose, provider, usageHolder, start, false, params))
-                .doOnCancel(() -> recordRound(t, purpose, provider, usageHolder, start, true, params));
+                .doOnComplete(() -> recordRound(t, purpose, provider, usageHolder, start, false, params, roundOutput))
+                .doOnError(e -> recordRound(t, purpose, provider, usageHolder, start, false, params, roundOutput))
+                .doOnCancel(() -> recordRound(t, purpose, provider, usageHolder, start, true, params, roundOutput));
     }
 
     /** 记录一轮 LLM 调用步骤(供 tracedRound 的三个终止回调复用; interrupted 仅取消时为 true) */
     private static void recordRound(com.dcdr.agent.common.log.LlmCallTrace t, String purpose,
                                     ChatModelProvider provider, ChatResponse.TokenUsage[] usageHolder,
-                                    long[] start, boolean interrupted, Map<String, Object> params) {
+                                    long[] start, boolean interrupted, Map<String, Object> params,
+                                    StringBuilder roundOutput) {
         ChatResponse.TokenUsage u = usageHolder[0];
+        // 本轮输出预览: 中断/出错时记的是"已产出的部分", 这正是排查最需要的现场
+        com.dcdr.agent.common.log.LlmCallTrace.putOutput(params, roundOutput);
         t.recordLlm(purpose, provider.getName(),
                 u != null ? u.getPrompt() : null,
                 u != null ? u.getCompletion() : null,
@@ -737,7 +756,7 @@ public class AgentOrchestrator {
                                         List<String> outToolResults, List<Map<String, Object>> collectedSources,
                                         String userQuery, List<String> knowledgeBaseIds,
                                         Map<String, String> outResultsById,
-                                        String userId, String sessId,
+                                        String userId, String sessId, int resultMaxChars,
                                         com.dcdr.agent.common.log.LlmCallTrace t) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
@@ -775,6 +794,8 @@ public class AgentOrchestrator {
             KnowledgeSearchContextHolder.set(knowledgeBaseIds);
             // F-43: 沙箱工具的审计需要 userId/sessionId, 同线程注入, finally 清除防串号
             SandboxContextHolder.set(userId, sessId);
+            // F-47: 工具结果落盘按会话分目录, 分页读取工具据此做会话隔离
+            ToolResultContextHolder.set(userId, sessId);
             try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
@@ -877,6 +898,12 @@ public class AgentOrchestrator {
                         // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)
                         result = rebuildCompact(srcs);
                     }
+                    // V3.1 F-47 单一收口点: 工具结果在此压缩一次, 后续三处消费共用同一份文本 ——
+                    //   ① history 的 tool 消息(回灌模型) ② ChatChunk.result(下发前端) ③ assistant 正文(落库)
+                    // 策略见 ToolResultCompressor: 落盘 → LLM 摘要 → 头尾保留硬截断。
+                    // 在产出处收口(而非三个消费点各截一次)是"口径一致"的结构性保证:
+                    // V3.0 的缺陷正是只有 2 处截断, 前端下发与 assistant 正文都被漏掉。
+                    result = toolResultCompressor.compress(name, result, resultMaxChars).text();
                     outToolResults.add(result);
                     // 按 tool_call_id 记录回灌结果(与 tool 消息配对)
                     outResultsById.put(tc.getId(), result);
@@ -916,6 +943,7 @@ public class AgentOrchestrator {
                 // 清除 ThreadLocal, 防止线程池线程复用导致知识库 ID 泄漏到下一轮无关对话
                 KnowledgeSearchContextHolder.clear();
                 SandboxContextHolder.clear();
+                ToolResultContextHolder.clear();
             }
         }));
     }
@@ -968,8 +996,8 @@ public class AgentOrchestrator {
     /** 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮 */
     private static final int MAX_TOOL_ROUNDS = 10;
 
-    /** 工具结果回灌到模型上下文时的最大长度(字符), 超长截断以控制 token 开销 */
-    private static final int TOOL_RESULT_MAX_LEN = 6000;
+    // 注: 工具结果的回灌长度上限已收敛到配置 agent.tools.result.max-length,
+    // 压缩统一由 ToolResultCompressor 在"结果产出处"完成(V3.1 F-47), 编排层不再自行截断。
 
     /**
      * 基于 Markdown 结构特征的通用正文清洗。
@@ -1087,15 +1115,6 @@ public class AgentOrchestrator {
         }
 
         return result;
-    }
-
-    /**
-     * 通用截断: 超出 maxLen 字符时截断并追加提示。null/空原样返回。
-     */
-    private static String truncate(String text, int maxLen) {
-        if (text == null) return "";
-        if (text.length() <= maxLen) return text;
-        return text.substring(0, maxLen) + "\n...(工具结果过长已截断)";
     }
 
     /**
@@ -1988,6 +2007,8 @@ public class AgentOrchestrator {
             if (wireRequestSync != null && !wireRequestSync.isBlank()) {
                 params.put("wireRequest", wireRequestSync);
             }
+            // 本轮输出预览: chatSync 为单轮同步调用, 此内容即该轮(也是本次请求)的最终答案正文
+            com.dcdr.agent.common.log.LlmCallTrace.putOutput(params, response.getContent());
             t.recordLlm("chatSync-answer", prepSync.answerProvider().getName(),
                     u != null ? u.getPrompt() : null,
                     u != null ? u.getCompletion() : null,

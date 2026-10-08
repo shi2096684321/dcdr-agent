@@ -12,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -25,11 +26,14 @@ import java.util.Map;
 public class InMemoryChatMemory implements ChatMemory {
 
     private final int maxMessages;
+    /** V3.1 F-47.6: sources 落库前单个来源正文的字符上限 */
+    private final int sourceContentMaxLength;
     private final MessageRepository messageRepository;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public InMemoryChatMemory(AgentProperties properties, MessageRepository messageRepository) {
         this.maxMessages = properties.getMemory().getMaxMessages();
+        this.sourceContentMaxLength = properties.getTools().getResult().getSourceContentMaxLength();
         this.messageRepository = messageRepository;
     }
 
@@ -60,10 +64,28 @@ public class InMemoryChatMemory implements ChatMemory {
         }
     }
 
-    private static String toJsonSources(List<Map<String, Object>> sources) {
+    /**
+     * 序列化引用来源, 并做<b>落库截断</b>(V3.1 F-47.6)。
+     * <p>{@code web_extract} 抓取的整页正文若不截断, 单行可达数百 KB —— 既撑大 messages 表,
+     * 又让刷新后前端每次都要全量拉取。这里在落库边界统一收口(与
+     * {@code agent.tools.result.source-content-max-length} 同一口径)。
+     * <p>刻意不改动入参集合: 同一份 sources 还会经 done 分块下发前端, 序列化器不应有副作用。
+     */
+    private String toJsonSources(List<Map<String, Object>> sources) {
         if (sources == null || sources.isEmpty()) return null;
         try {
-            return MAPPER.writeValueAsString(sources);
+            List<Map<String, Object>> safe = new ArrayList<>(sources.size());
+            for (Map<String, Object> source : sources) {
+                if (source == null) continue;
+                Map<String, Object> copy = new LinkedHashMap<>(source);
+                Object content = copy.get("content");
+                if (content != null && content.toString().length() > sourceContentMaxLength) {
+                    copy.put("content", content.toString().substring(0, sourceContentMaxLength)
+                            + "…(来源正文已截断)");
+                }
+                safe.add(copy);
+            }
+            return MAPPER.writeValueAsString(safe);
         } catch (Exception e) {
             return null;
         }
