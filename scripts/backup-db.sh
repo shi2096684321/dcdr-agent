@@ -17,8 +17,12 @@ DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-agent}"
 DB_USER="${DB_USER:-agent}"
-BACKUP_DIR="${BACKUP_DIR:-/var/backups/dcdr-agent}"
-DATA_DIR="${DATA_DIR:-./data}"          # 应用数据目录 (含 kb/ uploads/)
+# ⚠️ V3.1 防复发 (2026-09-28): BACKUP_DIR 必须是**宿主机可见**的目录(bind mount 挂进来的),
+#    不能留在容器文件系统内 —— 容器内路径与 Docker VM 的 vhdx 同生共死: vhdx 被删时
+#    数据与备份会一起消失(2026-09-28 已实际发生, 备份目录 /var/backups 随之一并丢失)。
+#    当前约定: compose 中 `./data/backup:/backup`, 即宿主机 <项目>/data/backup。
+BACKUP_DIR="${BACKUP_DIR:-/backup}"
+DATA_DIR="${DATA_DIR:-/app/data}"       # 应用数据目录 (含 kb/ uploads/, 经 bind mount 落宿主机)
 DB_RETAIN_DAYS=14                        # 数据库备份保留天数
 FILE_RETAIN_DAYS=30                      # 文件备份保留天数
 # --------------------------------------

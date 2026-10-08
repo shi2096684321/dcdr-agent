@@ -2,8 +2,16 @@
 # 用法: 在项目根目录执行 `docker compose up -d`
 #   - 应用镜像由本仓库 Dockerfile 现场构建 (无需提前 docker pull)
 #   - 使用 pgvector/pgvector:pg16 镜像(已预装 pgvector 扩展), 通过 CREATE EXTENSION vector 激活
-#   - 数据使用命名卷 pgdata, 物理存于 Docker VM 虚拟磁盘 E:\appdata\docker\DockerDesktop\DockerDesktop.vhdx
-#     (Docker Desktop dataFolder 已配置到 E 盘, 命名卷数据随之落在 E 盘, 不占 C 盘空间)
+#   - 数据安全策略 (V3.1, 2026-09-28 事故后确立): PG 数据仍用命名卷 pgdata, 但**每日由 pg_dump
+#     落到宿主机可见目录**。原因: 命名卷数据物理上藏在 Docker VM 的 vhdx 里, Docker Desktop
+#     重置/重装会随 vhdx 一起消失(2026-09-28 已实际发生, 全部业务数据丢失)。
+#     备份与恢复: scripts/backup-db.ps1 (Windows 计划任务) / scripts/backup-db.sh
+#     ⚠️ PG 数据**不能**直接 bind mount 到 Windows 宿主目录 —— 已实测: initdb 报
+#     `data directory has invalid permissions (Permissions should be u=rwx (0700))`,
+#     Docker Desktop 的宿主目录共享层不保留 Unix 权限位(容器内实测 chmod 700 后仍为 0777)。
+#   - 环境约束: Docker Desktop 的 dataFolder 与 Hyper-V 的 VM 配置路径都必须落在 E 盘 ——
+#     C 盘仅剩 3.8GB, 放不下 VM 的 4096MB 内存内容文件(.VMRS), VM 会启动失败(0x80070070)。
+#     Hyper-V 侧命令: Set-VMHost -VirtualMachinePath E:\appdata\docker\HyperV\VM -VirtualHardDiskPath E:\appdata\docker\HyperV\VHD
 # 仅起数据库(开发期本机跑 jar): `docker compose up -d postgres redis`
 # 无 Docker 环境请参考 docs/sql/README.md 末尾的"无 Docker 备选方案"。
 
@@ -110,7 +118,12 @@ services:
       - "5432:5432"
     volumes:
       - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      # PG 数据仍用命名卷 (V3.1 实测: 无法 bind mount 到 Windows 宿主目录, initdb 权限检查会失败,
+      # 详见文件头说明)。数据安全的兜底是下面这个**落宿主机**的备份挂载 + 定时 pg_dump。
       - pgdata:/var/lib/postgresql/data
+      # 备份落点: 容器内 /backup <-> 宿主机 <项目>/data/backup
+      # (备份绝不能留在容器文件系统内 —— 那同样活在 vhdx 里, 与数据一损俱损)
+      - ./data/backup:/backup
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dcdr_agent -d dcdr_agent"]
       interval: 5s
@@ -144,6 +157,8 @@ services:
 volumes:
   zipkindata:
     driver: local
+  # PG 数据卷。⚠️ 卷数据藏在 Docker VM 的 vhdx 内, Docker Desktop 重置会随 vhdx 一起消失
+  # (2026-09-28 事故)。因此数据安全必须依赖 scripts/backup-db.* 把 pg_dump 落到宿主机目录。
   pgdata:
     driver: local
   # V3.1 F-43: Sandbox Server 元数据(snapshot / 模板目录)
