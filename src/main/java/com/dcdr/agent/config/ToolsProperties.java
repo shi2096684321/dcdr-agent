@@ -14,6 +14,7 @@ public class ToolsProperties {
     private ToolConfig calculator = new ToolConfig();
     private ToolConfig time = new ToolConfig();
     private SandboxConfig sandbox = new SandboxConfig();
+    private WebToolsConfig web = new WebToolsConfig();
 
     @Data
     public static class WeatherConfig {
@@ -90,5 +91,55 @@ public class ToolsProperties {
 
         /** 是否禁止沙箱出网(true=NetworkPolicy 默认 DENY) */
         private boolean networkDisabled = true;
+    }
+
+    /**
+     * V3.2 自建联网搜索配置(替代第三方 Tavily)。
+     * <p>
+     * 由两个原生 {@code Tool} 提供能力, 工具名与原先 MCP 版本保持一致
+     * ({@code web_search} / {@code web_extract}), 因此 Agent 编排层零改动:
+     * <ul>
+     *   <li>{@code web_search} → SearXNG 元搜索(自托管, 无 API Key)</li>
+     *   <li>{@code web_extract} → crux 正文提取(Mozilla Readability 移植)</li>
+     * </ul>
+     * SearXNG 需在 {@code settings.yml} 中开启 {@code search.formats: [html, json]}。
+     */
+    @Data
+    public static class WebToolsConfig {
+
+        /** 是否启用自建联网搜索(关闭时两个工具不注册, 模型不可见) */
+        private boolean enabled = true;
+
+        /** SearXNG 服务地址(compose 内为 http://searxng:8080, 宿主本机跑 jar 用 http://localhost:8888) */
+        private String searxngUrl = "http://localhost:8888";
+
+        /** 搜索语言, 如 zh-CN / en-US / all */
+        private String language = "zh-CN";
+
+        /** 单次搜索默认返回条数(会被模型传入的 maxResults 覆盖, 上限见 maxResultsLimit) */
+        private int maxResults = 8;
+
+        /** 单次搜索最多返回条数上限 */
+        private int maxResultsLimit = 12;
+
+        /** HTTP 超时(秒): 搜索与抓取共用 */
+        private int timeoutSeconds = 15;
+
+        /** 单页正文最大长度(字符), 超出截断 */
+        private int maxContentLength = 8000;
+
+        /** 单次 web_extract 最多抓取的 URL 数 */
+        private int maxExtractUrls = 3;
+
+        /**
+         * 是否开启 SSRF 防护: 拒绝环回/内网/链路本地(含云元数据 169.254.169.254)等地址。
+         * <p>仅在需要抓取内网内部站点时才应关闭。
+         */
+        private boolean ssrfGuard = true;
+
+        /** 抓取时使用的 User-Agent(部分站点对无 UA 的请求直接 403) */
+        private String userAgent =
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        + "(KHTML, like Gecko) Chrome/120.0 Safari/537.36";
     }
 }

@@ -1,0 +1,65 @@
+# ===== V3.2 自建联网搜索: SearXNG 配置 =====
+# 挂载到容器 /etc/searxng/settings.yml (见 docker-compose.yml 的 searxng 服务)。
+#
+# 合并机制(源自 searx/settings_loader.py 的 update_settings):
+#   · 非 engines 的键 → 与镜像内置默认配置递归合并(update_dict), 只覆盖写到的字段;
+#   · engines 列表     → 先按 use_default_settings.engines.remove / keep_only 过滤,
+#                        再按 name 与默认引擎递归合并(同名只覆盖指定字段, 不会丢默认字段)。
+use_default_settings:
+  engines:
+    # 只保留国内可直连的引擎。
+    # 镜像默认启用的是 brave / duckduckgo / google 等, 在国内全部超时,
+    # 表现为搜索返回 0 条结果(响应里 unresponsive_engines 全是 timeout)。
+    keep_only:
+      - baidu
+      - bing
+      - 360search
+      - sogou
+      - quark
+
+server:
+  # 会话与加密用的密钥。
+  # ⚠️ 生产环境请替换为随机字符串: openssl rand -hex 32
+  secret_key: "dcdr-agent-searxng-please-change-me"
+
+  # 关闭限流器。限流器面向公网多用户场景, 本应用是内网单一调用方,
+  # 开启后会因高并发检索误触发 429。
+  limiter: false
+
+  # 不代理图片(减少无谓流量与延迟)
+  image_proxy: false
+
+search:
+  # ★ 关键配置: 开启 JSON 输出格式。
+  #   默认只有 html, 不开启时 /search?format=json 会被拒绝(403),
+  #   自建的 web_search 工具将完全不可用。
+  formats:
+    - html
+    - json
+
+  # 默认搜索语言
+  default_lang: zh-CN
+
+  # 安全搜索级别: 0=不过滤, 1=中等, 2=严格
+  safe_search: 0
+
+engines:
+  # 默认定义中这些国内引擎均为 disabled: true, 此处逐个启用。
+  # 注意: 不要写 engine / shortcut / categories 等字段 —— 它们在默认配置里已有,
+  #       这里只需按 name 覆盖要改的字段(写错字段名会静默无效)。
+  - name: baidu
+    disabled: false
+
+  - name: bing
+    disabled: false
+    # 官方注释注明: 部署在中国的实例应使用国内版基址
+    base_url: https://cn.bing.com
+
+  - name: 360search
+    disabled: false
+
+  - name: sogou
+    disabled: false
+
+  - name: quark
+    disabled: false

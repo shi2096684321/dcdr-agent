@@ -22,13 +22,25 @@
     </properties>
 
     <!-- ===== V3.0 LangChain4j 对照版 (feat/v3.0-langchain4j 分支) =====
-         BOM 统一管理核心库与集成模块版本, 避免模块间错配 -->
+         BOM 统一管理核心库与集成模块版本, 避免模块间错配。
+         注意: LangChain4j 分两条发布线, 两套 BOM 互不包含——
+           langchain4j-bom           = 核心库(GA 版号, 如 1.19.0)
+           langchain4j-community-bom = 社区厂商集成(带 beta 后缀, 如 1.19.0-beta29)
+         两者主版本需保持一致(1.19.0 ↔ 1.19.0-beta29)。 -->
     <dependencyManagement>
         <dependencies>
             <dependency>
                 <groupId>dev.langchain4j</groupId>
                 <artifactId>langchain4j-bom</artifactId>
                 <version>1.19.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- V3.2 新增: 社区集成 BOM(dashscope 等厂商集成模块的版本由此统一管理) -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-community-bom</artifactId>
+                <version>1.19.0-beta29</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -113,6 +125,32 @@
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j-http-client-jdk</artifactId>
+        </dependency>
+
+        <!-- V3.2 RAG 重排(Rerank): 百炼(DashScope) 原生集成, 提供 QwenScoringModel
+             (实现 LangChain4j ScoringModel 接口, 底层走阿里官方 dashscope-sdk-java)。
+             版本由上方 langchain4j-community-bom 统一管理, 此处不写 version。 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-dashscope</artifactId>
+        </dependency>
+
+        <!-- V3.2 自建联网搜索: 网页正文提取
+             crux = Mozilla Readability 算法的 Java/Kotlin 移植(去导航/广告/页脚, 只留正文),
+             用于替代 Tavily 的 extract 能力。
+             ⚠️ 必须锁 4.x: 5.x 已重构为 Kotlin 协程(Crux#extractFrom 是 suspend 函数)并移除了
+             articles.ArticleExtractor, 从 Java 调用需协程桥接; 4.0 保留同步链式 API。 -->
+        <dependency>
+            <groupId>com.chimbori.crux</groupId>
+            <artifactId>crux</artifactId>
+            <version>4.0</version>
+        </dependency>
+
+        <!-- V3.2 自建联网搜索: HTML → Markdown 转换(把提取出的正文转成 LLM 友好的 Markdown) -->
+        <dependency>
+            <groupId>com.vladsch.flexmark</groupId>
+            <artifactId>flexmark-html2md-converter</artifactId>
+            <version>0.64.8</version>
         </dependency>
 
         <!-- V3.1 F-43 代码执行沙箱: OpenSandbox Java SDK(自托管沙箱中间件客户端)

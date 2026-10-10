@@ -219,6 +219,25 @@ agent:
     retrieval:
       top-k: 5
       min-score: 0.3
+      hybrid:                  # ← 第二层：混合检索
+        enabled: true
+        rrf-k: 60
+      # ===== V3.2 相关性重排(Rerank): 默认关闭 =====
+      # engine=dashscope: 百炼原生重排(QwenScoringModel + 官方 dashscope-sdk-java), 复用 DASHSCOPE_API_KEY
+      # engine=openai   : OpenAI 兼容 /rerank 端点(自研适配器, 对接 Jina / Cohere / 自部署 bge-reranker)
+      # 注意: 重排 relevance_score 是"单次请求内的相对分", 不可跨请求比较, min-score 按此语义理解
+      rerank:
+        enabled: false
+        engine: dashscope
+        model: qwen3.7-text-rerank
+        # 留空走 SDK 默认端点; 需专属域名({WorkspaceId}.cn-beijing.maas.aliyuncs.com)时再填
+        base-url: ${DASHSCOPE_RERANK_BASE_URL:}
+        # 留空则重排 Bean 不注册(自动禁用)
+        api-key: ${DASHSCOPE_API_KEY:}
+        # 排序指令(可选, 仅 engine=dashscope 生效, 建议英文); 留空用模型默认(问答检索任务)
+        instruct: ""
+        # 重排后保留条数, 留空则用上方 top-k
+        # max-results: 5
     # ===== V2.1 OCR 扫描版 PDF 文本提取 =====
     # 关闭时扫描版 PDF 直接报错(原 PdfReader 行为); 开启后自动降级调 qwen3.5-ocr
     # 复用 DASHSCOPE_API_KEY, 走 OpenAI 兼容协议 /chat/completions
@@ -516,27 +535,46 @@ agent-tools:
     max-concurrent: 2
     # 禁止沙箱出网(NetworkPolicy 默认 DENY)
     network-disabled: true
+  # ===== V3.2 自建联网搜索(替代第三方 Tavily) =====
+  # 由两个原生 Tool 提供能力, 工具名与原先 MCP 版本完全一致(web_search / web_extract),
+  # 因此 Agent 编排层(硬编码按 web_search 判断)与前端联网开关均零改动:
+  #   web_search  → SearXNG 元搜索(自托管, AGPL-3.0, 无 API Key, 无调用费用)
+  #   web_extract → 抓取网页正文(crux = Mozilla Readability 移植 + flexmark 转 Markdown)
+  # 前置条件: SearXNG 的 settings.yml 必须开启 search.formats: [html, json],
+  #           否则 format=json 会被拒绝(403)。部署见 docker-compose.yml 的 searxng 服务。
+  # 能力边界: 抓取不执行 JavaScript, 纯 SPA 站点提取不到正文(上游会降级为搜索摘要)。
+  web:
+    enabled: true
+    # 本机跑 jar 用 localhost; 若应用跑在 compose 内则改为 http://searxng:8080
+    searxng-url: ${AGENT_TOOLS_WEB_SEARXNG_URL:http://localhost:8888}
+    language: zh-CN
+    max-results: 8
+    max-results-limit: 12
+    timeout-seconds: 15
+    # 单页正文最大长度(字符), 超出截断
+    max-content-length: 8000
+    # 单次 web_extract 最多抓取的 URL 数
+    max-extract-urls: 3
+    # SSRF 防护: 拒绝环回/内网/链路本地(含云元数据 169.254.169.254)
+    ssrf-guard: true
 
 # ===== MCP Server 连接配置 (本应用作为 Host, 连接外部 MCP Server) =====
 # 只需写 Client 去访问别人提供的 MCP Server, 不需要自己起 Server。
 # 下面为示例(默认注释): 启用时去掉注释, 并把 command 换成你实际可用的 MCP Server 启动命令。
 # 注意: command 为 stdio 启动命令, 系统需能执行 npx/python 等。
+# V3.2: 原 Tavily(第三方收费 API + 需 npx/Node 子进程) 已由上方 agent-tools.web 的自建方案取代
+#       (SearXNG 搜索 + crux 正文提取), 故 servers 置空。
+#       如需临时切回 Tavily 做效果对比, 取消下方注释即可 ——
+#       ⚠️ 两者注册的工具名相同(web_search / web_extract), ToolRegistry 为 Map 后者覆盖前者,
+#          必须先关闭 agent-tools.web.enabled, 不可同时启用。
 mcp:
-  servers:
-    - name: web-search
-      # Tavily 官方 MCP Server (stdio, 由 npx 拉起)
-      # 需设置环境变量 TAVILY_API_KEY(如下), 否则 Server 启动后调用会报错:
-      #   Windows(PowerShell):  $env:TAVILY_API_KEY='tvly-xxx'
-      #   Linux/macOS:          export TAVILY_API_KEY='tvly-xxx'
-      # 注: npx 拉起的子进程会继承本应用的环境变量, 故在启动 dcdr-agent 前设置即可
-      command: ["D:\\app\\nodejs\\npx.cmd", "-y", "tavily-mcp@0.2.1"]
-      # 该 Server 暴露的工具名, 允许在流式对话中被调用
-      streaming-tools: ["tavily-search", "tavily-extract"]
-      # 把第三方工具名对齐到本项目约定: tavily-search -> web_search
-      # 这样 AgentOrchestrator / 前端开关(都按 web_search 判断)无需改动
-      aliases:
-        tavily-search: web_search
-        tavily-extract: web_extract
+  servers: []
+  # - name: web-search
+  #   command: ["D:\\app\\nodejs\\npx.cmd", "-y", "tavily-mcp@0.2.1"]
+  #   streaming-tools: ["tavily-search", "tavily-extract"]
+  #   aliases:
+  #     tavily-search: web_search
+  #     tavily-extract: web_extract
 
 # SpringDoc OpenAPI 配置
 springdoc:

@@ -47,6 +47,9 @@ services:
       # 故经宿主映射端口访问(容器内可用 host.docker.internal 指向宿主)
       OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
       OPEN_SANDBOX_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
+      # V3.2 自建联网搜索: 容器内应用访问 compose 内的 searxng 服务
+      # (本机跑 jar 时无需设置, application.yml 默认 http://localhost:8888)
+      AGENT_TOOLS_WEB_SEARXNG_URL: ${AGENT_TOOLS_WEB_SEARXNG_URL:-http://searxng:8080}
     volumes:
       # 上传文件/生成图片视频/知识库文档落盘持久化, 容器重建不丢
       - ./data:/app/data
@@ -152,6 +155,32 @@ services:
     # 内存存储即可满足本地/开发排障, 重启即清空; 如需持久化可挂卷
     volumes:
       - zipkindata:/data
+    restart: unless-stopped
+
+  # V3.2 自建联网搜索(替代第三方 Tavily)
+  # SearXNG 元搜索引擎: AGPL-3.0 开源、无 API Key、无调用费用, 结果聚合多引擎。
+  # 与 agent 的对接: 由应用内两个原生 Tool 调用(见 agent-tools.web 配置):
+  #   GET http://<host>:8888/search?q=...&format=json  (需 settings.yml 开启 json 格式)
+  # 内存占用很小(纯 Python 服务, 无浏览器), 对 Docker VM 4GB 的上限无压力。
+  searxng:
+    image: searxng/searxng:latest
+    container_name: dcdr-agent-searxng
+    ports:
+      # 宿主 8888 -> 容器 8080 (避开 agent 已占用的 8080)
+      - "8888:8080"
+    volumes:
+      # 配置以挂载方式提供: 改配置只需重启容器, 无需重建镜像
+      - ./docker/searxng:/etc/searxng:rw
+    environment:
+      # 使用挂载进来的自定义配置(含 search.formats: [html, json])
+      - SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    # 与 postgres / opensandbox-server 同因: Docker 20.10.8 的旧 seccomp profile 拦截
+    # glibc 的 clone3, 导致容器内 pthread_create 失败("can't start new thread")。
+    # SearXNG 是 Python 服务, 启动期必需创建线程, 故必须 seccomp=unconfined;
+    # 升级 Docker 到 20.10.10+ 后可去掉。
+    security_opt:
+      - seccomp=unconfined
     restart: unless-stopped
 
 volumes:

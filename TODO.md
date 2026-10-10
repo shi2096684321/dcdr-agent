@@ -239,6 +239,112 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 
 ---
 
+## V3.2 RAG 重排（Rerank）接入百炼（2026-10-08）
+
+### 已实现
+- 接入百炼 `qwen3.7-text-rerank`，**直接用 LangChain4j 社区轮子 `QwenScoringModel`**
+  （`dev.langchain4j:langchain4j-community-dashscope:1.19.0-beta29`，实现 `ScoringModel` 接口，
+  底层走阿里官方 `dashscope-sdk-java:2.22.24`），**未手写 HTTP 适配器**。
+- 装配在 `RagRetrievalConfig`，按 `agent.rag.retrieval.rerank.engine` 二选一（条件互斥，最多注册一个 Bean）：
+  - `dashscope` = `QwenScoringModel`，复用 `DASHSCOPE_API_KEY`
+  - `openai` = 自研 `OpenAiCompatibleScoringModel`（Jina / Cohere / 自部署 bge-reranker）
+- `RerankConfig` 新增 `engine` / `instruct`；`application.yml` 补 `rerank` 段（默认 `enabled: false`）。
+
+### 关键设计决策
+- **两条发布线、两套 BOM 互不包含**：LangChain4j 核心库与社区集成分开发布 ——
+  `langchain4j-bom:1.19.0`（核心库，116 个模块，**不含任何 community 模块**）
+  与 `langchain4j-community-bom:1.19.0-beta29`（社区集成，70 个模块，含 dashscope）。
+  故项目在 `<dependencyManagement>` **同时引入两套 BOM**，依赖不写 version；
+  两套主版本须保持一致（`1.19.0` ↔ `1.19.0-beta29`，其 pom 依赖 `langchain4j-core:1.19.0`）。
+- **不设 `topN`**：`QwenScoringModel` 内部把 `output.results` 按 `index` 升序取分；
+  一旦设置 `topN`，服务端只返回 topN 条 → 分数列表短于入参，**破坏 `ScoringModel` 的 1:1 契约**。
+  截断统一交给 `ReRankingContentAggregator.maxResults`。
+
+### 踩坑记录
+- **同族模型的 rerank 端点并不统一，不能混用**：`qwen3.7-text-rerank` 走
+  `/api/v1/services/rerank/text-rerank/text-rerank`（嵌套 `input`/`parameters`），
+  而 `qwen3-rerank` 走 `/compatible-api/v1/reranks`（扁平结构）。SDK `TextReRank` 固定前者
+  → 只有 `qwen3.7-text-rerank` / `gte-rerank-v2` 能直接调通，`qwen3-rerank` 需另写适配器。
+- **`relevance_score` 是"单次请求内的相对分"**（官方明确），不可跨请求比较；
+  故 `rerank.min-score` 是"本次候选内的相对门槛"，与向量 `min-score` 的绝对相似度语义**不同**。
+- `gte-rerank` 已于 **2026-05-30 下线**，勿再使用。
+
+### 生效前置条件（当前均未满足）
+- `agent.rag.enabled` 必须为 `true`（当前 `false`，RAG 整体未启用，`RetrievalService` 会直接抛 503）
+- `agent.rag.retrieval.rerank.enabled: true` 且 `api-key` 非空，否则 Bean 不注册（自动禁用）
+- 需 `--spring.profiles.active=pg` + pgvector
+
+### 待验证
+- `dashscope-sdk-java:2.22.24` 直调 `qwen3.7-text-rerank` 需**真实 Key 冒烟**
+  （社区库 `QwenModelName` 常量未收录该模型，但 `modelName` 为 String 透传，理论可行）。
+
+---
+
+## V3.2 自建联网搜索（替代第三方 Tavily）（2026-10-09）
+
+### 已实现
+- **移除第三方 Tavily**（收费 API + 需 npx/Node 子进程 + `TAVILY_API_KEY`），
+  改为两个**原生 `Tool`**（非 MCP），工具名沿用以保证编排层零改动：
+  - `web_search` → `SearxngWebSearchTool`：调自托管 **SearXNG** 的 JSON 接口
+  - `web_extract` → `WebExtractTool`：
+    `WebClient(取字节) → jsoup(自动识别 charset) → crux(提取正文) → flexmark(转 Markdown)`
+- 配置：新增 `agent-tools.web.*`（`ToolsProperties.WebToolsConfig`）；
+  `mcp.servers` 置空（Tavily 配置以注释保留，便于回退对比）。
+- 部署：`docker-compose.yml` 新增 `searxng` 服务（宿主 8888）+ `docker/searxng/settings.yml`。
+
+### 关键设计决策
+- **不引入 Chromium**：Firecrawl / Crawl4AI 更成熟，但都需 Chromium（常驻 1~2GB），
+  而本机 Docker VM 固定 4GB（`memoryMiB=4096`，**Hyper-V 后端不支持动态内存**，
+  且动态内存对 Linux 客户机只能热添加不能回收），物理内存 16GB 而宿主仅余 1.8GB 可用 —— 塞不下。
+  故选纯 Java 库组合，**零额外内存占用**。代价：**不执行 JS，纯 SPA 站点提取不到正文**
+  （上游降级为搜索摘要，属预期行为）。
+- **依赖**：`crux 4.0`（正文提取）+ `flexmark-html2md-converter 0.64.8`（HTML→Markdown）；
+  jsoup 项目已有，未新增。
+
+### 踩坑记录
+- **crux 必须锁 4.x**：5.x 已重构为 Kotlin 协程（`Crux#extractFrom` 是 suspend 函数）
+  并**移除了 `articles.ArticleExtractor`**（只剩 LinkUrl / ImageUrl 提取），从 Java 调用需协程桥接；
+  4.0 保留同步链式 API：`new ArticleExtractor(HttpUrl, html).extractMetadata().extractContent().getArticle()`。
+- **⚠️ crux 4.0 的 `Article.document` 取法有坑（实测踩到并修复）**：
+  它把提取出的正文元素**直接挂在 Document 根下**，与自动创建的空 `<body>` **平级**，
+  因此 `article.getDocument().body().html()` **恒为空**（正文其实在 `html()` 里，`text()` 有值）。
+  必须先 `Jsoup.parse(doc.html())` **重新解析一次**（jsoup 会把游离元素归入 body）再取 body，
+  否则转 Markdown 为空、抓取被误判成"提取不到正文"。
+  实测对比：不重新解析 → Markdown 长度 0；重新解析后 → 正常提取（样例页 740 字符）。
+- **SearXNG 在 Docker 20.10.8 上起不来**：旧 seccomp profile 拦截 glibc 的 `clone3`，
+  容器内 `pthread_create` 失败报 `RuntimeError: can't start new thread`（实测容器反复 restarting）。
+  与 postgres / opensandbox-server 同因，解法：`security_opt: [seccomp=unconfined]`。
+- **SearXNG 默认引擎在国内全部不可用**：镜像默认启用 brave / duckduckgo / google / wikipedia 等，
+  实测响应 `unresponsive_engines` 全是 timeout，搜索返回 **0 条结果**；
+  而 `baidu` / `bing` / `360search` / `sogou` / `quark` 在默认配置里都是 `disabled: true`，需显式启用。
+  覆盖语法（源自容器内 `searx/settings_loader.py#update_settings`）：
+  `use_default_settings.engines.keep_only` 只做**筛选**、不改 disabled；自定义 `engines` 段与默认定义
+  **按 name 递归合并**（只覆盖写到的字段）。故两者配合：keep_only 只留国内引擎 + engines 段逐条 `disabled: false`。
+  bing 建议同时设 `base_url: https://cn.bing.com`（官方注释："for instances hosted in China"）。
+- **readability4j 不可用**：虽为纯 Java 且有 `ArticleExtractor`，但其 pom 把
+  `logback-core` / `logback-classic 1.2.3` 与 `junit 4.12` 声明为 **compile 依赖**（上游失误），
+  会与 Spring Boot 的 logback 冲突，需大量 exclusion 才能用。
+- **SearXNG 必须在 `settings.yml` 开启 `search.formats: [html, json]`**，
+  否则 `/search?format=json` 返回 403，搜索工具直接不可用。
+- **三个不可变更的契约**（改了编排层就废）：
+  1. 工具名必须为 `web_search` / `web_extract` —— `AgentOrchestrator` 对其有硬编码特判；
+  2. `web_extract` 的参数名必须为 `urls`（数组或单值）—— `enrichWithExtract` 按此名传参；
+  3. `web_extract` 的**完整正文必须放在 `sources[0].content`** —— 编排层从这里取全文，
+     再经 `cleanMarkdownContent` 清洗后写回搜索来源。
+- **中文站点编码**：必须用 `bodyToMono(byte[].class)` + `Jsoup.parse(InputStream, null, url)`
+  交给 jsoup 按 `<meta charset>` 判定编码；直接取 `String` 会让 GBK 站点乱码。
+
+### 待验证
+- 端到端联调需先 `docker compose up -d searxng`，确认
+  `http://localhost:8888/search?q=test&format=json` 返回 JSON（而非 403）。
+
+### 顺带改善（原 MCP 方案的遗留问题）
+- 原 MCP 传输层 `McpTransport#request` 在 `synchronized` 块内 `await`，使同一 Server 请求完全串行；
+  自建方案不经过 MCP，**该瓶颈自然消失**。
+- 新增 **SSRF 防护**（拒绝环回 / 内网 / 链路本地 / 云元数据 169.254.169.254），原方案无任何校验。
+
+---
+
 ## 环境事故：Docker Desktop 重置导致数据全丢（2026-09-28，已处置）
 
 ### 现象

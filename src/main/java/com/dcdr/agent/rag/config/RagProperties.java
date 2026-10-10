@@ -111,12 +111,26 @@ public class RagProperties {
     public static class RerankConfig {
         /** 重排总开关 */
         private boolean enabled = false;
-        /** OpenAI 兼容 rerank 端点 baseUrl (未配置则重排不回退, 视为关闭) */
+        /**
+         * 实现引擎:
+         * <ul>
+         *   <li>{@code dashscope}=百炼原生重排({@code QwenScoringModel}, 走官方 dashscope-sdk-java)</li>
+         *   <li>{@code openai}=OpenAI 兼容 HTTP 端点(自研适配器, 对接 Jina / Cohere / 自部署 bge-reranker)</li>
+         * </ul>
+         * 与 {@code agent.rag.embedding.providers[].engine} 同风格: 换引擎只改此值。
+         */
+        private String engine = "openai";
+        /** rerank 端点 baseUrl; engine=openai 时必填, engine=dashscope 时留空走 SDK 默认端点 */
         private String baseUrl;
-        /** API Key */
+        /** API Key; engine=dashscope 时复用 DASHSCOPE_API_KEY */
         private String apiKey;
-        /** rerank 模型名 */
+        /** rerank 模型名: dashscope 用 qwen3.7-text-rerank; openai 用服务商模型名 */
         private String model = "xxx-rerank";
+        /**
+         * 排序任务说明(仅 engine=dashscope 生效, 建议英文)。
+         * 留空则用模型默认: 问答检索任务("Given a web search query, retrieve relevant passages that answer the query.")。
+         */
+        private String instruct;
         /** 重排后保留的最低分; 为空则用检索 minScore */
         private Double minScore;
         /** 重排后保留的最大条数; 为空则用检索 topK */
