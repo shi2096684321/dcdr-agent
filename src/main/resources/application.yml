@@ -548,8 +548,9 @@ agent-tools:
     # 本机跑 jar 用 localhost; 若应用跑在 compose 内则改为 http://searxng:8080
     searxng-url: ${AGENT_TOOLS_WEB_SEARXNG_URL:http://localhost:8888}
     language: zh-CN
-    max-results: 8
-    max-results-limit: 12
+    # 结果清洗管线会过滤掉大量聚合页(实测约砍掉一半), 故默认取 12 条以保证过滤后仍有足够条数
+    max-results: 12
+    max-results-limit: 15
     timeout-seconds: 15
     # 单页正文最大长度(字符), 超出截断
     max-content-length: 8000

@@ -15,7 +15,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -42,9 +41,6 @@ public class SearxngWebSearchTool extends AbstractTool {
 
     /** 工具名: 与原先 MCP(tavily-search) 的 alias 保持一致, 编排层零改动 */
     public static final String NAME = "web_search";
-
-    /** 单条摘要最大长度(与原 McpTool 口径一致) */
-    private static final int SNIPPET_MAX = 200;
 
     /** 送入模型的来源条数上限 */
     private static final int MAX_SOURCES = 12;
@@ -168,57 +164,24 @@ public class SearxngWebSearchTool extends AbstractTool {
     }
 
     /**
-     * 解析 SearXNG 响应为来源卡片。
+     * 解析 SearXNG 响应为来源卡片, 随后交由 {@link SearchResultCleaner} 做
+     * 「过滤非文章页 → 清洗 URL/标题/摘要 → 去重」。
      * <p>响应形如 {@code {"results":[{"url","title","content","engine","score",...}]}}。
-     * 部分引擎会返回 {@code publishedDate}, 拼进摘要末尾供模型判断时效。
      */
     private List<Map<String, Object>> parseSources(String body, int limit) throws Exception {
-        List<Map<String, Object>> sources = new ArrayList<>();
         if (body == null || body.isBlank()) {
-            return sources;
+            return List.of();
         }
         JsonNode root = mapper.readTree(body);
         JsonNode results = root.path("results");
         if (!results.isArray()) {
             log.warn("SearXNG 响应缺少 results 数组(可能未开启 json 输出格式): 响应前 200 字符={}",
                     body.length() > 200 ? body.substring(0, 200) : body);
-            return sources;
+            return List.of();
         }
-        for (JsonNode r : results) {
-            if (sources.size() >= Math.min(limit, MAX_SOURCES)) {
-                break;
-            }
-            String url = r.path("url").asText("");
-            String title = r.path("title").asText("");
-            if (url.isBlank() || title.isBlank()) {
-                continue;
-            }
-            String snippet = buildSnippet(r);
-            Map<String, Object> s = new LinkedHashMap<>();
-            s.put("index", sources.size() + 1);
-            s.put("title", title);
-            s.put("url", url);
-            s.put("snippet", snippet);
-            sources.add(s);
-        }
-        return sources;
-    }
-
-    /** 摘要 = 引擎正文摘要 + 发布时间(若有) */
-    private String buildSnippet(JsonNode result) {
-        StringBuilder sb = new StringBuilder();
-        String content = result.path("content").asText("");
-        if (!content.isBlank()) {
-            sb.append(content);
-        }
-        String published = result.path("publishedDate").asText("");
-        if (!published.isBlank()) {
-            if (sb.length() > 0) {
-                sb.append(' ');
-            }
-            sb.append("(发布于 ").append(published).append(')');
-        }
-        return clip(sb.toString(), SNIPPET_MAX);
+        List<JsonNode> raw = new ArrayList<>(results.size());
+        results.forEach(raw::add);
+        return SearchResultCleaner.clean(raw, Math.min(limit, MAX_SOURCES));
     }
 
     /**
@@ -253,11 +216,4 @@ public class SearxngWebSearchTool extends AbstractTool {
         return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
     }
 
-    private static String clip(String s, int max) {
-        if (s == null) {
-            return "";
-        }
-        String normalized = s.replaceAll("\\s+", " ").trim();
-        return normalized.length() <= max ? normalized : normalized.substring(0, max) + "…";
-    }
 }

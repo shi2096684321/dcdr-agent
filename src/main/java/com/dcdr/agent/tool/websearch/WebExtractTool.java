@@ -14,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import okhttp3.HttpUrl;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -189,8 +190,10 @@ public class WebExtractTool extends AbstractTool {
                     .extractContent()
                     .estimateReadingTime()
                     .getArticle();
-            String title = article.getTitle() != null && !article.getTitle().isBlank()
+            String rawTitle = article.getTitle() != null && !article.getTitle().isBlank()
                     ? article.getTitle() : hostOf(url);
+            // 复用搜索侧的标题清洗(去话题标签/尾部省略号/站点后缀, 如 "_光明网")
+            String title = SearchResultCleaner.cleanTitle(rawTitle);
             String markdown = toMarkdown(article);
             if (markdown.isBlank()) {
                 log.warn("web_extract 未能提取到正文(可能是纯 JS 渲染页面): {}", url);
@@ -226,9 +229,13 @@ public class WebExtractTool extends AbstractTool {
             if (clean == null) {
                 return "";
             }
+            // 1) 重新解析: crux 把正文元素挂在根下(见上方说明), 借 jsoup 归位到 body
             Document normalized = Jsoup.parse(clean.html());
+            // 2) DOM 规范化: 去无用标签、展开嵌套 <p>、删空元素
+            normalizeDom(normalized);
             String html = normalized.body() != null ? normalized.body().html() : clean.html();
-            return normalizeBlankLines(mdConverter.convert(html));
+            // 3) 转 Markdown 后再做文本级清洗
+            return normalizeMarkdown(mdConverter.convert(html));
         } catch (Exception e) {
             log.warn("正文转 Markdown 失败: {}", e.getMessage());
             return "";
@@ -315,12 +322,78 @@ public class WebExtractTool extends AbstractTool {
         }
     }
 
-    /** 压缩连续空行(Markdown 转换后常出现 3+ 空行) */
-    private static String normalizeBlankLines(String s) {
-        if (s == null) {
+    /**
+     * DOM 规范化: crux 的输出常见 {@code <p>} 嵌套与空元素, 会让 Markdown 转换产生大量碎片
+     * (实测出现 {@code <p><p>public</p><p>class</p> HelloWorld</p>} 这类把代码块拆散的结构)。
+     * <p>处理: 去掉无内容价值的标签 → 展开外层嵌套 {@code <p>} → 删除空元素。
+     */
+    private static void normalizeDom(Document doc) {
+        Element body = doc.body();
+        if (body == null) {
+            return;
+        }
+        body.select("script, style, noscript, iframe, svg, form, button, input").remove();
+        // <p><p>x</p></p> → <p>x</p>: 展开外层 p(移除其标签但保留子节点)
+        body.select("p:has(> p)").forEach(Element::unwrap);
+        // 删除纯空白且不含图片的空元素(先收集再删, 避免遍历时修改 DOM)
+        body.select("p, div, span, li, td").stream()
+                .filter(e -> e.text().isBlank() && e.select("img").isEmpty())
+                .toList()
+                .forEach(Element::remove);
+    }
+
+    /**
+     * 网页正文中常见的「列表符号」—— 多来自 {@code <ul><li>} 被提取后的纯文本残留。
+     * <p>用 Unicode 码点转义写法而非直接输入字符, 避免源码编码差异导致漏匹配。
+     * <p>注意: 注释中不能出现反斜杠加 u 的转义写法 —— Java 的词法预解析对注释同样生效,
+     * 非法转义会直接编译失败(本项目已踩过)。
+     */
+    /**
+     * 网页正文里的「列表符号」—— 它们来自 {@code <ul><li>} 被提取后的纯文本残留。
+     * <p>刻意<b>不含</b> U+00B7(中文间隔号, 如「迈克尔·乔丹」), 避免误删人名。
+     */
+    private static final String BULLET_CHARS =
+            "\u2022\u2023\u2043\u2219\u25aa\u25ab\u25cf\u25e6\u30fb\uff65";
+
+    /**
+     * Markdown 文本清洗:
+     * <ol>
+     *   <li>去 NBSP</li>
+     *   <li>去列表符号残留({@code •} 等非 Markdown 标准符号)</li>
+     *   <li>去 Markdown 转义符({@code \[}、{@code \>} 等) —— 对 LLM 而言转义符是纯噪声</li>
+     *   <li>去行尾空白、压缩连续空行</li>
+     * </ol>
+     */
+    private static String normalizeMarkdown(String md) {
+        if (md == null) {
             return "";
         }
-        return s.replaceAll("\\n{3,}", "\n\n").trim();
+        return stripBullets(md.replace('\u00a0', ' '))
+                .replaceAll("\\\\([\\\\`*_{}\\[\\]()#+\\-.!>~|])", "$1")
+                .replaceAll("[ \\t]+(\\R)", "$1")
+                .replaceAll("\\R{3,}", "\n\n")
+                .trim();
+    }
+
+    /**
+     * 逐个字符删除列表符号及其后随的一个空格。
+     * <p>相较「逐行判断行首是否以列表符号开头」的写法, 这里不依赖行首定位、也不依赖
+     * 空白判定, 实现更直白可靠(前者曾在实测中静默失效)。
+     */
+    private static String stripBullets(String md) {
+        StringBuilder sb = new StringBuilder(md.length());
+        for (int i = 0; i < md.length(); i++) {
+            char ch = md.charAt(i);
+            if (BULLET_CHARS.indexOf(ch) < 0) {
+                sb.append(ch);
+                continue;
+            }
+            // 命中列表符号: 跳过符号本身; 若其后紧跟一个半角空格也一并跳过
+            if (i + 1 < md.length() && md.charAt(i + 1) == ' ') {
+                i++;
+            }
+        }
+        return sb.toString();
     }
 
     private static String clip(String s, int max) {
