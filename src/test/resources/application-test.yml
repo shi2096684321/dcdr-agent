@@ -1,0 +1,45 @@
+# ==========================================================================
+#  测试专用配置 (profile: test)
+# --------------------------------------------------------------------------
+#  由测试类上的 @ActiveProfiles("test") 激活, 叠加在 src/main/resources/application.yml 之上。
+#
+#  为什么需要这个文件:
+#   1. application.yml 里 spring.profiles.active 被写死为 pg(本地开发用 PostgreSQL),
+#      @ActiveProfiles("test") 会覆盖它, 避免测试去连真实 PostgreSQL;
+#   2. application.yml 的数据源是 H2 文件库(./data/database/agent),
+#      测试必须换成内存库, 否则会写脏本地开发数据;
+#   3. 追踪默认会向 Zipkin(localhost:9411) 上报, 测试环境无该服务, 关闭以免噪声日志。
+#
+#  目标: Spring 上下文在"零外部依赖"(无 PostgreSQL / 无 SearXNG / 无沙箱 / 无 Zipkin)下可启动,
+#        使 ApplicationContextTest 在任何机器上直接 `mvn test` 即可跑通。
+# ==========================================================================
+
+spring:
+  datasource:
+    # 内存库: DB_CLOSE_DELAY=-1 保证上下文存活期间库不被销毁, 避免连接池中途拿不到库
+    url: jdbc:h2:mem:dcdr_test;DB_CLOSE_DELAY=-1;DB_CLOSE_ON_EXIT=FALSE
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  jpa:
+    hibernate:
+      # 每次上下文启动重建表结构, 保证测试之间互不干扰
+      ddl-auto: create-drop
+    show-sql: false
+  h2:
+    console:
+      enabled: false
+
+# 关闭追踪上报(默认向 localhost:9411 的 Zipkin 上报, 测试环境无该服务)
+management:
+  tracing:
+    enabled: false
+
+# 防御性: 显式关闭会访问外部服务的可选能力(测试不验证这些能力, 关掉可减少启动期噪声)
+agent:
+  rag:
+    enabled: false
+
+# 防御性: 确保不启动任何 MCP 子进程(与 application.yml 保持一致, 此处显式声明避免被本地改动覆盖)
+mcp:
+  servers: []

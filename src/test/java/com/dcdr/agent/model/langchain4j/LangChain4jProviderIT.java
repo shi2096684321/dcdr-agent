@@ -35,9 +35,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *   <li>embedBatch 向量化(1536 维, RAG 依赖)</li>
  * </ol>
  * 仅在 DASHSCOPE_API_KEY 存在时执行, 未设置时跳过。
+ * <p>
+ * <b>为什么类名以 {@code IT} 结尾</b>: 它会真实发起外部调用(并产生费用), 必须与
+ * "零依赖、秒级"的单元测试隔离 —— {@code *IT} 由 failsafe 插件在 {@code mvn verify}
+ * 阶段执行, 而 {@code mvn test} 只跑 surefire 的 {@code *Test}, 不会触碰本类。
+ * 故: 日常随手验证用 {@code mvn test}; 需要真实联调时才 {@code mvn verify}。
  */
 @EnabledIfEnvironmentVariable(named = "DASHSCOPE_API_KEY", matches = ".+")
-class LangChain4jProviderTest {
+class LangChain4jProviderIT {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
     private static LangChain4jChatProvider chatProvider;

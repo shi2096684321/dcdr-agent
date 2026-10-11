@@ -1,0 +1,71 @@
+# ==========================================================================
+#  Gitee Go 流水线: 持续集成
+# --------------------------------------------------------------------------
+#  用法: 在 Gitee 仓库的「DevOps / 流水线(Gitee Go)」页开通后, 本文件即为其配置来源。
+#
+#  流水线做什么:
+#    跑 `mvn test` —— 162 条单元/装配测试, 约 15 秒, **零外部依赖、零费用**
+#    (需要真实 Key 的 *IT 已由 failsafe 隔离在 `mvn verify`, 本阶段不会执行)。
+#
+#  为什么不在这里跑集成测试(*IT):
+#    `RagVectorStoreIT` 依赖 Testcontainers(需构建机可用 Docker)。
+#    本插件的基础镜像是 CentOS 8.3, 是否支持容器内 Docker 尚未验证,
+#    因此 CI 只做"离线单元测试"这道最稳的防线; 完整验证(含真实 PG 容器)用
+#    本地脚本 `scripts/run-tests.ps1 -Full` 执行, 避免 CI 因环境能力不确定而长期红灯。
+#
+#  ⚠️ 字段说明(踩坑点):
+#    branches 下四个键语义**不同**, 极易混淆:
+#      prefix  → 前缀匹配
+#      precise → 精确匹配(完整分支名)
+#      include → **正则**匹配
+#      exclude → **精确名排除**(不是正则), 且优先级最高
+#    三者维度(分支/Tag/CommitMessage)之间是**交集**关系, 同时配置时须全部满足。
+# ==========================================================================
+
+name: ci
+displayName: 持续集成
+
+triggers:
+  # 推送即触发: 覆盖主干与日常特性分支
+  push:
+    branches:
+      include:
+        - ^master$
+        - ^main$
+        - ^develop$
+        - ^feature/.*
+        - ^fix/.*
+        - ^hotfix/.*
+
+  # PR 触发: 只要求合并进主干的 PR
+  pr:
+    branches:
+      precise:
+        - master
+        - main
+
+variables:
+  # 避免构建机默认编码导致中文注释/日志乱码
+  MAVEN_OPTS: -Dfile.encoding=UTF-8
+
+stages:
+  - stage:
+    name: test
+    displayName: 测试
+    # naturally: 并行任务链互不影响(本阶段仅一个任务, 取默认语义即可)
+    strategy: naturally
+    trigger: auto
+    steps:
+      - step: build@maven
+        name: unit_test
+        displayName: 单元测试 (+ 编译)
+        # 项目 java.version=17; 该插件支持 JDK 17
+        jdkVersion: 17
+        # 插件支持的最高 Maven 版本(本机开发用 3.9.0, 二者对本项目兼容)
+        mavenVersion: 3.6.3
+        commands:
+          # -B: 批处理模式, 关闭颜色与交互; 该命令同时完成编译与单元测试
+          - mvn -B test
+          # 归档测试报告, 便于失败时在平台上直接查看
+          - echo "=== surefire 报告 ==="
+          - ls -l target/surefire-reports || true

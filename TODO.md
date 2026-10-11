@@ -338,10 +338,241 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 - 端到端联调需先 `docker compose up -d searxng`，确认
   `http://localhost:8888/search?q=test&format=json` 返回 JSON（而非 403）。
 
+### 结果清洗管线（2026-10-10，针对「噪声大」）
+
+**问题**：SearXNG 返回的是**搜索引擎原始结果**（不像 Tavily 已为 LLM 优化过）。实测一个中文
+查询的 20 条结果里近一半是「聚合页 / 列表页 / 标签页 / 视频页」—— 摘要只是多条标题的堆砌、
+且无法提取正文，既污染模型上下文又白占结果位。典型样本：
+
+- `tags.news.sina.com.cn/人工智能`、`toutiao.com/topic/xxx`、`leiphone.com/category/ai`
+- `page.sm.cn/blm/video-page-710/video?...`（**URL 单条 700+ 字符**，全是追踪参数）
+- 标题含 `#话题标签 @账号`（短视频页）
+- `fromgeek.com/...` 的摘要 = `标题 2026-09-15 18:35:02 标题 2026-09-15 16:05:03 …`（列表堆砌）
+
+**方案**：新增 `SearchResultCleaner`（纯静态工具类，无状态、便于单测），在
+`SearxngWebSearchTool.parseSources` 之后串一条「过滤 → 清洗 → 去重」管线：
+
+- **过滤非文章页**：路径特征（`/tag`、`/topic`、`/category`、`/news`、`/video-` 等，且要求特征词后
+  紧跟分隔符，以免误伤 `/newsroom`、`/newsDetail_forward_xxx`）+ 单层短路径
+  （`^/[^/.\d]{1,20}$`，如 `/ai`）+ 标题聚合词（「最新资讯 / 实时滚动 / 榜单」等）
+  + 域名黑名单（`page.sm.cn`）
+- **URL 清洗**：去 hash 片段与追踪参数（`uc_param_str`/`wm_cid`/`utm_*`/`spm`/`bucket` 等）、
+  丢弃无 `=` 的噪声参数、去尾斜杠
+- **标题清洗**：去话题标签（`#xxx`）、`@账号`、尾部省略号、站点后缀（` | 雷锋网`、`_光明网`）
+- **摘要清洗**：去时间前缀（`10 小时之前 · `）、去截断省略号、压缩空白；
+  **列表页堆砌检测**（含 ≥2 个完整时间戳则整体丢弃该摘要）
+- **去重**：规范化 URL（去协议 / www）+ 规范化标题（去标点空白），拦截「同一新闻的多来源转载」
+
+**实测效果**（查询「人工智能最新进展」，**同一次响应做前后对比**）：
+原始 13 条 → 清洗后 4 条，被过滤的 6 条全部是聚合页，**无一条具体文章被误伤**。
+
+**注意**：因过滤会砍掉约一半结果，故 `max-results` 由 8 提到 12，保证过滤后仍有足够条数。
+
+**抓取侧同时做了正文清洗**（`WebExtractTool`）：
+
+- **DOM 规范化**（转 Markdown 前）：去 `script/style/noscript/iframe/svg/form/button/input`、
+  展开嵌套 `<p>`（crux 常输出 `<p><p>x</p></p>`）、删空元素
+- **Markdown 清洗**（转换后）：去 NBSP、去列表符号残留、去 Markdown 转义符（`\[`、`\>` 等
+  对 LLM 是纯噪声）、去行尾空白、压缩连续空行
+- **标题清洗**：复用 `SearchResultCleaner.cleanTitle`，剥离 `_光明网` 这类站点后缀
+
+**实测**（runoob 教程页 + 光明网新闻页）：新闻页正文 4113 字符、段落完整连贯；
+教程页的转义符与列表符号残留已清除。
+
+#### 踩坑记录（抓取侧）
+
+- **列表符号清洗的「逐行行首判断」会静默失效**：最初用
+  `(?m)^\s*[•…]\s+` 正则、后改逐行 `stripLeading()` + 行首字符判断，**两种写法实测都不生效**
+  （调试确认真值：常量含 U+2022、`indexOf` 返回 1、该符号确在行首，条件却未命中 —— 根因未完全定位，
+  疑与不可见字符有关）。**最终改为逐字符扫描**（`stripBullets`）后生效。结论：这类清洗不要依赖
+  「行首定位 + 空白判定」，逐字符扫描最可靠。
+- **`Character.isWhitespace` 不认 NBSP**：U+00A0 / U+202F 等虽然视觉上是空白，
+  `isWhitespace` 返回 **false**，导致「符号后必须紧跟空白」这类校验失效。
+- **Java 的 Unicode 转义在词法阶段处理，注释里同样生效**：注释中写 `\uXXXX` 形式的占位说明
+  会直接导致**编译失败**（`非法 Unicode 转义`），本项目已实际踩到。
+
 ### 顺带改善（原 MCP 方案的遗留问题）
 - 原 MCP 传输层 `McpTransport#request` 在 `synchronized` 块内 `await`，使同一 Server 请求完全串行；
   自建方案不经过 MCP，**该瓶颈自然消失**。
 - 新增 **SSRF 防护**（拒绝环回 / 内网 / 链路本地 / 云元数据 169.254.169.254），原方案无任何校验。
+
+---
+
+## V3.2 测试体系基建（2026-10-10）
+
+### 背景
+此前全项目只有 3 个测试类 / 23 条用例（其中 `LangChain4jProviderTest` 还需真实 API Key），
+无 `src/test/resources`、无 `@SpringBootTest`、无 CI。改完代码除 `mvn compile` 看退出码外，
+**没有任何自动手段判断"行为是否还正确"**，只能人工启动应用、翻日志、手工走查。
+
+### 本次落地（第一批：上下文装配层）
+- **新增 `src/test/resources/application-test.yml`**（此前该目录不存在）：测试专用 profile。
+  数据源切 H2 **内存库** —— 主 `application.yml` 是文件库 `./data/database/agent`，
+  不改会直接写脏本地开发数据；`ddl-auto: create-drop`；关闭 tracing 上报
+  （否则反复向不存在的 Zipkin 上报，产生噪声日志）。
+- **新增 `ApplicationContextTest`**（`@SpringBootTest` + `@ActiveProfiles("test")`）：
+  零外部依赖（不连 PostgreSQL / SearXNG / 沙箱 / Zipkin），任何机器上 `mvn test` 直接跑通。
+  覆盖 4 类只有运行期才暴露的错误：上下文能否启动、核心 Bean 依赖链是否完整、
+  联网工具是否按 `web_search`/`web_extract` 注册、rerank 条件装配是否互斥；
+  另有第 5 条见下方「待优化 BUG」。
+
+### 第二批：纯逻辑单元测试（2026-10-11）
+- 新增 `SearchResultCleanerTest`（23 条，`websearch` 包）+ `CodeGuardTest`（26 条，`sandbox` 包），全绿。
+- **选取标准**：纯静态、零依赖、且属于"调一条正则可能悄悄破坏另一条"的高回归风险区。
+- **`SearchResultCleanerTest` 覆盖**：`cleanUrl`（去 hash / 剥追踪参数 / 去尾斜杠）、
+  `cleanTitle`（话题标签 / @账号 / 站点后缀 / 尾部省略号）、
+  `cleanSnippet`（时间前缀 / **列表页堆砌整体丢弃** / 单时间戳不误杀）、
+  主流程（四类过滤规则 / URL 变体去重 / 同标题跨来源去重 /
+  **过滤后继续向后扫描补齐 limit** / index 重编号 / 发布时间拼接）。
+- **`CodeGuardTest` 覆盖两个方向**：既断言危险调用被拒（`os.system` / `subprocess` / `eval` /
+  `__import__` / `socket` / `ctypes` / `shutil.rmtree` 等 17 类），
+  **也断言正常计算代码被放行**（`math` / `sorted` / 字符串含 `eval` / 变量名含 `socket`）——
+  只测"能拦住"会掩盖误杀，而误杀会让模型连算数都做不到，毁掉沙箱工具的唯一价值场景。
+- 整体结果：`mvn test` **77 条 / 0 失败**（6 条因无 `DASHSCOPE_API_KEY` 跳过），耗时约 15 秒。
+
+### 第三批：测试分档 —— surefire / failsafe 分离（2026-10-11）
+- **要解决的问题**：`LangChain4jProviderTest` 会真实调用 DashScope（**产生费用**），却按 `*Test` 命名，
+  于是 `mvn test` 会尝试执行它 —— "随手跑一下单元测试"可能误触外部付费调用，且任何人无法只跑离线测试。
+- **改动两处**：
+  1. `pom.xml` 新增 `maven-failsafe-plugin`（版本由 `spring-boot-starter-parent:3.3.5` 管理，无需指定）；
+  2. 该类改名为 `LangChain4jProviderIT`（文件一并改名，用 `git mv` 保留历史）。
+- **实测效果**：
+  - `mvn test` → **71 条 / 0 失败 / Skipped 0**，完全不扫描、不触碰任何外部服务；
+  - `mvn verify` → surefire 71 条 + failsafe 执行 `LangChain4jProviderIT`（无 Key 时 6 条跳过）。
+  - 即执行条数不变（71），但"跳过"噪音与付费风险都消除了。
+- **今后约定（写测试时遵守）**：
+  - **`*Test`** = 单元 / 装配测试：零外部依赖、秒级 → 归 `mvn test`（可随手跑）
+  - **`*IT`** = 集成测试：需要真实 Key / 容器 / 外部服务 → 归 `mvn verify`
+
+### 第四批：核心链路纯逻辑单测（2026-10-11）
+- 新增 3 个测试类共 **61 条**；`mvn test` 总量 **71 → 132 条 / 0 失败 / 0 跳过**。
+- **`JsonSchemaConverterTest`（29 条）**：正向(object/array/string/integer/number/boolean/enum/`$ref`/
+  可空联合 anyOf/缺 type 时按 properties 推断)、反向、往返一致性。
+  **重点是数组项回归断言** —— 锁住「array 即使没有 description, 也必须能写入 items」，
+  即 `web_extract` 那个缺陷的长期防线。
+- **`MemoryRelevanceScorerTest`（16 条）**：中文 2-gram 近义命中（"部署到测试环境" vs "部署环境" = 2/3）、
+  精确包含短路、**阈值闭区间**（恰好 0.5 算命中）、标签序列化/反序列化往返、空值边界。
+- **`CleanMarkdownContentTest`（16 条）**：HTML 块/裸标签/实体解码、连续 **≥3** 行导航块
+  （同时锁住"仅 2 行不得误删"）、纯图片行、行内图片、链接标题行、栏目聚合行、SPA 占位行、
+  页脚截断、空行压缩、长度截断。
+  - 该方法虽是 `AgentOrchestrator` 的成员, 但为**包级 static** → 测试类放同包即可直接调用,
+    **无需启动 Spring、无需构造那个 20 依赖的上帝类**。
+  - **先补测试再重构**: 为将来把它抽成独立工具类提供"改完行为不变"的验证依据。
+  - 其中一条曾**刻意断言已知问题**: 页脚关键词在正文中途命中会截断后续全部内容。
+    该问题**已在同批次内修复**（见文末「已修复（近期）」），断言已同步改为验证修复后的行为。
+
+### 第五批：RAG 分块 + RBAC 权限单测（2026-10-11）
+- 新增 `RecursiveSplitterTest`（17 条）+ `PermissionTest`（13 条）。
+- **`RecursiveSplitterTest`** 固定了三个不直观的行为特征（这些特征若被无意改动, 检索质量会静默变化）：
+  1. 切分时**把分隔符粘回上一段末尾**（`"aa\n\nbb\n\ncc"` → `["aa\n\n","bb\n\n","cc"]`），
+     避免切出无结构碎片；
+  2. 合并阶段把相邻原子块**拼到接近 chunkSize**, 而非一块一原子；
+  3. **带 overlap 时块可能超过 chunkSize**（10 字符原子 + overlap 3 → 13 字符）—— 属设计行为,
+     调用方不应假设"块长 <= chunkSize"。
+  另覆盖构造器参数校验（`chunkSize<=0`、`overlap>=chunkSize` 均拒绝, 后者防无限回溯）。
+- **`PermissionTest`** 刻意按**包含关系**断言而非写死权限条数 ——
+  重点锁住 admin 的层级继承（必须含 user + guest 的全部权限），
+  这是"新增权限时只加到一个角色"最容易悄悄破坏的地方；另覆盖大小写不敏感、未知角色返回空集、
+  返回值不可变（防调用方改坏共享规则表）、权限码符合 `资源:操作` 格式。
+
+### 第六批：集成测试基建（Testcontainers + pgvector）（2026-10-11）
+- **要解决的问题**：此前 162 条测试全部是"零外部依赖"的单元/装配测试，**所有与 PostgreSQL 的接缝
+  从未被验证过** —— JPA 实体映射、pgvector 向量检索、原生 SQL。这类缺陷的共同点是
+  "单元测试永远发现不了，但一上真实环境就炸"。
+- **落地**：
+  - 新增依赖 `spring-boot-testcontainers` + `testcontainers:postgresql` + `testcontainers:junit-jupiter`
+    （版本由 `spring-boot-starter-parent` 管理，无需显式指定）。
+  - 新增 `src/test/resources/db/init-pgvector.sql`（`CREATE EXTENSION vector`），
+    经 `withInitScript` 在**Spring 上下文启动前**执行 —— 否则 Hibernate 建 `vector(1536)` 列会直接失败。
+  - 新增 `RagVectorStoreIT`（10 条，`*IT` → 由 failsafe 在 `mvn verify` 执行）：
+    pgvector 扩展可用性、`float[] ↔ vector` 经 `VectorType` 往返一致、`<=>` KNN 距离排序、
+    `findTopKWithDistance` 返回**真实**余弦距离（V3.0 修复的回归防线）、topK 截断、
+    **知识库隔离**、null 向量过滤、FTS 全文检索命中/无匹配。
+  - `@ServiceConnection` 自动注入容器连接（覆盖 test profile 的 H2 数据源）；
+    `disabledWithoutDocker` 保证无 Docker 环境跳过而非失败。
+- **结果**：`mvn verify` → surefire 162 条 + failsafe 16 条（`RagVectorStoreIT` 10 条全过，
+  `LangChain4jProviderIT` 6 条因无 Key 跳过）。
+
+### 第七批：集成测试改用真实建库脚本（2026-10-11）
+- **动机**：第六批的集成测试让 Hibernate 从实体推导建表(`ddl-auto: create-drop`)，这与生产不一致 ——
+  生产的**规范来源**是 `docs/sql/*.sql`(见 `docs/sql/README.md`)。后果是
+  **测不出"生产建库脚本本身是否正确"**，也测不出脚本里 JPA 生成不了的部分：
+  `COMMENT`、部分索引(`WHERE`)、`DESC` 排序索引，以及 **FTS 依赖的 `pg_trgm` 扩展与 trigram GIN 索引**。
+- **改动**：
+  - 新增 `src/test/resources/application-it.yml`（profile `it`，与 `test` **叠加**而非替换）：
+    `ddl-auto: update` + `spring.sql.init` 依次执行 `docs/sql/` 下 10 个脚本 —— 与 `application-pg.yml`
+    **完全同构**（脚本建表 + JPA 补齐）。
+  - `RagVectorStoreIT` 改用 `@ActiveProfiles({"test", "it"})`。
+  - 新增两条断言，验证脚本真的生效：`pg_trgm` 扩展存在、`idx_chunk_content_trgm` GIN 索引存在。
+- **结果**：`mvn verify` → surefire 162 条 + failsafe 18 条
+  （`RagVectorStoreIT` **12 条全过**，`LangChain4jProviderIT` 6 条跳过）。
+
+### 第八批：CI 基建（Gitee Go）（2026-10-11）
+- **平台确认**：仓库托管在 Gitee（`gitee.com/shi-zhun/dcdr-agent`），此前**无任何 CI 配置**
+  （`.gitee/` 只有 issue/PR 模板）。故采用 Gitee Go，配置文件为 `.workflow/ci.yml`。
+- **CI 做什么**：`mvn test`（162 条单元/装配测试，约 15 秒，**零外部依赖、零费用**）。
+  需要真实 Key 的 `*IT` 已被 failsafe 隔离在 `mvn verify`，CI 阶段不会执行。
+- **为什么 CI 不跑集成测试**：`RagVectorStoreIT` 依赖 Testcontainers（需构建机可用 Docker），
+  而 `build@maven` 插件的基础镜像是 CentOS 8.3，其容器内 Docker 能力未经验证 ——
+  与其让 CI 长期红灯，不如只做"离线单元测试"这道最稳的防线；
+  完整验证（含真实 pgvector 容器）由 `scripts/run-tests.ps1 -Full` 承载。
+- **配套脚本**：新增 `scripts/run-tests.ps1`，封装两档验证
+  （默认 `mvn test`；`-Full` 走 `mvn verify` 含集成测试；`-TestClass` 跑指定类），
+  并自动设置 JDK/Maven 路径、清空 `DASHSCOPE_API_KEY`（防止误触外部付费调用）。
+- **启用方式**：需先在 Gitee 仓库的「DevOps / 流水线」页开通 Gitee Go，本文件即其配置来源。
+
+### 踩坑记录（可复用结论）
+- **本机 Docker 20.10.8 的 seccomp 会阻断容器内 initdb**：现象是容器以退出码 1 结束、
+  `database system is ready to accept connections` 永远等不到。`docker-compose.yml` 早已用
+  `security_opt: [seccomp=unconfined]` 绕过，**Testcontainers 起的容器必须用同样方式绕过**：
+  ```java
+  .withCreateContainerCmdModifier(cmd ->
+          cmd.getHostConfig().withSecurityOpts(List.of("seccomp=unconfined")))
+  ```
+  升级 Docker 到 20.10.10+ 后，这两处（compose 与测试）都可移除。
+- **docker-java 的 `HostConfig` 用 fluent 命名**：是 `withSecurityOpts(List)`，
+  **不是** `setSecurityOpt(...)`。拿不准时直接 `javap` 查本地 jar，比翻文档快且准。
+- **H2 profile 下 `document_chunks` 表建不出来**：H2 不认识 `vector(1536)` 类型，建表语句被拒，
+  其后引用该表的 DDL 连带失败（日志表现为 `H2 JdbcSQLSyntaxErrorException: Table "DOCUMENT_CHUNKS"
+  not found` 的 WARN）。这与 `application.yml` 的注释一致("H2 默认 profile 不支持 pgvector")。
+  **不影响单元测试**（它们不碰该表），但说明 RAG 相关功能只能在 pg profile 下验证 ——
+  现在由 `RagVectorStoreIT` 覆盖。
+- **改用真实建库脚本后, 测试数据必须满足脚本声明的完整外键链**（第七批一次性暴露）：
+  `document_chunks.doc_id → documents(id)`、`document_chunks.kb_id → knowledge_bases(id)`、
+  `knowledge_bases.user_id → users(id)`。而 JPA 实体只用普通 `String` 列表达关联字段、
+  **没有 `@ManyToOne`**, 所以"实体推导建表"时根本不存在外键, 凭空插入也能成功。
+  修复：测试数据自底向上补齐 `users → knowledge_bases → documents → document_chunks`。
+  **教训**：实体映射与建库脚本是两套独立来源, 只有"用脚本建表"才能发现二者分歧 ——
+  而这个约束在生产环境是真实存在的（写数据必须先满足外键）。
+- **本机 `JAVA_HOME` 指向 JDK 8（`D:\jdk1.8.0_202`），而项目要求 JDK 17**：
+  跑 Maven 前必须显式切到 JDK 17（`D:\app\jdk17`），否则报 `Method.invoke(Method.java:498)`
+  这类 JDK 8 行号的诡异堆栈。`scripts/run-tests.ps1` 已内置"按候选路径挑出 >= 17 的 JDK"。
+- **PowerShell 5.1 读取「UTF-8 无 BOM」的 `.ps1` 会按 GBK 解码**：中文注释直接变成乱码，
+  导致**解析器报语法错**（报错信息里全是乱码就是该症状，而非真的写错了语法）。
+  修复：脚本必须以 **UTF-8 with BOM** 保存 —— 项目既有的 `scripts/backup-db.ps1` 正是带 BOM 的，
+  可作为编码惯例参考。
+- **`$ErrorActionPreference = 'Stop'` 与外部命令不兼容**：PowerShell 会把**原生命令**
+  （`java -version`、`mvn`）写到 stderr 的任何输出都当成错误并抛 `NativeCommandError` ——
+  哪怕命令实际成功（实测：JVM 的 `HotSpot warning`、Maven 告警都会触发）。
+  结论：调用外部命令的脚本**不要设 `Stop`**，一律用 `$LASTEXITCODE` 判断成败。
+- **测试失败先怀疑夹具与预期, 再怀疑产品代码**（本批连续两例）：
+  - `SearchResultCleanerTest` 首版用了 `/x` 这种不真实的单层短路径 URL, 被栏目页规则正确过滤掉;
+  - `JsonSchemaConverterTest` 误以为 `JsonObjectSchema.builder().build().properties()` 返回 `null`
+    （实际返回**空 Map**）。
+  两处都不是产品缺陷, 是断言写错。
+- **测试夹具的 URL 必须贴近真实形态**：`SearchResultCleanerTest` 初版用了 `/x` 这种单层短路径，
+  被 `SHALLOW_SECTION_PATH` 规则正确判为栏目页过滤掉，导致"去重"断言意外变成 0 条。
+  **这不是代码 bug, 而是夹具不真实** —— 构造测试输入时应按生产数据的形态来
+  （真实文章 URL 一般含数字 ID 或两层以上路径）。
+- **`application.yml` 里 `spring.profiles.active: pg` 是写死的**：必须用 `@ActiveProfiles("test")`
+  覆盖，否则测试会去连真实 PostgreSQL。**测试配置一律放 profile-specific 文件，不要改主 `application.yml`**。
+- **`@SpringBootTest` 会执行 `ApplicationRunner` / `CommandLineRunner`**：它经
+  `SpringBootContextLoader` 走 `SpringApplication.run()`，故启动期注册逻辑（工具注册 / 模型注册 /
+  预置模板插入）在测试中**真实发生**。好处："注册期转换"这类只在启动时执行的逻辑也被覆盖了
+  —— 本次发现的 `web_extract` 缺陷正属此类。
+- **H2 能建出 `document_chunks.embedding vector(1536)`**：该列虽是
+  `@Column(columnDefinition = "vector(1536)")` + 自定义 `VectorType`，H2 下建表未报错
+  （与 pg profile 的差异仅在实际向量检索行为，不影响上下文装配）。
 
 ---
 
@@ -421,6 +652,38 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
 
 ## 待优化 BUG
 
+### [BUG] `web_extract` 的 schema 构建静默失败，导致该工具对 LLM 不可见
+- **状态**：✅ 已修复（2026-10-11，按方案 a 修改 `schemaMap` 返回可变 Map）；
+  2026-10-10 由新建的 `ApplicationContextTest` 发现
+- **现象**：启动日志出现
+  `ERROR ToolRegistry - 注册 web_extract 的 ToolSpecification 失败, 已注册执行但不暴露给 LLM`。
+  工具注册数显示 9 个，但真正暴露给模型的 `ToolSpecification` 只有 8 个 ——
+  模型永远不知道 `web_extract` 存在，**「搜索后串联抓取正文」这条链路实际是断的**，
+  且不报错、不影响启动。
+- **根因**：`JsonSchemaConverter.schemaMap`（`JsonSchemaConverter.java:232-237`）两个分支
+  都返回**不可变 Map**：
+  ```java
+  if (description == null) return Map.of("type", type);
+  return Map.of("type", type, "description", description);
+  ```
+  而 `fromSchemaElement` 的 `JsonArraySchema` 分支（`:187-192`）需要在该 Map 上补 `items`：
+  ```java
+  Map<String, Object> m = schemaMap("array", a.description());
+  if (a.items() != null) m.put("items", fromSchemaElement(a.items()));  // ← 抛 UnsupportedOperationException
+  ```
+  其他基础类型（string / integer / boolean / enum）都是 `return schemaMap(...)` 直接返回、
+  不再修改，故不受影响；`WebExtractTool` 是项目里**唯一**使用 `JsonArraySchema`（数组参数 `urls`）
+  的工具，因此只有它中招。
+- **修复方案**（二选一，推荐 a）：
+  a. `schemaMap` 改为返回可变 Map（`new LinkedHashMap<>()` + 条件 `put`），语义上
+     "供调用方继续扩展的 schema Map" 更合理，一处根治；
+  b. 仅让 `JsonArraySchema` 分支自建可变 Map（改动更局部）。
+  **验证方式**：修完后 `mvn test -Dtest=ApplicationContextTest` 应全绿
+  （`allStreamingToolsExposedToLlm` 断言"所有 `supportsStreaming()` 的工具都必须出现在
+  `getStreamingToolSpecifications()` 中"，正是为此类静默失败兜底）。
+- **为什么长期没被发现**：异常被 `ToolRegistry.register` 的 `catch` 吞掉（只记 ERROR 日志、
+  不阻断启动）；`mvn compile` 完全无感；只有"实际发起对话并观察模型是否调用该工具"才可能察觉。
+
 ### [BUG] 多轮对话时 agent 重复回答历史内容
 - **状态**：✅ 已修复（2026-08-07，commit `87be529`）
 - **记录时间**：2026-08-06
@@ -436,6 +699,18 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
 
 ## 已修复（近期）
 
+- ✅ **`cleanMarkdownContent` 页脚截断误删后半篇正文**（2026-10-11）：原实现为「命中页脚关键词即
+  从该行起全部截断」且**不区分位置**（源码中 `ratio` 计算后的 if/else 两分支内容完全相同，实际未生效），
+  于是正文里一句「请 Subscribe 我们的栏目」会把其后全部正文删掉。已补回位置门槛 ——
+  新增常量 `FOOTER_TAIL_RATIO = 0.7`，仅**尾部区域**命中才截断。
+  **取舍**：正文中部的真页脚不再被裁剪 —— 误删正文的代价远高于残留一段页脚噪音。
+  由 `CleanMarkdownContentTest#footerKeywordInBodyDoesNotTruncate` 锁定
+  （该断言此前断言的是"会被误删"，修复后已反转）。
+- ✅ **`web_extract` schema 构建静默失败、对 LLM 不可见**（2026-10-11）：根因是
+  `JsonSchemaConverter.schemaMap` 返回不可变 `Map.of(...)`，而数组分支需继续追加 `items`，
+  抛 `UnsupportedOperationException` 后被 `ToolRegistry.register` 的 catch 吞掉（工具注册成功但
+  对模型不可见）。已改为返回可变 `LinkedHashMap`；由 `ApplicationContextTest` 的
+  `allStreamingToolsExposedToLlm` 断言兜底（详见上方「待优化 BUG」条目）。
 - ✅ **调用链日志丢失「最后一轮」步骤**（2026-09-15）：`doFinally` 执行时机导致 ——
   上游 `tracedRound` / `tracedTool` 用 `doFinally` 记录步骤，晚于下游 `ChatController` 的
   `doFinally` 落库 summary，导致最后一次 LLM 调用 / 工具执行的步骤来不及进入快照

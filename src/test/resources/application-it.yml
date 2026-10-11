@@ -1,0 +1,40 @@
+# ==========================================================================
+#  集成测试专用配置 (profile: it)
+# --------------------------------------------------------------------------
+#  由 *IT 测试类经 @ActiveProfiles({"test", "it"}) 激活 —— 两个 profile 叠加:
+#    test → 让上下文"零外部依赖"可启动(H2 内存库、关 tracing 等), 供单元/装配测试使用
+#    it   → 在 test 之上, 把"表结构来源"切换为与生产一致的方式(docs/sql/*.sql 脚本)
+#
+#  为什么要这样做:
+#    若仅靠 Hibernate 的 ddl-auto 从实体推导建表, 就测不出"生产建库脚本本身是否正确",
+#    更测不出脚本里 JPA 生成不了的部分 —— 如 COMMENT、部分索引(WHERE)、DESC 排序索引,
+#    以及 v3.2_rag_hybrid_schema.sql 中 FTS 所依赖的 pg_trgm 扩展与 trigram GIN 索引。
+#    本 profile 让集成测试走"脚本建表 + JPA update 补齐", 与 application-pg.yml 完全同构。
+#
+#  注意: schema-locations 用 file: 相对路径, 相对工作目录(项目根)。
+#        脚本均为 IF NOT EXISTS 幂等写法, 重复执行安全。
+# ==========================================================================
+
+spring:
+  jpa:
+    hibernate:
+      # 与 application-pg.yml 保持一致: 建库脚本是规范来源, JPA 仅补齐脚本未覆盖的部分
+      ddl-auto: update
+  sql:
+    init:
+      # PG 是非嵌入式数据库, 必须显式 always(默认 embedded 不会对 PG 生效)
+      mode: always
+      # 顺序: 先基础(V2.0 → V3.0 主 schema), 再各版本增量
+      schema-locations:
+        - file:docs/sql/v2.0_schema.sql
+        - file:docs/sql/v3.0_schema.sql
+        - file:docs/sql/v3.0_beta_schema.sql
+        - file:docs/sql/v3.0_llm_trace_schema.sql
+        - file:docs/sql/v3.0_rc_schema.sql
+        - file:docs/sql/v3.1_f44_governance_schema.sql
+        - file:docs/sql/v3.1_feedback_schema.sql
+        - file:docs/sql/v3.1_memory_schema.sql
+        - file:docs/sql/v3.1_ownership_schema.sql
+        - file:docs/sql/v3.2_rag_hybrid_schema.sql
+      # 脚本执行失败即让上下文启动失败 —— 这正是本 profile 要暴露的问题
+      continue-on-error: false

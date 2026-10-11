@@ -235,6 +235,27 @@
             <artifactId>reactor-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <!-- V3.2 集成测试基建: Testcontainers 起真实 PostgreSQL + pgvector。
+             用于验证"代码与真实数据库的接缝" —— JPA 实体映射、pgvector 向量检索、
+             原生 SQL(余弦距离 / 全文检索), 这些是纯单元测试覆盖不到的部分。
+             *IT 命名 → 由 failsafe 在 `mvn verify` 阶段执行, 不影响 `mvn test` 的秒级离线体验。
+             版本由 spring-boot-starter-parent 统一管理。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -250,6 +271,24 @@
                         </exclude>
                     </excludes>
                 </configuration>
+            </plugin>
+
+            <!-- V3.2 测试分档: 集成测试(*IT)交由 failsafe 在 `mvn verify` 阶段执行,
+                 与 surefire 的单元测试(*Test, 即 `mvn test`)隔离。
+                 意义: `mvn test` 保持「零外部依赖 + 秒级 + 不花钱」, 可随手跑;
+                 需要真实 API Key / 容器 / 外部服务 的测试归入 `mvn verify`。
+                 版本由 spring-boot-starter-parent 统一管理, 无需显式指定。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
     </build>
