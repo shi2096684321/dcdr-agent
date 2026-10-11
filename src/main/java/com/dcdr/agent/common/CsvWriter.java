@@ -21,19 +21,19 @@ public final class CsvWriter {
     private static final String FORMULA_PREFIX = "=+-@";
 
     private final StringBuilder sb = new StringBuilder(1024);
+    /** 已写入的数据行数(不含表头), 供 {@link #lineCount()} 返回 */
+    private int dataRows = 0;
 
-    /** 写表头 */
+    /** 写表头(不计入 {@link #lineCount()}) */
     public CsvWriter header(String... columns) {
-        return row((Object[]) columns);
+        writeCells((Object[]) columns);
+        return this;
     }
 
     /** 写一行数据 */
     public CsvWriter row(Object... cells) {
-        for (int i = 0; i < cells.length; i++) {
-            if (i > 0) sb.append(',');
-            sb.append(escape(cells[i]));
-        }
-        sb.append(LINE_SEP);
+        writeCells(cells);
+        dataRows++;
         return this;
     }
 
@@ -47,9 +47,25 @@ public final class CsvWriter {
         return ("\uFEFF" + sb).getBytes(StandardCharsets.UTF_8);
     }
 
-    /** 已写入的行数 (不含表头), 便于调用方做导出上限校验 */
+    /**
+     * 已写入的<b>数据行数</b>(不含表头), 便于调用方做导出上限校验。
+     * <p>
+     * 早前实现是「把已拼接的整串文本按行分隔符切分后数段数」, 而 {@code header(...)}
+     * 直接复用了 {@code row(...)} —— 于是表头也被计入, 与注释声明的语义相反(多算 1 行)。
+     * 现改为显式计数: 仅 {@link #row(Object...)} 累加, {@link #header(String...)} 不参与。
+     * 顺带省掉了每次调用都对全串文本做一次 {@code split} 的开销。
+     */
     public int lineCount() {
-        return sb.length() == 0 ? 0 : sb.toString().split(LINE_SEP, -1).length - 1;
+        return dataRows;
+    }
+
+    /** 拼接一行: 单元格以逗号分隔, 行尾追加 CRLF(表头与数据行共用) */
+    private void writeCells(Object[] cells) {
+        for (int i = 0; i < cells.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(escape(cells[i]));
+        }
+        sb.append(LINE_SEP);
     }
 
     private static String escape(Object value) {

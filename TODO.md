@@ -521,6 +521,22 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
   并自动设置 JDK/Maven 路径、清空 `DASHSCOPE_API_KEY`（防止误触外部付费调用）。
 - **启用方式**：需先在 Gitee 仓库的「DevOps / 流水线」页开通 Gitee Go，本文件即其配置来源。
 
+### 第九批：补完剩余纯逻辑类单测（2026-10-11）
+- 新增 4 个测试类共 **60 条**；`mvn test` 总量 **162 → 222 条 / 0 失败 / 0 跳过**。
+- **`CsvWriterTest`（21 条）**：UTF-8 BOM 前缀、CRLF 行分隔、**公式注入防护**
+  （`= + - @` 开头加单引号；含"先加前缀、再引号包裹"的顺序断言）、RFC 4180 转义
+  （逗号 / 内嵌引号翻倍 / 换行）、null 单元格、行计数。
+- **`ApiKeyCipherTest`（8 条）**：加解密往返、**同一明文两次密文不同**（验证随机 IV 未固定）、
+  **密文翻转一位即被 GCM 认证标签拦下**（确认"用了 GCM"≠"完整性真的生效"）、
+  换主密钥解密失败、非法密文异常语义统一、主密钥未配置时兜底密钥仍可用。
+- **`VectorTypeTest`（14 条）**：`toVectorString` 格式与边界、`nullSafeGet` 解析
+  （元素空白 / 无方括号 / 空数组 / 科学计数法 / SQL NULL）、**往返一致性**（含 1536 维生产规模）、
+  Hibernate UserType 契约（equals / hashCode / deepCopy 独立性 / isMutable）。
+- **`TokenEstimatorTest`（18 条）**：单段与多段估算、**思维链 / `tool_calls` 结构化 JSON /
+  工具名与 tool_call id 均计入**（这些是 agentic 场景的 token 大头，漏算会让"接近上限"判定长期偏乐观）、
+  **阈值闭区间边界**（用 `estimate()` 反推"恰好等于 `limit×ratio`"的文本，验证判定用的是 `>=`）、
+  `resolveUsage` 的"真实 usage 优先、否则估算兜底"（以 `assertSame` 验证确实透传而非重算）。
+
 ### 踩坑记录（可复用结论）
 - **本机 Docker 20.10.8 的 seccomp 会阻断容器内 initdb**：现象是容器以退出码 1 结束、
   `database system is ready to accept connections` 永远等不到。`docker-compose.yml` 早已用
@@ -699,6 +715,14 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
 
 ## 已修复（近期）
 
+- ✅ **`CsvWriter.lineCount()` 与注释语义相反**（2026-10-11）：注释声明「已写入的行数(不含表头)」，
+  但实现是「按行分隔符切分已拼接的整串文本后数段数」，而 `header(...)` 直接复用了 `row(...)`
+  —— 于是**表头被一并计入，多算 1 行**。
+  修复：改为显式计数（仅 `row(...)` 累加 `dataRows`，`header(...)` 不参与），
+  顺带省掉每次调用都对全串文本做一次 `split` 的开销。
+  **改动前已确认：`lineCount()` 在生产代码中没有任何调用方**（唯一引用是测试类自身；
+  `CostReportService.exportCsv` 虽使用 `CsvWriter` 但未调用它）→ 修改语义无兼容性风险。
+  由 `CsvWriterTest#headerIsNotCounted` 锁定。
 - ✅ **`cleanMarkdownContent` 页脚截断误删后半篇正文**（2026-10-11）：原实现为「命中页脚关键词即
   从该行起全部截断」且**不区分位置**（源码中 `ratio` 计算后的 if/else 两分支内容完全相同，实际未生效），
   于是正文里一句「请 Subscribe 我们的栏目」会把其后全部正文删掉。已补回位置门槛 ——
