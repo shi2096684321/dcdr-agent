@@ -990,6 +990,13 @@ public class AgentOrchestrator {
             "\\b(©|Copyright|All rights reserved|Privacy Policy|Terms of Service|Cookie Policy|Subscribe|Newsletter|Follow us)\\b",
             Pattern.CASE_INSENSITIVE);
 
+    /**
+     * 页脚截断的位置门槛: 命中行位置须达到全文该比例, 才认定为「页脚」并截断。
+     * <p>存在理由见 {@link #cleanMarkdownContent(String)} —— 不加位置限制时,
+     * 正文中偶然出现的 Subscribe / Follow us 会把其后全部正文一并删掉。
+     */
+    private static final double FOOTER_TAIL_RATIO = 0.7;
+
     /** 正文最大长度（清洗后，超出截断） */
     private static final int MAX_CONTENT_LENGTH = 4000;
 
@@ -1012,7 +1019,8 @@ public class AgentOrchestrator {
      *   <li>去除栏目聚合块行（{@code ## [栏目名](栏目/分类链接)}）</li>
      *   <li>去除 SPA 动态占位行（加载中/点击加载更多/暂无相关内容 等）</li>
      *   <li>剥离行内图片语法 {@code ![alt](url)}（保留正文文字）</li>
-     *   <li>页脚特征截断（命中 {@code FOOTER_KEYWORD} 即从该行起全部截断）</li>
+     *   <li>页脚特征截断（<b>尾部区域</b>命中 {@code FOOTER_KEYWORD} 后, 从该行起全部截断;
+ *       命中位置须达全文 {@code FOOTER_TAIL_RATIO}(0.7) 之后, 以免正文中部的偶然命中误删后半篇）</li>
      *   <li>空行压缩（连续多空行合并为一个）</li>
      *   <li>长度截断（超出 {@value #MAX_CONTENT_LENGTH} 字符后追加提示）</li>
      * </ol>
@@ -1072,7 +1080,10 @@ public class AgentOrchestrator {
             }
         }
 
-        // 3) 页脚特征处理（#4：放宽阈值，命中即截断，不再局限于后 30%）
+        // 3) 页脚特征处理（#4）：仅在尾部区域命中才截断。
+        //    页脚的本质特征是「在文末」；早前实现为「命中即截断」(不区分位置),
+        //    于是正文中一句「请 Subscribe 我们的栏目以获取更新」会把其后全部正文删掉。
+        //    误删正文的代价远高于残留一段页脚噪音, 故恢复位置门槛。
         int footerLine = -1;
         for (int i = 0; i < n; i++) {
             if (FOOTER_KEYWORD.matcher(lines[i]).find()) {
@@ -1080,15 +1091,10 @@ public class AgentOrchestrator {
                 break; // 只处理第一个命中的行
             }
         }
-        if (footerLine >= 0) {
-            double ratio = (double) footerLine / Math.max(1, n);
-            if (ratio >= 0.7) {
-                // 在后 30% 区域: 从此行起全部截断
-                for (int i = footerLine; i < n; i++) remove[i] = true;
-            } else {
-                // 前/中区域: 命中即从此行起截断（页脚/订阅块通常在文末但亦可能提前出现）
-                for (int i = footerLine; i < n; i++) remove[i] = true;
-            }
+        if (footerLine >= 0
+                && (double) footerLine / Math.max(1, n) >= FOOTER_TAIL_RATIO) {
+            // 尾部区域命中: 从此行起全部截断
+            for (int i = footerLine; i < n; i++) remove[i] = true;
         }
 
         // 4) 按标记重建文本

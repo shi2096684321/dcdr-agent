@@ -228,11 +228,21 @@ public final class JsonSchemaConverter {
         return m;
     }
 
-    /** 基础类型 schema Map: {type, description?} */
+    /**
+     * 基础类型 schema Map: {type, description?}。
+     * <p>
+     * <b>必须返回可变 Map</b>: 调用方可能需要在结果上继续追加字段 ——
+     * {@link JsonArraySchema} 分支就要补 {@code items}(见 {@link #fromSchemaElement})。
+     * 早前此处返回 {@code Map.of(...)} 不可变实例, 使数组类型 schema 转换抛
+     * {@code UnsupportedOperationException}, 进而导致含数组参数的工具(web_extract)
+     * 在注册期构建 ToolSpecification 失败、无法暴露给 LLM(功能静默失效)。
+     */
     private static Map<String, Object> schemaMap(String type, String description) {
-        if (description == null) {
-            return Map.of("type", type);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("type", type);
+        if (description != null) {
+            m.put("description", description);
         }
-        return Map.of("type", type, "description", description);
+        return m;
     }
 }
