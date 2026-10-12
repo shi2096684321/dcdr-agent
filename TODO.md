@@ -586,9 +586,12 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
   `SpringBootContextLoader` 走 `SpringApplication.run()`，故启动期注册逻辑（工具注册 / 模型注册 /
   预置模板插入）在测试中**真实发生**。好处："注册期转换"这类只在启动时执行的逻辑也被覆盖了
   —— 本次发现的 `web_extract` 缺陷正属此类。
-- **H2 能建出 `document_chunks.embedding vector(1536)`**：该列虽是
-  `@Column(columnDefinition = "vector(1536)")` + 自定义 `VectorType`，H2 下建表未报错
-  （与 pg profile 的差异仅在实际向量检索行为，不影响上下文装配）。
+- **别只看 `Tests run` 就给"环境能力"下结论**：本小节曾并存两条自相矛盾的记录 ——
+  早期依据 `Tests run: 5, Failures: 0` 断言"该向量列在 H2 下能正常建表"（错误结论），
+  而实际建表**一直失败**（原因见上方"H2 profile 下 `document_chunks` 表建不出来"那条：
+  Hibernate 建表失败只记 WARN、不中断上下文，故上下文照常启动、测试照常全绿）。
+  **教训**：判定"某项能力在当前环境是否可用"，依据应当是 **DDL / 驱动日志**，
+  而不是"测试是否全绿" —— 后者只能说明"没有测试踩到那个坑"，不能说明"那个坑不存在"。
 
 ---
 

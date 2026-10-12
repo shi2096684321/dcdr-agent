@@ -6,9 +6,28 @@
 #  为什么需要这个文件:
 #   1. application.yml 里 spring.profiles.active 被写死为 pg(本地开发用 PostgreSQL),
 #      @ActiveProfiles("test") 会覆盖它, 避免测试去连真实 PostgreSQL;
-#   2. application.yml 的数据源是 H2 文件库(./data/database/agent),
+#   2. application.yml 的数据源默认是 H2 文件库(./data/database/agent),
 #      测试必须换成内存库, 否则会写脏本地开发数据;
 #   3. 追踪默认会向 Zipkin(localhost:9411) 上报, 测试环境无该服务, 关闭以免噪声日志。
+#
+#  H2 在此的角色: **仅为装配测试的替身**, 不是"开发数据库"(生产/开发一律走 PostgreSQL,
+#  见 application-pg.yml)。它是目前唯一能"零依赖、秒级"启动 Spring 上下文的方案 ——
+#  但能力有边界, 见下方「已知限制」。
+#
+#  ⚠️ 已知限制: H2 不认识 pgvector 的 VECTOR 类型, document_chunks 表建不出来
+#  --------------------------------------------------------------------------
+#  启动日志会出现下面这两段 —— **属预期现象, 不是本文件配错了, 无需处理**:
+#      GenerationTarget encountered exception accepting command : Error executing DDL
+#        "create table document_chunks (...)" via JDBC [Unknown data type: "VECTOR";]
+#        "create index ... on document_chunks (...)"   via JDBC [Table "DOCUMENT_CHUNKS" not found]
+#  第 1 行是根因(类型不被识别 → 建表被拒), 第 2 行只是后果(表不存在 → 索引连带失败)。
+#  Hibernate 建表失败只记 WARN、**不中断上下文**, 故上下文照常启动、测试照常全绿。
+#
+#  边界(以下场景不能靠本 profile, 必须用真实 pgvector):
+#    document_chunks 的任何读写 / 向量 KNN 与余弦距离 / pg_trgm 全文检索 / 生产建库脚本本身。
+#    这些由 RagVectorStoreIT(*IT + Testcontainers) 在 `mvn verify` 阶段覆盖。
+#    另: 判断"某项能力在当前环境是否可用"请看 DDL / 驱动日志, 不要只看 `Tests run` 是否全绿
+#    —— 全绿只说明"没有测试踩到那个坑", 不代表"那个坑不存在"。
 #
 #  目标: Spring 上下文在"零外部依赖"(无 PostgreSQL / 无 SearXNG / 无沙箱 / 无 Zipkin)下可启动,
 #        使 ApplicationContextTest 在任何机器上直接 `mvn test` 即可跑通。

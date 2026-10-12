@@ -5,7 +5,7 @@
 .DESCRIPTION
     两档验证, 与 pom.xml 的插件分档一一对应:
 
-      默认      mvn test      —— 单元 + 装配测试(162 条, 约 15 秒)
+      默认      mvn test      —— 单元 + 装配测试(约 15 秒)
                                 零外部依赖: 不连数据库/网络, 不需要 API Key, 不产生费用
       -Full     mvn verify    —— 在上述基础上追加集成测试(*IT)
                                 需要本机 Docker: RagVectorStoreIT 会以 Testcontainers
@@ -14,6 +14,9 @@
 
     脚本会临时清空 DASHSCOPE_API_KEY, 确保即使运行 -Full 也不会误触外部付费调用 ——
     需要真实联调模型时请手动设置该变量并单独执行 `mvn verify`。
+
+    测试条数刻意不写死于注释: 它随测试演进持续增长, 写死会让文档很快过时
+    (此前写"162 条", 实际已达 222 条)。实际条数以运行输出的 `Tests run: N` 为准。
 
 .PARAMETER Full
     执行完整验证(含集成测试, 需要 Docker)。
