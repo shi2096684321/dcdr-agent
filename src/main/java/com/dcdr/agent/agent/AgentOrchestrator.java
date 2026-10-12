@@ -826,13 +826,23 @@ public class AgentOrchestrator {
                             .arguments(mapper.writeValueAsString(params))
                             .build();
                     if ("knowledge_base_search".equals(name)) {
-                        // Agentic RAG: 记录该次检索的 query/kb 数/命中条数/耗时到调用链日志
+                        // Agentic RAG: 记录该次检索的 query/kb 数/命中条数/耗时/topScore/命中文档到调用链日志
                         long ragStart = System.nanoTime();
                         ToolInfo ragInfo = frameworkToolExecutorBridge.executeWithInfo(request, null);
                         String ragQuery = params.get("query") != null ? params.get("query").toString() : "";
-                        int hits = ragInfo.getSources() != null ? ragInfo.getSources().size() : 0;
-                        t.recordRag(ragQuery, knowledgeBaseIds.size(), hits,
-                                (System.nanoTime() - ragStart) / 1_000_000);
+                        List<Map<String, Object>> ragSources =
+                                ragInfo.getSources() != null ? ragInfo.getSources() : List.of();
+                        double ragTop = ragSources.stream()
+                                .mapToDouble(src -> src.get("score") instanceof Number num ? num.doubleValue() : 0.0)
+                                .max().orElse(0.0);
+                        List<String> ragDocs = ragSources.stream()
+                                .map(src -> src.get("documentId"))
+                                .filter(java.util.Objects::nonNull)
+                                .map(Object::toString)
+                                .distinct()
+                                .collect(java.util.stream.Collectors.toList());
+                        t.recordRag(ragQuery, knowledgeBaseIds.size(), ragSources.size(),
+                                (System.nanoTime() - ragStart) / 1_000_000, ragTop, ragDocs);
                         toolInfo = ragInfo;
                     } else {
                         toolInfo = frameworkToolExecutorBridge.executeWithInfo(request, null);
@@ -1774,8 +1784,16 @@ public class AgentOrchestrator {
             log.warn("知识库检索失败, 本次对话降级为无知识库增强: {}", e.getMessage());
             return new RagInject(history, null, null);
         }
+        // 供库侧聚合判断"匹配度趋势"与"死文档": topScore 看整体匹配度是否下滑,
+        // docIds 用于反查"入库很久却从未被召回"的文档(见 docs/sql/eval/retrieval-health.sql)
+        double ragTopScore = results.stream().mapToDouble(RetrievalResult::getScore).max().orElse(0.0);
+        List<String> ragDocIds = results.stream()
+                .map(RetrievalResult::getDocumentId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .collect(java.util.stream.Collectors.toList());
         trace.recordRag(userMessage, scope.size(), results.size(),
-                (System.nanoTime() - ragStart) / 1_000_000);
+                (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds);
         List<Message> withKb = new ArrayList<>(history);
         if (!results.isEmpty()) {
             StringBuilder kb = new StringBuilder();
@@ -1798,6 +1816,9 @@ public class AgentOrchestrator {
                 s.put("content", r.getContent());
                 s.put("score", r.getScore());
                 s.put("chunkId", r.getChunkId());
+                // 文档级 ID: 调用链日志与评测都按"文档"而非"分块"聚合 ——
+                // 一个文档会切成多块, "该文档有没有被召回"才是业务语义
+                s.put("documentId", r.getDocumentId());
                 s.put("source", "knowledge_base");
                 sources.add(s);
             }

@@ -180,6 +180,27 @@ public final class LlmCallTrace {
 
     /** 记录一次 RAG 知识库检索(query/kb 数量/命中条数/耗时), 供调用链日志度量检索效果 */
     public synchronized void recordRag(String query, int kbCount, int hits, long costMs) {
+        recordRag(query, kbCount, hits, costMs, 0.0, java.util.List.of());
+    }
+
+    /**
+     * 记录一次 RAG 检索(含质量明细)。
+     *
+     * <p><b>为什么需要 topScore 与 docIds</b>: "线上文档持续增长时效果有没有漂移"这个问题,
+     * 光靠"命中几条"回答不了 ——
+     * <ul>
+     *   <li>{@code topScore}(最高相似度) 整体下降 → 库里的语料与用户问题的匹配度在变差
+     *       (文档变多、话题被稀释、新文档内容质量差);</li>
+     *   <li>{@code docIds}(命中的文档 ID) 能反过来找出"入库很久却从未被召回过"的文档 ——
+     *       切分太碎、内容重复、与库主题不符时, 这类"死文档"会出现, 而整体命中率看不出异常。</li>
+     * </ul>
+     * 两者都可在库侧直接用 SQL 聚合(见 {@code docs/sql/eval/retrieval-health.sql})。
+     *
+     * @param topScore 本次检索的最高相似度; 未命中传 0
+     * @param docIds   命中的文档 ID(按相似度降序, 已被 topK 截断); 未命中传空列表
+     */
+    public synchronized void recordRag(String query, int kbCount, int hits, long costMs,
+                                       double topScore, java.util.List<String> docIds) {
         String tag = "rag[" + kbCount + "库/命中" + hits + "]";
         chain.add(tag);
         ragCount++;
@@ -190,10 +211,15 @@ public final class LlmCallTrace {
         step.put("kbCount", kbCount);
         step.put("hits", hits);
         step.put("costMs", costMs);
+        // 质量明细: 供库侧聚合判断"匹配度趋势"与"死文档"
+        step.put("topScore", topScore);
+        if (docIds != null && !docIds.isEmpty()) {
+            step.put("docIds", docIds);
+        }
         steps.add(step);
         emit(step);
-        log.info("[llm-trace] turn={} RAG {} query='{}' {}{}", turnId, tag, query, fmtMs(costMs),
-                hits == 0 ? " [未命中]" : "");
+        log.info("[llm-trace] turn={} RAG {} query='{}' {} topScore={}{}", turnId, tag, query, fmtMs(costMs),
+                topScore > 0 ? String.format("%.3f", topScore) : "-", hits == 0 ? " [未命中]" : "");
     }
 
     /** 注册 SSE 实时下发回调: 先回放已缓存事件(路由等前置步骤), 后续事件实时推送 */

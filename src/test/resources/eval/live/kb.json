@@ -1,0 +1,38 @@
+{
+  "_comment": [
+    "Live 模式评测配置: 直接对真实知识库跑检索, 不需要灌语料 —— 库里已有的文档就是语料。",
+    "",
+    "为什么单独有这个模式:",
+    "  fixture 模式(../retrieval-golden.json)把语料内联在 JSON 里, 评测时灌进临时库;",
+    "  它测的是『检索算法』, 但**跳过了 PDF 解析与切分**那一整段。",
+    "  live 模式跑在真实库上, 因此把『PDF 解析 → 切分 → embedding → 检索』全链路都纳入评测。",
+    "",
+    "⚠️ 使用前提与安全约束:",
+    "  1. 需要本机(或可访问的) PostgreSQL 已启动, 且其中包含 kbId 指定的知识库;",
+    "  2. 本模式**默认不执行** —— 必须显式加 `-Deval.live=true` 才会运行,",
+    "     以免在 CI / 无意识场景下连上生产库;",
+    "  3. 评测**只读**(只调 RetrievalService.retrieve), 不会写入任何业务数据。",
+    "",
+    "如何拿到 kbId(两条 SQL, 在 pg 里执行):",
+    "  -- 1) 列出所有知识库, 挑你想评测的那个",
+    "  SELECT id, name, user_id, created_at FROM knowledge_bases ORDER BY created_at DESC;",
+    "  -- 2) 看该库里有哪些文档(用于填写 expectedDocIds)",
+    "  SELECT d.id AS doc_id, d.filename, COUNT(c.id) AS chunk_count",
+    "  FROM documents d LEFT JOIN document_chunks c ON c.doc_id = d.id",
+    "  WHERE d.kb_id = '你的知识库ID' GROUP BY d.id, d.filename ORDER BY d.filename;"
+  ],
+  "kbId": "请填入你的知识库 ID",
+  "topK": 5,
+  "thresholds": {
+    "_comment": "真实库的数据会持续增长, 指标天然波动, 故下限比 fixture 模式宽松 —— 只用于兜住『严重退化』。建议随实测逐步收紧。",
+    "recallAtK": 0.6,
+    "mrr": 0.5,
+    "hitRateAtK": 0.7
+  },
+  "baseline": {
+    "_comment": "首次运行前留 0; 运行后把实测值填回来, 之后每次跑都会打印与它的差异(仅供趋势参考, 不参与断言)。",
+    "recallAtK": 0.0,
+    "mrr": 0.0,
+    "hitRateAtK": 0.0
+  }
+}
