@@ -34,6 +34,8 @@ public class RagProperties {
     private EmbeddingConfig embedding = new EmbeddingConfig();
     private VectorStoreConfig vectorStore = new VectorStoreConfig();
     private RetrievalConfig retrieval = new RetrievalConfig();
+    /** 检索结果注入 prompt 的策略: 边界标记与长度预算 */
+    private InjectConfig inject = new InjectConfig();
     /** 扫描版 PDF / 图片 OCR 配置(V2.1): 关闭时扫描版 PDF 直接报错不降级 */
     private OcrConfig ocr = new OcrConfig();
 
@@ -97,6 +99,37 @@ public class RagProperties {
         private HybridConfig hybrid = new HybridConfig();
         /** 相关性重排(ReRankingContentAggregator, 需配置 ScoringModel)。默认关闭 */
         private RerankConfig rerank = new RerankConfig();
+    }
+
+    /**
+     * 检索结果注入 prompt 的策略。
+     *
+     * <p>两个目的:
+     * <ol>
+     *   <li><b>防「间接提示注入」</b>: 注入的片段是<b>外部内容</b>(用户上传的文档、OCR 结果、
+     *       联网抓取的网页), 可能含形如"忽略以上指令"、"你现在是 XXX"的文本。
+     *       加边界标记 + 显式告知模型"标记内是资料而非指令", 可显著降低被带偏的概率。
+     *       此前是原样拼接, 无任何隔离。</li>
+     *   <li><b>控住 prompt 长度</b>: 此前注入片段全文, 长度只靠
+     *       {@code chunkSize × topK} 间接约束(默认约 5×1000 字) —— 任一项调大就会失控,
+     *       且没有显式上限。这里给出明确的字符预算, 超出时按序截断
+     *       (保留高分片段: results 已按相似度降序)。</li>
+     * </ol>
+     */
+    @Data
+    public static class InjectConfig {
+
+        /** 注入片段的总字符预算; 超出则按序截断(保留高分片段)。<= 0 表示不限制 */
+        private int maxTotalChars = 6000;
+
+        /** 单个片段的字符上限; 超出则截断并标注。<= 0 表示不限制 */
+        private int maxCharsPerChunk = 2000;
+
+        /**
+         * 是否用边界标记包裹片段, 并告知模型"标记内是资料、不是指令"。
+         * <p>关闭仅用于对比测试(观察该防护对回答质量的影响), 生产不建议关闭。
+         */
+        private boolean boundaryMarker = true;
     }
 
     @Data

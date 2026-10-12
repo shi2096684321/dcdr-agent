@@ -48,6 +48,10 @@ public final class LlmCallTrace {
     private int toolSteps = 0;
     /** RAG 检索次数 */
     private int ragCount = 0;
+    /** 引用忠实度校验次数(每次回答收尾校验一次) */
+    private int citationCount = 0;
+    /** 本次请求所用 system prompt 的指纹(短哈希); null 表示尚未记录 */
+    private String promptFingerprint;
     /** token 累计(入/出), 缺 usage 的调用不计 */
     private long totalIn;
     private long totalOut;
@@ -220,6 +224,92 @@ public final class LlmCallTrace {
         emit(step);
         log.info("[llm-trace] turn={} RAG {} query='{}' {} topScore={}{}", turnId, tag, query, fmtMs(costMs),
                 topScore > 0 ? String.format("%.3f", topScore) : "-", hits == 0 ? " [未命中]" : "");
+    }
+
+    /**
+     * 记录本次请求所用 system prompt 的<b>指纹</b>(短哈希)。
+     *
+     * <p><b>解决什么问题</b>: prompt 分散在配置与 classpath 模板文件里(见 {@code SystemPromptResolver}),
+     * 改动它们不会有任何代码 diff 之外的痕迹。于是当"某天回答质量变了"时, 无法回答
+     * <b>"是不是 prompt 被改过"</b> —— 只能靠人工回忆。
+     *
+     * <p>记录了指纹之后: 同一会话不同日期的回答, 只要对比日志里的 8 位哈希, 就能确认
+     * "回答变化时 prompt 是否也变了", 把猜测变成事实。
+     *
+     * <p><b>为什么记哈希而不是全文</b>: 全文可由 git 中受版本控制的配置/模板还原;
+     * 每轮都往日志里塞一份完整 prompt 只会浪费存储与带宽, 且不利于比对。
+     *
+     * @param systemPrompt 合并后的 L1+L2 场景级 system prompt(可为 null, 表示本轮未注入)
+     */
+    public synchronized void recordPromptFingerprint(String systemPrompt) {
+        if (promptFingerprint != null) {
+            return;   // 一个 turn 只用一份 system prompt, 记一次即可
+        }
+        promptFingerprint = fingerprint(systemPrompt);
+        java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
+        step.put("kind", "prompt");
+        step.put("seq", 1);
+        step.put("systemPromptFingerprint", promptFingerprint);
+        step.put("systemPromptChars", systemPrompt == null ? 0 : systemPrompt.length());
+        steps.add(step);
+        emit(step);
+        log.info("[llm-trace] turn={} system prompt 指纹={} ({} 字)", turnId, promptFingerprint,
+                systemPrompt == null ? 0 : systemPrompt.length());
+    }
+
+    /** 取文本 SHA-256 前 4 字节的十六进制(8 位), 够区分 prompt 版本且便于阅读比对 */
+    private static String fingerprint(String text) {
+        if (text == null || text.isBlank()) {
+            return "-";
+        }
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(8);
+            for (int i = 0; i < 4; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "-";
+        }
+    }
+
+    /**
+     * 记录一次「引用忠实度」校验结果。
+     *
+     * <p><b>它是什么</b>: 回答里的 {@code [[n]]} 由模型自己标注, 后端此前不校验。本方法记录
+     * 「回答标注了几处引用 / 本轮共有几条来源 / 其中哪些编号越界」, 把
+     * <b>幻觉引用</b>(引用了不存在的来源编号) 从"看不见"变成"可统计"。
+     *
+     * <p><b>为什么只记录不阻断</b>: 流式回答边生成边推送, 收到完整文本时用户已经看到内容,
+     * 事后撤回体验更差。故只留痕 —— 便于统计「幻觉引用率」并在超标时回头调 prompt。
+     *
+     * @param citedCount     回答中出现的不同引用编号个数
+     * @param availableCount 本轮可用来源条数(召回片段 + 工具来源)
+     * @param outOfRange     越界编号(小于 1 或大于 availableCount); 空列表表示引用全部合法
+     */
+    public synchronized void recordCitation(int citedCount, int availableCount, java.util.List<Integer> outOfRange) {
+        citationCount++;
+        java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
+        step.put("kind", "citation");
+        step.put("seq", citationCount);
+        step.put("citedCount", citedCount);
+        step.put("availableCount", availableCount);
+        if (outOfRange != null && !outOfRange.isEmpty()) {
+            step.put("outOfRange", outOfRange);
+        }
+        steps.add(step);
+        emit(step);
+
+        if (outOfRange == null || outOfRange.isEmpty()) {
+            log.info("[llm-trace] turn={} 引用校验: 标注 {} 处, 来源 {} 条, 全部在范围内",
+                    turnId, citedCount, availableCount);
+        } else {
+            // 越界引用 = 编造了不存在的来源编号, 属幻觉信号, 用 WARN 让它更容易被发现
+            log.warn("[llm-trace] turn={} 引用越界(疑似幻觉引用): 标注 {} 处, 来源仅 {} 条, 越界编号 {}",
+                    turnId, citedCount, availableCount, outOfRange);
+        }
     }
 
     /** 注册 SSE 实时下发回调: 先回放已缓存事件(路由等前置步骤), 后续事件实时推送 */

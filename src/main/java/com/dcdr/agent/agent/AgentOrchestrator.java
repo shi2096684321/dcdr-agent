@@ -114,6 +114,10 @@ public class AgentOrchestrator {
     private static final java.util.regex.Pattern P_AGGREGATE =
             java.util.regex.Pattern.compile(".*/(section|sections|category|categories|topic|topics|tag|tags|channel|list|search|c/).*");
 
+    /** 回答中的引用角标 {@code [[n]]}(容忍中括号内空格), 用于引用忠实度校验 */
+    private static final java.util.regex.Pattern P_CITATION =
+            java.util.regex.Pattern.compile("\\[\\[\\s*(\\d+)\\s*\\]\\]");
+
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
@@ -1399,6 +1403,40 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 引用忠实度校验: 回答中标注的 {@code [[n]]} 是否都落在本次来源集范围内。
+     *
+     * <p><b>为什么需要</b>: {@code [[n]]} 是模型<b>自己标的</b>, 后端此前不做任何校验 ——
+     * 于是「标了 {@code [[7]]} 但只召回 5 条」「引用编号指向不相关片段」这类<b>幻觉引用</b>
+     * 无人发现。本方法把它变成可统计的信号(写入调用链日志的 citation 步骤)。
+     *
+     * <p><b>为什么只留痕、不阻断</b>: 流式回答是边生成边推给前端的, 收到完整文本时用户
+     * 已经看到了内容, 事后撤回只会让体验更差。这类问题的正确处置是<b>让它可见</b> ——
+     * 便于统计「幻觉引用率」, 并在超标时回头调 prompt(必要时可接入告警)。
+     *
+     * @param answer  模型本轮生成的完整回答
+     * @param sources 本轮的来源列表(即前端渲染引用卡片所用的同一份数据)
+     * @param trace   调用链日志句柄(可为 null, 此时不做任何事)
+     */
+    private static void validateCitations(String answer, List<Map<String, Object>> sources,
+                                          com.dcdr.agent.common.log.LlmCallTrace trace) {
+        if (trace == null || answer == null || answer.isEmpty()) {
+            return;
+        }
+        java.util.Set<Integer> cited = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher m = P_CITATION.matcher(answer);
+        while (m.find()) {
+            try {
+                cited.add(Integer.parseInt(m.group(1)));
+            } catch (NumberFormatException ignored) {
+                // 位数过长的数字: 视为无效引用, 交由下方越界判断统一标记
+            }
+        }
+        int available = sources != null ? sources.size() : 0;
+        List<Integer> outOfRange = cited.stream().filter(n -> n < 1 || n > available).toList();
+        trace.recordCitation(cited.size(), available, outOfRange);
+    }
+
+    /**
      * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
      * 并下发 done 分块与 finish_reason 相关提示。
      */
@@ -1426,6 +1464,12 @@ public class AgentOrchestrator {
         if (costRecorded.compareAndSet(false, true)) {
             costTracker.record(userId, sessId, null, "chat", provider.getName(), u);
         }
+
+        // 引用忠实度校验: 回答里的 [[n]] 必须落在本次来源集范围内。
+        // 流式回答边生成边推送、无法事后撤回, 故这里只做"事后校验 + 留痕":
+        // 让"模型编造了不存在的引用编号"这类幻觉在调用链日志里可见(可统计、可告警),
+        // 而不是悄悄过去 —— 此前对 [[n]] 没有任何校验。
+        validateCitations(accumulated.toString(), collectedSources, trace);
 
         // 仅构建待落库消息(不在此处阻塞 SSE)
         Message assistantMessage = null;
@@ -1578,6 +1622,11 @@ public class AgentOrchestrator {
             List<Message> withSys = new ArrayList<>(history);
             withSys.add(0, Message.system(resolvedChatPrompt));
             history = withSys;
+        }
+        // prompt 指纹: 记录合并后 system prompt 的短哈希, 使"改了 prompt 导致回答变化"可追溯。
+        // prompt 分散在配置与 classpath 模板中, 不留指纹就只能靠人工回忆"那天是不是改过它"。
+        if (trace != null) {
+            trace.recordPromptFingerprint(resolvedChatPrompt);
         }
 
         // 3.1.1 会话角色设定包装注入(V3.1 方案 A, 标准做法):
