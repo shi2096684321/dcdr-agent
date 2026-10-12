@@ -1,5 +1,5 @@
 # V2.0 / V2.1 PostgreSQL + PgVector profile
-# 启用方式: --spring.profiles.active=pg  (默认 dev 仍走 H2, 见 application.yml)
+# 启用方式: --spring.profiles.active=pg  (项目已在 application.yml 中将其写死为默认)
 # 需先建库并执行 docs/sql/v2.0_schema.sql (含 pgvector 扩展)
 spring:
   config:

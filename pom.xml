@@ -60,15 +60,18 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
-        <!-- 数据库: H2 + Spring Data JPA (会话/消息/项目持久化) -->
+        <!-- 数据库访问: Spring Data JPA (会话/消息/项目持久化) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!-- H2 (test scope): 仅作测试期的"装配测试替身"(见 src/test/resources/application-test.yml)。
+             生产与本地开发一律走 PostgreSQL + pgvector (见 application-pg.yml)。
+             用 test scope 而非 runtime, 使打包产物中不再包含 H2。 -->
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>
-            <scope>runtime</scope>
+            <scope>test</scope>
         </dependency>
 
         <!-- PostgreSQL: V2.0/V2.1 生产级 RAG 向量检索, 通过 pg profile 启用。

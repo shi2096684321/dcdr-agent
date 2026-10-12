@@ -30,7 +30,6 @@ public class AuthProperties {
 //            "/api/models",
             "/v3/api-docs",
             "/swagger-ui",
-            "/h2-console",
             // 上传文件匿名访问: 用 Ant 通配 /** 放行所有子路径(图片 URL 如 /api/files/uploads/2026/08/31/xxx.png)。
             // 需与 SecurityConfig.authorizeExchange 的 Ant pathMatchers 语义一致;
             // isPermitted 已支持把结尾 "/**" 还原为前缀做 startsWith, 两处匹配口径统一。

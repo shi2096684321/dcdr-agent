@@ -537,6 +537,32 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
   **阈值闭区间边界**（用 `estimate()` 反推"恰好等于 `limit×ratio`"的文本，验证判定用的是 `>=`）、
   `resolveUsage` 的"真实 usage 优先、否则估算兜底"（以 `assertSame` 验证确实透传而非重算）。
 
+### 第十批：H2 退场 —— 明确为"测试替身"（2026-10-12）
+
+**背景**：H2 最初被当作"开发期数据库"，但 `application.yml` 的 `spring.profiles.active` 早已写死为
+`pg`（生产与本地开发实际都走 PostgreSQL + pgvector），那段 H2 数据源配置**从未生效**；
+更隐蔽的是 `pom.xml` 里 H2 一直是 `runtime` scope —— 即**打包产物中始终带着一个没人用的数据库**。
+经确认：H2 今后不再作为开发/生产数据库，仅在测试中充当"装配测试替身"（零依赖、秒级，
+使 `mvn test` 不需要 Docker）。
+
+**改动（5 个文件）**：
+- `pom.xml`：H2 依赖 `runtime` → **`test`**，打包产物不再包含 H2。
+- `application.yml`：删除 H2 `datasource` 与 `h2.console` 段（死代码）、删除 `/h2-console` 白名单；
+  更新两处已过时注释（默认 profile 说明、RAG 说明）。保留 `jpa` 默认段 —— 它非 H2 专属，
+  且被各 profile 覆盖/合并，删除风险大于收益。
+- `AuthProperties`：`permitPaths` 移除 `/h2-console`。
+- `application-pg.yml` / `docker-compose.yml`：注释更新（原文"默认 dev 仍走 H2"、"覆盖默认 H2"
+  均已不成立）。
+
+**验证**：`mvn test` **222 条 / 0 失败**（`ApplicationContextTest` 依赖 test profile 的 H2 内存库，
+故它通过即证明替身链路完好）；`dependency:list -DincludeScope=runtime` 中 **H2 命中数 = 0**，
+证实其已退出运行时依赖。
+
+**遗留（本轮未做，需单独一轮）**：`LlmUsageLogRepository` 的"周/月聚合放到 Java 侧 rollup"
+本是为绕开"H2 不支持 `date_trunc`、改用 nativeQuery 会在 H2 下报错"而做的妥协
+（见 `CostReportService` 类注释）。H2 既已退出，这段可改回 `date_trunc` + nativeQuery ——
+但它动的是**生产查询逻辑**，须单独验证，不并入本次配置清理。
+
 ### 踩坑记录（可复用结论）
 - **本机 Docker 20.10.8 的 seccomp 会阻断容器内 initdb**：现象是容器以退出码 1 结束、
   `database system is ready to accept connections` 永远等不到。`docker-compose.yml` 早已用

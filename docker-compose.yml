@@ -26,7 +26,8 @@ services:
     ports:
       - "8080:8080"
     environment:
-      # 激活 pg profile (PostgreSQL + PgVector), 覆盖默认 H2
+      # 激活 pg profile (PostgreSQL + PgVector); 与 application.yml 的默认 profile 一致,
+      # 显式声明以保证容器环境不受基础镜像变量影响
       SPRING_PROFILES_ACTIVE: pg
       # 覆盖 application-pg.yml 里写死的 localhost, 指向 compose 内的 postgres 服务
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public

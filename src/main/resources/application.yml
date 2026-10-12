@@ -10,20 +10,15 @@ spring:
   lifecycle:
     timeout-per-shutdown-phase: 30s
 
-  # 默认不激活额外 profile (走 application.yml 的 H2); 设置 SPRING_PROFILES_ACTIVE=pg 即切 PostgreSQL
+  # 数据库连接一律由 profile 提供, 此处不再内置数据源:
+  #   pg   → PostgreSQL + pgvector (生产与本地开发的唯一选择, 连接见 application-pg.yml)
+  #   test → H2 内存库 (仅供测试, 见 src/test/resources/application-test.yml)
+  # 故必须激活其中之一, 否则启动时会因找不到数据源而失败; 此处写死 pg,
+  # 避免"忘记指定 profile 时静默回退到另一个库"这类隐患。
   profiles:
     active: pg
-  #    active: ${SPRING_PROFILES_ACTIVE:default}
-  # H2 数据库配置(开发期)
-  datasource:
-    url: jdbc:h2:file:./data/database/agent;AUTO_SERVER=TRUE;DB_CLOSE_DELAY=-1
-    driver-class-name: org.h2.Driver
-    username: sa
-    password:
-  h2:
-    console:
-      enabled: true
-      path: /h2-console
+  # 说明: H2 已不再作为开发/生产数据库(仅测试期使用, 见 pom.xml 中该依赖的 test scope),
+  #       原先此处的 H2 datasource 与 h2.console 配置已移除。
   jpa:
     hibernate:
       ddl-auto: update
@@ -149,7 +144,6 @@ agent:
       # 走下方 /api/** authenticated() 规则, 登录后携带 Token 正常解析用户上下文 (V3.1)。
       - /v3/api-docs
       - /swagger-ui
-      - /h2-console
       # 上传文件匿名访问: 用 Ant 通配 /** 放行所有子路径(图片 URL 形如 /api/files/uploads/2026/08/31/xxx.png)。
       # 仅写 /api/files/uploads(无 /**) 时, SecurityConfig.authorizeExchange 的 Ant pathMatchers 不匹配子路径,
       # 子路径会落到下方 /api/** authenticated() 被拦, 而浏览器 <img> 不带 token 导致 401 加载失败。
@@ -163,8 +157,8 @@ agent:
       - /actuator/prometheus
 
   # ===== V2.1 RAG 知识库配置 =====
-  # 仅在 pg profile 下生效真实向量检索; H2 默认 profile 不支持 pgvector,
-  # 上传/检索会因 VectorType 列无法识别而失败, 请切换 --spring.profiles.active=pg
+  # 真实向量检索依赖 pgvector, 仅在 pg profile 下可用(生产与本地开发均走 pg)。
+  # 测试期的 H2 不支持 VECTOR 类型, 相关能力改由 RagVectorStoreIT(Testcontainers) 覆盖。
   rag:
     enabled: false
     # 平台级知识库 ID 列表(visibility=PLATFORM): 对所有对话无感可用, 用户无需选择
