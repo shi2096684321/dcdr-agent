@@ -18,6 +18,8 @@ export * from './market'
 export * from './monitor'
 // 调用链日志
 export * from './llmCalls'
+// 检索健康度 (RAG 可观测性, 仅管理员)
+export * from './retrievalHealth'
 // V3.1 用户自定义模型
 export * from './userModels'
 // V3.1 回答反馈 (F-48)

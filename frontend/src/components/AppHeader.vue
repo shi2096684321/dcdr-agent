@@ -19,6 +19,8 @@
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='routing'}" @click="$emit('update:mode', 'routing')">智能路由</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='llm-logs'}" @click="$emit('update:mode', 'llm-logs')">调用链</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='monitor'}" @click="$emit('update:mode', 'monitor')">监控</div>
+        <!-- 检索健康度: 零命中样本含用户原始提问, 属运维数据, 故仅管理员可见(后端亦校验) -->
+        <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='retrieval-health'}" @click="$emit('update:mode', 'retrieval-health')">检索健康</div>
         <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='admin'}" @click="$emit('update:mode', 'admin')">管理</div>
       </div>
       <button class="web-search-toggle" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"

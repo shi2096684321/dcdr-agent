@@ -28,6 +28,8 @@
         <RoutingView v-else-if="mode==='routing'" />
         <LlmCallLogView v-else-if="mode==='llm-logs'" />
         <MonitorView v-else-if="mode==='monitor'" />
+        <!-- 检索健康度: 含用户原始提问, 仅管理员; 与顶栏入口、后端校验形成三层一致 -->
+        <RetrievalHealthView v-else-if="mode==='retrieval-health' && authStore.isAdmin" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
     </template>
@@ -52,6 +54,7 @@ import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
 import RoutingView from '@/views/RoutingView.vue'
 import LlmCallLogView from '@/views/LlmCallLogView.vue'
 import MonitorView from '@/views/MonitorView.vue'
+import RetrievalHealthView from '@/views/RetrievalHealthView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'
 

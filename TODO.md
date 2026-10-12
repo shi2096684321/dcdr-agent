@@ -563,6 +563,175 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 （见 `CostReportService` 类注释）。H2 既已退出，这段可改回 `date_trunc` + nativeQuery ——
 但它动的是**生产查询逻辑**，须单独验证，不并入本次配置清理。
 
+### 第十一批：RAG 检索质量评测（Offline Eval）—— 补上"效果评估"层（2026-10-12）
+
+**背景**：此前 222 条测试全部断言"代码是否按预期运行"（确定性、非黑即白），却回答不了
+AI 项目的核心问题 —— **回答效果好不好、RAG 召回准不准**。这是"代码正确"与"效果合格"的
+两个不同维度，后者此前**完全没有覆盖**。
+
+**关键区分**：`RagVectorStoreIT` 测的是**机制**（KNN 能否排序、余弦距离对不对），用的是
+单位向量，因此它**回答不了**"该找的文档到底有没有被找出来"；本批用**真实 Embedding** +
+人工标注的期望命中，回答的正是这个问题。
+
+**落地**：
+- 新增 `src/test/resources/eval/retrieval-golden.json`（黄金集）：8 篇语料 / 17 条问题 /
+  期望命中文档 / 阈值 / 基线。语料刻意含近邻易混话题（年假 vs 病假、报销 vs 采购），
+  问题措辞刻意与文档用词不同 —— 否则测的是关键词匹配而非语义召回，指标会虚高。
+- 新增 `RagRetrievalEvalIT`（3 条，`*IT`）：灌语料（用生产同一套 `RecursiveSplitter` 切分 +
+  真实向量化）→ 逐条检索 → 算 **Recall@K / MRR / HitRate@K** → 与基线/下限对比。
+  另含两条"评测自身可信度"断言：期望文档必须真实存在于语料（防标注笔误）、重复检索结果一致。
+
+**首次实测基线（17 条，topK=5，纯向量，hybrid/rerank 关闭）**：
+`Recall@5 = 1.000`、`MRR = 0.971`、`HitRate@5 = 1.000`；断言下限设为 **0.90/0.90/0.90**
+（比基线略低，容忍小样本波动）。**注意**：本语料系人工构造、话题区分度高，故 1.000 属预期；
+**真实业务语料通常明显更低**，届时应以当时实测值作为新基线。
+
+**设计要点**：
+- **命中判定用 documentId 而非 chunkId**：一个文档切成多块，"检索到该文档的任意分块"即满足
+  业务需要；按 chunkId 判定会虚低。
+- **断言按指标、不按单条 case**：效果看整体水平，单条波动不该阻断；失败时把未命中清单打进
+  断言消息，便于直接定位是哪个问题退化。
+- **门控两道**：需 `DASHSCOPE_API_KEY`（真调 Embedding，产生少量费用）+ 需 Docker，
+  任一不满足即整类跳过 —— 效果评测不该绑架 `mvn test` / `mvn verify`。
+- **归 `*IT`**：慢且花钱，属"按需手动跑"的层。
+
+**踩坑记录**：
+- **`@Container` 与 Spring 的扩展执行顺序无保证**：两者都靠 `BeforeAllCallback` 执行
+  （前者启动容器、后者加载上下文），顺序由注解组合决定。一旦 Spring 先执行，
+  `@ServiceConnection` 就会在容器启动前索取映射端口，报
+  `Mapped port can only be obtained after the container is started`。
+  本次症状：日志里只有 Ryuk 容器被创建，pgvector 容器**从未启动**。
+  **修复**：改用 static 初始化块自行 `POSTGRES.start()` + `@DynamicPropertySource` 注入连接，
+  时序完全确定（类加载 → 容器就绪 → 上下文加载）；Docker 不可用时由 `assumeTrue` 整类跳过。
+  **注**：现有 `RagVectorStoreIT` 仍用 `@Container`，目前恰好未踩到 —— 属潜在脆弱点。
+- **基线值的记录精度必须与比较容差匹配**：初版 `verdict` 用 `1e-9` 比较，而 JSON 里基线按
+  3 位小数记录（0.971 vs 实测 0.9705882…），差值 -0.0004 被误报成"退化"。
+  改为千分位容差 —— 统计指标本就不该按浮点严格比较。
+
+**遗留（未做）**：
+- **回答质量评估尚未覆盖**：本批只做了检索侧。回答侧**可客观化**的部分是
+  **引用忠实度**（回答里的 `[[n]]` 引用必须出现在召回结果内 —— 把"幻觉"从主观问题变成
+  可计算的比率）与格式/红线类断言；**主观质量**（有用性、语气）只能人工抽检或裁判模型打分。
+- **评测集需用真实业务语料扩充**：把线上坏例（该召回却没召回的问题）按 cases 格式追加进来，
+  让它随真实使用增长 —— 这是评测集最有价值的用法。
+
+### 第十二批：检索评测新增 live 模式 —— 直接指向真实库（2026-10-12）
+
+**背景**：用户提出"线上文档会越来越多，怎么持续观察效果"，以及"真实数据怎么进评测集
+（PDF 是分块入库的）"。上一批的 fixture 模式把语料**内联在 JSON** 里，无法反映真实库；
+而文档增长的退化（切分碎、内容重复、PDF 解析乱码）恰恰只有真实链路才测得出。
+
+**关键认知（本轮澄清的两件事）**：
+- **评测集答不了"数据增长"**：它的语料是冻结快照，为的是跨时间可比。要观察文档增长带来的
+  漂移，得靠**线上指标聚合**（见下方遗留）。
+- **真实数据不需要"抄进评测集"**：库里已有的文档就是语料，评测集里只需写
+  `{问题, 库里真实的 documentId}` —— 标注是唯一需要人工维护的部分。
+
+**落地（4 个文件）**：
+- `src/test/resources/eval/live/kb.json`：live 配置（kbId / topK / thresholds / baseline），
+  并在注释里写明安全约束与"查 kbId、查 docId"的两条 SQL。
+- `src/test/resources/eval/live/cases.json`：标注文件（只有 id / question / expectedDocIds）。
+- `src/test/java/com/dcdr/agent/rag/eval/RetrievalEvalMetrics.java`：**两种模式共用的**
+  指标计算与报告（Recall@K / MRR / HitRate@K + 逐条明细 + 基线对比）。
+  抽出来是为了保证 fixture 与 live 的**口径完全一致**，否则两边分数无法互相参照。
+- `src/test/java/com/dcdr/agent/rag/RagRetrievalEvalLiveIT.java`：live 评测本体。
+
+**关键设计**：
+- **门控**：`@EnabledIfSystemProperty(named = "eval.live", matches = "true")` —— 默认整类跳过。
+  因为本类**连真实数据库**，不加门控的话 `mvn verify` 在 CI 或无意识场景下可能连上生产库。
+  （实测：不传该属性时 `Skipped: 1`，未加载上下文、未连库。）
+- **只读保证**：全程只调 `RetrievalService.retrieve`，不写任何业务数据。
+- **不启动 Testcontainers**：它要连的是"真实库"，故用 `@ActiveProfiles("pg")` 走本地数据源。
+- **阈值放宽**：真实库数据持续变化、指标天然波动，故 live 的下限（0.60/0.50/0.70）比 fixture
+  宽松，只兜"严重退化"；趋势对比靠 `baseline`，不靠硬断言。
+- **占位符自检**：`kb.json` / `cases.json` 未填写时直接给出明确提示失败，
+  而不是让占位符参与打分把指标静默拖低。
+
+**运行方式**：
+```powershell
+mvn verify -Dit.test=RagRetrievalEvalLiveIT -Deval.live=true
+```
+
+**当前状态**：代码与门控均已验证（编译通过、默认跳过）。但本机 pg 里
+`SELECT ... FROM knowledge_bases` **返回 0 行** —— 本地环境当前没有任何知识库，
+故 live 模式尚未实跑。等库里有文档并填好 kbId/标注后即可使用。
+
+**遗留项处理（同日完成）**：
+- ✅ **`RagRetrievalEvalIT` 已改为复用 `RetrievalEvalMetrics`**：删除其内部重复的指标计算、
+  `Thresholds` 与 `GoldenCase` 内部类、以及 `verdict`，统一调用共用实现。
+  验证方式是"**行为保持**"—— 重构后重跑，指标与重构前完全一致
+  （Recall@5 = 1.000 / MRR = 0.971 / HitRate@5 = 1.000），222 条单测亦全绿。
+- ✅ **`LlmCallTrace.recordRag` 已补上质量明细**：新增 `topScore` 与 `docIds`
+  （以重载保留旧签名，避免波及无关调用方）。两处调用点（`AgentOrchestrator` 的自动 RAG 注入、
+  Agentic RAG 工具分支）均已传值；顺带在检索结果的 `sources` 里补了 `documentId` ——
+  因为"该文档有没有被召回"才是业务语义（一个文档会切成多块），日志与评测统一按文档维度聚合。
+  日志现在会打印 `topScore=0.831` 这类信息，不再只有"命中几条"。
+- ✅ **新增 `docs/eval/retrieval-health.sql`**（检索健康度巡检，5 组查询）：
+  ① 近 30 天总览（**零命中率 / 平均最高相似度 / P95 耗时**）；
+  ② 按天趋势（定位"哪天开始变差"）；③ 按库拆分（哪个库最差）；
+  ④ **死文档排查**（入库 > 7 天、近 30 天从未被召回过）；
+  ⑤ 零命中问题样本（用于区分"知识盲区"与"检索退化"）。
+  **为什么这个文件是"持续观察"的关键**：固定评测集答不了"文档增长"——它的语料是冻结的；
+  巡检 SQL 看的是真实流量，两者互补、缺一不可。
+
+**仍遗留**：
+- 评测集收敛为**核心集（冻结，跨版本比较）+ 增量集（滚动，跟随新文档）**两层（属文件结构级改动）。
+- ~~检索健康度只有 SQL，尚未做前端呈现~~ → 已由第十三批完成。
+
+### 第十三批：检索健康度页面（可观测性看板，2026-10-12）
+
+**背景**：第十二批把检索质量指标落进了 `llm_call_logs.steps_json` 并给了巡检 SQL，但需要
+手工执行。本批把它做成**页面**，按"企业主流"的可观测性看板来做。
+
+**三处对"企业主流"的升级（相对最初的轻量设想）**：
+- **引入图表库 ECharts**：趋势图（零命中率柱 + 相似度/检索次数双轴折线）手写 CSS 做不到；
+  采用**按需引入**（只注册 LineChart/BarChart/Grid/Tooltip/Legend/CanvasRenderer），避免整包进产物。
+- **权限收紧为"仅管理员"**：零命中样本含**用户原始提问**，属运维数据，普通用户不应看到他人问题。
+  前端 `v-if="authStore.isAdmin"` 隐藏入口，后端在方法内用 `SecurityContext.isAdmin(exchange)` 校验，
+  形成三层一致（顶栏入口 / 页面挂载 / 接口）。
+- **增加上周期对比**：给出"在变好还是变差"的方向判断，比绝对值更有意义。
+
+**落地**：
+- 后端：`dto/RetrievalHealthDtos.java`、`agent/governance/RetrievalHealthService.java`、
+  `controller/RetrievalHealthController.java`（`GET /api/retrieval-health/overview?days=30`）；
+  `LlmCallLogRepository` 新增 `findForHealthAggregation`（按窗口取行，支持 userId 为 null 表示全局）。
+- 前端：`views/RetrievalHealthView.vue`、`api/retrievalHealth.js`；
+  `App.vue` 加挂载分支、`AppHeader.vue` 加「检索健康」入口（仅管理员可见）。
+
+**关键设计**：
+- **JSON 聚合放在 Java 侧，不写 nativeQuery**：`steps_json` 虽是 JSON 文本，但 PG 的
+  `jsonb_array_elements` 属方言特性，用了会绑死数据库并在 H2 下报错（`LlmUsageLogRepository`
+  已有同类踩坑）。故 Repository 只做"按窗口取行"，展开与聚合在 Service 里用 Jackson 完成。
+- **扫描上限 + 截断标志**：内存聚合需要把行读出来，故限制 5000 条并取**最近**的部分；
+  命中上限时响应置 `truncated=true`，前端显式弹出 warning —— 让使用者知道指标只覆盖了部分日志，
+  而不是误以为覆盖完整。
+- **平均相似度只统计"有命中"的检索**：零命中时 `topScore` 为 0，若一并计入均值会失真。
+- **P95 用"排序后取分位"**：不引统计学库，样本量级下足够。
+
+**验证**：`mvn test-compile` 通过；`ApplicationContextTest` 5/5 通过 ——
+**它同时验证了新写的 JPQL 能被正确解析**（JPQL 语法错误会在上下文启动时暴露）；
+`npm run build` 成功（`built in 11.82s`）。
+
+**未做的验证（重要）**：**尚未做端到端实测**（启动应用 + 管理员账号 + 页面渲染）。
+原因是本机 pg 里没有任何知识库与调用链数据（见第十二批），页面会是空数据；
+需要真实流量后才能看到实际效果。接口路径/权限/装配均已通过编译与装配测试验证。
+
+**仍遗留**：
+- 页面未包含**死文档排查**（入库很久却从未被召回）。它需要 join `documents` + `document_chunks`，
+  且属低频运维动作，继续留在 `docs/eval/retrieval-health.sql` 里；确实常看再搬上页面。
+- 评测集收敛为**核心集 + 增量集**两层。
+
+**编写巡检 SQL 时踩到的两个坑（已实测修正）**：
+- **PostgreSQL 的 `round()` 不接受 `double precision`**：`ROUND(AVG(score), 3)` 报
+  `function round(double precision, integer) does not exist` —— 只有 `round(numeric, int)`。
+  需显式转换 `ROUND(AVG(score)::numeric, 3)`。注意 `AVG(int)` 本身返回 numeric 故不受影响，
+  因此容易只在 `double precision` 列上踩到（本文件的 `topScore` 正是此类）。
+- **`psql` 不认 UTF-8 BOM，而 PowerShell 管道会引入 BOM**：
+  `Get-Content ... | docker exec -i ... psql -f -` 会让 SQL 开头带上 BOM，
+  报 `syntax error at or near ""`（位置显示为 `LINE 1: ﻿--`）。
+  改用 `docker cp` 把文件传进容器再 `psql -f` 即可；前提是文件本身无 BOM
+  （用 `[System.IO.File]::WriteAllText($f, $c, (New-Object System.Text.UTF8Encoding $false))` 写出）。
+
 ### 踩坑记录（可复用结论）
 - **本机 Docker 20.10.8 的 seccomp 会阻断容器内 initdb**：现象是容器以退出码 1 结束、
   `database system is ready to accept connections` 永远等不到。`docker-compose.yml` 早已用
