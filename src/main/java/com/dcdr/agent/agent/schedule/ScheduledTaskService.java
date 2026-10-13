@@ -12,15 +12,18 @@ import com.dcdr.agent.dto.ScheduledTaskDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
 import com.dcdr.agent.entity.ScheduledTaskEntity;
 import com.dcdr.agent.repository.ScheduledTaskRepository;
+import com.dcdr.agent.cluster.ClusterLock;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -50,6 +53,12 @@ public class ScheduledTaskService {
     private final SessionManager sessionManager;
     /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (越权返回 404, 替代原先内联 equals 判断的 403) */
     private final OwnershipGuard ownershipGuard;
+    /** V3.1 F-46: 多实例下保证同一任务同一时刻只被执行一次 */
+    private final ClusterLock clusterLock;
+
+    /** 租约 TTL(秒): 需 >= 单次任务最长执行时间(Agent 调用可能较久) */
+    @Value("${agent.v3.cluster.lock-ttl-seconds:300}")
+    private long lockTtlSeconds;
 
     private ThreadPoolTaskScheduler scheduler;
     /** 任务 ID → 调度句柄, 用于启停 */
@@ -189,8 +198,23 @@ public class ScheduledTaskService {
         if (f != null) f.cancel(false);
     }
 
-    /** cron 到点 / 手动触发都会调用的实际执行逻辑 */
+    /**
+     * cron 到点的实际执行逻辑(<b>仅</b>由调度器调用)。
+     * <p>
+     * V3.1 F-46: 每个实例启动时都会把全部 enabled 任务注册进自己的
+     * {@link ThreadPoolTaskScheduler}, 故多实例部署下同一时刻 N 个实例会同时触发同一任务 ——
+     * 后果是重复触发 Agent(重复会话 + 重复模型费用)。这里用租约锁把执行权收归单一实例。
+     * <p>
+     * 手动 {@link #trigger} 不经过本方法, <b>刻意不加锁</b>: 那是用户主动发起的动作,
+     * 重复执行的语义是"用户点了两次", 不应被集群锁静默吞掉。
+     */
     private void runJob(String taskId) {
+        String lockName = "scheduled:task:" + taskId;
+        if (!clusterLock.tryAcquire(lockName, Duration.ofSeconds(Math.max(1L, lockTtlSeconds)))) {
+            // 其他实例已抢到执行权, 本次跳过 —— 属正常调度竞争, 不是错误
+            log.debug("定时任务 {} 已由其他实例执行, 本次跳过", taskId);
+            return;
+        }
         try {
             ScheduledTaskEntity task = repository.findById(taskId).orElse(null);
             if (task == null || !task.isEnabled()) return;
@@ -203,6 +227,8 @@ public class ScheduledTaskService {
             runOnce(task, input);
         } catch (Exception e) {
             log.error("定时任务执行异常: {}", taskId, e);
+        } finally {
+            clusterLock.release(lockName);
         }
     }
 

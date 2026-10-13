@@ -8,6 +8,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -43,10 +44,19 @@ public class WorkflowTemplateInitializer implements ApplicationRunner {
         }
         LocalDateTime now = LocalDateTime.now();
         List<WorkflowDefinitionEntity> templates = buildPresetTemplates(now);
+        int inserted = 0;
         for (WorkflowDefinitionEntity t : templates) {
-            repository.save(t);
+            // V3.1 F-46 多实例: 与 AgentTemplateInitializer 同因 —— 两个实例同时首启会插入相同
+            // 主键(wf_tpl_*) 撞唯一约束; 约束冲突从 ApplicationRunner 抛出会**导致启动失败**。
+            // 故逐条 saveAndFlush 并容错: 一个成功, 另一个静默跳过(详见该类注释)。
+            try {
+                repository.saveAndFlush(t);
+                inserted++;
+            } catch (DataIntegrityViolationException e) {
+                log.debug("预置工作流模板 {} 已由其他实例写入, 跳过", t.getId());
+            }
         }
-        log.info("工作流预置模板初始化完成: 已插入 {} 个模板", templates.size());
+        log.info("工作流预置模板初始化完成: 本次插入 {}/{} 个模板", inserted, templates.size());
     }
 
     /** 构建预置工作流模板 (系统级, userId=null, isTemplate=true) */

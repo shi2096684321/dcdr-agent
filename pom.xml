@@ -193,6 +193,16 @@
             <groupId>io.zipkin.reporter2</groupId>
             <artifactId>zipkin-reporter-brave</artifactId>
         </dependency>
+        <!-- ===== V3.1 F-46 多实例集群协调 =====
+             用途: ①限流集中式计数 ②定时任务跨实例互斥(租约锁)。
+             选 reactive 而非阻塞版: 限流在 WebFilter 热路径上, 不能用阻塞 API 占住
+             reactor 事件循环线程。
+             注: 仅在 agent.v3.cluster.backend=redis 时真正连接; =memory(默认) 时
+             Lettuce 连接工厂是惰性的, 不会建立任何连接(单实例行为与 V3.0 完全一致)。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>

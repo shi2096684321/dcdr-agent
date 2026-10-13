@@ -170,6 +170,35 @@ public class V3Properties {
         private int ipRequestsPerMinute = 120;
     }
 
+    /**
+     * V3.1 F-46 多实例集群协调: 集中式限流计数 + 定时任务跨实例互斥。
+     * <p>
+     * 为什么需要它: {@code RateLimitWebFilter} 的计数与 {@code @Scheduled} 任务都是
+     * <b>进程内</b>状态 —— 单实例正确, 多实例下前者会把总限额放大到 N 倍,
+     * 后者会在每个实例各执行一次(定时任务重复触发 Agent, 产生重复会话与重复费用)。
+     * <p>
+     * 默认 {@code backend=memory} 保持单实例行为与 V3.0 完全一致, 多实例部署时才切 {@code redis}。
+     */
+    private Cluster cluster = new Cluster();
+
+    @Data
+    public static class Cluster {
+        /**
+         * 集群协调后端:
+         * <ul>
+         *   <li>{@code memory}(默认): 进程内状态, 单实例等价, 多实例有上述两个问题</li>
+         *   <li>{@code redis}: 集中式, 多实例必需</li>
+         * </ul>
+         */
+        private String backend = "memory";
+
+        /** 实例标识(租约持有者); 留空自动生成"主机名-随机后缀" */
+        private String instanceId = "";
+
+        /** 定时任务租约 TTL(秒): 持有者崩溃后自动过期供其他实例接管 */
+        private long lockTtlSeconds = 300;
+    }
+
     /** F-40.4 熔断: 按 LLM provider 名统计失败率, 开断后快速失败 */
     @Data
     public static class CircuitBreaker {

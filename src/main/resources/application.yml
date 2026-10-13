@@ -32,6 +32,19 @@ spring:
   codec:
     max-in-memory-size: 16MB
 
+  # V3.1 F-46 Redis 连接 (仅 agent.v3.cluster.backend=redis 时才会真正建立连接;
+  # 默认 backend=memory 下 Lettuce 连接工厂惰性创建, 不会连接, 故此处有默认值也无副作用)
+  # compose 内: REDIS_HOST=redis; 本机跑 jar: 默认 localhost:6379
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # 集群协调是"尽力而为"的能力, 超时必须短 —— 否则 Redis 抖动会拖慢限流热路径
+      timeout: 2s
+      connect-timeout: 2s
+      lettuce:
+        shutdown-timeout: 100ms
+
 # ===== Agent 核心配置 =====
 agent:
   name: "一人公司多模态 AI 助手工作台"
@@ -160,7 +173,7 @@ agent:
   # 真实向量检索依赖 pgvector, 仅在 pg profile 下可用(生产与本地开发均走 pg)。
   # 测试期的 H2 不支持 VECTOR 类型, 相关能力改由 RagVectorStoreIT(Testcontainers) 覆盖。
   rag:
-    enabled: false
+    enabled: true
     # 平台级知识库 ID 列表(visibility=PLATFORM): 对所有对话无感可用, 用户无需选择
     # 管理员将知识库 visibility 设为 PLATFORM 后, 把 ID 填入此处即可全局生效
     platform-kb-ids: ["kb_1786443109991fff8909"]
@@ -185,7 +198,7 @@ agent:
           provider: qwen
           api-key: ${DASHSCOPE_API_KEY:demo-key}
           base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-          model: qwen3.7-text-embedding
+          model: qwen3.7-text-embedding-flash
           dimensions: 1536
           # v4 单次请求最大 10 条(官方限制), v3 为 25; 此处按 v4 限制
           batch-size: 10
@@ -467,6 +480,20 @@ agent:
       user-requests-per-minute: 60
       # 匿名/按 IP 每分钟请求上限 (保护未认证接口)
       ip-requests-per-minute: 120
+
+    # ===== V3.1 F-46 多实例集群协调 (见 docs/16-多实例与高可用演练.md) =====
+    # backend 同时控制两项集群级能力(两者都依赖"跨实例共享状态"):
+    #   ① API 限流计数: memory=进程内计数(多实例会放大总限额 N 倍!) / redis=集中式计数
+    #   ② 定时任务互斥: memory=每个实例都执行(多实例会重复执行) / redis=租约锁, 同一时刻仅一个实例执行
+    # 默认 memory: 单实例部署行为与 V3.0 完全一致, 升级无感; 多实例部署必须改 redis。
+    cluster:
+      backend: memory
+      # 实例标识: 租约锁的持有者标识, 也出现在日志里。留空自动生成(主机名 + 随机后缀);
+      # 多实例部署建议显式指定(如 app-1 / app-2), 便于区分"谁在执行"。
+      instance-id: ""
+      # 定时任务租约 TTL(秒): 持有者崩溃后由 TTL 自动过期, 允许其他实例接管。
+      # 需 >= 单次任务最长执行时间(工作流的 Agent 调用可能较久), 又不宜过大(崩溃后要等这么久才接管)。
+      lock-ttl-seconds: 300
 
     # F-40.4 LLM 熔断: 按模型名统计失败率, 开断后快速失败 503
     circuit-breaker:

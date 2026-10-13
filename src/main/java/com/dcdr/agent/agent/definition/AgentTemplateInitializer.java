@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -33,10 +34,25 @@ public class AgentTemplateInitializer implements ApplicationRunner {
             return;
         }
         LocalDateTime now = LocalDateTime.now();
-        for (AgentDefinitionEntity t : buildPresetTemplates(now)) {
-            repository.save(t);
+        List<AgentDefinitionEntity> presets = buildPresetTemplates(now);
+        int inserted = 0;
+        for (AgentDefinitionEntity t : presets) {
+            // V3.1 F-46 多实例: 两个实例同时首启会都判定"库为空" → 同时插入相同主键(tpl_*)
+            // → 后到的那个撞唯一约束, 异常从 ApplicationRunner 抛出会**导致启动失败**。
+            // 这里用 saveAndFlush 让约束冲突在本行抛出并被吞掉(而不是拖到事务提交时),
+            // 于是"并发初始化"退化为"一个成功、另一个静默跳过"。
+            // 用 flush 而非普通 save 的原因就在这里: save 的 INSERT 可能在方法返回后才 flush,
+            // 那时异常已经脱离 try 块, 兜不住。
+            // 未用集群锁的原因: 锁只解决"同时", 且持锁实例崩溃会让另一个实例跳过初始化 →
+            // 模板缺失; 而对唯一约束容错是确定性的, 与实例数、时序无关。
+            try {
+                repository.saveAndFlush(t);
+                inserted++;
+            } catch (DataIntegrityViolationException e) {
+                log.debug("预置模板 {} 已由其他实例写入, 跳过", t.getId());
+            }
         }
-        log.info("Agent 预置模板初始化完成: 已插入 {} 个模板", buildPresetTemplates(now).size());
+        log.info("Agent 预置模板初始化完成: 本次插入 {}/{} 个模板", inserted, presets.size());
     }
 
     /** 构建预置模板列表 (系统级, userId=null, isTemplate=true) */
