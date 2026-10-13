@@ -1,0 +1,176 @@
+# dcdr-agent V3.1 F-46 多实例 + 主从 演练编排（覆盖文件，非替代）
+#
+# 用法（两个文件叠加，必须带 --profile ha）：
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml --profile ha up -d
+#
+# 为什么用"覆盖文件 + profile"而不是改主 compose：
+#   本机的 Docker VM 只有 4GB 内存（Hyper-V 后端，见主文件头说明），多实例 + 备库跑不起来是常态。
+#   把演练组件收进 profile，日常开发照旧 `docker compose up -d`，只有演练时才叠加本文件，
+#   演练结束 `docker compose -f docker-compose.yml -f docker-compose.ha.yml --profile ha down` 即回收。
+#
+# ⚠️ 内存预算是硬约束。省内存的正确姿势是"只启动需要的服务"，而不是"先 up 再 stop"
+#   （stop 之后再来一次 up -d 会把停掉的服务重新拉起）：
+#   docker compose -f docker-compose.yml -f docker-compose.ha.yml --profile ha up -d --build \
+#       postgres redis agent agent-2 nginx
+#   即不带 zipkin / searxng / opensandbox-server —— 它们不是任何服务的依赖，不会被拉起。
+#   pg-standby 只在演练主从时再加（省 256MB）。详见 docs/16 §2。
+#
+# 本文件做四件事：
+#   1. 给主 agent 打开集中式集群协调（backend=redis）+ 限住内存
+#   2. 新增 agent-2（第二个应用实例，验证"多实例"而非"单实例装作多实例"）
+#   3. 新增 nginx（7 层统一入口，转发给两个实例）
+#   4. 新增 pg-standby（PostgreSQL 流复制备库，极小内存配置）
+#
+# ⚠️ 关于端口的一个坑（实测踩到，勿改回去）：
+#   compose 叠加时 **`ports` 是"追加合并"而不是"覆盖"** —— 曾试图把主 agent 的
+#   8080 改成 8081 好让 nginx 占 8080，结果 `docker compose config` 显示它同时发布了
+#   8080 和 8081 两个宿主端口，nginx 再抢 8080 就直接起不来（端口冲突）。
+#   解法是不碰主 agent 的端口，nginx 用独立宿主端口 8090 作为统一入口：
+#     直连实例: http://localhost:8080 (app-1) / http://localhost:8082 (app-2)
+#     统一入口: http://localhost:8090 (nginx，前端应指这个)
+#   （compose 2.24+ 有 `!override` 标签可以真正覆盖，但本机 Docker 20.10.8 附带的
+#     compose 版本不保证支持，故选择版本无关的写法。）
+#
+# 本文件不解决的两件事（属"只能真环境验证"，见 docs/16）：
+#   - Patroni/etcd 自动选主与 VIP 漂移
+#   - 跨机房/跨可用区复制
+
+services:
+
+  # ── 1. 主应用实例：开启集中式集群协调（端口保持 8080 不动，见文件头"端口坑"） ──
+  agent:
+    environment:
+      # 多实例必需：限流走集中式计数 + 定时任务用租约锁互斥
+      AGENT_V3_CLUSTER_BACKEND: redis
+      # 显式实例标识，便于在日志/Redis key 里区分"谁在执行"
+      AGENT_V3_CLUSTER_INSTANCE_ID: app-1
+      REDIS_HOST: redis
+      # 演练需停掉 zipkin 省内存（见文件头）。不关这个，实例会持续向不存在的 zipkin
+      # 上报失败并刷错误日志。若你保留了 zipkin，删掉本行即可恢复链路上报。
+      ZIPKIN_EXPORT_ENABLED: "false"
+      # 内存压住：不设上限时 MaxRAMPercentage 会按 VM 总内存(4GB)算，两个实例直接撑爆
+      JAVA_OPTS: "-Xmx384m -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8"
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+
+  # ── 2. 第二个应用实例 ──
+  # 与 agent 完全同构，仅实例标识与宿主端口不同。
+  # 注意：两边共用同一个 ./data 挂载（上传文件/知识库原文）—— 真实多实例应换共享存储(NFS/对象存储)，
+  # 本地演练用同一目录是可接受的近似（见 docs/13 的部署约束）。
+  agent-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dcdr-agent:2.1
+    container_name: dcdr-agent-app-2
+    profiles: ["ha"]
+    ports:
+      - "8082:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: pg
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public
+      SPRING_DATASOURCE_USERNAME: dcdr_agent
+      SPRING_DATASOURCE_PASSWORD: dcdr_agent
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-demo-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-demo-key}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-demo-key}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-key}
+      KLING_API_KEY: ${KLING_API_KEY:-demo-key}
+      ZIPKIN_ENDPOINT: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
+      # 与主实例同因：演练期 zipkin 是停掉的，不上报可避免刷连接失败日志
+      ZIPKIN_EXPORT_ENABLED: "false"
+      OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
+      OPEN_SANDBOX_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
+      AGENT_TOOLS_WEB_SEARXNG_URL: ${AGENT_TOOLS_WEB_SEARXNG_URL:-http://searxng:8080}
+      AGENT_V3_CLUSTER_BACKEND: redis
+      AGENT_V3_CLUSTER_INSTANCE_ID: app-2
+      REDIS_HOST: redis
+      JAVA_OPTS: "-Xmx384m -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 768m
+    restart: unless-stopped
+
+  # ── 3. 七层入口 ──
+  # 为什么必须关 proxy_buffering：SSE 流式对话靠"边生成边推送"，nginx 默认缓冲会把整个响应
+  # 攒完再发 —— 表现是"前端一直转圈，然后一次性出现全部回答"，流式体验直接失效。
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: dcdr-agent-nginx
+    profiles: ["ha"]
+    ports:
+      # 统一入口用 8090（而非 8080）：主 agent 已占 8080，且 ports 无法被覆盖，见文件头说明
+      - "8090:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - agent
+      - agent-2
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+    restart: unless-stopped
+
+  # ── 4. 流复制备库 ──
+  # 内存压到 256m 的关键：备库只做"收 WAL + replay"，不承担业务查询，
+  # 故 shared_buffers 32MB / work_mem 2MB / max_connections 20 足够（主库是 1g）。
+  #
+  # 首次启动由 docker/pg-standby/standby-entrypoint.sh 自动做 pg_basebackup；
+  # 前置条件是主库上存在复制角色 —— 执行 scripts/ha-standby-init.ps1 创建（幂等）。
+  #
+  # 不映射宿主端口：备库仅供"提升为主 + 应用改连"的演练使用，不需要从宿主直连；
+  # 真要连时用 `docker compose exec pg-standby psql -U dcdr_agent`。
+  pg-standby:
+    image: pgvector/pgvector:pg16
+    container_name: dcdr-agent-pg-standby
+    profiles: ["ha"]
+    # 与主库同因：Docker 20.10.8 的旧 seccomp 会拦 glibc clone3，initdb fork 报 ENOMEM
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      POSTGRES_DB: dcdr_agent
+      POSTGRES_USER: dcdr_agent
+      POSTGRES_PASSWORD: dcdr_agent
+      # 以下三个供 standby-entrypoint.sh 做基准备份用
+      PRIMARY_HOST: postgres
+      PRIMARY_PORT: "5432"
+      REPL_USER: repl
+      REPL_PASSWORD: repl_secret
+      STANDBY_NAME: standby-1
+    command: >
+      postgres
+      -c shared_buffers=32MB
+      -c work_mem=2MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=20
+      -c wal_level=replica
+      -c hot_standby=on
+      -c max_wal_senders=3
+      -c autovacuum=off
+      -c log_min_duration_statement=5000
+    entrypoint: ["/bin/sh", "/opt/standby/standby-entrypoint.sh"]
+    volumes:
+      - pgstandbydata:/var/lib/postgresql/data
+      - ./docker/pg-standby/standby-entrypoint.sh:/opt/standby/standby-entrypoint.sh:ro
+    shm_size: 64m
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+    restart: unless-stopped
+
+volumes:
+  # 备库数据卷：与主库分开，演练可随时 `docker volume rm` 重来（重建代价=一次 pg_basebackup）
+  pgstandbydata:
+    driver: local
