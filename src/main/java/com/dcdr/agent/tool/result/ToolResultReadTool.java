@@ -35,9 +35,17 @@ public class ToolResultReadTool extends AbstractTool {
     private final ToolResultSpillStore spillStore;
     private final AgentProperties properties;
 
+    /**
+     * 工具名。
+     * <p>名称常量而不是在 {@link #getName()} 里写字面量: {@code ToolRegistry} 用它把本工具
+     * 排除在 Agent 白名单之外 —— 白名单里只要没列它, "超长结果落盘 + 分页读取"这条链路就是断的。
+     * 散着写的话, 改名不会有任何编译错误, 只会让这条链路静默失效。
+     */
+    public static final String NAME = "tool_result_read";
+
     @Override
     public String getName() {
-        return "tool_result_read";
+        return NAME;
     }
 
     @Override

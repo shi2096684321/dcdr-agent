@@ -47,20 +47,27 @@ public class CostTracker {
      * @param userId     用户 ID (可空)
      * @param sessionId  会话 ID (可空)
      * @param execId     工作流执行 ID (可空)
-     * @param source     调用来源: chat / workflow / routing
+     * @param source     调用来源 —— 取值为 {@link CostSource}(唯一取值定义处), 不可为空:
+     *                   费用报表按它分组, 记错了就是"看不见的费用"
      * @param model      模型名
      * @param usage      token 统计 (可空, 无统计时不落库)
      */
-    public void record(String userId, String sessionId, String execId, String source,
+    public void record(String userId, String sessionId, String execId, CostSource source,
                        String model, ChatResponse.TokenUsage usage) {
         if (usage == null) return;
+        if (source == null) {
+            // 宁可少记一行, 也不默认记成"对话": 默认值是静默的错误归因,
+            // 报表上看不出来, 只能靠"总数与分项对不上"这种更难查的迹象发现
+            log.warn("用量记录缺少来源, 已跳过: model={}, user={}", model, userId);
+            return;
+        }
         try {
             LlmUsageLogEntity e = new LlmUsageLogEntity();
             e.setId("lu_" + UUID.randomUUID().toString().replace("-", ""));
             e.setUserId(userId);
             e.setSessionId(sessionId);
             e.setWorkflowExecutionId(execId);
-            e.setSource(source == null ? "chat" : source);
+            e.setSource(source.value());
             e.setModel(model);
             e.setInputTokens(usage.getPrompt());
             e.setOutputTokens(usage.getCompletion());

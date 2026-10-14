@@ -4,10 +4,13 @@ import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
 import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
+import com.dcdr.agent.agent.memory.longterm.MemoryAutoExtractor;
+import com.dcdr.agent.agent.memory.longterm.MemoryContextHolder;
 import com.dcdr.agent.agent.prompt.BackgroundContextBudget;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
+import com.dcdr.agent.agent.governance.CostSource;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.config.SystemPromptProperties;
 import com.dcdr.agent.agent.session.SessionManager;
@@ -19,16 +22,20 @@ import com.dcdr.agent.dto.SessionDTO;
 import com.dcdr.agent.agent.image.ChatImageService;
 import com.dcdr.agent.dto.ChatImageRequest;
 import com.dcdr.agent.model.provider.ChatModelProvider;
+import com.dcdr.agent.rag.RagSource;
 import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
+import com.dcdr.agent.rag.tool.KnowledgeSearchTool;
 import com.dcdr.agent.skill.SkillCatalogProvider;
 import com.dcdr.agent.skill.SkillContextHolder;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
 import com.dcdr.agent.tool.ToolRegistry;
+import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
+import com.dcdr.agent.tool.websearch.WebExtractTool;
 import com.dcdr.agent.tool.ToolInfo;
 import com.dcdr.agent.tool.FrameworkToolExecutorBridge;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -93,6 +100,8 @@ public class AgentOrchestrator {
     private final FrameworkToolExecutorBridge frameworkToolExecutorBridge;
     /** V3.1 长期记忆: 跨会话沉淀的用户级/Agent 级记忆, 在 prepareForChat 中召回注入 */
     private final LongTermMemoryService longTermMemoryService;
+    /** V3.1 P1: LLM 自动抽取记忆(默认关闭)。只在收尾时异步派发, 不参与主链路 */
+    private final MemoryAutoExtractor memoryAutoExtractor;
     /** V3.1 F-47: 工具结果体积治理(唯一收口点, 见 ToolResultCompressor) */
     private final ToolResultCompressor toolResultCompressor;
     /** V3.1 技能: 只能注入"技能目录"(渐进式披露第一层), 正文由模型按需通过 skill_load 取回 */
@@ -136,6 +145,7 @@ public class AgentOrchestrator {
                              RetrievalService retrievalService, KnowledgeBaseRepository kbRepository,
                              FrameworkToolExecutorBridge frameworkToolExecutorBridge,
                              LongTermMemoryService longTermMemoryService,
+                             MemoryAutoExtractor memoryAutoExtractor,
                              ToolResultCompressor toolResultCompressor,
                              SkillCatalogProvider skillCatalogProvider) {
         this.router = router;
@@ -158,6 +168,7 @@ public class AgentOrchestrator {
         this.kbRepository = kbRepository;
         this.frameworkToolExecutorBridge = frameworkToolExecutorBridge;
         this.longTermMemoryService = longTermMemoryService;
+        this.memoryAutoExtractor = memoryAutoExtractor;
         this.toolResultCompressor = toolResultCompressor;
         this.skillCatalogProvider = skillCatalogProvider;
     }
@@ -542,7 +553,7 @@ public class AgentOrchestrator {
                                 intUsage.setPrompt(estP);
                                 intUsage.setCompletion(estC);
                                 intUsage.setTotal(estT);
-                                costTracker.record(currentUserId, sessId, null, "chat",
+                                costTracker.record(currentUserId, sessId, null, CostSource.CHAT,
                                         provider.getName(), intUsage);
                             }
                             // 审计日志: 中断场景 (F-28)
@@ -814,6 +825,8 @@ public class AgentOrchestrator {
             // V3.1 技能: skill_load 只拿到模型给的 name, "当前是谁在问"必须在此注入,
             // 否则无法按归属过滤技能(可能加载到他人的私有技能)
             SkillContextHolder.set(userId);
+            // V3.1 记忆工具: 写长期记忆需要知道"写给谁、来自哪次会话" —— 这两样都在工具参数之外
+            MemoryContextHolder.set(userId, sessId);
             try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
@@ -843,7 +856,7 @@ public class AgentOrchestrator {
                             .name(name)
                             .arguments(mapper.writeValueAsString(params))
                             .build();
-                    if ("knowledge_base_search".equals(name)) {
+                    if (KnowledgeSearchTool.NAME.equals(name)) {
                         // Agentic RAG: 记录该次检索的 query/kb 数/命中条数/耗时/topScore/命中文档到调用链日志
                         long ragStart = System.nanoTime();
                         ToolInfo ragInfo = frameworkToolExecutorBridge.executeWithInfo(request, null);
@@ -860,7 +873,7 @@ public class AgentOrchestrator {
                                 .distinct()
                                 .collect(java.util.stream.Collectors.toList());
                         t.recordRag(ragQuery, knowledgeBaseIds.size(), ragSources.size(),
-                                (System.nanoTime() - ragStart) / 1_000_000, ragTop, ragDocs);
+                                (System.nanoTime() - ragStart) / 1_000_000, ragTop, ragDocs, RagSource.TOOL);
                         toolInfo = ragInfo;
                     } else {
                         toolInfo = frameworkToolExecutorBridge.executeWithInfo(request, null);
@@ -918,7 +931,7 @@ public class AgentOrchestrator {
                 } else {
                     List<Map<String, Object>> srcs = toolInfo.getSources();
                     ExtractStat ext = new ExtractStat(0, 0, 0);
-                    if ("web_search".equals(name)) {
+                    if (SearxngWebSearchTool.NAME.equals(name)) {
                         // —— 智能流水线 STEP 1: 搜索与抓取 ——
                         chunks.add(ChatChunk.status("🔍 正在实时检索多个资讯源，并抓取相关页面…"));
                         // —— 串联提取: 对 top-N 具体文章链接抓取完整正文, 提升检索完整性 ——
@@ -946,7 +959,7 @@ public class AgentOrchestrator {
                             }
                         }
                         collectedSources.addAll(srcs);   // 累计联网搜索等来源, 供落库与前端引用
-                        if ("web_search".equals(name)) {
+                        if (SearxngWebSearchTool.NAME.equals(name)) {
                             // —— 智能流水线 STEP 2 + STEP 3 ——
                             StringBuilder step2 = new StringBuilder("🧹 已抓取 ").append(srcs.size())
                                     .append(" 个页面，其中 ");
@@ -973,6 +986,7 @@ public class AgentOrchestrator {
                 SandboxContextHolder.clear();
                 ToolResultContextHolder.clear();
                 SkillContextHolder.clear();
+                MemoryContextHolder.clear();
             }
         }));
     }
@@ -1234,7 +1248,7 @@ public class AgentOrchestrator {
                 if (userQuery != null && !userQuery.isBlank()) {
                     params.put("query", userQuery);
                 }
-                ToolInfo ext = toolRegistry.executeInfo("web_extract", params);
+                ToolInfo ext = toolRegistry.executeInfo(WebExtractTool.NAME, params);
                 List<Map<String, Object>> exSrcs = ext.getSources();
                 if (exSrcs != null && !exSrcs.isEmpty()) {
                     Object full = exSrcs.get(0).get("content");
@@ -1477,7 +1491,7 @@ public class AgentOrchestrator {
         // 路由为平台探测成本, 不计入用户用量 —— 见 routing_logs.token 字段)。
         // costRecorded 与中断回调的补记互斥, 竞态下只记一次。
         if (costRecorded.compareAndSet(false, true)) {
-            costTracker.record(userId, sessId, null, "chat", provider.getName(), u);
+            costTracker.record(userId, sessId, null, CostSource.CHAT, provider.getName(), u);
         }
 
         // 引用忠实度校验: 回答里的 [[n]] 必须落在本次来源集范围内。
@@ -1570,6 +1584,8 @@ public class AgentOrchestrator {
                 buildChatAuditDetail(provider.getName(), p, c, t, durationMs, request.isWebSearch(),
                         buildEffectiveKbIds(request), toolCalls, false, fr),
                 userId);
+        // 记忆自动抽取(默认关闭): 放在 done 之后异步派发, 绝不阻塞 SSE 收尾
+        dispatchMemoryExtraction(userId, sessId);
         return Flux.fromIterable(tail);
     }
 
@@ -1669,7 +1685,7 @@ public class AgentOrchestrator {
         // 3.1.3 V3.1 长期记忆注入: 在 Agent 人设之后、平台运行时约束之前注入跨会话沉淀的记忆。
         //       召回为「常驻(pinned/高重要度/画像类) + 关键词条件触发」两级, 本版本不含向量检索;
         //       未命中任何记忆时不产生 system 消息。仅临时注入本次请求, 不落库。
-        history = injectLongTermMemory(history, userId, request);
+        history = injectLongTermMemory(history, userId, request, trace);
 
         // 3.2 平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录), 与同步 chatSync 路径共用, 保证两条链路注入一致
         history = injectRuntimeSystemPrompts(history, provider, request, userId);
@@ -1685,11 +1701,11 @@ public class AgentOrchestrator {
         //       由 LLM 自主决定是否检索(省 token, 闲聊不查库)。
         List<Map<String, Object>> forcedKbSources = null;
         String forcedKbNotice = null;
-        // 知识库检索注入。模式分层:
-        //   - 用户显式选择(强意图) → forced: 未命中明确告知, 不让模型假装查过;
-        //   - 未显式选择 → 自动语义检索(相关度门控): 平台库 + Agent 绑定库 + 用户自有库合并成一次检索,
-        //     由检索打分(min-score/top-k)门控, 命中才注入 —— 免 LLM tool-calling 自觉(不漏检),
-        //     也不每轮无条件注入(省 token); 合并范围让平台库与用户自有库一次命中、不互相遮蔽(成熟企业 RAG)。
+        // 知识库检索只保留一跳: 用户显式选择(强意图) → forced, 未命中明确告知, 不让模型假装查过。
+        // 这里原先还有第二条 —— "未显式选择时, 平台拿用户原话先自动检索一遍"(相关度门控后注入)。
+        // 已移除, 因为它"每轮必查": 即便这一轮模型压根没打算查资料, 也要付一次 embedding + 向量查询;
+        // 而且它在模型没表达意愿的情形下就产生了检索, 与"模型自主调用"在调用链里还难以区分。
+        // 未显式选择时, 检索完全交给模型自主决定(见下方 knowledge_base_search 工具)。
         boolean forced = !explicitKbIds.isEmpty() && ragProperties.isEnabled();
         if (forced) {
             // 强制检索范围 = 显式选择 + Agent 绑定 + 平台级(去重合并, 即 buildEffectiveKbIds 全量口径)
@@ -1700,9 +1716,8 @@ public class AgentOrchestrator {
             history = inj.history;
         }
 
-        // 未显式选择时的可用知识库范围(去重合并: 平台级公共库 + Agent 绑定库 + 用户自己的 USER 级库)。
-        // 该范围由上面的自动语义注入(relevant-gated)实际检索, 命中才注入;
-        // 同时注册到 knowledge_base_search 工具, 作为模型后续追问时的补充检索手段。
+        // 注册给 knowledge_base_search 工具的可用范围(去重合并: 平台级公共库 + Agent 绑定库 + 用户自己的 USER 级库)。
+        // 未显式选择时含用户全部自有库 —— 让模型追问时不必先勾选也能查到他自己的资料。
         List<String> agenticKbIds;
         if (!explicitKbIds.isEmpty()) {
             agenticKbIds = buildEffectiveKbIds(request);
@@ -1725,14 +1740,8 @@ public class AgentOrchestrator {
                     }
                 }
             } catch (Exception e) {
-                // 查询失败不阻断对话: 语义范围退化为显式/平台级口径
-                log.warn("查询用户自有知识库失败, 语义检索范围退化为显式/平台级: {}", e.getMessage());
-            }
-            // 自动语义注入(成熟 RAG): 合并范围非空即做相关度门控检索, 命中才注入, 未命中无感
-            if (!agenticKbIds.isEmpty()) {
-                RagInject inj = retrieveAndInject(agenticKbIds, request.getMessage(), trace, history, false);
-                forcedKbSources = inj.sources;
-                history = inj.history;
+                // 查询失败不阻断对话: 检索范围退化为显式/平台级口径
+                log.warn("查询用户自有知识库失败, 检索范围退化为显式/平台级: {}", e.getMessage());
             }
         }
 
@@ -1832,9 +1841,11 @@ public class AgentOrchestrator {
     }
 
     /** 知识库统一检索 + 相关度门控注入。
-     *  <p>scope 为去重合并后的待检索库 ID; forced=true 表示用户显式选择(强意图), 未命中也下发"未找到"提示;
-     *  forced=false 表示平台级 + 用户自有库的自动语义检索, 命中才注入, 未命中保持无感。
-     *  由检索打分(min-score/top-k)门控: 省 token 的同时不依赖 LLM tool-calling 自觉, 合并范围避免平台库遮蔽用户库。
+     *  <p>scope 为去重合并后的待检索库 ID; forced=true 表示用户显式选择(强意图), 未命中也下发"未找到"提示。
+     *  <p><b>当前唯一调用方传 forced=true</b>: 平台自动预检索(forced=false)已移除, 未显式选择时
+     *  检索完全交给模型自主调用 {@code knowledge_base_search} 工具。故下方 forced=false 的分支目前不可达,
+     *  但实现完整保留 —— 免得将来想恢复自动预检索时, 还要重新推导"未命中该不该告知模型"这类决定。
+     *  <p>由检索打分(min-score/top-k)门控: 命中才注入; 合并范围避免平台库遮蔽用户库。
      */
     private RagInject retrieveAndInject(List<String> scope, String userMessage,
                                         com.dcdr.agent.common.log.LlmCallTrace trace,
@@ -1857,7 +1868,8 @@ public class AgentOrchestrator {
                 .distinct()
                 .collect(java.util.stream.Collectors.toList());
         trace.recordRag(userMessage, scope.size(), results.size(),
-                (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds);
+                (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds,
+                forced ? RagSource.FORCED : RagSource.AUTO);
         List<Message> withKb = new ArrayList<>(history);
         if (!results.isEmpty()) {
             // 片段渲染统一交给 RuntimePromptProvider.ragInjection:
@@ -1912,7 +1924,8 @@ public class AgentOrchestrator {
             log.info("知识库检索(RAG) 强制: kbIds={}, 未命中(用户显式选择)", scope);
             return new RagInject(withKb, null, "已检索所选知识库，未找到相关内容");
         }
-        // 自动语义检索未命中: 无感, 不注入任何指令, 不做任何打扰
+        // forced=false 的未命中: 无感, 不注入任何指令, 不做任何打扰
+        // (平台自动预检索已移除, 该分支暂无调用方 —— 见 retrieveAndInject 的说明)
         return new RagInject(history, null, null);
     }
 
@@ -2065,7 +2078,7 @@ public class AgentOrchestrator {
         }
 
         // V3.1 长期记忆注入 (与流式 3.1.3 同口径, 保证两条链路注入一致)
-        history = injectLongTermMemory(history, currentUserId, request);
+        history = injectLongTermMemory(history, currentUserId, request, t);
 
         // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)
         String userOriginal = request.getMessage();
@@ -2147,7 +2160,7 @@ public class AgentOrchestrator {
         // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径, 仅模型自身消耗;
         // 路由为平台探测成本, 不计入用户用量 —— 见 routing_logs.token 字段)
         ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
-        costTracker.record(currentUserId, sessionId, null, "chat",
+        costTracker.record(currentUserId, sessionId, null, CostSource.CHAT,
                 prepSync.answerProvider().getName(), syncUsage);
 
         Integer usage = syncUsage != null ? syncUsage.getTotal() : null;
@@ -2166,7 +2179,28 @@ public class AgentOrchestrator {
                         null, false, null),
                 currentUserId);
 
+        // 记忆自动抽取(默认关闭): 与流式链路同一口径, 收尾后异步派发
+        dispatchMemoryExtraction(currentUserId, sessionId);
         return response;
+    }
+
+    /**
+     * 异步派发一次「LLM 自动抽取记忆」(V3.1 P1, 默认关闭)。
+     * <p>
+     * 三条纪律:
+     * <ul>
+     *   <li><b>不阻塞收尾</b>: SSE 的 done 必须立刻下发, 抽取放 boundedElastic 上跑
+     *       (与 {@code IntentRouter} 的调用约定一致);</li>
+     *   <li><b>不在响应式线程上查库</b>: 开关与"每 N 轮"门控都在异步侧判断 —— 这里只创建一个 Mono;</li>
+     *   <li><b>不抛异常</b>: 抽取是增强项, 失败只在日志留一行。</li>
+     * </ul>
+     */
+    private void dispatchMemoryExtraction(String userId, String sessId) {
+        if (userId == null || sessId == null) return;
+        Mono.fromRunnable(() -> memoryAutoExtractor.extractIfDue(userId, sessId))
+                .subscribeOn(Schedulers.boundedElastic())
+                .doOnError(ex -> log.warn("记忆自动抽取派发异常(不影响对话): {}", ex.getMessage()))
+                .subscribe();
     }
 
     /**
@@ -2184,11 +2218,14 @@ public class AgentOrchestrator {
      * @param history 当前对话历史 (返回新列表, 不修改入参)
      * @param userId  当前用户; 为空(未登录/认证关闭)时直接跳过
      * @param request 对话请求 (取 agentId 作作用域, 取当轮提问作触发匹配)
+     * @param trace   调用链: 记录"本轮召回了哪几条" —— 这是回答"哪条记忆从未被用过"的唯一数据源
      * @return 注入记忆后的历史列表
      */
-    private List<Message> injectLongTermMemory(List<Message> history, String userId, ChatRequest request) {
+    private List<Message> injectLongTermMemory(List<Message> history, String userId, ChatRequest request,
+                                               com.dcdr.agent.common.log.LlmCallTrace trace) {
         if (userId == null) return history;
 
+        long recallStart = System.nanoTime();
         List<MemoryEntity> recalled;
         try {
             recalled = longTermMemoryService.recall(userId, request.getAgentId(), request.getMessage());
@@ -2210,6 +2247,12 @@ public class AgentOrchestrator {
                 "system".equals(m.getRole()) && MEMORY_SYSTEM_NAME.equals(m.getName()));
         if (!exists) {
             result.add(Message.system(MEMORY_SYSTEM_NAME, fragment));
+            // 调用链留痕: 记的是"这一轮真正进了上下文的那几条"。库侧据此反查从未命中的记忆 ——
+            // 它们占着常驻额度、每轮都要过一遍召回与打分, 却对回答毫无贡献。
+            // 只在真的注入了才记(幂等重入时不记), 否则同一轮会被记成两次召回。
+            trace.recordMemory(request.getMessage(), recalled.size(), fragment.length(),
+                    (System.nanoTime() - recallStart) / 1_000_000,
+                    recalled.stream().map(MemoryEntity::getId).toList());
         }
 
         try {
@@ -2247,7 +2290,7 @@ public class AgentOrchestrator {
         }
 
         // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索
-        if (request != null && request.isWebSearch() && toolRegistry.getTool("web_search") != null) {
+        if (request != null && request.isWebSearch() && toolRegistry.getTool(SearxngWebSearchTool.NAME) != null) {
             injectIfAbsent(result, runtimePromptProvider.webSearch());
         }
 

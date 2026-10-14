@@ -35,9 +35,17 @@ public class SkillLoadTool extends AbstractTool {
         this.skillService = skillService;
     }
 
+    /**
+     * 工具名。
+     * <p>名称常量而不是在 {@link #getName()} 里写字面量: {@code ToolRegistry} 用它把本工具
+     * 排除在 Agent 白名单之外(平台机制的一部分)。散着写的话, 改名不会有任何编译错误,
+     * 只会让"技能目录可加载"这条机制静默失效。
+     */
+    public static final String NAME = "skill_load";
+
     @Override
     public String getName() {
-        return "skill_load";
+        return NAME;
     }
 
     @Override

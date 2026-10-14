@@ -2,6 +2,7 @@ package com.dcdr.agent.agent.workflow;
 
 import com.dcdr.agent.agent.AgentOrchestrator;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
+import com.dcdr.agent.agent.governance.CostSource;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.session.SessionManager;
@@ -908,7 +909,7 @@ public class WorkflowEngine {
                 ctx.totalTokens += resp.getTokenUsage().getTotal() > 0
                         ? resp.getTokenUsage().getTotal()
                         : resp.getTokenUsage().getPrompt() + resp.getTokenUsage().getCompletion();
-                costTracker.record(ctx.userId, null, ctx.entity.getId(), "workflow",
+                costTracker.record(ctx.userId, null, ctx.entity.getId(), CostSource.WORKFLOW,
                         resp.getModel(), resp.getTokenUsage());
             }
             String content = resp.getContent() == null ? "" : resp.getContent().trim();
@@ -975,7 +976,7 @@ public class WorkflowEngine {
                 ctx.totalTokens += resp.getTokenUsage().getTotal() > 0
                         ? resp.getTokenUsage().getTotal()
                         : resp.getTokenUsage().getPrompt() + resp.getTokenUsage().getCompletion();
-                costTracker.record(ctx.userId, null, ctx.entity.getId(), "workflow",
+                costTracker.record(ctx.userId, null, ctx.entity.getId(), CostSource.WORKFLOW,
                         resp.getModel(), resp.getTokenUsage());
             }
             String content = resp.getContent() == null ? "" : resp.getContent().trim().toUpperCase();
@@ -1169,7 +1170,7 @@ public class WorkflowEngine {
                         : resp.getTokenUsage().getPrompt() + resp.getTokenUsage().getCompletion();
                 r.setTokens(tokens);
                 ctx.totalTokens += tokens;
-                costTracker.record(ctx.userId, sess.getId(), ctx.entity.getId(), "workflow",
+                costTracker.record(ctx.userId, sess.getId(), ctx.entity.getId(), CostSource.WORKFLOW,
                         resp.getModel(), resp.getTokenUsage());
             }
             try { sessionManager.deleteSession(sess.getId()); } catch (Exception ignored) {}

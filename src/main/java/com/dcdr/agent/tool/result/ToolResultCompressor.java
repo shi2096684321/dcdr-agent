@@ -1,5 +1,6 @@
 package com.dcdr.agent.tool.result;
 
+import com.dcdr.agent.agent.governance.CostSource;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
@@ -37,9 +38,6 @@ import java.util.List;
 @Component
 @RequiredArgsConstructor
 public class ToolResultCompressor {
-
-    /** 摘要调用计入用量的来源标记(进 llm_usage_logs.source) */
-    private static final String SUMMARY_SOURCE = "tool_summary";
 
     /** 尾部占比上限: 尾部保留过多会让头部信息(通常更关键)被挤掉 */
     private static final double MAX_TAIL_RATIO = 0.5;
@@ -247,7 +245,7 @@ public class ToolResultCompressor {
             // 摘要调用同样是真实 LLM 开销, 计入用量 —— 否则 F-39/F-44 的成本报表会出现"看不见的费用"
             if (response.getTokenUsage() != null) {
                 costTracker.record(ToolResultContextHolder.userId(), ToolResultContextHolder.sessionId(),
-                        null, SUMMARY_SOURCE, provider.getName(), response.getTokenUsage());
+                        null, CostSource.SUMMARY, provider.getName(), response.getTokenUsage());
             }
             return "[工具结果摘要(原文 " + text.length() + " 字符)]\n" + response.getContent().trim();
         } catch (Exception e) {

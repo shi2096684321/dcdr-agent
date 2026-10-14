@@ -1,6 +1,7 @@
 package com.dcdr.agent.agent.definition;
 
 import com.dcdr.agent.entity.AgentDefinitionEntity;
+import com.dcdr.agent.rag.tool.KnowledgeSearchTool;
 import com.dcdr.agent.repository.AgentDefinitionRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -110,7 +111,9 @@ public class AgentTemplateInitializer implements ApplicationRunner {
                         "3. 知识库未覆盖的问题, 明确告知'知识库中未找到相关内容'\n" +
                         "4. 涉及多条信息时, 分点结构化呈现\n" +
                         "5. 保持客观中立, 不添加个人观点",
-                        null, List.of("knowledge_base_search"), new BigDecimal("0.10"), null, null, now),
+                        // 白名单里的名字必须与工具自身声明的名字一致: 手抄一份的话, 工具改名后
+                        // 这条白名单会静默失配(模板照建, 工具却调不到)
+                        null, List.of(KnowledgeSearchTool.NAME), new BigDecimal("0.10"), null, null, now),
 
                 build("tpl_summarizer", "内容总结",
                         "长文压缩为要点摘要, 保留核心信息, 去除冗余",

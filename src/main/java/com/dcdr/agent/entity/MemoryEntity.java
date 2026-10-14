@@ -93,6 +93,16 @@ public class MemoryEntity implements OwnedEntity {
     @Schema(description = "来源消息序号 (溯源)")
     private Integer sourceMsgSeq;
 
+    /**
+     * 写入来源: MANUAL(记忆页新增) / REQUESTED(对话中用户要求) / AUTO(平台自动抽取)。
+     * 取值见 {@link com.dcdr.agent.agent.memory.longterm.MemoryOrigin}。
+     * <p>可空 —— 这是后加的列, 存量行没有值, 由读取侧按 {@code sourceSessionId} 兜底归因
+     * (见 {@code MemoryOrigin#resolve}), 不回填数据。
+     */
+    @Schema(description = "写入来源: MANUAL / REQUESTED / AUTO (可空, 存量数据无值)")
+    @Column(length = 16)
+    private String sourceKind;
+
     @Schema(description = "被召回次数 (淘汰依据)")
     @Column(nullable = false)
     private int hitCount = 0;

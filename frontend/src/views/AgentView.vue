@@ -435,7 +435,10 @@ async function submitForm() {
 async function removeAgent(agent) {
   try {
     const ownerTip = isOthersAgent(agent) ? `(归属: ${ownerLabel(agent)}) ` : ''
-    await ElMessageBox.confirm(`确定删除${ownerTip}专家 "${agent.name}" 吗?`, '提示', { type: 'warning' })
+    // 删除会连带归档该专家名下的专属记忆 —— 必须在确认框里说清, 否则用户事后会以为记忆丢了
+    await ElMessageBox.confirm(
+      `确定删除${ownerTip}专家 "${agent.name}" 吗？其名下的专属记忆会被一并归档（可在记忆页恢复）。`,
+      '提示', { type: 'warning' })
     await deleteAgent(agent.id)
     ElMessage.success('已删除')
     if (currentAgentId.value === agent.id) currentAgentId.value = ''

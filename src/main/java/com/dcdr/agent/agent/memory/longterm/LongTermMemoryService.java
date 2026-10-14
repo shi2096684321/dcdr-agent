@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
+import java.util.Arrays;
 import java.util.stream.Collectors;
 
 /**
@@ -90,6 +91,8 @@ public class LongTermMemoryService {
     private final MemoryRepository memoryRepository;
     private final AgentDefinitionRepository agentDefinitionRepository;
     private final MemoryRelevanceScorer relevanceScorer;
+    /** 只为概览下发「自动记忆开关状态」—— 记忆是否可能被自动写入, 用户有权知道 */
+    private final AutoExtractPreference preference;
 
     // ==================== 查询 ====================
 
@@ -123,15 +126,66 @@ public class LongTermMemoryService {
                 .filter(m -> MemoryScope.USER.name().equals(m.getScope())).count());
         summary.setAgentLevel(actives.stream()
                 .filter(m -> MemoryScope.AGENT.name().equals(m.getScope())).count());
-        summary.setRetrieval("常驻注入 + 关键词条件触发（本版本未启用向量检索）");
+        summary.setRetrieval(retrievalDescription());
+        // 开关状态要下发: 开关一开, 记忆就可能不再全是用户亲手写的, 用户有权知道。
+        // 三态都要给 —— 界面要靠它区分"部署没开" / "你自己关了" / "你还没选过";
+        // 取值与中文名一并下发, 界面只负责显示、不负责翻译
+        AutoExtractChoice choice = preference.choice(userId);
+        summary.setAutoExtractAllowed(preference.allowed());
+        summary.setAutoExtractChoice(choice.value());
+        summary.setAutoExtractChoiceLabel(choice.label());
+        summary.setAutoExtractEnabled(preference.active(userId));
         return summary;
+    }
+
+    /**
+     * 召回策略说明 (记忆管理页展示)。
+     * <p>
+     * <b>刻意由实际参数拼装, 而不是写一段固定文案</b>。原先这里是一句手写的
+     * "常驻注入 + 关键词条件触发（本版本未启用向量检索）", 它说的三点至今仍然成立,
+     * 但随后陆续加进来的东西它一个都没覆盖 —— 上下文预算裁剪、过期归档、作用域过滤、
+     * 常驻/触发条数上限、命中观测。用户看到的解释与系统实际做的事不一致, 比不写更容易误导:
+     * 比如"为什么这条没被注入"、"为什么这条一直占着位置"都会解释不通。
+     * <p>
+     * 手写文案的毛病在于它不会随行为变化 —— 改了条数上限、改了常驻类型划分, 文案照旧。
+     * 故这里直接从 {@code RESIDENT_LIMIT} / {@code TRIGGERED_LIMIT} / {@code RESIDENT_IMPORTANCE}
+     * 与 {@link MemoryType#resident()} 生成: 参数一改, 说明自动跟着改。
+     * (同类教训项目里已有先例: 注入预算的估算值也必须提为常量, 否则"预算里写死一个估算值、
+     * 渲染时用另一份字面量, 改文案就会让预算悄悄失准"。)
+     */
+    private static String retrievalDescription() {
+        String residentTypes = Arrays.stream(MemoryType.values())
+                .filter(MemoryType::resident)
+                .map(MemoryType::label)
+                .collect(Collectors.joining("·"));
+        return String.format(
+                "常驻注入(%s / 置顶 / 重要度≥%.2f, 最多 %d 条) + 触发键命中当轮提问(最多 %d 条); "
+                        + "专家级记忆仅在当前专家匹配时可用; 过期条目自动归档, 不再参与召回; "
+                        + "注入总量超出上下文预算的部分整条不注入(不做半条截断); "
+                        + "本阶段按触发键字面匹配, 未启用向量检索",
+                residentTypes, RESIDENT_IMPORTANCE, RESIDENT_LIMIT, TRIGGERED_LIMIT);
     }
 
     // ==================== 写入 ====================
 
-    /** 新增记忆 (用户手动创建; 后续 P1 由自动抽取链路复用本方法) */
+    /**
+     * 新增记忆 —— 记忆页手动新增走这条, 来源记为 {@link MemoryOrigin#MANUAL}。
+     * <p>其它写入链路(自动抽取 / 对话中用户要求)用
+     * {@link #create(String, SaveRequest, MemoryOrigin)} 显式声明来源。
+     */
     @Transactional
     public MemoryView create(String userId, SaveRequest req) {
+        return create(userId, req, MemoryOrigin.MANUAL);
+    }
+
+    /**
+     * 新增记忆(指定写入来源)。
+     * <p><b>为什么来源是方法参数, 而不是 {@code SaveRequest} 的字段</b>: 它是"这条记忆怎么来的"
+     * 这一客观事实, 不是用户可编辑的内容。放进请求体, 就会遇上"编辑记忆时表单没带该字段 →
+     * 被静默清空"的问题(技能来源标识 sourceRef 当初正是为此单开了一个入口)。
+     */
+    @Transactional
+    public MemoryView create(String userId, SaveRequest req, MemoryOrigin origin) {
         requireUser(userId);
         MemoryScope scope = resolveScope(req.getScope(), req.getAgentId());
 
@@ -148,6 +202,9 @@ public class LongTermMemoryService {
         entity.setPinned(Boolean.TRUE.equals(req.getPinned()));
         entity.setSourceSessionId(trimToNull(req.getSourceSessionId()));
         entity.setSourceMsgSeq(req.getSourceMsgSeq());
+        // 来源必须落库: 空值会被读取侧按 sourceSessionId 兜底归因成"AI 自动提炼", 那对
+        // 用户要求记的条目是错的 —— 他会以为自己那句话没生效
+        entity.setSourceKind((origin == null ? MemoryOrigin.MANUAL : origin).name());
         entity.setExpiresAt(req.getExpiresAt());
         entity.setStatus(MemoryStatus.ACTIVE.name());
 
@@ -182,16 +239,11 @@ public class LongTermMemoryService {
         return toView(entity, agentNameOf(entity.getAgentId()));
     }
 
-    /** 删除记忆 (软删除, 保留数据以便误删恢复与审计) */
+    /** 删除记忆 (软删除, 保留数据以便误删恢复与审计; 恢复入口见 {@link #restore}) */
     @Transactional
     public void delete(String userId, String id) {
         requireUser(userId);
-        MemoryEntity entity = loadOwned(userId, id);
-        if (MemoryStatus.DELETED.name().equals(entity.getStatus())) return;
-        entity.setStatus(MemoryStatus.DELETED.name());
-        entity.setUpdatedAt(LocalDateTime.now());
-        memoryRepository.save(entity);
-        log.info("删除长期记忆: id={}, user={}", id, userId);
+        applyStatus(loadOwned(userId, id), MemoryStatus.DELETED);
     }
 
     /**
@@ -214,6 +266,91 @@ public class LongTermMemoryService {
         memoryRepository.saveAll(actives);
         log.info("清空长期记忆: user={}, 共 {} 条", userId, actives.size());
         return actives.size();
+    }
+
+    /**
+     * 归档记忆: 保留数据, 但不再参与召回。
+     * <p>与"删除"的差别在用户意图上 —— 删除是"这条不对/没用了", 归档是"还有效, 但现在先别用它"
+     * (典型场景: 某个项目的偏好, 项目暂停了)。两者都不再注入, 且都能用 {@link #restore} 撤回来。
+     */
+    @Transactional
+    public MemoryView archive(String userId, String id) {
+        requireUser(userId);
+        MemoryEntity e = loadOwned(userId, id);
+        applyStatus(e, MemoryStatus.ARCHIVED);
+        return toView(e, agentNameOf(e.getAgentId()));
+    }
+
+    /**
+     * 恢复记忆到活跃 —— 归档与已删除都可以恢复。
+     * <p><b>这是"软删除"这件事的另一半</b>: 软删若不可撤销, "软"就只剩"占着库不删"的意思,
+     * 用户误删一条记忆后只能从"显示已删除/归档"里干看着。
+     */
+    @Transactional
+    public MemoryView restore(String userId, String id) {
+        requireUser(userId);
+        MemoryEntity e = loadOwned(userId, id);
+        applyStatus(e, MemoryStatus.ACTIVE);
+        return toView(e, agentNameOf(e.getAgentId()));
+    }
+
+    /**
+     * 归档某专家的全部专属记忆 —— 供"删除专家"链路调用。
+     * <p>删除专家后, 它名下 {@code AGENT} 级记忆的 {@code agentId} 会指向一个不存在的专家(悬空数据):
+     * 这些记忆在列表里看着正常, 却永远匹配不上任何一轮对话 —— {@code inScope} 要求 agentId 相等,
+     * 而那个 id 再也不会出现在任何请求里。它们只会安静地占着召回候选池。
+     * <p>归档而非删除: 那是用户亲手写下的内容, 不该因为"删掉一个专家"就消失; 且专家若重建,
+     * 用户还能把它们恢复过来自己决定去留。
+     *
+     * @return 被归档的条数
+     */
+    @Transactional
+    public int archiveByAgent(String agentId) {
+        if (agentId == null || agentId.isBlank()) return 0;
+        List<MemoryEntity> owned = memoryRepository
+                .findByAgentIdAndStatus(agentId, MemoryStatus.ACTIVE.name());
+        if (owned.isEmpty()) return 0;
+        LocalDateTime now = LocalDateTime.now();
+        for (MemoryEntity m : owned) {
+            m.setStatus(MemoryStatus.ARCHIVED.name());
+            m.setUpdatedAt(now);
+        }
+        memoryRepository.saveAll(owned);
+        log.info("专家被删除, 其专属记忆已归档: agentId={}, 共 {} 条", agentId, owned.size());
+        return owned.size();
+    }
+
+    /**
+     * 把已过期的活跃记忆置为归档 —— 供定时任务调用。
+     * <p>此前"过期"只在召回时被过滤掉(见 {@code notExpired}), 条目仍留在库里、列表里、状态仍是活跃:
+     * 表现就是<b>只增不减</b> —— 用户看到的列表越用越脏, 而系统每轮都要把它们捞出来再丢掉。
+     * <p>归档而非删除: 时效性记忆过期不等于"用户不要它了", 归档后仍能在"显示已删除/归档"里看到并恢复。
+     *
+     * @return 被归档的条数
+     */
+    @Transactional
+    public int archiveExpired() {
+        List<MemoryEntity> expired = memoryRepository
+                .findByStatusAndExpiresAtBefore(MemoryStatus.ACTIVE.name(), LocalDateTime.now());
+        if (expired.isEmpty()) return 0;
+        LocalDateTime now = LocalDateTime.now();
+        for (MemoryEntity m : expired) {
+            m.setStatus(MemoryStatus.ARCHIVED.name());
+            m.setUpdatedAt(now);
+        }
+        memoryRepository.saveAll(expired);
+        log.info("过期记忆归档: 共 {} 条 (到期后不再参与召回, 数据保留可恢复)", expired.size());
+        return expired.size();
+    }
+
+    /** 幂等地改状态: 已是目标状态就不动 —— 避免无意义写入与 updatedAt 无谓抖动 */
+    private void applyStatus(MemoryEntity e, MemoryStatus status) {
+        if (status.name().equals(e.getStatus())) return;
+        MemoryStatus from = MemoryStatus.from(e.getStatus() == null ? "ACTIVE" : e.getStatus());
+        e.setStatus(status.name());
+        e.setUpdatedAt(LocalDateTime.now());
+        memoryRepository.save(e);
+        log.info("长期记忆状态变更: id={}, {} -> {}", e.getId(), from.name(), status.name());
     }
 
     // ==================== 召回与注入 ====================
@@ -539,6 +676,10 @@ public class LongTermMemoryService {
         v.setStatusLabel(statusLabel(e.getStatus()));
         v.setSourceSessionId(e.getSourceSessionId());
         v.setSourceMsgSeq(e.getSourceMsgSeq());
+        // 来源: 字段优先, 为空时按 sourceSessionId 兜底(存量数据没有该列的值, 见 MemoryOrigin#resolve)
+        MemoryOrigin origin = MemoryOrigin.resolve(e.getSourceKind(), e.getSourceSessionId());
+        v.setSourceKind(origin.name());
+        v.setSourceKindLabel(origin.label());
         v.setHitCount(e.getHitCount());
         v.setLastHitAt(e.getLastHitAt());
         v.setExpiresAt(e.getExpiresAt());

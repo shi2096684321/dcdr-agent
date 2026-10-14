@@ -44,9 +44,17 @@ public class KnowledgeSearchTool extends AbstractTool {
         this.properties = properties;
     }
 
+    /**
+     * 工具名。
+     * <p>名称常量而不是字面量: 编排层要按它识别"这次工具调用是一次 RAG 检索"并单独记调用链;
+     * Agent 模板的工具白名单里也写着它。改名一旦只改一处, 检索照跑但调用链上不再有 rag 步骤 ——
+     * 没有任何报错, 只是"这次是谁决定要查的"从此查不出来。
+     */
+    public static final String NAME = "knowledge_base_search";
+
     @Override
     public String getName() {
-        return "knowledge_base_search";
+        return NAME;
     }
 
     @Override

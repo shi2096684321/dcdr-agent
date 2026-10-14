@@ -8,7 +8,10 @@
     <div class="toolbar">
       <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
       <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:160px" @change="loadLogs">
-        <el-option label="仅自己" value="" />
+        <!-- 取值必须非空: 空串会被 el-select 当作"未选择", 于是默认态下输入框什么都不显示,
+             用户看不出当前查的是谁(而"全部用户"取值是 all, 标签能正常渲染 —— 两个选项表现不一致)。
+             默认态本身就是"仅自己", 所以它该是一个真实取值而不是"没有值" -->
+        <el-option label="仅自己" value="self" />
         <el-option label="全部用户" value="all" />
       </el-select>
       <div class="stat-block" v-if="logs.length">
@@ -49,6 +52,11 @@
               <div class="step-head">
                 <span class="step-badge" :class="stepClass(s.kind)">
                   {{ stepLabel(s) }}
+                </span>
+                <!-- 检索来源: 补这个字段之前, "这次检索是谁发起的"只能靠步骤位置反推 ——
+                     看到 rag 步骤却在工具调用里找不到 knowledge_base_search 时尤其难判断 -->
+                <span v-if="s.ragSource" class="step-src">
+                  {{ RAG_SOURCE_LABELS[s.ragSource] || s.ragSource }}
                 </span>
                 <span v-if="s.model" class="step-model">{{ s.model }}</span>
                 <span v-if="s.purpose" class="step-purpose">{{ s.purpose }}</span>
@@ -178,7 +186,7 @@ function onSizeChange() {
   page.value = 1
   loadLogs()
 }
-const filterUserId = ref('')
+const filterUserId = ref('self')
 const expanded = ref(new Set())
 
 // ===== 详情抽屉: 展示一次调用链的完整步骤与每次 LLM 调用的请求参数 =====
@@ -208,8 +216,12 @@ const STEP_LABELS = {
   messageCount: '上下文消息数', toolSpecCount: '注入工具数',
   inTokens: '输入 token', outTokens: '输出 token', costMs: '耗时',
   interrupted: '是否中断', tools: '工具', query: '检索词',
-  kbCount: '知识库数', hits: '命中条数', outputChars: '输出字数'
+  kbCount: '知识库数', hits: '命中条数', outputChars: '输出字数',
+  // 记忆召回步骤(kind=memory): 与 rag 共用 query/hits/costMs, 额外的两个是它特有的
+  chars: '注入字数', memoryIds: '召回记忆',
+  ragSource: '检索来源'
 }
+
 
 /** 请求体 JSON 字符串 → 缩进美化(解析失败则原样返回, 不阻断展示) */
 function prettyJson(raw) {
@@ -221,6 +233,9 @@ function stepEntries(s) {
   const out = []
   for (const k of Object.keys(s)) {
     if (k === 'kind' || k === 'seq' || k === 'calls' || k === 'systemPrompt' || k === 'messages' || k === 'wireRequest' || k === 'outputPreview') continue
+    // 后端为某字段另发了中文名时（约定 key + 'Label'，如 ragSource + ragSourceLabel），
+    // 由原值那一行合并展示，这里跳过 —— 否则会出现两行都叫「检索来源」
+    if (s[k + 'Label'] !== undefined) continue
     const v = s[k]
     let label = STEP_LABELS[k] || k
     let value = v
@@ -228,6 +243,8 @@ function stepEntries(s) {
     if (k === 'costMs') value = fmtDur(v)
     else if (k === 'inTokens' || k === 'outTokens') value = v == null ? '-' : fmtTokens(v)
     else if (k === 'interrupted') value = v ? '是' : '否'
+    // 中文名取自后端，原值仍留在括号里：它是按日志/库侧聚合时要 grep 的东西，只留中文反而查不下去
+    else if (k === 'ragSource') value = s.ragSourceLabel ? `${s.ragSourceLabel}（${v}）` : v
     else if (k === 'outputChars') value = fmtTokens(v) + ' 字'
     else if (typeof v === 'object') value = JSON.stringify(v)
     out.push({ label, value: value == null || value === '' ? '-' : value, mono })
@@ -238,7 +255,10 @@ function stepEntries(s) {
 function stepBadgeLabel(s, i) {
   if (s.kind === 'llm') return `#${s.seq} LLM 调用 · ${s.purpose}`
   if (s.kind === 'tool') return `#${s.seq} 工具执行 · ${s.tools}`
-  if (s.kind === 'rag') return `#${s.seq} RAG 检索`
+  if (s.kind === 'rag') {
+    return `#${s.seq} RAG 检索${s.ragSourceLabel ? ' · ' + s.ragSourceLabel : ''}`
+  }
+  if (s.kind === 'memory') return `#${s.seq} 记忆召回`
   return `步骤 ${i + 1}`
 }
 
@@ -277,10 +297,13 @@ function endTag(s) {
 }
 function stepLabel(s) {
   if (s.kind === 'rag') return '📚 RAG'
+  // 记忆召回此前完全没有留痕, 现在与 RAG 并列可见 —— 两者是同一层"背景信息"的两个来源
+  if (s.kind === 'memory') return '🧠 记忆'
   return s.kind === 'tool' ? '🔧' : '🤖'
 }
 function stepClass(kind) {
   if (kind === 'rag') return 'step-rag'
+  if (kind === 'memory') return 'step-memory'
   return kind === 'tool' ? 'step-tool' : 'step-llm'
 }
 function stepTokens(s) {
@@ -311,7 +334,8 @@ async function loadLogs() {
   loading.value = true
   try {
     const params = { page: page.value - 1, size: pageSize.value }
-    if (authStore.isAdmin && filterUserId.value) params.userId = filterUserId.value
+    // 只有"全部用户"需要带参数: 后端仅在 userId=all 时查全部, 其余取值(含不传)一律查自己
+    if (authStore.isAdmin && filterUserId.value === 'all') params.userId = filterUserId.value
     const data = await getLlmCallLogs(params)
     logs.value = Array.isArray(data) ? data : (data.content || [])
     total.value = Array.isArray(data) ? data.length : (data.totalElements || data.length)
@@ -364,6 +388,9 @@ onMounted(() => {
 .step-llm { color: #667eea; background: #eef0ff; }
 .step-tool { color: #059669; background: #e6f7f1; }
 .step-rag { color: #b45309; background: #fef3c7; }
+/* 检索来源标签: 与 step-memory 同色系(都属"背景信息"这一类), 但要能一眼分出来 */
+.step-src { font-size: 11px; color: #7c3aed; background: #f3e8ff; border-radius: 4px; padding: 0 5px; }
+.step-memory { color: #7c3aed; background: #f3e8ff; }
 .step-model, .step-purpose { font-size: 11px; color: #9aa7c2; font-family: monospace; }
 .step-purpose { color: #606266; }
 .step-tokens, .step-cost { font-size: 11px; color: #86909c; }

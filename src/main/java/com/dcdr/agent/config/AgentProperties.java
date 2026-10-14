@@ -28,6 +28,60 @@ public class AgentProperties {
         private int contextTokenLimit = 8000;
         /** 触发提示的阈值比例(0~1) */
         private double contextWarnRatio = 0.8;
+        /** LLM 自动抽取记忆 (V3.1 P1), 默认关闭 */
+        private AutoExtractConfig autoExtract = new AutoExtractConfig();
+    }
+
+    /**
+     * LLM 自动抽取长期记忆 (V3.1 P1) —— 参考 CodeBuddy 的记忆设计:
+     * 它同样是一个「可全局关闭的开关」+ 「AI 自动识别并保存」, 且由 AI 自己管理记忆。
+     * <p>
+     * <b>为什么默认关闭</b>: ①它每隔若干轮就要发起一次真实模型调用, 是<b>持续性费用</b>;
+     * ②在此之前记忆全部由用户亲手写下, "AI 自己往里写"是质变 —— 应当由部署方显式开启
+     * (与 {@code agent.tools.result.summary} 同一口径, 那个也是默认关闭)。
+     * <p>
+     * <b>关闭时的影响仅限于"不再自动抽取"</b>: 手动增删改、召回注入、过期归档、命中统计
+     * 一律照常; 也不会影响已经抽出来的记忆。
+     */
+    @Data
+    public static class AutoExtractConfig {
+        /** 默认关闭: 见类注释 */
+        private boolean enabled = false;
+        /**
+         * 能力开启后, <b>未表态用户</b>的默认是否生效 —— 即"该能力默认给谁用"。
+         * <p>
+         * {@code true}(默认) = 跟随部署开启, 用户可在记忆页自行关闭
+         * (与 CodeBuddy 的"AI 自动识别并保存 + 可全局关闭"一致);
+         * {@code false} = 用户必须自己在记忆页开启(opt-in), 适合同意口径更严的部署。
+         * <p>
+         * <b>为什么默认 true</b>: 若默认 false, 那么部署方把 {@link #isEnabled()} 设为 true
+         * 之后什么都不会发生 —— 一个显式开关被另一个开关的默认值悄悄抵消, 排查起来很费解。
+         * 用户级开关应当是<b>新增的一层控制</b>, 而不是顺手改变已配好的行为。
+         * <p>
+         * 之所以做成配置而不是写死: "要不要对用户默认开启"是产品判断, 随部署方的合规口径而异,
+         * 在代码里定死的话改一次就要发一次版。
+         */
+        private boolean userDefault = true;
+        /** 抽取用模型 (留空 = 系统默认对话模型)。建议配低成本模型 —— 它是周期性调用 */
+        private String model;
+        /**
+         * 每多少轮抽取一次 (按会话累计消息数估算)。
+         * <p>不以"会话结束"触发: 对话是流式的, 没有可靠的"结束"事件 —— 用户随时可能再说一句,
+         * 靠超时或断连判定会话结束, 反而会漏掉最能沉淀记忆的那批长对话。
+         */
+        private int everyNTurns = 4;
+        /**
+         * 单次抽取最多写入几条(ADD/UPDATE/DELETE 合计)。
+         * <p>注入是每轮的常驻成本, 一次灌进十条会把背景预算吃光, 让后面真正重要的记忆挤不进来。
+         */
+        private int maxPerRun = 2;
+        /**
+         * 新增前与现有记忆的相似度阈值(0~1): 达到即视为重复, 跳过并记日志;
+         * &lt;= 0 表示不查重。
+         * <p>取值比召回的 {@code HIT_THRESHOLD}(0.5) 高 —— 召回漏判只是少注入一条,
+         * 这里误判会让"该记的东西记不下来", 宁可放过, 不可错杀。
+         */
+        private double dedupeThreshold = 0.6;
     }
 
     @Data

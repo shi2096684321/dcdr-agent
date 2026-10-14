@@ -157,7 +157,7 @@ public class MonitorDtos {
         private List<ModelUsageCost> byModel;
         @Schema(description = "Top 用户 (仅管理员全局视图返回)")
         private List<UserUsageCost> byUser;
-        @Schema(description = "调用来源维度: chat / workflow / routing")
+        @Schema(description = "调用来源维度 (取值定义见 CostSource)")
         private List<SourceUsage> bySource;
     }
 
@@ -206,8 +206,10 @@ public class MonitorDtos {
     @Data
     @Schema(description = "调用来源维度成本")
     public static class SourceUsage {
-        @Schema(description = "chat / workflow / routing")
+        @Schema(description = "来源取值 (定义见 CostSource)")
         private String source;
+        @Schema(description = "来源中文名 (由后端下发, 界面不再自己翻译)")
+        private String sourceLabel;
         private long calls;
         private long totalTokens;
         private BigDecimal cost;

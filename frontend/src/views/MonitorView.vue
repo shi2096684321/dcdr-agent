@@ -303,7 +303,7 @@
                        @click="doExportCsv('source')" :loading="costExporting">导出 CSV</el-button>
           </div>
           <el-table :data="costReport?.bySource || []" size="small">
-            <el-table-column prop="source" label="来源" width="140" />
+            <el-table-column prop="sourceLabel" label="来源" width="140" />
             <el-table-column prop="calls" label="调用" width="100" />
             <el-table-column label="Token" width="130">
               <template #default="{ row }">{{ fmt(row.totalTokens) }}</template>

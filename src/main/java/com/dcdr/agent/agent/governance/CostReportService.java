@@ -121,7 +121,7 @@ public class CostReportService {
             case "source" -> {
                 csv.header("来源", "调用次数", "合计Token", costHeader);
                 for (MonitorDtos.SourceUsage s : nvl(view.getBySource())) {
-                    csv.row(s.getSource(), s.getCalls(), s.getTotalTokens(), money(s.getCost(), withCost));
+                    csv.row(s.getSourceLabel(), s.getCalls(), s.getTotalTokens(), money(s.getCost(), withCost));
                 }
             }
             default -> {
@@ -198,7 +198,11 @@ public class CostReportService {
         List<MonitorDtos.SourceUsage> list = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             MonitorDtos.SourceUsage s = new MonitorDtos.SourceUsage();
-            s.setSource(row[0] == null ? UNKNOWN : String.valueOf(row[0]));
+            String source = row[0] == null ? UNKNOWN : String.valueOf(row[0]);
+            // 原值照发(报表契约不变), 另附中文名供界面与 CSV 直接显示;
+            // 认不出的历史来源原样带出 —— 统一显示"未知"会让历史报表解释不通
+            s.setSource(source);
+            s.setSourceLabel(CostSource.labelOf(source));
             s.setCalls(asLong(row[1]));
             s.setTotalTokens(asLong(row[2]));
             s.setCost(asDecimal(row[3]));

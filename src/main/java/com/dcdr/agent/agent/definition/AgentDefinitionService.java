@@ -1,5 +1,6 @@
 package com.dcdr.agent.agent.definition;
 
+import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
 import com.dcdr.agent.agent.tenant.TenantService;
 import com.dcdr.agent.agent.version.AgentVersionDiffer;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
@@ -51,6 +52,12 @@ public class AgentDefinitionService {
     private final TenantService tenantService;
     /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (可见性口径见 AgentOwnershipProvider) */
     private final OwnershipGuard ownershipGuard;
+    /**
+     * V3.1: 删除专家时一并归档它的专属记忆 —— 否则 {@code long_term_memories.agentId} 会悬空。
+     * <p>这里注入 Service 而不是 Repository: "归档"的语义(保留数据、可恢复、记日志)归记忆模块
+     * 自己决定, 删除专家的一方只需表达"这个专家没了"。
+     */
+    private final LongTermMemoryService longTermMemoryService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /**
@@ -144,8 +151,12 @@ public class AgentDefinitionService {
         // 归属校验(写): 模板仅 admin; 非模板仅创建者; admin 全部放行
         ownershipGuard.check(ResourceType.AGENT, id, userId, isAdmin, true);
         AgentDefinitionEntity e = loadEntity(id);
+        // 先归档专属记忆, 再删专家。顺序本身不影响结果(记忆按 agentId 查, 与专家是否还在库无关),
+        // 但放在同一事务里才能保证"专家没了"与"它的记忆不再注入"一起生效或一起回滚
+        int archived = longTermMemoryService.archiveByAgent(e.getId());
         repository.delete(e);
-        log.info("删除 Agent: {} (name={}, template={})", e.getId(), e.getName(), e.isTemplate());
+        log.info("删除 Agent: {} (name={}, template={}, 归档专属记忆 {} 条)",
+                e.getId(), e.getName(), e.isTemplate(), archived);
     }
 
     /**

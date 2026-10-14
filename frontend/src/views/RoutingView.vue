@@ -8,7 +8,9 @@
     <div class="toolbar">
       <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
       <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:160px" @change="loadLogs">
-        <el-option label="仅自己" value="" />
+        <!-- 取值必须非空: 空串会被 el-select 当作"未选择", 输入框什么都不显示, 用户看不出当前查的是谁
+             (与调用链页同一处修正 —— 两页原本是同一份代码, 不一起改会出现"一页显示、一页空白") -->
+        <el-option label="仅自己" value="self" />
         <el-option label="全部用户" value="all" />
       </el-select>
       <el-select v-model="filterType" size="small" style="width:140px" @change="loadLogs" placeholder="路由类型">
@@ -108,7 +110,7 @@ function onSizeChange() {
   page.value = 1
   loadLogs()
 }
-const filterUserId = ref('')
+const filterUserId = ref('self')
 const filterType = ref('')
 
 // ===== 详情抽屉 =====
@@ -151,7 +153,8 @@ async function loadLogs() {
       page: page.value - 1,
       size: pageSize.value
     }
-    if (authStore.isAdmin && filterUserId.value) params.userId = filterUserId.value
+    // 只有"全部用户"需要带参数: 后端仅在 userId=all 时查全部, 其余取值(含不传)一律查自己
+    if (authStore.isAdmin && filterUserId.value === 'all') params.userId = filterUserId.value
     const data = await getRoutingLogs(params)
     logs.value = Array.isArray(data) ? data : (data.content || [])
     total.value = Array.isArray(data) ? data.length : (data.totalElements || data.length)

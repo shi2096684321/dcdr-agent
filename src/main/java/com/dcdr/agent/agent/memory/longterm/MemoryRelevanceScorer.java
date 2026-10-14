@@ -57,6 +57,30 @@ public class MemoryRelevanceScorer {
         return score(query, topic, tags) >= HIT_THRESHOLD;
     }
 
+    /**
+     * 两条记忆的内容是否在说同一件事 —— 供自动抽取入库前查重用。
+     * <p>
+     * <b>为什么不能直接用 {@link #score}</b>: 它的分母是"候选词"(topic/tags, 很短),
+     * 语义是"短键匹配长提问"; 而这里两边都是长句, 用覆盖率会把
+     * "同一件事的详略两版"(如"用户偏好中文回答" / "用户希望用中文交流并避免英文术语")
+     * 判成不相似 —— 那正是最需要被识别为重复的情形。
+     * 故改用 2-gram <b>包含度</b>: 重叠数 / 较短一方的大小。
+     *
+     * @return 0.0~1.0; 任一侧归一化后为空返回 0
+     */
+    public double similarity(String a, String b) {
+        String na = normalize(a == null ? "" : a);
+        String nb = normalize(b == null ? "" : b);
+        if (na.isEmpty() || nb.isEmpty()) return 0.0;
+        // 一方完整包含另一方 → 判为同一件事(详略两版), 不必再算 n-gram
+        if (na.contains(nb) || nb.contains(na)) return 1.0;
+        Set<String> ga = ngrams(na);
+        Set<String> gb = ngrams(nb);
+        if (ga.isEmpty() || gb.isEmpty()) return 0.0;
+        long overlap = ga.stream().filter(gb::contains).count();
+        return (double) overlap / Math.min(ga.size(), gb.size());
+    }
+
     /** 解析逗号分隔的标签串 (与 MemoryEntity.tags 的存储格式对应) */
     public static List<String> parseTags(String raw) {
         if (raw == null || raw.isBlank()) return List.of();

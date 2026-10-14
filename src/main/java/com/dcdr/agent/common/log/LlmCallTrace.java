@@ -1,5 +1,6 @@
 package com.dcdr.agent.common.log;
 
+import com.dcdr.agent.rag.RagSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -48,6 +49,8 @@ public final class LlmCallTrace {
     private int toolSteps = 0;
     /** RAG 检索次数 */
     private int ragCount = 0;
+    /** 长期记忆召回次数 */
+    private int memoryCount = 0;
     /** 引用忠实度校验次数(每次回答收尾校验一次) */
     private int citationCount = 0;
     /** 本次请求所用 system prompt 的指纹(短哈希); null 表示尚未记录 */
@@ -182,11 +185,6 @@ public final class LlmCallTrace {
         log.info("[llm-trace] turn={} TOOL {} {}{}", turnId, tools, fmtMs(costMs), interrupted ? " [中断]" : "");
     }
 
-    /** 记录一次 RAG 知识库检索(query/kb 数量/命中条数/耗时), 供调用链日志度量检索效果 */
-    public synchronized void recordRag(String query, int kbCount, int hits, long costMs) {
-        recordRag(query, kbCount, hits, costMs, 0.0, java.util.List.of());
-    }
-
     /**
      * 记录一次 RAG 检索(含质量明细)。
      *
@@ -200,11 +198,21 @@ public final class LlmCallTrace {
      * </ul>
      * 两者都可在库侧直接用 SQL 聚合(见 {@code docs/sql/eval/retrieval-health.sql})。
      *
+     * <p><b>为什么需要 source</b>: 检索有两条发起路径 —— 用户勾选知识库后的强制检索、
+     * 模型自主调用 {@code knowledge_base_search} 工具。它们在调用链里长得完全一样(都是 kind=rag),
+     * 于是"这一轮究竟是谁决定要查的"从数据上无从判断: 实际排查时就遇到过
+     * "看到了 rag 步骤、可工具调用里根本没有 knowledge_base_search", 最后只能靠
+     * "这条步骤在 LLM 轮之前还是之间"去反推。记下 source 后一眼可答,
+     * 也才能按来源分别统计检索成本。
+     *
+     * @param source   检索来源 —— 取值为 {@link RagSource} 枚举(唯一取值定义处), 不可为空:
+     *                 它是"这次检索是谁发起的"的唯一答案, 不存在"记不出来的来源"这种情形
      * @param topScore 本次检索的最高相似度; 未命中传 0
      * @param docIds   命中的文档 ID(按相似度降序, 已被 topK 截断); 未命中传空列表
      */
     public synchronized void recordRag(String query, int kbCount, int hits, long costMs,
-                                       double topScore, java.util.List<String> docIds) {
+                                       double topScore, java.util.List<String> docIds,
+                                       RagSource source) {
         String tag = "rag[" + kbCount + "库/命中" + hits + "]";
         chain.add(tag);
         ragCount++;
@@ -220,10 +228,51 @@ public final class LlmCallTrace {
         if (docIds != null && !docIds.isEmpty()) {
             step.put("docIds", docIds);
         }
+        // 取值 + 中文名一起下发: 面板不再自己维护一份"取值 → 人话"的映射表
+        // (那种映射改一边漏一边不会报错, 只会在界面上留个没人认得的英文单词)
+        step.put("ragSource", source.value());
+        step.put("ragSourceLabel", source.label());
         steps.add(step);
         emit(step);
         log.info("[llm-trace] turn={} RAG {} query='{}' {} topScore={}{}", turnId, tag, query, fmtMs(costMs),
                 topScore > 0 ? String.format("%.3f", topScore) : "-", hits == 0 ? " [未命中]" : "");
+    }
+
+    /**
+     * 记录一次长期记忆召回。
+     *
+     * <p><b>为什么需要 {@code memoryIds}</b>: "记忆是不是越攒越多、越攒越没用"这个问题,
+     * 光看"注入了几条"回答不了 —— 一条记忆可能每轮都在候选池里, 却从未真正进过上下文。
+     * 记下当轮召回的 ID, 就能在库侧反查<b>从未命中过的记忆</b>
+     * (见 {@code docs/eval/memory-health.sql}): 它们占着常驻额度、每轮都要过一遍召回与打分,
+     * 却对回答毫无贡献 —— 是纯成本。
+     *
+     * <p>字段命名刻意与 RAG 步骤对齐({@code query} / {@code hits} / {@code costMs}):
+     * 调用链面板与库侧聚合都能复用同一套解析, 不必为"记忆"再写一套。
+     *
+     * @param query     当轮用户提问(条件触发匹配的依据)
+     * @param hits      召回的条数(常驻 + 条件触发, 已按上限截断)
+     * @param chars     注入文本的字符数(受背景信息预算约束后的实际长度, 不是逐条内容之和)
+     * @param costMs    召回耗时
+     * @param memoryIds 召回的记忆 ID; 未召回传空列表
+     */
+    public synchronized void recordMemory(String query, int hits, int chars, long costMs,
+                                          java.util.List<String> memoryIds) {
+        memoryCount++;
+        chain.add("mem[" + hits + "]");
+        java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
+        step.put("kind", "memory");
+        step.put("seq", memoryCount);
+        step.put("query", query);
+        step.put("hits", hits);
+        step.put("chars", chars);
+        step.put("costMs", costMs);
+        if (memoryIds != null && !memoryIds.isEmpty()) {
+            step.put("memoryIds", memoryIds);
+        }
+        steps.add(step);
+        emit(step);
+        log.info("[llm-trace] turn={} MEM 召回 {} 条 / 注入 {} 字 {}", turnId, hits, chars, fmtMs(costMs));
     }
 
     /**

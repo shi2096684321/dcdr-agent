@@ -24,9 +24,16 @@ public class ImageGenerationTool extends AbstractTool {
         this.chatImageService = chatImageService;
     }
 
+    /**
+     * 工具名。
+     * <p>名称常量而不是在 {@link #getName()} 里写字面量: 编排层要按它识别"这一轮出过图"
+     * (决定是否走图片 URL 回填与多模态追问)。改名只改一处的话, 图照出, 但下游识别不到 —— 无任何报错。
+     */
+    public static final String NAME = "image_generation";
+
     @Override
     public String getName() {
-        return "image_generation";
+        return NAME;
     }
 
     @Override

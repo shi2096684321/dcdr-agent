@@ -1,6 +1,8 @@
 package com.dcdr.agent.tool;
 
 import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
+import com.dcdr.agent.tool.result.ToolResultReadTool;
+import com.dcdr.agent.tool.skill.SkillLoadTool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
@@ -51,7 +53,8 @@ public class ToolRegistry {
      * 不用"把这两个名字写进每个 Agent 的白名单"来解决: 那样任何新增 Agent、克隆、模板导入
      * 都要记得带上它们, 属于把机制正确性寄托在配置纪律上。
      */
-    private static final Set<String> PLATFORM_TOOLS = Set.of("skill_load", "tool_result_read");
+    private static final Set<String> PLATFORM_TOOLS =
+            Set.of(SkillLoadTool.NAME, ToolResultReadTool.NAME);
 
     public void register(Tool tool) {
         tools.put(tool.getName(), tool);

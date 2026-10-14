@@ -25,17 +25,51 @@
         <el-option v-for="t in TYPE_OPTIONS" :key="t.value" :label="t.label" :value="t.value" />
       </el-select>
       <el-checkbox v-model="includeInactive" size="small" @change="load">显示已删除/归档</el-checkbox>
+      <!-- 召回观测: 记忆此前完全没有"这条到底有没有被用过"的视图, 于是没人能发现"它从没生效过" -->
+      <el-select v-model="hitFilter" size="small" style="width:150px" placeholder="命中情况">
+        <el-option label="全部命中情况" value="" />
+        <el-option label="从未命中" value="never" />
+        <el-option label="命中过" value="hit" />
+      </el-select>
       <el-button size="small" @click="load" :loading="loading">刷新</el-button>
       <el-button size="small" type="danger" plain :disabled="!memories.length" @click="clearAll">清空全部</el-button>
       <div class="stat-block">
         <span class="stat-item">活跃 {{ summary.active ?? 0 }} 条</span>
         <span class="stat-item">用户级 {{ summary.userLevel ?? 0 }}</span>
         <span class="stat-item">专家级 {{ summary.agentLevel ?? 0 }}</span>
+        <!-- 从未命中 = 活跃且命中数为 0: 每轮都要过一遍召回与打分, 却从未进过上下文 -->
+        <span class="stat-item" :class="{ 'stat-warn': neverHitCount > 0 }">
+          从未命中 {{ neverHitCount }} 条
+        </span>
+        <!-- 自动记忆开关 —— 由用户自己决定"要不要让 AI 替我记"。
+             它和部署方的 agent.memory.auto-extract.enabled 是两回事：后者是能力闸门（决定费用），
+             这里是用户同意；两者都开才生效，所以部署关着时开关禁用并写明原因，
+             而不是让用户对着一个点不动的开关猜 -->
+        <span class="stat-item auto-switch">
+          <span class="auto-label" :class="{ 'auto-on': summary.autoExtractEnabled }"
+                :title="autoExtractTip">自动记忆</span>
+          <el-switch
+            size="small"
+            :model-value="!!summary.autoExtractEnabled"
+            :disabled="!summary.autoExtractAllowed"
+            :loading="autoExtractSaving"
+            @change="onToggleAutoExtract"
+          />
+          <span v-if="!summary.autoExtractAllowed" class="auto-note">部署未开启</span>
+          <template v-else>
+            <!-- 未表态要写出来：否则用户会以为"现在的状态"是自己选的 -->
+            <span v-if="summary.autoExtractChoice === AUTO_EXTRACT_CHOICE.DEFAULT" class="auto-note"
+                  title="当前跟随部署配置；拨动开关即成为你自己的选择">{{ summary.autoExtractChoiceLabel }}</span>
+            <el-button v-else size="small" text type="primary" @click="onResetAutoExtract">恢复默认</el-button>
+          </template>
+        </span>
       </div>
     </div>
 
+    <!-- 策略说明由后端按实际参数生成(常驻类型 / 条数上限 / 重要度阈值 / 预算裁剪),
+         所以它会比一句话长 —— 但它解释了"为什么这条没被注入""为什么这条一直占着位置" -->
     <div class="retrieval-tip" v-if="summary.retrieval">
-      当前召回策略：{{ summary.retrieval }}
+      <b>当前召回策略：</b>{{ summary.retrieval }}
     </div>
 
     <div class="memory-list" v-loading="loading">
@@ -50,6 +84,14 @@
           <span v-if="m.agentName || m.agentId" class="mc-agent">@{{ m.agentName || m.agentId }}</span>
           <el-tag v-if="m.pinned" size="small" type="danger" effect="dark">常驻</el-tag>
           <el-tag v-if="m.status !== 'ACTIVE'" size="small" type="info">{{ m.statusLabel || m.status }}</el-tag>
+          <!-- 写入来源: "我要求记的" 与 "AI 自己提炼的" 必须能分辨 —— 否则用户既看不出
+               自己那句"记住 X"到底记下没有, 也会对着一条陌生记忆发懵。
+               MANUAL 不打标: 那是默认情形, 每条都标等于没标 -->
+          <el-tag v-if="m.sourceKind && m.sourceKind !== MEMORY_ORIGIN.MANUAL" size="small"
+                  :type="m.sourceKind === MEMORY_ORIGIN.REQUESTED ? 'success' : 'primary'" effect="plain"
+                  :title="originTip(m)">
+            {{ m.sourceKindLabel }}
+          </el-tag>
           <span class="mc-importance">重要度 {{ Number(m.importance).toFixed(2) }}</span>
           <span class="mc-time">{{ formatTime(m.updatedAt) }}</span>
         </div>
@@ -57,12 +99,26 @@
         <div class="mc-meta">
           <span v-if="m.topic">触发键: <b>{{ m.topic }}</b></span>
           <span v-if="m.tags && m.tags.length">标签: {{ m.tags.join(' / ') }}</span>
-          <span v-if="m.hitCount">已命中 {{ m.hitCount }} 次</span>
-          <span v-if="m.expiresAt">到期: {{ formatTime(m.expiresAt) }}</span>
+          <span v-if="m.hitCount">
+            已命中 {{ m.hitCount }} 次<span v-if="m.lastHitAt">（最近 {{ formatTime(m.lastHitAt) }}）</span>
+          </span>
+          <!-- 之前 lastHitAt 有值却从不展示: 它是判断"这条还有没有用"的直接依据 -->
+          <span v-else class="mc-never-hit" title="创建后从未被召回进上下文 —— 可能是触发键不对，也可能确实用不上">
+            从未命中
+          </span>
+          <span v-if="m.expiresAt">
+            到期: {{ formatTime(m.expiresAt) }}
+            <!-- 过期后会被定时任务归档(不再参与召回) —— 标出来, 否则用户只会觉得"这条怎么不生效了" -->
+            <el-tag v-if="isExpired(m)" size="small" type="warning" effect="plain">已过期</el-tag>
+          </span>
         </div>
         <div class="mc-ops">
           <el-button size="small" text type="primary" @click="openEdit(m)">编辑</el-button>
           <el-button size="small" text @click="togglePin(m)">{{ m.pinned ? '取消常驻' : '设为常驻' }}</el-button>
+          <!-- 归档 =「还有效, 但现在先别用它」, 与删除的区别在用户意图上; 两者都能用右侧的「恢复」撤回 -->
+          <el-button v-if="m.status === 'ACTIVE'" size="small" text @click="archive(m)">归档</el-button>
+          <!-- 恢复同时覆盖归档与已删除: 软删除若不给出撤销入口, "软"就只剩"占着库不删"的意思 -->
+          <el-button v-else size="small" text type="success" @click="restore(m)">恢复</el-button>
           <el-button v-if="m.status === 'ACTIVE'" size="small" text type="danger" @click="remove(m)">删除</el-button>
         </div>
       </div>
@@ -131,8 +187,10 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getMemories, getMemorySummary, createMemory, updateMemory, deleteMemory, clearMemories,
-  getAgents, extractMessage
+  archiveMemory, restoreMemory, setAutoExtract, getAgents, extractMessage
 } from '@/api'
+// 取值镜像：仅用于判断；展示用的中文名一律由后端下发（见文件头注释）
+import { AUTO_EXTRACT_CHOICE, MEMORY_ORIGIN } from '@/constants/enums'
 
 // 类型选项: note 里的「常驻 / 按需触发」对应后端 MemoryType.resident(), 让用户理解注入行为
 const TYPE_OPTIONS = [
@@ -149,11 +207,20 @@ const summary = ref({})
 const agents = ref([])
 const filterScope = ref('')
 const filterType = ref('')
+const hitFilter = ref('')
 const includeInactive = ref(false)
+// 自动记忆开关提交中（防连点；失败时回读，避免开关停在被拒绝的位置）
+const autoExtractSaving = ref(false)
+
+/** 活跃但从未命中: 占着常驻额度(每轮都要过一遍召回与打分)却从未进过上下文 —— 就是纯成本 */
+const neverHitCount = computed(() =>
+  memories.value.filter((m) => m.status === 'ACTIVE' && !m.hitCount).length)
 
 const filteredMemories = computed(() => memories.value.filter((m) => {
   if (filterScope.value && m.scope !== filterScope.value) return false
   if (filterType.value && m.type !== filterType.value) return false
+  if (hitFilter.value === 'never' && m.hitCount) return false
+  if (hitFilter.value === 'hit' && !m.hitCount) return false
   return true
 }))
 
@@ -175,6 +242,55 @@ function toLocalDateTime(date) {
   const pad = (n) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
     + `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+// ===== 写入来源 =====
+
+/** 来源标签的说明: 讲清"这条怎么来的"，以及它能不能改 */
+function originTip(m) {
+  const base = m.sourceSessionId ? `（来源会话 ${m.sourceSessionId}）` : ''
+  return m.sourceKind === MEMORY_ORIGIN.REQUESTED
+    ? `你在对话中明确要求记住的${base}；和手动新增的一样，可编辑、可归档、可删除`
+    : `AI 从对话里自动提炼的${base}；如不准确可直接编辑或归档，关闭「自动记忆」后不再新增`
+}
+
+// ===== 自动记忆用户级开关 =====
+
+const autoExtractTip = computed(() => {
+  if (!summary.value.autoExtractAllowed) {
+    return '部署方未开启此能力（agent.memory.auto-extract.enabled=false），所以无法自动记忆'
+  }
+  return summary.value.autoExtractEnabled
+    ? 'AI 会每隔若干轮从对话里提炼结论并写入记忆。自动写入的条目会标为「自动记录」，可随时编辑或归档'
+    : '记忆目前只由你手动创建。开启后，AI 会把对话里关于你的结论性信息自动记下来'
+})
+
+async function onToggleAutoExtract(val) {
+  await saveAutoExtract(val)
+}
+
+// 恢复默认 = 不再表态、重新跟随部署配置（后端把 null 解释为"没有选择过"）
+async function onResetAutoExtract() {
+  await saveAutoExtract(null)
+}
+
+async function saveAutoExtract(enabled) {
+  autoExtractSaving.value = true
+  try {
+    const sum = await setAutoExtract(enabled)
+    if (sum) summary.value = sum
+    ElMessage.success(
+      enabled === null
+        ? '已恢复为跟随部署配置'
+        : (enabled ? '已开启自动记忆：AI 会把对话中的结论记下来' : '已关闭自动记忆：不再自动写入（已有记忆保留）')
+    )
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '设置失败')
+    // 请求失败时开关会停在用户拨到的位置，与实际状态不一致 —— 回读一次纠正
+    try { summary.value = (await getMemorySummary()) || {} } catch { /* 回读失败就保持原样 */ }
+  } finally {
+    autoExtractSaving.value = false
+  }
 }
 
 async function load() {
@@ -273,8 +389,38 @@ function togglePin(m) {
     .catch((e) => ElMessage.error(extractMessage(e) || '操作失败'))
 }
 
+/** 到期时间已过 —— 过期后会被定时任务归档(不再参与召回), 列表里据此标出来 */
+function isExpired(m) {
+  if (!m.expiresAt) return false
+  const t = new Date(String(m.expiresAt).replace(' ', 'T')).getTime()
+  return !Number.isNaN(t) && t <= Date.now()
+}
+
+function archive(m) {
+  ElMessageBox.confirm(
+    '归档后该记忆不再参与后续对话，但会保留、随时可以恢复。确定归档？', '提示', { type: 'info' })
+    .then(async () => {
+      try {
+        await archiveMemory(m.id)
+        ElMessage.success('已归档')
+        load()
+      } catch (e) {
+        ElMessage.error(extractMessage(e) || '归档失败')
+      }
+    })
+    .catch(() => {})
+}
+
+function restore(m) {
+  restoreMemory(m.id)
+    .then(() => { ElMessage.success('已恢复为活跃'); load() })
+    .catch((e) => ElMessage.error(extractMessage(e) || '恢复失败'))
+}
+
 function remove(m) {
-  ElMessageBox.confirm('删除后该记忆不再参与后续对话，确定删除？', '提示', { type: 'warning' })
+  // 明确写出"可恢复": 软删除若不说, 用户误删之后不会知道还能找回来
+  ElMessageBox.confirm(
+    '删除后该记忆不再参与后续对话，确定删除？可在「显示已删除/归档」里恢复。', '提示', { type: 'warning' })
     .then(async () => {
       try {
         await deleteMemory(m.id)
@@ -319,10 +465,19 @@ onMounted(() => {
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: #86909c; }
 .stat-item { white-space: nowrap; }
+/* 有"从未命中"的记忆时给个视觉提示 —— 它们是纯成本, 值得被注意到 */
+.stat-warn { color: #e6a23c; font-weight: 500; }
+/* 自动记忆开关: 标签 + 开关 + 状态说明排一行 */
+.auto-switch { display: inline-flex; align-items: center; gap: 6px; }
+.auto-label { cursor: help; }
+/* 开启时用主色: 提示"这里的内容可能不再是全部手写的" */
+.auto-on { color: #667eea; font-weight: 500; }
+.auto-note { font-size: 12px; color: #909399; cursor: help; }
 
 .retrieval-tip {
   font-size: 12px; color: #667eea; background: #f2f4ff;
   border-radius: 6px; padding: 6px 10px; margin-bottom: 12px;
+  line-height: 1.6;   /* 说明按实际参数生成, 会占两三行 */
 }
 
 .memory-list { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
@@ -331,6 +486,7 @@ onMounted(() => {
 .memory-card.inactive { opacity: 0.6; border-left: 3px solid #c0c4cc; }
 .mc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .mc-agent { font-size: 12px; color: #e6a23c; }
+.mc-never-hit { font-size: 11px; color: #c0c4cc; }
 .mc-importance { font-size: 11px; color: #86909c; }
 .mc-time { font-size: 11px; color: #a0a4ab; margin-left: auto; }
 .mc-content { font-size: 13px; color: #1d2129; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
