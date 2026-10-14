@@ -18,14 +18,14 @@
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v3.0.0** |
-| 发布日期 | 2026-09-08 |
+| 当前版本 | **v3.1.0** |
+| 发布日期 | 2026-10-14 |
 | Java | 17 |
 | Spring Boot | 3.3.5 |
 | AI 框架 | LangChain4j 1.19.0 |
 | 构建工具 | Maven |
 
-> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ **V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）**。发布说明见 [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md)。
+> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）→ **V3.1（统一归属框架 / 专家与技能体系 / 代码执行沙箱 / 版本与成本治理 / 多实例协调 / 长期记忆）**。发布说明见 [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)，历史版本见 `docs/RELEASE-*.md`。
 
 ---
 
@@ -88,9 +88,9 @@ dcdr-agent/
 ├── docker-compose.yml
 ├── docs/                         # 需求 / 规划 / 发布说明 / SQL 脚本
 │   ├── 01-需求文档.md
-│   ├── 07-V3.0规划文档.md
-│   ├── RELEASE-v3.0.0.md
-│   └── sql/v3.0_schema.sql
+│   ├── 14-V3.1规划文档.md
+│   ├── RELEASE-v3.1.0.md
+│   └── sql/v3.1_*.sql
 ├── src/main/java/com/dcdr/agent/
 │   ├── JavaAgentApplication.java
 │   ├── controller/              # REST 接口 (Chat/Agent/KnowledgeBase/Workflow/ScheduledTask/Image/Video/Model/Auth/Routing/Webhook/Admin...)
@@ -203,8 +203,8 @@ docker compose up -d --build
 ## 九、相关文档
 
 - 需求文档：`docs/01-需求文档.md`
-- V3.0 规划：`docs/07-V3.0规划文档.md`
-- 发布说明：`docs/RELEASE-v3.0.0.md`（历史版本见 `docs/RELEASE-*.md`）
+- V3.1 规划：`docs/14-V3.1规划文档.md`（V3.0 见 `docs/07-V3.0规划文档.md`）
+- 发布说明：`docs/RELEASE-v3.1.0.md`（历史版本见 `docs/RELEASE-*.md`）
 
 ---
 

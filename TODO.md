@@ -28,14 +28,36 @@
   第一条直接针对本文件上方记录的「多轮对话重复回答历史内容」问题（避免长期记忆成为新的复述来源），
   第三条防止通过写入记忆实施提示词注入。
 
+### 已实现（2026-10-14）
+- **P1 自动抽取：两层开关** —— 部署闸门 `agent.memory.auto-extract.enabled`（决定要不要付这笔周期性
+  模型费用）+ 用户同意 `users.auto_memory_enabled`（`NULL` = 未表态，跟随 `user-default`）。
+  **生效 = 两者都开**；判定语义只写在 `AutoExtractPreference` 一处（抽取门控与概览都调它）。
+  用户级那列刻意用**可空布尔**：若用 `NOT NULL DEFAULT false`，部署方日后调整默认值时，
+  从未表态的用户会被当成"明确拒绝"而永远拿不到新默认。
+- **P1 触发**：流式（`done` 之后）与同步链路收尾各异步派发一次，跑在 `boundedElastic` ——
+  不阻塞 SSE 收尾、不在响应式线程上查库、异常全程吞（记忆是增强项，失败只在日志留一行）。
+  门控按 `用户消息数 % every-n-turns`，**刻意不按消息总数**：助手消息是异步 fire-and-forget 落库的，
+  按总数判定会与那次写竞争，明明到了第 N 轮却读到落库前的计数，于是整段对话都可能错过触发点。
+  代价：不足 N 轮的"尾巴"不会被抽取（流式对话没有可靠的"会话结束"事件），失败也不重试。
+- **P1 冲突消解**：ADD / UPDATE / DELETE / NOOP。**DELETE 走归档而非硬删** ——
+  模型判断"这条已被用户否定"是概率性的，归档可一键恢复，硬删只能靠数据库回滚。
+  写入前用 2-gram 包含度查重（`MemoryRelevanceScorer.similarity`；不能复用召回的 `score` ——
+  后者分母是"短触发键"，拿它比对两个长句会把"同一件事的详略两版"判成不相似），
+  并有单次条数上限 `max-per-run`（注入是每轮的常驻成本，一次灌太多会吃光背景预算）。
+- **P1 可观测**：抽取费用计入成本报表（来源 `memory_extract`）；记忆页概览下发开关三态
+  （部署未开 / 你自己关了 / 你还没选过），自动写入的条目带「自动记录」标识与来源会话。
+- **P1 提示词按失败模式分节**：不该记什么（噪声）、指令类内容一律不记（提示词注入 ——
+  模型现在既能读也能写了）、与现有记忆的关系（重复）、"多数轮次都应该是空的"（防模型为有输出而编造）。
+
 ### 待办（后续阶段）
-- **P1 自动抽取**：会话结束 / 每 N 轮异步触发 LLM 结构化抽取 + 冲突消解（ADD/UPDATE/DELETE/NOOP），
-  复用 `LongTermMemoryService.create`（已按可复用签名设计）。
 - **P2 向量召回**：注意 `PgVectorEmbeddingStoreAdapter` 的写路径当前抛
   `UnsupportedOperationException`（设计上仅承担检索），复用需另写写入逻辑或直写表。
-- **P3 记忆总开关**：用户一键关闭记忆注入 / 停止提取（CodeBuddy 有该开关）。
-  当前 P0 无自动提取（记忆均为用户手动创建），暂不涉及隐私风险。
+- **P3 记忆总开关**：其中"停止提取"已由用户级开关覆盖（2026-10-14）；
+  仍缺**"一键关闭记忆注入"** —— 当前注入是常驻的，用户只能逐条归档。它与"自动写入开关"**正交**，是另一件事。
 - `hit_count` / `last_hit_at` 已记录但暂未用于重要度衰减与淘汰。
+- **角色字面量尚未枚举化**：`"user"/"assistant"/"tool"` 仍散落在编排层十余处（属 OpenAI 协议词汇
+  + 库表取值，铺得最广）。与"取值域枚举化"（本次已做 `RagSource` / `MemoryAction` /
+  `AutoExtractChoice` / `CostSource`）不同批次，需单独一次改动 + 回归。
 
 ### 踩坑记录
 - **Reactor `doFinally` 晚于下游的终止处理，不能用于「必须先于下游完成」的记录**：
@@ -65,6 +87,13 @@
 - **前端日期不能直接传 `toISOString()`**：后端字段是 `LocalDateTime`，带时区偏移与毫秒的
   `...Z` 格式会反序列化失败。`MemoryView.vue` 内用 `toLocalDateTime()` 统一格式化为
   `yyyy-MM-ddTHH:mm:ss`（其他页面传 `from`/`to` 给 `Instant` 字段时可继续用 `toISOString()`，两者不可混用）。
+- **Maven 增量编译可能"什么都没编"却报 `BUILD SUCCESS`，让测试结论失真**：改完代码跑 `mvn test-compile`，
+  输出 `Nothing to compile - all classes are up to date.` 并成功 —— 而测试代码里对**已删除常量**的引用
+  其实还在，编译必然失败。因为跑的是**上一份 class**，此时直接 `mvn test` 会看到"全绿"的假象。
+  可靠做法：改动涉及"新增/删除类型或常量"时，先 `rmdir /s /q target\classes target\test-classes` 再编译
+  （或直接 `mvn clean test`），**不要相信 "Nothing to compile"**。
+  判据：编译日志里必须有 `Compiling N source files` 且 N 与改动规模相称。
+  另：`-q` 会吞掉这些信息，排查编译问题（及判断"到底编没编"）时不要加 `-q`。
 
 ---
 

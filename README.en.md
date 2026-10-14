@@ -4,9 +4,11 @@
 
 A production-grade Agent orchestration platform based on Spring Boot + Java 17 + LangChain4j, featuring intelligent routing, visual DAG workflow orchestration, fault-tolerant execution, knowledge base RAG, multimodal generation, and full observability (tracing / metrics / audit).
 
-Current version: **v3.0.0** (Release Notes: [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md)).
+Current version: **v3.1.0** (Release Notes: [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)).
 
-> Version note: v3.0.0 unifies the v3.0.0-alpha milestone (intelligent routing F-30 / trigger layer F-31 / execution fault tolerance F-33) with visual DAG orchestration (F-32), template market (F-35), cost & quota (F-39), production hardening (F-40 partial), and the LangChain4j framework migration of the capability layer. See [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md).
+> Version note: v3.1.0 delivers the unified ownership framework (F-41), the expert & skill system (F-45, scope changed from the planned remote template market), the code execution sandbox (F-43), governance completion — agent versioning + cost report (F-44), multi-instance cluster coordination plus backup/restore drills (F-46), tool-result size governance (F-47), answer feedback (F-48), and long-term memory (P0 + P1 auto-extraction). Voice STT/TTS (F-42) and the remote template repository are **not** delivered in this release. See [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md).
+>
+> Previous milestone: v3.0.0 unified the v3.0.0-alpha milestone (intelligent routing F-30 / trigger layer F-31 / execution fault tolerance F-33) with visual DAG orchestration (F-32), template market (F-35), cost & quota (F-39), production hardening (F-40 partial), and the LangChain4j framework migration. See [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md).
 
 ## ✨ Features
 
@@ -264,8 +266,10 @@ Adding a tool: implement the `Tool` interface and annotate with `@Component`; it
 
 - [`docs/01-需求文档.md`](docs/01-需求文档.md)
 - [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
+- [`docs/14-V3.1规划文档.md`](docs/14-V3.1规划文档.md) (security / expert & skill / sandbox / governance / HA / memory)
 - [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md) (intelligent routing / DAG / fault tolerance / hardening)
-- [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md) (current release)
+- [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md) (current release)
+- [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md) (previous release)
 - [`docs/RELEASE-v3.0.0-alpha-self-impl.md`](docs/RELEASE-v3.0.0-alpha-self-impl.md) (v3.0 alpha milestone)
 - [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md) (knowledge base / auth / multi-agent)
 - [`docs/04-V1.1规划文档.md`](docs/04-V1.1规划文档.md) (voice STT/TTS / video generation)

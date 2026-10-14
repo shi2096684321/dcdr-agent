@@ -13,7 +13,7 @@
 
     <groupId>com.dcdr</groupId>
     <artifactId>dcdr-agent</artifactId>
-    <version>3.0.0</version>
+    <version>3.1.0</version>
     <name>一人公司多模态 AI 助手工作台</name>
     <description>一人公司多模态 AI 助手工作台</description>
 
