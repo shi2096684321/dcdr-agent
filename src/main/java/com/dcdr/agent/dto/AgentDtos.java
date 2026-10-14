@@ -43,6 +43,14 @@ public class AgentDtos {
         private Boolean isTemplate;
         @Schema(description = "变更说明 (V3.1 F-44.1, 更新时存入版本历史)")
         private String changeNote;
+        @Schema(description = "职业头衔 (V3.1 专家元数据: 专家卡片标题)")
+        private String profession;
+        @Schema(description = "行业分类 (V3.1 专家元数据: 市场分类筛选)")
+        private String categoryId;
+        @Schema(description = "擅长领域标签 (V3.1 专家元数据)")
+        private List<String> tags;
+        @Schema(description = "推荐问法 (V3.1 专家元数据: 首条兼作开场引导)")
+        private List<String> quickPrompts;
     }
 
     /** Agent 列表项 / 详情视图 */
@@ -64,6 +72,14 @@ public class AgentDtos {
         private boolean isPublic;
         @JsonProperty("isTemplate")
         private boolean isTemplate;
+        @Schema(description = "职业头衔 (V3.1 专家元数据)")
+        private String profession;
+        @Schema(description = "行业分类 (V3.1 专家元数据)")
+        private String categoryId;
+        @Schema(description = "擅长领域标签 (V3.1 专家元数据)")
+        private List<String> tags;
+        @Schema(description = "推荐问法 (V3.1 专家元数据)")
+        private List<String> quickPrompts;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
         /**

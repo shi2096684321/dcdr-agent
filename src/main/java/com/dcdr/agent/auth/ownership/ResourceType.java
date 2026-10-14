@@ -38,7 +38,9 @@ public enum ResourceType {
     /** 模板市场分享记录(分享者归属, 用于"下架分享"校验) */
     TEMPLATE_SHARE("template_share", "模板分享"),
     /** 长期记忆条目 (V3.1) */
-    MEMORY("memory", "记忆");
+    MEMORY("memory", "记忆"),
+    /** 技能 (V3.1 专家体系): 按需加载的领域知识包 */
+    SKILL("skill", "技能");
 
     private final String code;
     private final String label;

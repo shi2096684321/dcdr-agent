@@ -2,7 +2,7 @@
   <div class="dag-mode">
     <div class="dag-header">
       <h2>可视化 DAG 编排</h2>
-      <p class="subtitle">拖拽节点 + 连线编排多 Agent 协作流程 (V3.0-beta F-32); 支持并行分支、自然语言条件与人工审批</p>
+      <p class="subtitle">拖拽节点 + 连线编排多专家协作流程 (V3.0-beta F-32); 支持并行分支、自然语言条件与人工审批</p>
     </div>
 
     <div class="dag-toolbar">
@@ -21,7 +21,7 @@
       <div class="palette">
         <div class="p-title">添加节点</div>
         <div class="p-item" @click="addNode('agent')">
-          <span class="p-icon" style="background:#667eea">A</span> Agent 节点
+          <span class="p-icon" style="background:#667eea">A</span> 专家节点
         </div>
         <div class="p-item" @click="addNode('condition')">
           <span class="p-icon" style="background:#e6a23c">?</span> 条件分支
@@ -89,8 +89,8 @@
               <el-input v-model="selectedNode.data.label" @input="dirty = true" />
             </el-form-item>
             <template v-if="selectedNode.type === 'agent'">
-              <el-form-item label="Agent">
-                <el-select v-model="selectedNode.data.agentId" placeholder="选择 Agent" @change="dirty = true">
+              <el-form-item label="专家">
+                <el-select v-model="selectedNode.data.agentId" placeholder="选择专家" @change="dirty = true">
                   <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
                 </el-select>
               </el-form-item>
@@ -114,7 +114,7 @@
             <template v-if="selectedNode.type === 'router'">
               <el-form-item label="路由规则">
                 <el-input v-model="selectedNode.data.input" type="textarea" :rows="3"
-                          placeholder="可选: 自然语言分配规则, 如: 涉及代码的任务走 编程Agent; 支持 ${nodeId.output}" @input="dirty = true" />
+                          placeholder="可选: 自然语言分配规则, 如: 涉及代码的任务走 编程专家; 支持 ${nodeId.output}" @input="dirty = true" />
               </el-form-item>
             </template>
             <div class="p-tip" v-if="selectedNode.type === 'router'">该节点只做分析+指派, 不执行任务; 出边标签为候选执行者, LLM 会选最合适的一个继续。</div>
@@ -245,13 +245,13 @@ const edgeLabelPlaceholder = computed(() => {
   if (!selectedEdge.value) return ''
   const src = nodes.value.find(n => n.id === selectedEdge.value.source)
   if (src?.type === 'condition') return 'condition 出边填: 是 / 否'
-  if (src?.type === 'router') return 'router 出边填: 候选执行者名 (如: 编程Agent)'
+  if (src?.type === 'router') return 'router 出边填: 候选执行者名 (如: 编程专家)'
   return '可选边标签'
 })
 const nodeSub = (n) => {
   if (n.type === 'agent') {
     const a = agents.value.find(x => x.id === n.data?.agentId)
-    return a ? a.name : '未选择 Agent'
+    return a ? a.name : '未选择专家'
   }
   if (n.type === 'condition') return n.data?.conditionMode === 'expr' ? '表达式判断' : '自然语言判断'
   if (n.type === 'router') return '分析并指派执行者'
@@ -286,7 +286,7 @@ const previewPath = computed(() => {
 let nodeSeq = 0
 function addNode(type) {
   const id = 'n' + (++nodeSeq)
-  const label = { agent: 'Agent', condition: '条件', router: '路由', approval: '审批', merge: '合并' }[type]
+  const label = { agent: '专家', condition: '条件', router: '路由', approval: '审批', merge: '合并' }[type]
   nodes.value.push({
     id,
     type,

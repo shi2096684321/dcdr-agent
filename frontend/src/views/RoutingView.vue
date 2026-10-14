@@ -14,7 +14,7 @@
       <el-select v-model="filterType" size="small" style="width:140px" @change="loadLogs" placeholder="路由类型">
         <el-option label="全部类型" value="" />
         <el-option label="工作流" value="workflow" />
-        <el-option label="Agent" value="agent" />
+        <el-option label="专家" value="agent" />
         <el-option label="普通对话" value="chat" />
       </el-select>
       <div class="stat-block" v-if="logs.length">
@@ -48,7 +48,7 @@
       </div>
       <div v-if="!loading && !filteredLogs.length" class="empty-tip">
         暂无路由记录<br />
-        在对话页面直接输入需求 (不手动选 Agent / 工作流), 系统会自动判断路由并记录在此
+        在对话页面直接输入需求 (不手动选专家 / 工作流), 系统会自动判断路由并记录在此
       </div>
     </div>
 
@@ -128,7 +128,7 @@ const highConfCount = computed(() => logs.value.filter(l => l.highConfidence).le
 const lowConfCount = computed(() => logs.value.filter(l => !l.highConfidence).length)
 
 function routeTypeLabel(t) {
-  return ({ workflow: '工作流', agent: 'Agent', chat: '普通对话' })[t] || t
+  return ({ workflow: '工作流', agent: '专家', chat: '普通对话' })[t] || t
 }
 function routeTypeTag(t) {
   if (t === 'workflow') return 'success'

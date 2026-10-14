@@ -166,6 +166,12 @@ public class AgentDefinitionService {
         req.setTools(filterAdminOnlyTools(parseStrList(src.getTools()), false));
         req.setKbIds(parseStrList(src.getKbIds()));
         req.setTemperature(src.getTemperature());
+        // 专家元数据随克隆一起带走: 克隆出来的还是一个"同款专家", 丢掉分类与标签会让它在市场里
+        // 退化成"无名角色"(这也是"克隆内置模板再改"这条主路径的前提)
+        req.setProfession(src.getProfession());
+        req.setCategoryId(src.getCategoryId());
+        req.setTags(parseStrList(src.getTags()));
+        req.setQuickPrompts(parseStrList(src.getQuickPrompts()));
         req.setIsPublic(false);
         req.setIsTemplate(false); // 克隆出来的始终是普通 Agent
         return create(req, userId, false);
@@ -232,6 +238,11 @@ public class AgentDefinitionService {
         req.setTools(filterAdminOnlyTools(parseStrList(snapshot.getTools()), false));
         req.setKbIds(parseStrList(snapshot.getKbIds()));
         req.setTemperature(snapshot.getTemperature());
+        // 同上: 从历史版本克隆也要带走元数据(版本快照已含这些列)
+        req.setProfession(snapshot.getProfession());
+        req.setCategoryId(snapshot.getCategoryId());
+        req.setTags(parseStrList(snapshot.getTags()));
+        req.setQuickPrompts(parseStrList(snapshot.getQuickPrompts()));
         req.setIsPublic(false);
         req.setIsTemplate(false);
         req.setChangeNote("克隆自 v" + version);
@@ -261,6 +272,10 @@ public class AgentDefinitionService {
             v.setName(e.getName());
             v.setDescription(e.getDescription());
             v.setAvatar(e.getAvatar());
+            v.setProfession(e.getProfession());
+            v.setCategoryId(e.getCategoryId());
+            v.setTags(e.getTags());
+            v.setQuickPrompts(e.getQuickPrompts());
             v.setSystemPrompt(e.getSystemPrompt());
             v.setModel(e.getModel());
             v.setTools(e.getTools());
@@ -283,6 +298,10 @@ public class AgentDefinitionService {
         e.setName(snapshot.getName());
         e.setDescription(snapshot.getDescription());
         e.setAvatar(snapshot.getAvatar());
+        e.setProfession(snapshot.getProfession());
+        e.setCategoryId(snapshot.getCategoryId());
+        e.setTags(snapshot.getTags());
+        e.setQuickPrompts(snapshot.getQuickPrompts());
         e.setSystemPrompt(snapshot.getSystemPrompt());
         e.setModel(snapshot.getModel());
         e.setTools(snapshot.getTools());
@@ -320,6 +339,12 @@ public class AgentDefinitionService {
         e.setName(req.getName().trim());
         e.setDescription(req.getDescription());
         e.setAvatar(req.getAvatar());
+        // V3.1 专家元数据: 这些字段决定"专家能否被找到" —— 分类/标签为空时市场里就只能靠名字搜,
+        // 故与其它定义字段走同一套序列化(JSON 数组)与同一套空值规整
+        e.setProfession(trimToNull(req.getProfession()));
+        e.setCategoryId(trimToNull(req.getCategoryId()));
+        e.setTags(serializeList(req.getTags()));
+        e.setQuickPrompts(serializeList(req.getQuickPrompts()));
         e.setSystemPrompt(req.getPersona());
         e.setModel((req.getModel() == null || req.getModel().isBlank()) ? null : req.getModel().trim());
         e.setTools(serializeList(req.getTools()));
@@ -373,6 +398,12 @@ public class AgentDefinitionService {
                 .toList();
     }
 
+    /** 去空白并归一空值为 null(避免库里出现 "" 与 null 两种空表示) */
+    private static String trimToNull(String s) {
+        if (s == null || s.isBlank()) return null;
+        return s.trim();
+    }
+
     private void validateName(String name) {
         if (name == null || name.isBlank()) {
             throw new BusinessException(400, "Agent 名称不能为空");
@@ -396,6 +427,10 @@ public class AgentDefinitionService {
         v.setTemperature(e.getTemperature());
         v.setPublic(e.isPublic());
         v.setTemplate(e.isTemplate());
+        v.setProfession(e.getProfession());
+        v.setCategoryId(e.getCategoryId());
+        v.setTags(parseStrList(e.getTags()));
+        v.setQuickPrompts(parseStrList(e.getQuickPrompts()));
         v.setCreatedAt(e.getCreatedAt());
         v.setUpdatedAt(e.getUpdatedAt());
         // 可编辑: 管理员可编辑任意 Agent (含他人私有 Agent 与预设模板); 普通用户仅限自己创建的非模板 Agent

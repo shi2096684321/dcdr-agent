@@ -34,6 +34,25 @@ public class ToolRegistry {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
+    /**
+     * 平台基础工具: <b>不受 Agent 工具白名单限制</b>。
+     * <p>
+     * 为什么需要这条例外: 这两个工具不是"某个 Agent 的业务能力", 而是<b>平台机制的一部分</b> ——
+     * <ul>
+     *   <li>{@code skill_load}: 技能目录由平台注入 system prompt(与 Agent 白名单无关)。
+     *       若加载工具被白名单挡住, 就会出现"模型看得见技能清单、却没有任何办法读取"
+     *       的自相矛盾状态。</li>
+     *   <li>{@code tool_result_read}: 超长工具结果落盘后, 唯一的取回途径。它是 V3.0 就存在的
+     *       潜在缺陷 —— Agent 白名单里只要没列它, "落盘 + 分页读取"这条链路对该 Agent 就是断的。</li>
+     * </ul>
+     * 安全上可接受: 两者都是<b>只读</b>工具, 且读取范围受当前会话/当前用户约束
+     * (skill_load 按归属过滤, tool_result_read 按会话目录 + 路径穿越校验)。
+     * <p>
+     * 不用"把这两个名字写进每个 Agent 的白名单"来解决: 那样任何新增 Agent、克隆、模板导入
+     * 都要记得带上它们, 属于把机制正确性寄托在配置纪律上。
+     */
+    private static final Set<String> PLATFORM_TOOLS = Set.of("skill_load", "tool_result_read");
+
     public void register(Tool tool) {
         tools.put(tool.getName(), tool);
         try {
@@ -189,7 +208,9 @@ public class ToolRegistry {
         List<ToolSpecification> result = new ArrayList<>();
         for (Map.Entry<String, ToolSpecification> e : specifications.entrySet()) {
             if (streamingOnly && !tools.get(e.getKey()).supportsStreaming()) continue;
-            if (filter && !allowedToolNames.contains(e.getKey())) continue;
+            if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
+                continue;
+            }
             result.add(e.getValue());
         }
         return result;
@@ -223,7 +244,9 @@ public class ToolRegistry {
         List<Map<String, Object>> defs = new ArrayList<>();
         for (Map.Entry<String, Tool> e : tools.entrySet()) {
             if (!e.getValue().supportsStreaming()) continue;
-            if (filter && !allowedToolNames.contains(e.getKey())) continue;
+            if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
+                continue;
+            }
             Map<String, Object> def = openAiDefinitions.get(e.getKey());
             if (def != null) {
                 defs.add(def);

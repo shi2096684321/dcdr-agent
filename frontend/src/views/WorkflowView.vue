@@ -275,8 +275,8 @@
           <el-form-item label="名称" label-width="70px">
             <el-input v-model="s.name" placeholder="步骤名 (唯一, 用作变量引用)" />
           </el-form-item>
-          <el-form-item label="Agent" label-width="70px">
-            <el-select v-model="s.agentId" placeholder="选择执行该步的 Agent" filterable style="width:100%">
+          <el-form-item label="专家" label-width="70px">
+            <el-select v-model="s.agentId" placeholder="选择执行该步的专家" filterable style="width:100%">
               <el-option v-for="a in agents" :key="a.id" :label="a.name + (a.isTemplate ? ' (模板)' : '')" :value="a.id" />
             </el-select>
           </el-form-item>
@@ -403,9 +403,9 @@ function openDagEditor() {
   if (!currentWf.value) return
   emit('open-dag', currentWf.value.id)
 }
-const dagNodeTypeLabel = (t) => ({ agent: 'Agent', condition: '条件', router: '路由', approval: '审批', merge: '合并' })[t] || t
+const dagNodeTypeLabel = (t) => ({ agent: '专家', condition: '条件', router: '路由', approval: '审批', merge: '合并' })[t] || t
 function dagNodeSub(n) {
-  if (n.type === 'agent') return n.data?.input ? `输入: ${n.data.input}` : 'Agent 节点'
+  if (n.type === 'agent') return n.data?.input ? `输入: ${n.data.input}` : '专家节点'
   if (n.type === 'condition') return n.data?.condition || '条件节点'
   if (n.type === 'router') return '分析并指派执行者'
   if (n.type === 'approval') return '人工审批门禁'
@@ -566,7 +566,7 @@ async function submitForm() {
   }
   for (const s of form.steps) {
     if (!s.name || !s.name.trim()) { ElMessage.warning('每个步骤必须有名称'); return }
-    if (!s.agentId) { ElMessage.warning('步骤 ' + s.name + ' 未选择 Agent'); return }
+    if (!s.agentId) { ElMessage.warning('步骤 ' + s.name + ' 未选择专家'); return }
   }
   saving.value = true
   try {

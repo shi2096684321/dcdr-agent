@@ -10,17 +10,13 @@
         <div class="mode-tab" :class="{active: mode==='creative'}" @click="$emit('update:mode', 'creative')">创作</div>
         <!-- 知识库开放给普通用户(可管理自己的 USER 级; 平台级只读), 登录即可使用 -->
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='agent'}" @click="$emit('update:mode', 'agent')">Agent</div>
+        <!-- 专家工作台: 专家 / 技能 / 技能市场 / 专家市场 四个二级页共用一个顶栏入口 -->
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='expert'}" @click="$emit('update:mode', 'expert')">专家</div>
         <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='memory'}" @click="$emit('update:mode', 'memory')">记忆</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='workflow'}" @click="$emit('update:mode', 'workflow')">工作流</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='dag'}" @click="$emit('update:mode', 'dag')">DAG编排</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='market'}" @click="$emit('update:mode', 'market')">模板市场</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='schedule'}" @click="$emit('update:mode', 'schedule')">定时任务</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='routing'}" @click="$emit('update:mode', 'routing')">智能路由</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='llm-logs'}" @click="$emit('update:mode', 'llm-logs')">调用链</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='monitor'}" @click="$emit('update:mode', 'monitor')">监控</div>
-        <!-- 检索健康度: 零命中样本含用户原始提问, 属运维数据, 故仅管理员可见(后端亦校验) -->
-        <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='retrieval-health'}" @click="$emit('update:mode', 'retrieval-health')">检索健康</div>
+        <!-- 自动化: 工作流 / DAG 编排 / 定时任务 -->
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='auto'}" @click="$emit('update:mode', 'auto')">自动化</div>
+        <!-- 运维: 监控与成本 / 调用链 / 智能路由 / 检索健康(仅管理员) -->
+        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='ops'}" @click="$emit('update:mode', 'ops')">运维</div>
         <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='admin'}" @click="$emit('update:mode', 'admin')">管理</div>
       </div>
       <button class="web-search-toggle" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"

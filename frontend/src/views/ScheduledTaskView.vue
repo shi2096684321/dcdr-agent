@@ -54,7 +54,7 @@
 
         <div class="task-detail">
           <div class="detail-row">
-            <div class="detail-label">关联 Agent</div>
+            <div class="detail-label">关联专家</div>
             <div class="detail-value">{{ currentTask.agentName || currentTask.agentId }}</div>
           </div>
           <div class="detail-row">
@@ -105,8 +105,8 @@
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如: 每日晨报" maxlength="100" />
         </el-form-item>
-        <el-form-item label="关联 Agent" required>
-          <el-select v-model="form.agentId" placeholder="选择触发执行的 Agent" filterable style="width:100%">
+        <el-form-item label="关联专家" required>
+          <el-select v-model="form.agentId" placeholder="选择触发执行的专家" filterable style="width:100%">
             <el-option v-for="a in agents" :key="a.id" :label="a.name + (a.isTemplate ? ' (模板)' : '')" :value="a.id" />
           </el-select>
         </el-form-item>
@@ -121,7 +121,7 @@
         </el-form-item>
         <el-form-item label="触发输入">
           <el-input v-model="form.inputMessage" type="textarea" :rows="3"
-                    placeholder="触发时喂给 Agent 的输入消息 (留空则用 '(定时触发)')" />
+                    placeholder="触发时喂给专家的输入消息 (留空则用 '(定时触发)')" />
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
@@ -254,7 +254,7 @@ function resetForm() {
 
 async function submitForm() {
   if (!form.name || !form.name.trim()) { ElMessage.warning('请填写任务名称'); return }
-  if (!form.agentId) { ElMessage.warning('请选择关联 Agent'); return }
+  if (!form.agentId) { ElMessage.warning('请选择关联专家'); return }
   if (!form.cron || !form.cron.trim()) { ElMessage.warning('请填写 Cron 表达式'); return }
   saving.value = true
   try {

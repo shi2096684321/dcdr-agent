@@ -26,3 +26,5 @@ export * from './userModels'
 export * from './feedback'
 // V3.1 长期记忆
 export * from './memories'
+// V3.1 技能(专家体系) + 技能市场
+export * from './skill'

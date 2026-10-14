@@ -4,6 +4,7 @@ import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -241,5 +242,64 @@ class ToolRegistryTest {
         @SuppressWarnings("unchecked")
         Map<String, Object> function = (Map<String, Object>) defs.get(0).get("function");
         assertFalse(function.containsKey("parameters"));
+    }
+
+    /** 平台基础工具(名字必须与 ToolRegistry.PLATFORM_TOOLS 一致) */
+    static class NamedStreamingTool extends AbstractTool {
+        private final String name;
+
+        NamedStreamingTool(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public String getDescription() {
+            return "平台基础工具";
+        }
+
+        @Override
+        public String execute(Map<String, Object> params) {
+            return "ok";
+        }
+
+        @Override
+        public boolean supportsStreaming() {
+            return true;
+        }
+    }
+
+    @Test
+    @DisplayName("平台基础工具不受 Agent 白名单限制")
+    void platformToolsBypassAgentWhitelist() {
+        ToolRegistry registry = new ToolRegistry();
+        registry.register(new StaticSchemaTool());
+        registry.register(new NamedStreamingTool("skill_load"));
+        registry.register(new NamedStreamingTool("tool_result_read"));
+        registry.register(new NamedStreamingTool("some_business_tool"));
+
+        List<String> whitelist = List.of("static_tool");
+
+        List<String> specNames = registry.getStreamingToolSpecificationsFiltered(whitelist).stream()
+                .map(ToolSpecification::name).toList();
+        assertTrue(specNames.contains("static_tool"), "白名单内的工具必须可见");
+        // 这两个是平台机制的一部分: 技能目录由平台注入(与白名单无关), 若加载工具被白名单挡住,
+        // 就会出现"模型看得见技能清单、却无法读取任何技能"的自相矛盾状态;
+        // tool_result_read 同理 —— 超长结果落盘后这是唯一的取回途径。
+        assertTrue(specNames.contains("skill_load"), "skill_load 必须豁免 Agent 白名单");
+        assertTrue(specNames.contains("tool_result_read"), "tool_result_read 必须豁免 Agent 白名单");
+        // 但普通业务工具仍应被挡住, 豁免不能变成"白名单失效"
+        assertFalse(specNames.contains("some_business_tool"), "普通工具不得豁免, 否则白名单形同虚设");
+
+        // OpenAI 兼容出口(legacy Provider 路径)必须与框架出口口径一致
+        List<String> defNames = registry.getStreamingToolDefinitionsFiltered(whitelist).stream()
+                .map(d -> (String) ((Map<?, ?>) d.get("function")).get("name"))
+                .toList();
+        assertTrue(defNames.contains("skill_load"));
+        assertFalse(defNames.contains("some_business_tool"));
     }
 }

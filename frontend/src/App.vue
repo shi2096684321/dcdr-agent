@@ -19,17 +19,12 @@
         <ChatView v-if="mode==='chat'" :current-model="currentModel" v-model:web-search="webSearch" v-model:thinking-enabled="thinkingEnabled" :models="models" />
         <CreativeView v-else-if="mode==='creative'" :current-model="currentModel" :image-models="imageModels" :video-models="videoModels" @update:current-model="currentModel = $event" />
         <KnowledgeBaseView v-else-if="mode==='knowledge'" />
-        <AgentView v-else-if="mode==='agent'" />
+        <!-- 三个工作台: 各自把同类页面收在一个顶栏入口下, 内部二级切换。
+             顶栏只留"此刻想干什么", 具体到哪一页交给容器(见 HubShell) -->
+        <ExpertHubView v-else-if="mode==='expert'" />
+        <AutoHubView v-else-if="mode==='auto'" />
+        <OpsHubView v-else-if="mode==='ops'" />
         <MemoryView v-else-if="mode==='memory'" />
-        <WorkflowView v-else-if="mode==='workflow'" @open-dag="onOpenDag" />
-        <DagEditorView v-else-if="mode==='dag'" :initial-workflow-id="dagTargetId" />
-        <TemplateMarketView v-else-if="mode==='market'" />
-        <ScheduledTaskView v-else-if="mode==='schedule'" />
-        <RoutingView v-else-if="mode==='routing'" />
-        <LlmCallLogView v-else-if="mode==='llm-logs'" />
-        <MonitorView v-else-if="mode==='monitor'" />
-        <!-- 检索健康度: 含用户原始提问, 仅管理员; 与顶栏入口、后端校验形成三层一致 -->
-        <RetrievalHealthView v-else-if="mode==='retrieval-health' && authStore.isAdmin" />
         <AdminView v-else-if="mode==='admin' && authStore.isAdmin" />
       </main>
     </template>
@@ -45,16 +40,12 @@ import AppHeader from '@/components/AppHeader.vue'
 import ChatView from '@/views/ChatView.vue'
 import CreativeView from '@/views/CreativeView.vue'
 import KnowledgeBaseView from '@/views/KnowledgeBaseView.vue'
-import AgentView from '@/views/AgentView.vue'
+// 三个工作台容器: 它们内部再挂各自的二级页(专家/技能/市场、工作流/DAG/定时、
+// 监控/调用链/路由/检索健康), 故那些视图不在 App 层引用了 —— App 只管到容器这一层
+import ExpertHubView from '@/views/ExpertHubView.vue'
+import AutoHubView from '@/views/AutoHubView.vue'
+import OpsHubView from '@/views/OpsHubView.vue'
 import MemoryView from '@/views/MemoryView.vue'
-import WorkflowView from '@/views/WorkflowView.vue'
-import DagEditorView from '@/views/DagEditorView.vue'
-import TemplateMarketView from '@/views/TemplateMarketView.vue'
-import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
-import RoutingView from '@/views/RoutingView.vue'
-import LlmCallLogView from '@/views/LlmCallLogView.vue'
-import MonitorView from '@/views/MonitorView.vue'
-import RetrievalHealthView from '@/views/RetrievalHealthView.vue'
 import AdminView from '@/views/AdminView.vue'
 import AuthView from '@/views/AuthView.vue'
 
@@ -73,13 +64,6 @@ const authReady = ref(false)
 
 const imageModels = computed(() => modelStore.imageModels)
 const videoModels = computed(() => modelStore.videoModels)
-
-// 从工作流页跳转到 DAG 编辑器时携带目标工作流 ID, 供 DagEditorView 打开后自动选中
-const dagTargetId = ref('')
-function onOpenDag(id) {
-  dagTargetId.value = id || ''
-  mode.value = 'dag'
-}
 
 async function loadModels() {
   try {

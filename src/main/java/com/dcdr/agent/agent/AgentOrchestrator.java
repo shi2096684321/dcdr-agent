@@ -4,6 +4,7 @@ import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
 import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
+import com.dcdr.agent.agent.prompt.BackgroundContextBudget;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
@@ -22,6 +23,8 @@ import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
+import com.dcdr.agent.skill.SkillCatalogProvider;
+import com.dcdr.agent.skill.SkillContextHolder;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
@@ -79,6 +82,8 @@ public class AgentOrchestrator {
     private final ToolRegistry toolRegistry;
     private final SystemPromptResolver systemPromptResolver;
     private final RuntimePromptProvider runtimePromptProvider;
+    /** 背景信息(长期记忆 + 检索片段)的统一预算: 两者此前各有限制却互不感知 */
+    private final BackgroundContextBudget backgroundContextBudget;
     private final RagProperties ragProperties;
     private final AuditService auditService;
     private final AgentDefinitionService agentDefinitionService;
@@ -90,6 +95,8 @@ public class AgentOrchestrator {
     private final LongTermMemoryService longTermMemoryService;
     /** V3.1 F-47: 工具结果体积治理(唯一收口点, 见 ToolResultCompressor) */
     private final ToolResultCompressor toolResultCompressor;
+    /** V3.1 技能: 只能注入"技能目录"(渐进式披露第一层), 正文由模型按需通过 skill_load 取回 */
+    private final SkillCatalogProvider skillCatalogProvider;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -123,12 +130,14 @@ public class AgentOrchestrator {
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
                              ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
                              RuntimePromptProvider runtimePromptProvider,
+                             BackgroundContextBudget backgroundContextBudget,
                              RagProperties ragProperties, AuditService auditService,
                              AgentDefinitionService agentDefinitionService, CostTracker costTracker,
                              RetrievalService retrievalService, KnowledgeBaseRepository kbRepository,
                              FrameworkToolExecutorBridge frameworkToolExecutorBridge,
                              LongTermMemoryService longTermMemoryService,
-                             ToolResultCompressor toolResultCompressor) {
+                             ToolResultCompressor toolResultCompressor,
+                             SkillCatalogProvider skillCatalogProvider) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -140,6 +149,7 @@ public class AgentOrchestrator {
         this.toolRegistry = toolRegistry;
         this.systemPromptResolver = systemPromptResolver;
         this.runtimePromptProvider = runtimePromptProvider;
+        this.backgroundContextBudget = backgroundContextBudget;
         this.ragProperties = ragProperties;
         this.auditService = auditService;
         this.agentDefinitionService = agentDefinitionService;
@@ -149,6 +159,7 @@ public class AgentOrchestrator {
         this.frameworkToolExecutorBridge = frameworkToolExecutorBridge;
         this.longTermMemoryService = longTermMemoryService;
         this.toolResultCompressor = toolResultCompressor;
+        this.skillCatalogProvider = skillCatalogProvider;
     }
 
     /**
@@ -800,6 +811,9 @@ public class AgentOrchestrator {
             SandboxContextHolder.set(userId, sessId);
             // F-47: 工具结果落盘按会话分目录, 分页读取工具据此做会话隔离
             ToolResultContextHolder.set(userId, sessId);
+            // V3.1 技能: skill_load 只拿到模型给的 name, "当前是谁在问"必须在此注入,
+            // 否则无法按归属过滤技能(可能加载到他人的私有技能)
+            SkillContextHolder.set(userId);
             try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
@@ -958,6 +972,7 @@ public class AgentOrchestrator {
                 KnowledgeSearchContextHolder.clear();
                 SandboxContextHolder.clear();
                 ToolResultContextHolder.clear();
+                SkillContextHolder.clear();
             }
         }));
     }
@@ -1656,8 +1671,8 @@ public class AgentOrchestrator {
         //       未命中任何记忆时不产生 system 消息。仅临时注入本次请求, 不落库。
         history = injectLongTermMemory(history, userId, request);
 
-        // 3.2 平台级运行时约束(生图策略 + 联网搜索引导), 与同步 chatSync 路径共用, 保证两条链路注入一致
-        history = injectRuntimeSystemPrompts(history, provider, request);
+        // 3.2 平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录), 与同步 chatSync 路径共用, 保证两条链路注入一致
+        history = injectRuntimeSystemPrompts(history, provider, request, userId);
 
         // 3.3 RAG 知识库检索增强(意图分层, 对齐主流产品混合式):
         //     - 显式模式(强制检索): 用户在前端显式选择了知识库(explicitKbIds 非空)→ 每轮先检索再回答。
@@ -1845,18 +1860,29 @@ public class AgentOrchestrator {
                 (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds);
         List<Message> withKb = new ArrayList<>(history);
         if (!results.isEmpty()) {
-            StringBuilder kb = new StringBuilder();
-            kb.append(forced
-                    ? "【知识库强制检索结果】系统已自动从你选择的知识库(含平台级公共库)检索到以下相关内容:\n\n"
-                    : "【知识库检索结果】系统已自动从可用知识库(平台公共库 + 你的知识库)检索到以下相关内容:\n\n");
-            List<Map<String, Object>> sources = new ArrayList<>(results.size());
-            for (int i = 0; i < results.size(); i++) {
+            // 片段渲染统一交给 RuntimePromptProvider.ragInjection:
+            // 边界标记(防间接提示注入)、单片段截断、总量预算都在那一处执行。
+            // 这里过去是手工拼字符串, 后果是 agent.rag.inject.* 整套配置形同虚设 ——
+            // 文档原文与指令同处一条 system 消息且无任何分隔, 长度只靠 chunkSize × topK
+            // 间接约束, 任一项调大就失控, 而且不报错: 配置读起来是生效的。
+            String reason = forced
+                    ? "【知识库强制检索结果】你本轮显式选择了知识库, 以下内容来自该知识库。"
+                    : "【知识库检索结果】系统已按语义从可用知识库(平台公共库 + 你的知识库)自动检索到以下内容。";
+            // 背景信息统一记账: 记忆那一段先占(它在本方法之前就已注入), 检索片段拿剩下的
+            int ragBudget = backgroundContextBudget.ragBudget(memoryCharsIn(history));
+            RuntimePromptProvider.RagInjection injection =
+                    runtimePromptProvider.ragInjection(results, reason, ragBudget);
+            if (injection == null) {
+                // 理论不可达(results 非空); 真出现时不能静默降级成"无增强" —— 那与"未命中"在表现上无法区分
+                log.warn("知识库检索命中 {} 条但渲染为空, 本次不做增强", results.size());
+                return new RagInject(history, null, null);
+            }
+            List<Map<String, Object>> sources = new ArrayList<>(injection.injectedCount());
+            // 只登记真正注入了的片段: 超出 maxTotalChars 被丢弃的片段模型根本没见到,
+            // 若仍出现在来源里, 用户会以为答案引用了它
+            for (int i = 0; i < injection.injectedCount(); i++) {
                 RetrievalResult r = results.get(i);
                 String filename = r.getFilename() != null ? r.getFilename() : "未知文件";
-                kb.append("[[").append(i + 1).append("]] 文件: ").append(filename)
-                        .append("（片段 #").append(r.getChunkIndex()).append("）\n")
-                        .append(r.getContent() != null ? r.getContent() : "")
-                        .append("\n\n");
                 Map<String, Object> s = new LinkedHashMap<>();
                 s.put("index", i + 1);
                 s.put("title", filename);
@@ -1871,10 +1897,10 @@ public class AgentOrchestrator {
                 s.put("source", "knowledge_base");
                 sources.add(s);
             }
-            kb.append("要求: 回答必须优先基于以上检索内容, 引用时标注 [[n]] 序号; ")
-              .append("检索内容不足以回答的部分, 需明确说明该部分来自你的自身知识而非知识库。");
-            withKb.add(0, Message.system("rag:" + (forced ? "forced" : "auto"), kb.toString()));
-            log.info("知识库检索(RAG) {}: kbIds={}, 命中 {} 条", forced ? "强制" : "自动", scope, results.size());
+            SystemPromptProperties.PromptFragment frag = injection.fragment();
+            withKb.add(0, Message.system(frag.getName(), frag.getText()));
+            log.info("知识库检索(RAG) {}: kbIds={}, 命中 {} 条, 注入 {} 条",
+                    forced ? "强制" : "自动", scope, results.size(), injection.injectedCount());
             return new RagInject(withKb, sources, null);
         }
         if (forced) {
@@ -1892,6 +1918,18 @@ public class AgentOrchestrator {
 
     /** 检索注入结果: 注入后的历史 + 命中来源(供来源下发) + 未命中提示(forced 未命中时才非空) */
     private record RagInject(List<Message> history, List<Map<String, Object>> sources, String notice) {}
+
+    /**
+     * 长期记忆那一段在 history 里实际占用的字符数, 供背景信息统一记账。
+     * <p>刻意读"真正进了上下文的东西", 而不是让注入方法回头回报用量: 后者一旦与注入逻辑脱节
+     * (改了排版、加了段落), 记账就会悄悄失准, 而且没有任何地方会报错。
+     */
+    private static int memoryCharsIn(List<Message> history) {
+        return history.stream()
+                .filter(m -> "system".equals(m.getRole()) && MEMORY_SYSTEM_NAME.equals(m.getName()))
+                .mapToInt(m -> m.getContent() == null ? 0 : m.getContent().length())
+                .sum();
+    }
 
     /**
      * 合并用户选的知识库 ID + 平台级配置的知识库 ID, 供 Agentic RAG 工具使用。
@@ -2035,9 +2073,9 @@ public class AgentOrchestrator {
         ImagePrep prepSync = prepareImagesForModel(request, history, provider);
         String imageFallbackWarning = prepSync.fallbackWarning();
 
-        // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导),
+        // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录),
         // 与流式 chat 路径完全一致
-        history = injectRuntimeSystemPrompts(history, provider, request);
+        history = injectRuntimeSystemPrompts(history, provider, request, currentUserId);
 
         // RAG 已改为 Agentic 模式(混合式): chatSync 路径同样由 LLM 决定是否调用 knowledge_base_search 工具,
         // 不再在此处强制检索。同步路径暂不支持工具循环(chatSync 为简化路径, 仅 agent 模式才走工具),
@@ -2160,7 +2198,10 @@ public class AgentOrchestrator {
         }
         if (recalled.isEmpty()) return history;
 
-        String fragment = LongTermMemoryService.formatFragment(recalled);
+        // 施加字符预算: 条数上限约束不了总长度(常驻 20 + 触发 10 条 × 单条最多 1000 字符),
+        // 而这段文本要与检索片段共享"背景信息"总量 —— 见 BackgroundContextBudget
+        String fragment = LongTermMemoryService.formatFragment(
+                recalled, backgroundContextBudget.memoryMaxChars());
         if (fragment == null || fragment.isBlank()) return history;
 
         List<Message> result = new ArrayList<>(history);
@@ -2189,10 +2230,11 @@ public class AgentOrchestrator {
      * @param history  当前对话历史(会被复制后在头部插入约束, 不修改原列表)
      * @param provider 路由后的回答模型(用于判断是否支持函数调用)
      * @param request  聊天请求(用于判断 webSearch 开关)
+     * @param userId   当前用户(用于按归属取"技能目录"; 为 null 时只能看到公开技能)
      * @return 注入约束后的新历史列表
      */
     private List<Message> injectRuntimeSystemPrompts(List<Message> history, ChatModelProvider provider,
-                                                     ChatRequest request) {
+                                                     ChatRequest request, String userId) {
         List<Message> result = new ArrayList<>(history);
 
         // 统一按「name 去重键」判断：history 中已存在同 name 的 system 消息则跳过（幂等）。
@@ -2222,6 +2264,22 @@ public class AgentOrchestrator {
         //    此处直接把准确时间写进 system prompt, 模型无需调用工具也能拿到正确时间。
         //    时间必须每轮刷新: 用 injectOrReplace 而非 injectIfAbsent, 避免历史中旧时间被复用。
         injectOrReplace(result, runtimePromptProvider.currentTime());
+
+        // 5) 技能: 默认只注入"名称 + 简介"目录, 正文由模型调用 skill_load 按需取回(渐进式披露);
+        //    若用户本轮手动指定了技能, 则跳过"模型自己判断"这一步, 直接注入其正文
+        //    (两路如何取舍见 SkillCatalogProvider#skillPrompts)。
+        //    为什么不默认把正文都注入: 正文动辄数千字符, 三五个技能即可吃掉整个上下文预算,
+        //    而模型并不需要每轮都读它们 —— 只提供足以判断"要不要用"的信息, 才是正确取舍。
+        //    注入失败(如技能表异常)不该影响对话主链路, 故整体兜住异常。
+        try {
+            List<String> manualSkillNames = request == null ? null : request.getSkillNames();
+            for (SystemPromptProperties.PromptFragment f
+                    : skillCatalogProvider.skillPrompts(userId, manualSkillNames)) {
+                injectIfAbsent(result, f);
+            }
+        } catch (Exception e) {
+            log.warn("技能注入失败(不影响本轮对话): {}", e.getMessage());
+        }
 
         return result;
     }

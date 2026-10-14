@@ -1,14 +1,14 @@
 <template>
   <div class="market-mode">
     <div class="market-header">
-      <h2>模板市场</h2>
-      <p class="subtitle">发现并克隆他人分享的 Agent 与工作流模板; 也可以把自己的模板分享给所有人 (V3.0-beta F-35)</p>
+      <h2>专家市场</h2>
+      <p class="subtitle">发现并克隆他人分享的专家与工作流模板; 也可以把自己的模板分享给所有人 (V3.0-beta F-35)</p>
     </div>
 
     <div class="toolbar">
       <el-select v-model="filters.type" size="small" style="width:120px" @change="reload">
         <el-option label="全部类型" value="" />
-        <el-option label="Agent" value="agent" />
+        <el-option label="专家" value="agent" />
         <el-option label="工作流" value="workflow" />
       </el-select>
       <el-input v-model="filters.keyword" size="small" style="width:220px" placeholder="搜索标题 / 描述"
@@ -28,7 +28,7 @@
       <div v-for="t in templates" :key="t.id" class="tpl-card">
         <div class="tpl-head">
           <el-tag size="small" :type="t.type === 'agent' ? 'warning' : 'success'">
-            {{ t.type === 'agent' ? 'Agent' : '工作流' }}
+            {{ t.type === 'agent' ? '专家' : '工作流' }}
           </el-tag>
           <el-tag v-if="isBuiltin(t.id)" size="small" type="info" effect="plain">官方预置</el-tag>
           <span class="tpl-title">{{ t.title }}</span>
@@ -49,7 +49,7 @@
         </div>
       </div>
       <div v-if="!loading && !templates.length" class="empty-tip">
-        暂无市场模板<br />点击右上角「分享我的模板」, 把你的 Agent / 工作流分享给其他用户
+        暂无专家模板<br />点击右上角「分享我的模板」, 把你的专家 / 工作流分享给其他用户
       </div>
     </div>
 
@@ -59,11 +59,11 @@
     </div>
 
     <!-- 分享对话框 -->
-    <el-dialog v-model="shareDialogVisible" title="分享到模板市场" width="480px">
+    <el-dialog v-model="shareDialogVisible" title="分享到专家市场" width="480px">
       <el-form label-width="80px">
         <el-form-item label="类型">
           <el-radio-group v-model="shareForm.type">
-            <el-radio value="agent">Agent</el-radio>
+            <el-radio value="agent">专家</el-radio>
             <el-radio value="workflow">工作流</el-radio>
           </el-radio-group>
         </el-form-item>
@@ -96,7 +96,7 @@
       <el-table :data="myShares" size="small" v-loading="mySharesLoading">
         <el-table-column prop="title" label="标题" min-width="140" />
         <el-table-column prop="type" label="类型" width="80">
-          <template #default="{ row }">{{ row.type === 'agent' ? 'Agent' : '工作流' }}</template>
+          <template #default="{ row }">{{ row.type === 'agent' ? '专家' : '工作流' }}</template>
         </el-table-column>
         <el-table-column prop="cloneCount" label="克隆" width="60" />
         <el-table-column label="评分" width="90">
@@ -161,7 +161,7 @@ async function doClone(t) {
   try {
     await ElMessageBox.confirm(`将「${t.title}」克隆为你的私有副本 (可自由编辑)?`, '克隆模板', { type: 'info' })
     const r = await cloneMarketTemplate(t.id)
-    ElMessage.success(`克隆成功: ${r.newName} (${r.type === 'agent' ? 'Agent' : '工作流'})`)
+    ElMessage.success(`克隆成功: ${r.newName} (${r.type === 'agent' ? '专家' : '工作流'})`)
     load()
   } catch (e) { /* 取消 */ if (e !== 'cancel' && e?.message) ElMessage.error(extractMessage(e)) }
 }

@@ -56,6 +56,27 @@ public class AgentDefinitionVersionEntity {
     @Column(length = 512)
     private String avatar;
 
+    // ===== V3.1 专家元数据快照 =====
+    // 与 AgentDefinitionEntity 的定义列保持"一一对应"是本表的前提(否则回滚不完整):
+    // 元数据既是专家在市场里的展示信息, 也是"专家身份"的一部分 —— 回滚到旧版本时
+    // 如果分类/标签没跟着回去, 会出现"定义回滚了、专家卡片还是新的"这种半吊子状态。
+
+    @Schema(description = "版本快照: 职业头衔")
+    @Column(length = 128)
+    private String profession;
+
+    @Schema(description = "版本快照: 行业分类")
+    @Column(name = "category_id", length = 64)
+    private String categoryId;
+
+    @Schema(description = "版本快照: 擅长领域标签, JSON 字符串")
+    @Column(columnDefinition = "TEXT")
+    private String tags;
+
+    @Schema(description = "版本快照: 推荐问法, JSON 字符串")
+    @Column(name = "quick_prompts", columnDefinition = "TEXT")
+    private String quickPrompts;
+
     @Schema(description = "版本快照: 角色设定 (对应定义表的 system_prompt)")
     @Column(name = "system_prompt", columnDefinition = "TEXT")
     private String systemPrompt;

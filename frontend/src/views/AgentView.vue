@@ -1,9 +1,10 @@
 <template>
+  <!-- 用户可见文案统一叫「专家」; 组件名与接口字段沿用 agent —— 只改展示, 不动数据契约 -->
   <div class="agent-mode">
     <!-- 左侧: Agent 列表 -->
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
       <div class="sidebar-header">
-        <button class="new-btn gradient-bg" @click="openCreateDialog">+ 新建 Agent</button>
+        <button class="new-btn gradient-bg" @click="openCreateDialog">+ 新建专家</button>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起">«</button>
       </div>
       <div class="agent-list">
@@ -30,7 +31,7 @@
           </div>
         </div>
         <div v-if="!agents.length && !loading" class="empty-tip">
-          暂无 Agent<br/>点击上方按钮创建或克隆模板
+          暂无专家<br/>点击上方按钮创建或克隆模板
         </div>
       </div>
     </aside>
@@ -40,7 +41,7 @@
     <div class="agent-main">
       <!-- 顶部 Tab: 我的 Agent / 模板库 -->
       <el-tabs v-model="activeTab" class="agent-tabs" @tab-change="onTabChange">
-        <el-tab-pane label="Agent 详情" name="detail">
+        <el-tab-pane label="专家详情" name="detail">
           <template v-if="currentAgent">
             <div class="detail-toolbar">
               <div class="detail-title">
@@ -100,7 +101,7 @@
           </template>
           <div v-else class="empty-detail">
             <div class="empty-icon">🤖</div>
-            <p>选择左侧 Agent 查看详情, 或新建一个 Agent</p>
+            <p>选择左侧专家查看详情, 或新建一个专家</p>
           </div>
         </el-tab-pane>
 
@@ -114,7 +115,7 @@
                 <span v-if="t.model">{{ t.model }}</span>
                 <span v-if="t.temperature != null">· 温度 {{ t.temperature }}</span>
               </div>
-              <el-button size="small" type="primary" plain @click="cloneAgent(t)">克隆为我的 Agent</el-button>
+              <el-button size="small" type="primary" plain @click="cloneAgent(t)">克隆为我的专家</el-button>
             </div>
             <div v-if="!templates.length && !templatesLoading" class="empty-tip">
               暂无预设模板
@@ -128,21 +129,21 @@
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="640px" @closed="resetForm">
       <el-alert v-if="editing && isOthersAgent(editingTarget)" type="warning" :closable="false" show-icon
                 class="owner-alert"
-                title="正在编辑他人 Agent"
-                :description="`该 Agent 归属于 ${ownerLabel(editingTarget)}, 保存后将直接改变其使用效果。`" />
+                title="正在编辑他人专家"
+                :description="`该专家归属于 ${ownerLabel(editingTarget)}, 保存后将直接改变其使用效果。`" />
       <el-form :model="form" label-width="100px" label-position="right">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如: 翻译助手" maxlength="100" show-word-limit />
         </el-form-item>
         <el-form-item label="描述">
-          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="Agent 用途简介" />
+          <el-input v-model="form.description" type="textarea" :rows="2" placeholder="专家用途简介" />
         </el-form-item>
         <el-form-item label="头像 URL">
           <el-input v-model="form.avatar" placeholder="可选, 留空则用首字母占位" />
         </el-form-item>
         <el-form-item label="角色设定">
           <el-input v-model="form.persona" type="textarea" :rows="5"
-                    placeholder="设定该 Agent 的角色与行为, 如: 你是一个专业翻译, 支持中英互译... (由平台转述给模型, 不覆盖平台安全约束)" />
+                    placeholder="设定该专家的角色与行为, 如: 你是一个专业翻译, 支持中英互译... (由平台转述给模型, 不覆盖平台安全约束)" />
         </el-form-item>
         <el-form-item label="模型">
           <el-select v-model="form.model" placeholder="留空使用系统默认" clearable filterable style="width:100%">
@@ -164,7 +165,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="公开">
-          <el-switch v-model="form.isPublic" active-text="其他用户可使用此 Agent" inactive-text="仅自己可见" />
+          <el-switch v-model="form.isPublic" active-text="其他用户可使用此专家" inactive-text="仅自己可见" />
         </el-form-item>
         <el-form-item label="变更说明" v-if="editing">
           <el-input v-model="form.changeNote" placeholder="本次改动说明 (存入版本历史, 便于回滚时辨认)" maxlength="255" show-word-limit />
@@ -277,8 +278,8 @@ const currentUserId = computed(() => authStore.user?.id || '')
 // 正在编辑的 Agent (用于判断是否在编辑他人 Agent)
 const editingTarget = computed(() => agents.value.find(a => a.id === form.id) || null)
 const dialogTitle = computed(() => {
-  if (!editing.value) return '新建 Agent'
-  return isOthersAgent(editingTarget.value) ? '编辑他人 Agent' : '编辑 Agent'
+  if (!editing.value) return '新建专家'
+  return isOthersAgent(editingTarget.value) ? '编辑他人专家' : '编辑专家'
 })
 
 function avatarLetter(name) {
@@ -306,7 +307,7 @@ async function loadAgents() {
       currentAgentId.value = agents.value[0].id
     }
   } catch (e) {
-    ElMessage.error(extractMessage(e) || '加载 Agent 列表失败')
+    ElMessage.error(extractMessage(e) || '加载专家列表失败')
   } finally {
     loading.value = false
   }
@@ -397,7 +398,7 @@ function resetForm() {
 
 async function submitForm() {
   if (!form.name || !form.name.trim()) {
-    ElMessage.warning('请填写 Agent 名称')
+    ElMessage.warning('请填写专家名称')
     return
   }
   saving.value = true
@@ -416,10 +417,10 @@ async function submitForm() {
     }
     if (editing.value) {
       await updateAgent(form.id, payload)
-      ElMessage.success('Agent 已更新')
+      ElMessage.success('专家已更新')
     } else {
       const created = await createAgent(payload)
-      ElMessage.success('Agent 已创建')
+      ElMessage.success('专家已创建')
       currentAgentId.value = created.id
     }
     dialogVisible.value = false
@@ -434,7 +435,7 @@ async function submitForm() {
 async function removeAgent(agent) {
   try {
     const ownerTip = isOthersAgent(agent) ? `(归属: ${ownerLabel(agent)}) ` : ''
-    await ElMessageBox.confirm(`确定删除${ownerTip}Agent "${agent.name}" 吗?`, '提示', { type: 'warning' })
+    await ElMessageBox.confirm(`确定删除${ownerTip}专家 "${agent.name}" 吗?`, '提示', { type: 'warning' })
     await deleteAgent(agent.id)
     ElMessage.success('已删除')
     if (currentAgentId.value === agent.id) currentAgentId.value = ''

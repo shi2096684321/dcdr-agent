@@ -80,6 +80,21 @@ public class ChatRequest {
     private List<String> knowledgeBaseIds;
 
     /**
+     * 用户手动指定的技能标识列表 (V3.1, 可选)。
+     * <p>
+     * <b>与"技能目录"的关系</b>: 默认情况下技能是<b>模型自己判断</b>要不要加载的 ——
+     * 平台只把目录(name + 简介)注入 system prompt, 正文由模型调用 {@code skill_load} 取回。
+     * 这里非空则表示<b>用户显式指定</b>, 后端会跳过"模型自己判断"这一步, <b>直接把正文注入</b>,
+     * 并把它们从技能目录中移除(否则模型会再 skill_load 一次, 同一份正文进上下文两遍)。
+     * <p>
+     * <b>只认当前用户"可见且已启用"的技能</b>: 名字来自请求体(前端可选列表), 若直接按名查库,
+     * 任何人都能通过构造请求加载他人的私有技能。解析在
+     * {@code SkillCatalogProvider#skillPrompts} 内、以 {@code visibleEnabledSkills} 为准。
+     */
+    @Schema(description = "用户手动指定使用的技能标识列表（V3.1, 可选；指定后直接注入其正文, 不再等模型自行判断）")
+    private List<String> skillNames;
+
+    /**
      * V2.3 自定义 Agent ID (可选)。
      * <p>非空时, 后端会加载该 Agent 定义, 把其 systemPrompt / model / tools / kbIds / temperature
      * 应用到本次对话(覆盖请求中对应字段), 实现角色化对话体验。

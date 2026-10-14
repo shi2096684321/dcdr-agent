@@ -98,6 +98,23 @@ agent:
     context-token-limit: 8000
     context-warn-ratio: 0.8
 
+  # ===== V3.1 背景信息统一预算 =====
+  # 长期记忆(agent.memory 召回后注入)与检索片段(agent.rag.inject)都注入 system 上下文,
+  # 此前却各有限制、互不感知: 记忆只有条数上限(常驻 20 + 触发 10 条), 单条最多 1000 字符,
+  # 最坏约 3 万字符; 检索片段有 6000 字符预算。两者叠加时"先砍谁"没有任何规则。
+  #
+  # 优先级: 记忆优先, 检索片段让位。理由是失效方式不同 —— 记忆砍掉会让同一个问题在不同轮次
+  # 得到不一致的个性化回答(代价隐蔽); 检索片段本就按相关度降序, 砍的是尾部最不相关的部分。
+  # 若要优先保住资料, 把 memory-max-chars 调小即可, 它会同时让出更多额度给检索片段。
+  context:
+    budget:
+      # 两者合计字符上限(<= 0 表示不限制)。默认 9000 高于两类内容的常态占用(约 1~2k + 5k),
+      # 也就是默认下这条不会触发 —— 新的预算只处理"以前没人处理"的叠加情况, 不改既有行为。
+      background-max-total-chars: 9000
+      # 长期记忆单独上限(<= 0 表示不限制)。默认 6000 与 agent.rag.inject.max-total-chars 相同:
+      # 先保证任何一方都吃不到全局预算, 再由合计上限处理"两个都不超、加起来超"的那一段。
+      memory-max-chars: 6000
+
   # ===== V3.1 F-47 工具结果体积治理 =====
   # 工具结果在「产出处」压缩一次(ToolResultCompressor), 回灌模型 / 下发前端 / 落库三处共用同一份文本。
   # max-length 默认与 V3.0 的 TOOL_RESULT_MAX_LEN 一致 → 升级后"上限"行为不变;
@@ -268,6 +285,31 @@ agent:
     upload-dir: ./data/uploads
     upload-url-prefix: /api/files/uploads
     generated-dir: ./data/generated
+
+  # ===== V3.1 技能市场 (SkillHub) =====
+  # 把 SkillHub(WorkBuddy 技能市场后端, https://lightmake.site)的"发现层"接进来:
+  # 分类 / 列表 / 搜索 / 详情 / 版本历史 + 第三方安全扫描结论。这些接口公开、无需鉴权。
+  #
+  # ⚠️ 边界(决定了产品形态, 不要误解为"一键安装"):
+  #   技能包的**正文**不在公开接口里 —— 客户端下载走私有通道, 实测
+  #   /api/v1/skills/{slug}/download 对 GET/POST 均返回 405, 详情与版本响应也不含包地址。
+  #   因此"引入"产出的是"元数据骨架 + 待补全正文", 并且以停用状态入库(补全正文后手工启用)。
+  #   这样选是因为: 没有正文的技能若进入技能目录, 只会白占模型的判断预算。
+  #
+  # 默认关闭: 与 agent.v3.plugin / agent-tools.sandbox 同口径 —— 是否允许出网由部署方显式决定。
+  # 关闭时市场接口返回明确提示, 且不发起任何外部请求(WebClient 也是惰性构建的)。
+  skill:
+    hub:
+      enabled: true
+      base-url: ${SKILL_HUB_BASE_URL:https://lightmake.site}
+      # 出站超时(秒); 与 WorkBuddy 客户端保持一致(它自己是 10s)
+      timeout-seconds: 10
+      # 分类/详情/版本的内存缓存时长(秒): 把外部依赖从"每次点击"降为"每 TTL 一次"
+      cache-ttl-seconds: 300
+      # 单次请求条数上限(兜底, 防止前端传入超大 pageSize 打爆上游)
+      # 实测上游 pageSize=100 可用、200 直接 400(且响应体为空), 故保守取 50;
+      # 调高前请先实测, 上游对非法参数只回 400、不给任何原因。
+      max-page-size: 50
 
   # 模型配置
   models:

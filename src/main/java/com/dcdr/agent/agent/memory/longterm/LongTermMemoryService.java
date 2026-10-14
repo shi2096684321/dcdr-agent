@@ -79,6 +79,14 @@ public class LongTermMemoryService {
 
     private static final String PROMPT_FOOTER = "</long_term_memory>";
 
+    /**
+     * 注入文本里的两个分段标题。
+     * <p>提为常量是因为<b>预算计算要引用它们</b>(见 {@link #fitWithinBudget}) —— 若预算里写死一个
+     * 估算值、渲染时用另一份字面量, 改文案就会让预算悄悄失准, 而且不会有任何报错。
+     */
+    private static final String SECTION_TITLE_USER = "用户级记忆（跨 Agent 通用）";
+    private static final String SECTION_TITLE_AGENT = "本 Agent 专属记忆";
+
     private final MemoryRepository memoryRepository;
     private final AgentDefinitionRepository agentDefinitionRepository;
     private final MemoryRelevanceScorer relevanceScorer;
@@ -326,22 +334,77 @@ public class LongTermMemoryService {
     /**
      * 组装注入文本: 按作用域分段 (用户级 / Agent 级), 便于模型与排查区分来源。
      * <p>公开为静态方法, 供编排层在已自行召回 (并需记录命中统计) 的场景复用, 避免重复召回。
+     * <p>不施加长度预算 —— 需要预算的调用方用 {@link #formatFragment(List, int)}: 记忆的条数上限
+     * 并不能约束总长度(常驻 20 + 触发 10 条 × 单条 1000 字符 ≈ 3 万字符), 那才是要防的。
      *
      * @param recalled 已召回的记忆条目
      * @return 注入片段; 列表为空时返回 {@code null} (调用方据此跳过注入)
      */
     public static String formatFragment(List<MemoryEntity> recalled) {
+        return formatFragment(recalled, 0);
+    }
+
+    /**
+     * 组装注入文本, 并施加字符预算。
+     * <p><b>按输出顺序从前往后装, 装不下的整条丢弃</b>(不做半条截断): 一条被截一半的记忆
+     * (如"用户偏好简洁回答, 不要…"断了)比没有更危险 —— 模型会补全出一个用户从未表达过的偏好;
+     * 丢整条至少是可解释的"这条没被注入"。
+     * <p><b>至少保留一条</b>: 一条都不注入时调用方会跳过注入, 表现上与"该用户没有记忆"无法区分,
+     * 排查时会往错误的方向找。
+     *
+     * @param recalled 已召回的记忆条目
+     * @param maxChars 字符上限; &lt;= 0 表示不限制
+     * @return 注入片段; 列表为空时返回 {@code null}
+     */
+    public static String formatFragment(List<MemoryEntity> recalled, int maxChars) {
         if (recalled.isEmpty()) return null;
         List<MemoryEntity> userLevel = recalled.stream()
                 .filter(m -> MemoryScope.USER.name().equals(m.getScope())).toList();
         List<MemoryEntity> agentLevel = recalled.stream()
                 .filter(m -> MemoryScope.AGENT.name().equals(m.getScope())).toList();
 
+        List<MemoryEntity> keptUser = userLevel;
+        List<MemoryEntity> keptAgent = agentLevel;
+        if (maxChars > 0) {
+            List<MemoryEntity> ordered = new ArrayList<>(userLevel.size() + agentLevel.size());
+            ordered.addAll(userLevel);
+            ordered.addAll(agentLevel);
+            List<MemoryEntity> kept = fitWithinBudget(ordered, maxChars);
+            if (kept.size() < ordered.size()) {
+                log.info("长期记忆注入长度预算生效: 召回 {} 条, 注入 {} 条(上限 {} 字符), 丢弃 {} 条",
+                        ordered.size(), kept.size(), maxChars, ordered.size() - kept.size());
+            }
+            keptUser = keepScope(kept, MemoryScope.USER);
+            keptAgent = keepScope(kept, MemoryScope.AGENT);
+        }
+
         StringBuilder sb = new StringBuilder(PROMPT_HEADER);
-        appendSection(sb, "用户级记忆（跨 Agent 通用）", userLevel);
-        appendSection(sb, "本 Agent 专属记忆", agentLevel);
+        appendSection(sb, SECTION_TITLE_USER, keptUser);
+        appendSection(sb, SECTION_TITLE_AGENT, keptAgent);
         sb.append(PROMPT_FOOTER);
         return sb.toString();
+    }
+
+    /**
+     * 取预算内能装下的前缀(整条保留, 至少一条)。
+     * <p>固定开销(头 + 尾 + 两个分段标题)一次性预扣: 略微保守, 只会少装一条, 不会让最终文本超预算。
+     */
+    private static List<MemoryEntity> fitWithinBudget(List<MemoryEntity> ordered, int maxChars) {
+        int used = PROMPT_HEADER.length() + PROMPT_FOOTER.length()
+                + ("### " + SECTION_TITLE_USER + "\n").length()
+                + ("### " + SECTION_TITLE_AGENT + "\n").length();
+        List<MemoryEntity> kept = new ArrayList<>();
+        for (MemoryEntity m : ordered) {
+            int len = ("- [" + typeLabel(m.getType()) + "] " + oneLine(m.getContent()) + "\n").length();
+            if (!kept.isEmpty() && used + len > maxChars) break;
+            kept.add(m);
+            used += len;
+        }
+        return kept;
+    }
+
+    private static List<MemoryEntity> keepScope(List<MemoryEntity> items, MemoryScope scope) {
+        return items.stream().filter(m -> scope.name().equals(m.getScope())).toList();
     }
 
     private static void appendSection(StringBuilder sb, String title, List<MemoryEntity> items) {

@@ -167,6 +167,54 @@ class RuntimePromptProviderTest {
             assertTrue(text.contains("a.md"),
                     "若因预算过小导致一条都不注入, 表现上与「未命中」无法区分, 会误导排查方向");
         }
+
+        @Test
+        @DisplayName("回报实际注入条数：被预算丢弃的片段不能让调用方当成已注入")
+        void reportsInjectedCount() {
+            RagProperties.InjectConfig inject = defaults();
+            inject.setMaxCharsPerChunk(0);
+            // 150 恰好装得下前两条(60+60), 第三条(再 +60)触顶 —— 用 100 的话只有 1 条能进,
+            // 测不出"注入数介于 1 与总数之间"这个真正要守的区间
+            inject.setMaxTotalChars(150);
+            RuntimePromptProvider p = provider(inject);
+
+            List<RetrievalResult> results = new ArrayList<>();
+            results.add(hit("高".repeat(60), "high.md"));
+            results.add(hit("中".repeat(60), "mid.md"));
+            results.add(hit("低".repeat(60), "low.md"));
+
+            // 编排层按这个数截断下发给前端的「来源列表」: 若返回 3, 用户会以为三个文档
+            // 都参与了回答, 而模型实际只见过前两个 —— 这种不一致没有任何地方会报错
+            RuntimePromptProvider.RagInjection injection = p.ragInjection(results, null);
+            assertEquals(2, injection.injectedCount());
+            assertTrue(injection.fragment().getText().contains("[[2]]"), "第 2 条应确实在正文里");
+            assertFalse(injection.fragment().getText().contains("low.md"), "被丢弃的片段不应出现在正文里");
+        }
+
+        @Test
+        @DisplayName("未触发预算时, 注入条数等于命中条数")
+        void injectedCountEqualsHitsWhenWithinBudget() {
+            RuntimePromptProvider p = provider(defaults());
+            assertEquals(2, p.ragInjection(List.of(hit("a", "a.md"), hit("b", "b.md")), null).injectedCount());
+        }
+
+        @Test
+        @DisplayName("调用方可以覆盖总量预算(背景信息统一预算: 检索片段给记忆让位)")
+        void callerCanOverrideTotalBudget() {
+            RuntimePromptProvider p = provider(defaults());   // 配置 maxTotalChars=6000
+            List<RetrievalResult> results = new ArrayList<>();
+            results.add(hit("高".repeat(60), "high.md"));
+            results.add(hit("中".repeat(60), "mid.md"));
+
+            RuntimePromptProvider.RagInjection tight = p.ragInjection(results, null, 100);
+            assertEquals(1, tight.injectedCount(), "覆盖值应优先于配置值(否则统一预算形同虚设)");
+            assertTrue(tight.fragment().getText().contains("high.md"));
+            assertFalse(tight.fragment().getText().contains("mid.md"));
+
+            // 0 与负数都表示"沿用配置" —— 不能让"没传"被当成"预算为 0"
+            assertEquals(2, p.ragInjection(results, null, 0).injectedCount());
+            assertEquals(2, p.ragInjection(results, null, -1).injectedCount());
+        }
     }
 
     @Nested
@@ -201,6 +249,24 @@ class RuntimePromptProviderTest {
             String text = p.ragContext(List.of(hit(null, "a.md"))).getText();
 
             assertFalse(text.contains("null"), "不应把 null 字面量注入 prompt");
+        }
+
+        @Test
+        @DisplayName("reason 排在引导规范之前；不传时首句就是配置里的引导规范")
+        void prependsReasonWhenGiven() {
+            RuntimePromptProvider p = provider(defaults());
+
+            // 编排层是唯一知道"这次注入是用户选的还是系统自动的"的一方, 所以由它给 reason;
+            // 配置文件里的引导语必须来源中立 —— 自动检索时说"用户已选择知识库"是假话
+            String withReason = p.ragInjection(List.of(hit("正文", "a.md")),
+                    "【知识库强制检索结果】你本轮显式选择了知识库。").fragment().getText();
+            assertTrue(withReason.startsWith("【知识库强制检索结果】"), "reason 应放最前: 先给结论再给资料");
+            assertTrue(withReason.indexOf("【知识库强制检索结果】") < withReason.indexOf(BASE_RULE),
+                    "reason 必须排在引导规范之前");
+
+            String without = p.ragContext(List.of(hit("正文", "a.md"))).getText();
+            assertTrue(without.startsWith(BASE_RULE), "未传 reason 时首句就是配置的引导规范");
+            assertFalse(without.contains("【知识库"), "未传 reason 时不应凭空出现来源断言");
         }
     }
 }

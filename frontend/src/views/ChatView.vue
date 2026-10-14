@@ -186,12 +186,24 @@
                        @visible-change="onKbDropdownOpen">
               <el-option v-for="kb in selectableKnowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
             </el-select>
+            <!-- V3.1 技能(手动指定执行): 选中后其正文会直接注入本轮上下文, 不再等模型自行判断是否加载。
+                 只列"已启用"的技能 —— 停用/不可见的技能后端会拒绝注入(见 SkillCatalogProvider#skillPrompts),
+                 列出来只会让人以为选中就生效了。留空 = 回到默认的"模型按需加载"。 -->
+            <el-select v-if="authStore.isLoggedIn" v-model="selectedSkillNames" multiple collapse-tags collapse-tags-tooltip
+                       :max-collapse-tags="1" placeholder="技能" size="small"
+                       class="skill-select" :class="{active: selectedSkillNames.length > 0}"
+                       :disabled="streaming" :loading="skillLoading"
+                       title="手动指定技能：选中后强制把其正文加入本轮上下文并按它执行；留空则由模型自行判断是否需要"
+                       @visible-change="onSkillDropdownOpen">
+              <el-option v-for="s in availableSkills" :key="s.name"
+                         :label="s.displayName || s.name" :value="s.name" />
+            </el-select>
             <!-- V2.3 Agent 选择: 登录用户可见, 选择后对话使用该 Agent 的角色/模型/工具配置 -->
             <el-select v-if="authStore.isLoggedIn" v-model="selectedAgentId" clearable
-                       placeholder="Agent" size="small"
+                       placeholder="专家" size="small"
                        class="agent-select" :class="{active: !!selectedAgentId}"
                        :disabled="streaming" :loading="agentLoading"
-                       title="选择自定义 Agent 后, 对话将使用其角色设定/模型/工具/知识库配置"
+                       title="选择自定义专家后, 对话将使用其角色设定/模型/工具/知识库配置"
                        @visible-change="onAgentDropdownOpen">
               <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
             </el-select>
@@ -242,7 +254,7 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
-  buildExportUrl, getKnowledgeBases, getAgents
+  buildExportUrl, getKnowledgeBases, getAgents, getSkills
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
@@ -353,6 +365,31 @@ async function loadKnowledgeBases() {
 // 下拉首次展开时懒加载知识库列表
 function onKbDropdownOpen(open) {
   if (open && knowledgeBases.value.length === 0) loadKnowledgeBases()
+}
+
+// V3.1 技能(手动指定执行): 选中的技能正文会被后端直接注入本轮上下文, 强制模型按其流程执行
+const skills = ref([])
+const selectedSkillNames = ref([])
+const skillLoading = ref(false)
+
+// 只列"已启用"的技能: 停用/不可见的技能后端一律拒绝注入, 列出来只会让人以为选中就生效了
+const availableSkills = computed(() => skills.value.filter((s) => s.enabled))
+
+async function loadSkills() {
+  skillLoading.value = true
+  try {
+    skills.value = await getSkills()
+  } catch (e) {
+    console.error('加载技能列表失败', e)
+  } finally {
+    skillLoading.value = false
+  }
+}
+
+// 每次展开都刷新(不像知识库那样只加载一次): 技能启用/停用改得很频繁,
+// 拿一份过期的列表会让人选到已停用的技能, 然后困惑"为什么没生效"
+function onSkillDropdownOpen(open) {
+  if (open) loadSkills()
 }
 
 // V2.3 自定义 Agent 选择
@@ -573,6 +610,8 @@ async function send(opts = {}) {
       webSearch: props.webSearch,
       thinkingEnabled: props.thinkingEnabled,
       knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined,
+      // 手动指定的技能: 后端会直接把其正文注入本轮上下文(不再等模型调 skill_load)
+      skillNames: selectedSkillNames.value.length > 0 ? selectedSkillNames.value.slice() : undefined,
       agentId: selectedAgentId.value || undefined
     },
     (chunk) => {
@@ -1056,6 +1095,13 @@ onMounted(() => { loadSessions() })
 .kb-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
 .kb-select :deep(.el-select__placeholder) { font-size: 13px; color: #606266; }
 .kb-select :deep(.el-select__tags-text) { font-size: 12px; }
+/* V3.1 技能选择下拉: 复用 kb-select 样式 */
+.skill-select { width: 116px; flex-shrink: 0; }
+.skill-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: #f5f7fa; box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
+.skill-select :deep(.el-select__wrapper:hover) { background: #667eea15; }
+.skill-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.skill-select :deep(.el-select__placeholder) { font-size: 13px; color: #606266; }
+.skill-select :deep(.el-select__tags-text) { font-size: 12px; }
 /* V2.3 Agent 选择下拉: 复用 kb-select 样式 */
 .agent-select { width: 120px; flex-shrink: 0; }
 .agent-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: #f5f7fa; box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }

@@ -31,6 +31,10 @@
           暂无知识库<br/>点击上方按钮创建
         </div>
       </div>
+      <!-- 与「记忆」的分工: 常驻显示, 因为"这条该放哪"的疑问是在浏览时才产生的 -->
+      <div class="kb-scope-tip">
+        这里放<b>成篇资料</b>（保留原文、按需检索引用）；关于你的偏好与结论请放「记忆」
+      </div>
     </aside>
     <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false">»</button>
 
@@ -492,6 +496,8 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-item:hover .kb-delete-btn { opacity: 1; }
 .kb-delete-btn:hover { color: #f56c6c; background: rgba(245,108,108,0.1); }
 .empty-tip { text-align: center; color: #c0c4cc; font-size: 13px; line-height: 1.8; padding: 40px 10px; }
+/* 与「记忆」的分工说明: 常驻在侧栏底部, 不占主区域; .kb-list 是 flex:1, 故它会自然沉底 */
+.kb-scope-tip { padding: 10px 14px; font-size: 11.5px; line-height: 1.6; color: #86909c; border-top: 1px solid #f0f2f5; }
 
 /* 主区域 */
 .kb-main { flex: 1; display: flex; flex-direction: column; background: #fafbfc; overflow: hidden; }

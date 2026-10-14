@@ -3,8 +3,13 @@
     <div class="memory-header">
       <h2>长期记忆</h2>
       <p class="subtitle">
-        跨会话生效的记忆。用户级记忆对所有 Agent 通用；Agent 级记忆仅在该 Agent 下生效，冲突时以 Agent 级为准。
+        跨会话生效的记忆。用户级记忆对所有专家通用；专家级记忆仅在该专家下生效，冲突时以专家级为准。
         记忆只在相关内容出现时作为背景注入，不会主动复述。
+      </p>
+      <!-- 与知识库的分工: 两者都会进上下文, 用户会问"这条该放哪" —— 在这里给出判据, 而不是靠猜 -->
+      <p class="subtitle scope-tip">
+        这里放<b>关于你的稳定结论</b>：偏好、习惯、纠正、长期在做的事（一条一结论，越短越好）。
+        <b>成篇资料请放进「知识库」</b> —— 那里保留原文、按需检索引用，不需要你先总结成一句话。
       </p>
     </div>
 
@@ -13,7 +18,7 @@
       <el-select v-model="filterScope" size="small" style="width:140px" placeholder="作用域">
         <el-option label="全部作用域" value="" />
         <el-option label="用户级" value="USER" />
-        <el-option label="Agent 级" value="AGENT" />
+        <el-option label="专家级" value="AGENT" />
       </el-select>
       <el-select v-model="filterType" size="small" style="width:140px" placeholder="类型">
         <el-option label="全部类型" value="" />
@@ -25,7 +30,7 @@
       <div class="stat-block">
         <span class="stat-item">活跃 {{ summary.active ?? 0 }} 条</span>
         <span class="stat-item">用户级 {{ summary.userLevel ?? 0 }}</span>
-        <span class="stat-item">Agent 级 {{ summary.agentLevel ?? 0 }}</span>
+        <span class="stat-item">专家级 {{ summary.agentLevel ?? 0 }}</span>
       </div>
     </div>
 
@@ -38,7 +43,9 @@
         <div class="mc-head">
           <el-tag size="small" :type="typeTag(m.type)">{{ m.typeLabel || m.type }}</el-tag>
           <el-tag size="small" :type="m.scope === 'AGENT' ? 'warning' : 'success'" effect="plain">
-            {{ m.scopeLabel || m.scope }}
+            <!-- scopeLabel 由后端下发(MemoryScope 的展示名是"Agent 级记忆"), 而后端不改 ——
+                 这里是唯一一处需要按用户可见口径转一道的地方, 否则它会和筛选器里的"专家级"对不上 -->
+            {{ m.scope === 'AGENT' ? '专家级记忆' : (m.scopeLabel || m.scope) }}
           </el-tag>
           <span v-if="m.agentName || m.agentId" class="mc-agent">@{{ m.agentName || m.agentId }}</span>
           <el-tag v-if="m.pinned" size="small" type="danger" effect="dark">常驻</el-tag>
@@ -82,12 +89,12 @@
         </el-form-item>
         <el-form-item label="作用域">
           <el-radio-group v-model="form.scope">
-            <el-radio value="USER">用户级（所有 Agent 通用）</el-radio>
-            <el-radio value="AGENT">Agent 级（仅指定 Agent）</el-radio>
+            <el-radio value="USER">用户级（所有专家通用）</el-radio>
+            <el-radio value="AGENT">专家级（仅指定专家）</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item v-if="form.scope === 'AGENT'" label="所属 Agent" required>
-          <el-select v-model="form.agentId" placeholder="选择 Agent" style="width:100%">
+        <el-form-item v-if="form.scope === 'AGENT'" label="所属专家" required>
+          <el-select v-model="form.agentId" placeholder="选择专家" style="width:100%">
             <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
           </el-select>
         </el-form-item>
@@ -131,7 +138,7 @@ import {
 const TYPE_OPTIONS = [
   { value: 'PROFILE', label: '用户画像', note: '角色/技术栈 · 常驻' },
   { value: 'PREFERENCE', label: '偏好', note: '回答风格/格式 · 常驻' },
-  { value: 'FEEDBACK', label: '纠正', note: '对 Agent 行为的纠正 · 常驻' },
+  { value: 'FEEDBACK', label: '纠正', note: '对专家行为的纠正 · 常驻' },
   { value: 'PROJECT', label: '项目', note: '进行中的工作/决策 · 按需触发' },
   { value: 'REFERENCE', label: '资源指引', note: '外部系统/资源定位 · 按需触发' }
 ]
@@ -230,7 +237,7 @@ function openEdit(m) {
 
 async function submit() {
   if (!form.content.trim()) return ElMessage.warning('请填写记忆内容')
-  if (form.scope === 'AGENT' && !form.agentId) return ElMessage.warning('Agent 级记忆必须选择所属 Agent')
+  if (form.scope === 'AGENT' && !form.agentId) return ElMessage.warning('专家级记忆必须选择所属专家')
 
   const payload = {
     content: form.content.trim(),
@@ -305,6 +312,9 @@ onMounted(() => {
 .memory-header { margin-bottom: 16px; }
 .memory-header h2 { margin: 0 0 4px; font-size: 20px; color: #1d2129; }
 .subtitle { margin: 0; font-size: 13px; color: #86909c; line-height: 1.7; }
+/* 与知识库的选用指引: 视觉权重低于正文说明, 但常驻可见 —— "这条该放哪"的疑问随时会产生 */
+.scope-tip { margin: 8px 0 0; padding: 8px 12px; font-size: 12.5px; color: #667eea;
+  background: #f2f4ff; border-radius: 8px; line-height: 1.7; }
 
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
 .stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: #86909c; }
