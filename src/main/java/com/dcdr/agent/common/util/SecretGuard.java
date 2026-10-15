@@ -64,7 +64,9 @@ public final class SecretGuard {
         throw new IllegalStateException("""
                 %s 未配置(或仍是随仓内置的默认值)。
                 风险: %s
-                修复: 注入环境变量 %s —— 生成一个随机值:
+                修复: 写入项目根目录的 .env —— 本地运行(mvn spring-boot:run / IDE)与 docker compose
+                      都会读它(见 application.yml 的 spring.config.import); 也可直接注入环境变量 %s。
+                      生成一个随机值:
                   openssl rand -hex 32                                                     # Linux / macOS
                   [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')        # PowerShell
                 若确认这是仅本机、不对外暴露的环境, 可在配置中显式设置 %s=true 跳过本检查。

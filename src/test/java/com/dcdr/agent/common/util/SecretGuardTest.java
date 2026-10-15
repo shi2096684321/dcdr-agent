@@ -64,6 +64,9 @@ class SecretGuardTest {
         assertTrue(msg.contains(SecretGuard.MODEL_KEY_SECRET.optOutProperty()),
                 "必须点明放行开关的配置项名: " + msg);
         assertTrue(msg.contains("openssl rand"), "必须给出可直接复制的生成命令: " + msg);
+        assertTrue(msg.contains(".env"),
+                "必须点出 .env 这条路径 —— 实际最容易踩的就是「写进 .env 却报未配置」"
+                        + "(docker compose 读 .env, 而本地运行只认环境变量): " + msg);
         assertTrue(msg.contains(SecretGuard.MODEL_KEY_SECRET.risk()),
                 "必须写清后果, 否则容易被当成「顺手改一下的配置」就绕过去了: " + msg);
     }

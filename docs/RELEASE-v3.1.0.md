@@ -125,7 +125,8 @@ openssl rand -hex 32                                                   # Linux /
 [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')      # PowerShell
 ```
 
-- **Docker 部署**：写入 `.env`。compose 已把两项声明为必填（`${VAR:?}`），未设置会在**启动前**报错
+- **统一写在项目根目录的 `.env`**：compose 会自动加载它；本机 `mvn spring-boot:run` / IDE 也通过 `spring.config.import: optional:file:.env[.properties]` 读取同一份文件（`optional` 保证容器内不存在该文件时不报错）
+- **Docker 部署**：compose 已把两项声明为必填（`${VAR:?}`），未设置会在**启动前**报错
 - **本机快速跑通**：可用 `agent.auth.jwt.allow-default-secret=true` 与 `agent.models.allow-default-key-secret=true` 显式放行（**仅限不对外暴露的环境**）
 - ⚠️ 更换 `JWT_SECRET` 会使**所有已签发的 Token 立即失效**，用户需重新登录（这是预期的安全属性，不是 bug）
 - ⚠️ **已保存的用户自定义模型需要重新填一次 API Key**：升级前若没配 `MODEL_API_KEY_SECRET`，库里的密文是用当时的默认主密钥加密的 —— 换成新密钥后解不出来，页面会提示"主密钥可能已变更, 请重新保存该模型"。这是换密钥的必然结果，不是数据损坏。

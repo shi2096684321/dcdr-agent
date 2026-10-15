@@ -137,11 +137,17 @@ export JAVA_HOME=/path/to/jdk17
 # 两项密钥**必填**: 启动期会校验(SecretGuard), 为空或仍是内置默认值会被拒绝启动
 #   理由: 公开可知的 JWT 签名密钥 = 任何人都能伪造任意用户(含 admin)的 Token;
 #         公开可知的加密主密钥 = 拿到库里的密文即可解出用户真实的模型 API Key
-# Windows PowerShell 生成随机值:
-#   $env:JWT_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
-#   $env:MODEL_API_KEY_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+#
+# 推荐做法: 写进项目根目录的 .env（本地运行与 docker compose 都会读它, 见 application.yml 的
+# spring.config.import）—— 不必每次开 shell 都 export, 也不必往 IDE 运行配置里填:
+#   JWT_SECRET=<随机值>
+#   MODEL_API_KEY_SECRET=<随机值, 不要与上面复用>
+#
+# 生成随机值(Windows PowerShell):
+#   [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+# 也可以直接注入环境变量(仅当前 shell 有效):
 export JWT_SECRET=$(openssl rand -hex 32)
-export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)   # 不要与 JWT_SECRET 复用
+export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)
 
 # 编译 (离线)
 mvn -q -o compile -DskipTests
