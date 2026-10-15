@@ -277,6 +277,7 @@ Adding a tool: implement the `Tool` interface and annotate with `@Component`; it
 
 - [`docs/01-需求文档.md`](docs/01-需求文档.md)
 - [`docs/02-设计说明书.md`](docs/02-设计说明书.md)
+- [`docs/18-本地运行与部署教程.md`](docs/18-本地运行与部署教程.md) (local run & deployment tutorial)
 - [`docs/14-V3.1规划文档.md`](docs/14-V3.1规划文档.md) (security / expert & skill / sandbox / governance / HA / memory)
 - [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md) (intelligent routing / DAG / fault tolerance / hardening)
 - [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md) (current release)

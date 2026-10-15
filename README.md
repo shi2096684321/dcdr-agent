@@ -218,6 +218,7 @@ docker compose up -d --build
 ## 九、相关文档
 
 - 需求文档：`docs/01-需求文档.md`
+- **本地运行与部署教程**：`docs/18-本地运行与部署教程.md`（从零跑起来 / Docker 部署 / 升级 / 常见问题）
 - V3.1 规划：`docs/14-V3.1规划文档.md`（V3.0 见 `docs/07-V3.0规划文档.md`）
 - 发布说明：`docs/RELEASE-v3.1.0.md`（历史版本见 `docs/RELEASE-*.md`）
 
