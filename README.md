@@ -35,12 +35,13 @@
 - 流式对话（SSE），支持上下文记忆与多轮会话
 - **图像生成 / 视频生成**（按模型 `type` 分类：`CHAT` / `IMAGE` / `VIDEO`）
 - **音频生成**（TTS）与音频文件处理
-- 内置工具：计算器、时间、天气、图像生成、MCP 工具注册（`ToolRegistry`）
+- 内置工具：计算器、时间、天气、图像生成、**自建联网搜索**（SearXNG + 正文提取）、
+  **长期记忆读写**（`memory` 工具）、**代码执行沙箱**（`code_interpreter`）、MCP 工具注册（`ToolRegistry`）
 
 ### 知识库 (RAG)
-- 知识库管理（用户级 / 公开级可见性）
-- 文档上传 → 分块 → 向量化 → 相似度检索（`rag/` 模块）
-- 对话中按 `kbIds` 关联知识库进行检索增强
+- 知识库管理（用户级 / 公开级可见性），文档上传 → 分块 → 向量化 → 相似度检索（`rag/` 模块）
+- **混合检索**（向量 + BM25 全文，RRF 融合）与可选**相关性重排**；Agentic 检索（模型自主调用 `knowledge_base_search`）
+- 注入加固（边界标记 / 长度预算）与**引用忠实度校验**（回答中的 `[[n]]` 必须落在本次来源集内）
 
 ### 自定义 Agent 与编排
 - Agent 定义：系统提示词、绑定模型、工具列表 (`tools`)、关联知识库 (`kbIds`)、温度参数
@@ -63,6 +64,16 @@
 - 基于用户 / 可见性的数据隔离（Repository 按 `userId` / `visibility` 过滤）
 - 管理员后台（用户管理、审计日志 `audit/`）
 
+### V3.1 新增
+- **长期记忆**：分层作用域（用户级 / Agent 级）+ 常驻与关键词触发召回 + 过期归档；对话内「请记住 X」
+  （`memory` 工具）与 **LLM 自动抽取**（两层开关：部署闸门 + 用户同意），记忆页可见、可改、可溯源
+- **专家与技能体系**：技能定义 / 技能市场（SkillHub 发现层）/ 专家工作台（专家·自动化·运维三个 Hub）
+- **统一归属框架**（`auth/ownership`）：14 类资源的越权收口，声明式 `@PreAuthorize` 接入，越权统一 404
+- **代码执行沙箱**：受控容器运行 Python（禁网 / CPU 内存配额 / 双超时 / 非 root / 全局并发上限）
+- **治理**：Agent 版本快照 / 结构化 diff / 回滚，成本分析报表与 CSV 导出
+- **多实例协调**：集中式限流（Redis）+ 定时任务租约锁
+- **回答反馈**：点赞 / 点踩 + 差评归因看板；**用户自定义模型**（Key 加密存储）；检索健康度看板
+
 ---
 
 ## 三、技术栈
@@ -71,7 +82,7 @@
 |----|------|
 | 后端 | Spring Boot 3.3.5 · WebFlux (响应式) · Java 17 |
 | AI 框架 | LangChain4j 1.19.0（BOM 统一管理） |
-| 持久化 | Spring Data JPA · H2 / PostgreSQL |
+| 持久化 | Spring Data JPA · PostgreSQL 16 + pgvector（H2 仅作测试替身） · Redis |
 | 向量 | pgvector 余弦检索（RAG 模块） |
 | 可观测 | Micrometer Tracing · Zipkin · Prometheus · Actuator |
 | 前端 | Vue 3 · Vite · Element Plus · Pinia |
@@ -83,50 +94,61 @@
 
 ```
 dcdr-agent/
-├── pom.xml                       # Maven 构建 (JDK 17)
-├── Dockerfile
-├── docker-compose.yml
-├── docs/                         # 需求 / 规划 / 发布说明 / SQL 脚本
-│   ├── 01-需求文档.md
-│   ├── 14-V3.1规划文档.md
-│   ├── RELEASE-v3.1.0.md
-│   └── sql/v3.1_*.sql
+├── pom.xml                        # Maven 构建 (JDK 17, v3.1.0)
+├── Dockerfile / .dockerignore     # 多阶段构建; 凭据不进构建上下文
+├── docker-compose.yml             # 单机部署: agent / postgres / redis / searxng / opensandbox-server / zipkin
+├── docker-compose.ha.yml          # 多实例 + PG 主从 (profile: ha)
+├── docker/                        # nginx(SSE 反代) / pg-standby / searxng 配置
+├── scripts/                       # backup-db / restore-db / ha-standby-init / run-tests
+├── docs/                          # 需求 / 规划 / 发布说明 / SQL / 教程
+│   ├── 01-需求文档.md  14-V3.1规划文档.md  RELEASE-v3.1.0.md
+│   ├── 16-多实例与高可用演练.md  17-专家与技能体系.md
+│   ├── 18-本地运行与部署教程.md   # ← 从零跑起来 / Docker 部署 / 升级 / 常见问题
+│   ├── sql/                       # v2.0 / v3.0 / v3.1 建库脚本 + README(脚本清单)
+│   └── eval/                      # memory-health / retrieval-health 巡检 SQL
 ├── src/main/java/com/dcdr/agent/
 │   ├── JavaAgentApplication.java
-│   ├── controller/              # REST 接口 (Chat/Agent/KnowledgeBase/Workflow/ScheduledTask/Image/Video/Model/Auth/Routing/Webhook/Admin...)
+│   ├── controller/                # REST 接口 (Chat/Agent/KnowledgeBase/Workflow/ScheduledTask/
+│   │                              #   Image/Video/Audio/Model/Auth/Routing/Webhook/Admin/
+│   │                              #   Memory/Skill/SkillMarket/Feedback/Monitor/UserModel...)
 │   ├── agent/
-│   │   ├── AgentOrchestrator.java   # 多 Agent 编排核心
-│   │   ├── router/              # 智能路由 (IntentRouter, LLM 意图识别)
-│   │   ├── definition/          # Agent 定义 / 模板 (AgentDefinitionService)
-│   │   ├── workflow/            # 工作流 (含 DAG 编排 / 执行容错 / 断点续跑)
-│   │   ├── schedule/            # 定时任务
-│   │   ├── creative/ image/ memory/ prompt/ session/  # 各能力子模块
-│   │   └── ModelRouter.java     # 模型路由
-│   ├── rag/                     # 知识库 RAG (文档/分块/向量/检索)
-│   ├── auth/                    # 认证 / RBAC 鉴权 / 安全上下文
-│   ├── audit/                   # 审计日志
-│   ├── tool/                    # 工具注册与实现 (Calculator/Time/Weather/Image/MCP, 注册期转 ToolSpecification)
-│   ├── model/                   # 模型适配 (Chat/Image/Video, LangChain4j 框架化 + 熔断)
-│   ├── entity/                  # JPA 实体 (User/AgentDefinition/KnowledgeBase/Workflow/RoutingLog/AuditLog...)
-│   ├── dto/                     # 请求/响应 DTO (含对外布尔字段 @JsonProperty 规范)
-│   ├── repository/              # 数据访问 (含 userId/visibility 隔离过滤)
-│   ├── service/ config/ common/ admin/
+│   │   ├── AgentOrchestrator.java # 多 Agent 编排核心 (含记忆注入 / RAG 注入加固 / 引用校验)
+│   │   ├── router/                # 智能路由 (IntentRouter, LLM 意图识别)
+│   │   ├── definition/            # Agent 定义 / 模板 / 版本管理 (AgentDefinitionService)
+│   │   ├── workflow/              # 工作流 (DAG 编排 / 执行容错 / 断点续跑 / 人工审批)
+│   │   ├── memory/                # 会话记忆 + longterm/(长期记忆: CRUD/召回/LLM 自动抽取/memory 工具)
+│   │   ├── governance/            # 成本记录与报表 (CostTracker / CostReportService)
+│   │   ├── feedback/ market/ version/ creative/ image/ prompt/ schedule/ session/ tenant/
+│   │   └── ModelRouter.java       # 模型路由
+│   ├── skill/                     # 技能体系 (定义/目录/加载) + skill/market/(SkillHub 发现层)
+│   ├── rag/                       # 知识库 RAG (retrieval 混合+重排 / tool 知识库搜索 / ocr / config)
+│   ├── auth/                      # 认证 / RBAC / ownership(统一归属框架, 14 类资源)
+│   ├── cluster/                   # 多实例协调 (Redis 限流 / 定时任务租约锁)
+│   ├── tool/                      # 工具 (sandbox 代码沙箱 / result 结果治理 / websearch 自建搜索 / mcp)
+│   ├── model/                     # 模型适配 (Chat/Image/Video/Audio, LangChain4j 框架化 + 熔断)
+│   ├── entity/ dto/ repository/   # JPA 实体 / DTO / 数据访问 (含 userId/visibility 隔离过滤)
+│   ├── service/ config/ common/ admin/ audit/
+│   │   └── common/util/SecretGuard.java   # 启动期默认密钥拦截(两项密钥必填)
 ├── frontend/
 │   └── src/
-│       ├── api/                 # 接口封装 (@/api)
-│       ├── stores/              # Pinia (auth.js 认证 / model.js 全局模型列表)
-│       ├── views/               # ChatView / AgentView / KnowledgeBaseView
-│       │                         #   / WorkflowView / DagEditorView / TemplateMarketView
-│       │                         #   / ScheduledTaskView / RoutingView / MonitorView
-│       │                         #   / CreativeView / AdminView / AuthView
-│       ├── components/          # AppHeader 等
-│       └── App.vue              # 路由与全局模型加载
-└── data/                        # 运行时数据 (知识库文档/上传文件/生成图片/DB), 已加入 .gitignore 不入库
+│       ├── api/                   # 接口封装 (@/api)
+│       ├── stores/                # Pinia (auth.js 认证 / model.js 全局模型列表)
+│       ├── constants/             # 后端枚举取值镜像 (仅用于判断; 展示文案由后端下发)
+│       ├── views/                 # Chat / Agent / KnowledgeBase / Workflow / DagEditor
+│       │                          #   / Memory / SkillManage / SkillMarket / HubShell(专家·自动化·运维)
+│       │                          #   / TemplateMarket / ScheduledTask / Routing / Monitor
+│       │                          #   / RetrievalHealth / LlmCallLog / Creative / Admin / Auth
+│       ├── components/            # AppHeader / MessageBubble(点赞点踩) 等
+│       └── App.vue                # 路由与全局模型加载
+└── data/                          # 运行时数据 (知识库文档/上传文件/生成图片/DB), 已加入 .gitignore 不入库
 ```
 
 ---
 
 ## 五、快速开始
+
+> **完整教程见 [`docs/18-本地运行与部署教程.md`](docs/18-本地运行与部署教程.md)** ——
+> 密钥生成、依赖启动、Docker 部署、升级路径与常见问题都在那里；下面是最短路径。
 
 ### 5.1 后端 (JDK 17)
 
@@ -189,6 +211,11 @@ docker compose up -d --build
 | 模型 | `/api/models` | 模型列表（按 `type` 提供 CHAT/IMAGE/VIDEO） |
 | 认证 | `/api/auth` | 登录 / 注册 / 用户管理 |
 | 管理后台 | `/api/admin` `/api/tenants` | 用户管理 / 租户配额（仅 admin） |
+| 长期记忆 | `/api/memories` | 记忆 CRUD / 概览 / 归档恢复 / 「AI 自动记忆」开关 |
+| 技能 | `/api/skills` `/api/skill-market` | 技能定义管理 / 技能市场（分类·搜索·安装） |
+| 回答反馈 | `/api/feedback` | 点赞 / 点踩采集与看板统计 |
+| 治理 | `/api/monitor/cost/report` `/api/retrieval-health/overview` | 成本报表（CSV 导出）/ 检索健康度 |
+| 用户模型 | `/api/user-models` | 用户自定义模型（API Key 加密存储、不回显） |
 
 ---
 
@@ -210,6 +237,8 @@ docker compose up -d --build
 
 - 从 V1.x 升级需执行 `docs/sql/v2.0_schema.sql`（新增 `agent_definition` / `knowledge_base` / `workflow_definition` / `scheduled_task` / `audit_log` 等表）。
 - 从 V2.x 升级到 V3.0 需执行 `docs/sql/v3.0_schema.sql`（新增 `routing_logs` / `webhook_endpoints` / `workflow_executions` 三表，脚本可重复执行）。
+- 升级到 V3.1 需执行 `docs/sql/v3.1_schema.sql`（长期记忆 / 归属 / 治理 / 技能 / 反馈 / 混合检索索引）。
+  全部脚本幂等可重复执行；**全新部署由 `docker compose up -d` 自动完成**，无需手工执行任何 SQL。
 
 存量 `agent_definitions.tools` / `kb_ids` 若为裸字符串（非 JSON 数组），后端已兼容解析，无需手动清洗。
 

@@ -27,6 +27,17 @@ Current version: **v3.1.0** (Release Notes: [`docs/RELEASE-v3.1.0.md`](docs/RELE
 - **Tool calling (Function Calling)**: built-in `calculator` / `time` / `weather` / `image_generation` / `web_search` / `knowledge_base_search`, unified tool framework (registered as native `ToolSpecification` at startup), streaming result return and persistence.
 - **Multi-model adaptation**: LangChain4j-based providers with OpenAI-compatible, Qwen, DeepSeek, Zhipu built in; auto-routed by UI mode / model type.
 
+### New in v3.1
+
+- **Long-term memory**: layered scope (user-level / Agent-level) with resident + keyword-triggered recall and expiry archiving; in-conversation "remember X" (`memory` tool) and **LLM auto-extraction** (deployment gate + user consent) — fully visible and editable on the Memory page.
+- **Expert & skill system**: skill definitions, skill market (SkillHub discovery), expert workbench.
+- **Unified ownership framework** (`auth/ownership`): access control closed over 14 resource types via declarative `@PreAuthorize`; cross-user access returns 404.
+- **Code execution sandbox**: Python in a controlled container (no network, CPU/memory quotas, dual timeouts, non-root).
+- **Governance**: Agent version snapshots / structured diff / rollback, cost report with CSV export.
+- **Multi-instance coordination**: centralized rate limiting (Redis) + scheduled-task lease locks.
+- **Answer feedback**: like / dislike with a negative-feedback dashboard; **user-defined models** (API keys encrypted at rest); retrieval health dashboard.
+- **Web search rebuilt in-house** (SearXNG, no third-party API) and **hybrid retrieval** (vector + BM25, RRF fusion).
+
 ## 🧱 Software Architecture
 
 The project adopts a front-end / back-end separation architecture: the back-end is Java (Spring Boot), and the front-end is Vue 3 + Vite + Element Plus.
