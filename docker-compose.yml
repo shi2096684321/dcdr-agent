@@ -21,7 +21,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: dcdr-agent:2.1
+    # 本地构建产物名: 刻意不带版本号 —— 带版本号的话每次发版都要改这里, 忘了改也不会报错,
+    # 只会在 docker images 里留下一个旧标签(与 Dockerfile 里写死 jar 名是同一类坑)
+    image: dcdr-agent:local
     container_name: dcdr-agent-app
     ports:
       - "8080:8080"
@@ -45,11 +47,13 @@ services:
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-demo-key}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-key}
       KLING_API_KEY: ${KLING_API_KEY:-demo-key}
-      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      # (原 TAVILY_API_KEY 已移除: 联网搜索改为自建 SearXNG, 见下方 searxng 服务与 agent-tools.web)
       # 分布式追踪: 上报地址指向 compose 内的 zipkin 服务, 替换默认的 localhost
       ZIPKIN_ENDPOINT: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
       # V3.1 F-43 代码执行沙箱: 业务应用只连 Sandbox Server 的 HTTP, 不挂 docker.sock
-      # (沙箱能力默认关闭: agent-tools.sandbox.enabled=false, 需显式打开)
+      # ⚠️ 口径: 代码默认 false, 但 application.yml 随仓覆盖为 true
+      #    (agent-tools.sandbox.enabled=${AGENT_TOOLS_SANDBOX_ENABLED:true}) —— 即默认**开着**。
+      #    对外交付请显式设 AGENT_TOOLS_SANDBOX_ENABLED=false。
       # 本组件用 Docker 默认 bridge 网络(见下方 network_mode 说明), 不在 compose 网络内,
       # 故经宿主映射端口访问(容器内可用 host.docker.internal 指向宿主)
       OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
@@ -104,7 +108,7 @@ services:
     security_opt:
       - seccomp=unconfined
     restart: unless-stopped
-    # 注意: 沙箱是可选能力(默认关闭), 故 agent 不依赖本服务启动 ——
+    # 注意: 沙箱是可选能力(默认值口径见上方说明), 故 agent 不依赖本服务启动 ——
     # 即使沙箱组件起不来, 主应用仍应正常提供服务。
 
   postgres:
@@ -127,6 +131,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
+      # 仅自动执行 V2.0 建表脚本。V3.1 起的增量脚本(docs/sql/v3.1_*.sql)不在此自动执行,
+      # 需按 docs/RELEASE-v3.1.0.md「快速开始」里的脚本清单一、二、三…按序手工执行。
       - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       # PG 数据仍用命名卷 (V3.1 实测: 无法 bind mount 到 Windows 宿主目录, initdb 权限检查会失败,
       # 详见文件头说明)。数据安全的兜底是下面这个**落宿主机**的备份挂载 + 定时 pg_dump。
@@ -164,7 +170,7 @@ services:
       - zipkindata:/data
     restart: unless-stopped
 
-  # V3.2 自建联网搜索(替代第三方 Tavily)
+  # V3.1 自建联网搜索(替代第三方 Tavily)
   # SearXNG 元搜索引擎: AGPL-3.0 开源、无 API Key、无调用费用, 结果聚合多引擎。
   # 与 agent 的对接: 由应用内两个原生 Tool 调用(见 agent-tools.web 配置):
   #   GET http://<host>:8888/search?q=...&format=json  (需 settings.yml 开启 json 格式)

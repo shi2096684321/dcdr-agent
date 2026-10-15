@@ -141,7 +141,7 @@ CodeInterpreterTool (com.dcdr.agent.tool.Tool)
 
 ### 实施进度（2026-09-23）
 - [x] 1. 修复 Maven http-blocker → 引入 SDK 依赖并验证可编译
-- [x] 2. `ToolsProperties.SandboxConfig` + `application.yml`（`agent-tools.sandbox.*`，默认 `enabled=false`）
+- [x] 2. `ToolsProperties.SandboxConfig` + `application.yml`（`agent-tools.sandbox.*`，当时默认 `enabled=false`；后随仓覆盖为 `${AGENT_TOOLS_SANDBOX_ENABLED:true}`，口径见 docker-compose.yml 注释）
 - [x] 3. `CodeInterpreterTool` + `OpenSandboxService` + `CodeGuard` + `SandboxContextHolder`
       （代码经文件投递避免转义 + NetworkPolicy DENY 禁网 + 单命令超时 + 非 root(65534) 执行
        + 输出截断 + 审计只记摘要）

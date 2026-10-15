@@ -1,8 +1,10 @@
 # 本地数据库部署方案（Docker）
 
-本项目 V2.0 采用 **PostgreSQL 16 + PgVector** 作为生产级向量库（支撑 V2.1 RAG 检索、V2.2 用户隔离），并配套 **Redis**（缓存 / 会话）。
+本项目采用 **PostgreSQL 16 + PgVector** 作为唯一数据库（生产级向量库，支撑 RAG 检索与用户隔离），并配套 **Redis**（缓存 / 会话）。
 
-> 开发默认仍走 H2（`application.yml`），需要真实向量检索时再切换 `pg` profile。
+> ⚠️ 开发与生产**一律**走 `pg` profile（`application.yml` 默认 `spring.profiles.active=pg`）；
+> **H2 已退出开发/生产路径**，仅作为测试期的装配替身（`pom.xml` 中为 `test` scope，见
+> `src/test/resources/application-test.yml`）。本文写于 V2.0 时期，库名/用户名以 `docker-compose.yml` 为准（`dcdr_agent`）。
 
 ---
 
@@ -29,8 +31,9 @@ docker compose up -d
 
 启动后自动完成：
 1. 拉取 `pgvector/pgvector:pg16` 与 `redis:7-alpine` 镜像
-2. 创建数据库 `java_agent`、用户/密码 `java_agent` / `java_agent`
+2. 创建数据库 `dcdr_agent`、用户/密码 `dcdr_agent` / `dcdr_agent`
 3. 挂载 `docs/sql/v2.0_schema.sql` 到初始化目录，**自动建表（含 pgvector 扩展）**
+   （仅 V2.0 表；V3.1 起的增量脚本 `docs/sql/v3.1_*.sql` 不自动执行，需按 `docs/RELEASE-v3.1.0.md` 手工按序执行）
 4. 数据持久化到名为 `pgdata` 的 Docker 卷
 
 ### 查看状态与日志

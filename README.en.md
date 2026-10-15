@@ -213,9 +213,19 @@ Layering conventions:
 ```bash
 # in project root
 
-# if using web search (MCP/Tavily), set the API Key first (child process inherits this env var):
-#   Windows (PowerShell):  $env:TAVILY_API_KEY='tvly-your-key'
-#   Linux / macOS:         export TAVILY_API_KEY='tvly-your-key'
+# Two secrets are REQUIRED since v3.1: startup **fails** if they are missing or still the built-in
+# defaults (see SecretGuard). Reasons:
+#   - a public JWT signing key  = anyone can forge tokens for any user (including admin)
+#   - a public model-key master secret = user model API keys can be decrypted from the DB
+# Recommended: write them into `.env` at the project root (read by local runs AND docker compose):
+#   JWT_SECRET=<random>
+#   MODEL_API_KEY_SECRET=<random, do not reuse the one above>
+# Generate a random value:
+#   Windows (PowerShell): [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+#   Linux / macOS:        openssl rand -hex 32
+# Or inject them as environment variables (current shell only):
+export JWT_SECRET=$(openssl rand -hex 32)
+export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)
 
 mvn spring-boot:run
 ```
@@ -236,6 +246,7 @@ The front-end dev server proxies `/api` to the back-end 8080 port via Vite.
 
 Main configuration is in `src/main/resources/application.yml`:
 
+- **Required secrets (v3.1+)**: `JWT_SECRET` and `MODEL_API_KEY_SECRET` must be provided (`.env` at the project root or environment variables) — the application **refuses to start** otherwise (`SecretGuard`). See the Back-end section above.
 - **Model Key**: configure `api-key` for each chat / image / video provider under `agent.models`; supports environment variables (e.g. `OPENAI_API_KEY`, `ZHIPU_API_KEY`, `DASHSCOPE_API_KEY`).
 - **Weather tool**: `agent-tools.weather` defaults to demo mode (returns simulated data when `api-key` is `demo-key`). Configure a real Amap key:
   ```yaml
@@ -244,9 +255,9 @@ Main configuration is in `src/main/resources/application.yml`:
       enabled: true
       api-key: ${WEATHER_API_KEY:demo-key}
   ```
-- **Datasource**: defaults to H2 file DB `./data/database/agent` for development; for production use PostgreSQL (+pgvector for RAG) via `spring.datasource`, and run `docs/sql/v3.0_schema.sql` (adds `routing_logs` / `webhook_endpoints` / `workflow_executions`).
+- **Datasource**: PostgreSQL (+pgvector for RAG) via the `pg` profile — the only database for development and production (`application-pg.yml`; `docker compose up` starts it). H2 is a **test-only substitute** (`test` scope). Database setup and the incremental `docs/sql/v3.1_*.sql` scripts (run manually, in order) are described in `docs/sql/README.md`.
 - **V3 switches**: routing / retry / webhook base URL are under `agent.v3.*`; each capability can be toggled independently (with routing disabled, chat behaves exactly as v2.3).
-- **Web search (MCP)**: this project acts as an MCP Host, connecting to an external MCP Server via `mcp.servers` for capability — **no built-in search implementation**. The sample configures the official Tavily Server (`@tavily/mcp-server`), requiring env var `TAVILY_API_KEY` first (see run steps above). The tool name is mapped to `web_search` via `aliases`; the orchestration layer and front-end need no changes.
+- **Web search (built-in, since v3.1)**: no third-party search API and no MCP — `web_search` calls a self-hosted **SearXNG** instance and `web_extract` fetches page content (`agent-tools.web.*`). The compose file ships a `searxng` service; when running the jar locally the default URL is `http://localhost:8888`.
 
 ## 🛠 Built-in Tools
 
@@ -257,7 +268,7 @@ Main configuration is in `src/main/resources/application.yml`:
 | `weather` | city weather query | demo mode by default, returns real data after key configured |
 | `image_generation` | text-to-image | reuses in-conversation image model |
 | `video_generation` | text-to-video | creation mode video sub-mode, async task orchestration |
-| `web_search` | web search (MCP) | via MCP to external Server, requires `TAVILY_API_KEY`; de-dup interception of repeated calls within the same conversation turn |
+| `web_search` | web search (built-in, SearXNG) | self-hosted SearXNG + content extraction via `web_extract`; de-dup interception of repeated calls within the same conversation turn |
 | `knowledge_base_search` | knowledge base retrieval (RAG) | searches user-selected KBs (merged with platform KBs) on the LLM's decision (Agentic RAG) |
 
 Adding a tool: implement the `Tool` interface and annotate with `@Component`; it auto-registers in `ToolAutoConfiguration`. To expose it in streaming conversation, override `supportsStreaming()` to return `true`.

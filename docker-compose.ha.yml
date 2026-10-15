@@ -63,7 +63,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: dcdr-agent:2.1
+    # 与 app 服务同一镜像(见 docker-compose.yml 的说明: 标签刻意不带版本号)
+    image: dcdr-agent:local
     container_name: dcdr-agent-app-2
     profiles: ["ha"]
     ports:

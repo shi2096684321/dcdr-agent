@@ -108,13 +108,15 @@ agent:
     # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
     context-token-limit: 8000
     context-warn-ratio: 0.8
-    # ===== LLM 自动抽取记忆 (V3.1 P1, 默认关闭) =====
+    # ===== LLM 自动抽取记忆 (V3.1 P1) =====
     # 开启后每隔若干轮对话, 异步调用一次模型, 从对话里提炼"关于用户的结论性信息"
     # 写入长期记忆, 并做 ADD / UPDATE / DELETE(归档) / NOOP 的冲突消解。
     # 参考 CodeBuddy 的记忆设计: 同样是"可全局关闭的开关 + AI 自动识别并保存"。
     #
-    # 为什么默认关闭: 它是周期性真实模型调用(持续性费用), 且在此之前记忆全部由用户亲手写下 ——
-    # "AI 自己往里写"是质变, 应由部署方显式开启(与 agent.tools.result.summary 同口径)。
+    # ⚠️ 口径(别只写一半, 否则读配置的人会得到与运行时相反的结论):
+    #    代码默认 false —— 见 AgentProperties.AutoExtractConfig;
+    #    **本仓库 application.yml 覆盖为 true**(下方 enabled) —— 即随仓部署就是开着的,
+    #    并且会真实产生周期性模型费用。不想付这笔费用, 把下面 enabled 改回 false 即可。
     # 关闭时只影响"不再自动抽取", 手动增删改 / 召回注入 / 过期归档一律照常。
     #
     # 写入侧还有三道闸: 单次条数上限、与现有记忆的相似度查重、以及抽取器自身的
@@ -248,6 +250,8 @@ agent:
     # (它调 knowledge_base_search 时, 这里的库与用户自有库一并作为候选)。
     # 若发现平台资料经常没被引用, 要么给该知识库做更明确的提问, 要么恢复平台预检索。
     # 管理员将知识库 visibility 设为 PLATFORM 后, 把 ID 填入此处即可全局生效
+    # ⚠️ 环境特定值: 这是本部署平台级知识库的真实 ID, 换部署需替换(不需要则清空为 [])。
+    #    留在仓库里无害(不透明 ID, 需库访问才有意义), 但新部署不应带着别人的库跑。
     platform-kb-ids: ["kb_1786443109991fff8909"]
     storage-dir: ./data/kb
     document:
@@ -301,7 +305,7 @@ agent:
       hybrid:                  # ← 第二层：混合检索
         enabled: true
         rrf-k: 60
-      # ===== V3.2 相关性重排(Rerank): 默认关闭 =====
+      # ===== V3.1 相关性重排(Rerank): 随仓默认关闭 =====
       # engine=dashscope: 百炼原生重排(QwenScoringModel + 官方 dashscope-sdk-java), 复用 DASHSCOPE_API_KEY
       # engine=openai   : OpenAI 兼容 /rerank 端点(自研适配器, 对接 Jina / Cohere / 自部署 bge-reranker)
       # 注意: 重排 relevance_score 是"单次请求内的相对分", 不可跨请求比较, min-score 按此语义理解
@@ -351,8 +355,9 @@ agent:
   #   因此"引入"产出的是"元数据骨架 + 待补全正文", 并且以停用状态入库(补全正文后手工启用)。
   #   这样选是因为: 没有正文的技能若进入技能目录, 只会白占模型的判断预算。
   #
-  # 默认关闭: 与 agent.v3.plugin / agent-tools.sandbox 同口径 —— 是否允许出网由部署方显式决定。
-  # 关闭时市场接口返回明确提示, 且不发起任何外部请求(WebClient 也是惰性构建的)。
+  # ⚠️ 口径: 代码默认 false, **但本仓库 application.yml 覆盖为 true**(下方 enabled) ——
+  #    即随仓部署就会访问外部 SkillHub。是否允许出网应由部署方显式决定: 改回 false 即可,
+  #    关闭时市场接口返回明确提示, 且不发起任何外部请求(WebClient 也是惰性构建的)。
   skill:
     hub:
       enabled: true
@@ -656,7 +661,7 @@ agent-tools:
     max-concurrent: 2
     # 禁止沙箱出网(NetworkPolicy 默认 DENY)
     network-disabled: true
-  # ===== V3.2 自建联网搜索(替代第三方 Tavily) =====
+  # ===== V3.1 自建联网搜索(替代第三方 Tavily) =====
   # 由两个原生 Tool 提供能力, 工具名与原先 MCP 版本完全一致(web_search / web_extract),
   # 因此 Agent 编排层(硬编码按 web_search 判断)与前端联网开关均零改动:
   #   web_search  → SearXNG 元搜索(自托管, AGPL-3.0, 无 API Key, 无调用费用)
@@ -684,7 +689,7 @@ agent-tools:
 # 只需写 Client 去访问别人提供的 MCP Server, 不需要自己起 Server。
 # 下面为示例(默认注释): 启用时去掉注释, 并把 command 换成你实际可用的 MCP Server 启动命令。
 # 注意: command 为 stdio 启动命令, 系统需能执行 npx/python 等。
-# V3.2: 原 Tavily(第三方收费 API + 需 npx/Node 子进程) 已由上方 agent-tools.web 的自建方案取代
+# V3.1: 原 Tavily(第三方收费 API + 需 npx/Node 子进程) 已由上方 agent-tools.web 的自建方案取代
 #       (SearXNG 搜索 + crux 正文提取), 故 servers 置空。
 #       如需临时切回 Tavily 做效果对比, 取消下方注释即可 ——
 #       ⚠️ 两者注册的工具名相同(web_search / web_extract), ToolRegistry 为 Map 后者覆盖前者,
