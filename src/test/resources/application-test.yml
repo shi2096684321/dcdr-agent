@@ -58,6 +58,13 @@ management:
 agent:
   rag:
     enabled: false
+  # 启动期密钥校验(SecretGuard)在测试环境下**同样生效** —— 这里给固定的测试密钥, 而不是打开 opt-out:
+  # 这样测试跑的是与生产同一条校验路径, 哪天校验被绕过或默认值被改回, 测试会先红。
+  auth:
+    jwt:
+      secret: test-only-jwt-secret-0123456789abcdef0123456789abcdef
+  models:
+    api-key-secret: test-only-model-key-secret-0123456789abcdef
 
 # 防御性: 确保不启动任何 MCP 子进程(与 application.yml 保持一致, 此处显式声明避免被本地改动覆盖)
 mcp:

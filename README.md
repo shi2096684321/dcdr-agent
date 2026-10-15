@@ -134,6 +134,15 @@ dcdr-agent/
 # 要求 JDK 17 (示例路径, 按本机调整)
 export JAVA_HOME=/path/to/jdk17
 
+# 两项密钥**必填**: 启动期会校验(SecretGuard), 为空或仍是内置默认值会被拒绝启动
+#   理由: 公开可知的 JWT 签名密钥 = 任何人都能伪造任意用户(含 admin)的 Token;
+#         公开可知的加密主密钥 = 拿到库里的密文即可解出用户真实的模型 API Key
+# Windows PowerShell 生成随机值:
+#   $env:JWT_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+#   $env:MODEL_API_KEY_SECRET = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+export JWT_SECRET=$(openssl rand -hex 32)
+export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)   # 不要与 JWT_SECRET 复用
+
 # 编译 (离线)
 mvn -q -o compile -DskipTests
 

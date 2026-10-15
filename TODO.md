@@ -87,6 +87,19 @@
 - **前端日期不能直接传 `toISOString()`**：后端字段是 `LocalDateTime`，带时区偏移与毫秒的
   `...Z` 格式会反序列化失败。`MemoryView.vue` 内用 `toLocalDateTime()` 统一格式化为
   `yyyy-MM-ddTHH:mm:ss`（其他页面传 `from`/`to` 给 `Instant` 字段时可继续用 `toISOString()`，两者不可混用）。
+- **"能跑但密钥是公开的"这类默认值必须拒绝启动，而不是打个 WARN**：`JWT_SECRET` 与
+  `MODEL_API_KEY_SECRET` 原先都有随仓默认值，服务照常启动、功能照常可用 —— 于是**没有任何症状**。
+  而后果完全不对称：JWT 签名密钥公开 = 任何人可伪造任意用户(含 admin)的 Token；
+  加密主密钥公开 = 拿到库里的密文即可解出用户真实 API Key。WARN 恰好是最容易被启动日志淹没的一行。
+  现改为 `SecretGuard` 启动期校验：为空或等于内置默认值即**拒绝启动**，报错里给出可直接复制的
+  生成命令；确实只在断网本机跑的场景，用 `allow-default-*` 显式放行（默认 false）。
+  两条配套经验：① `application.yml` 里改用 `${VAR:}` 而不是 `${VAR:默认值}`，
+  让"没配"在配置层就是空；② 测试 profile 给**固定测试密钥**而不是打开 opt-out，
+  这样测试跑的是与生产同一条校验路径，校验哪天失效测试会先红。
+- **镜像里的产物名不能写死**：`Dockerfile` 原先 `COPY ... /dcdr-agent-1.0.0.jar`，而产物名是
+  `artifactId-version.jar` —— 版本一旦离开 1.0.0 就**构建失败**，且报错只说"文件不存在"，
+  不容易联想到"版本号变了"(实测: 从 v3.0.0 起该镜像就一直构建不过)。
+  已改为 `COPY --from=builder /build/target/*.jar app.jar`（`repackage` 产生的 `.jar.original` 不被匹配）。
 - **Maven 增量编译可能"什么都没编"却报 `BUILD SUCCESS`，让测试结论失真**：改完代码跑 `mvn test-compile`，
   输出 `Nothing to compile - all classes are up to date.` 并成功 —— 而测试代码里对**已删除常量**的引用
   其实还在，编译必然失败。因为跑的是**上一份 class**，此时直接 `mvn test` 会看到"全绿"的假象。

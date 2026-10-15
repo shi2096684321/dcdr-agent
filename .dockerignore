@@ -1,6 +1,13 @@
 # 构建上下文排除清单 (减小镜像构建上下文体积, 加速 docker build)
 # 排除项不会被 COPY/RADD 拷入 builder 阶段
 
+# ===== 凭据 (绝不进构建上下文) =====
+# Dockerfile 只 COPY pom.xml 与 src, 本项是双保险 —— 构建上下文整体仍会被发送给 docker daemon
+.env
+.env.*
+*.pem
+*.key
+
 # ===== 构建产物 / 依赖 =====
 target/
 frontend/node_modules/

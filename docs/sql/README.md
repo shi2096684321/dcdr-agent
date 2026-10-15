@@ -45,7 +45,7 @@ docker compose logs -f postgres
 ```bash
 docker compose ps          # STATUS 显示 healthy 即就绪
 # 或手动探活
-docker exec dcdr-agent-pg pg_isready -U java_agent -d java_agent
+docker exec dcdr-agent-pg pg_isready -U dcdr_agent -d dcdr_agent
 docker exec dcdr-agent-redis redis-cli ping   # 预期返回 PONG
 ```
 
@@ -69,14 +69,14 @@ docker exec dcdr-agent-redis redis-cli ping   # 预期返回 PONG
 
 ### 连 PostgreSQL 执行 SQL
 ```bash
-docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "\dt"
+docker exec -it dcdr-agent-pg psql -U dcdr_agent -d dcdr_agent -c "\dt"
 ```
 应能看到：`users` `knowledge_bases` `documents` `document_chunks` `agent_definitions` `audit_logs` `sessions`（含 `user_id` 列）。
 
 ### 确认 pgvector 扩展与向量表
 ```bash
-docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "SELECT extname FROM pg_extension WHERE extname='vector';"
-docker exec -it dcdr-agent-pg psql -U java_agent -d java_agent -c "\d document_chunks"
+docker exec -it dcdr-agent-pg psql -U dcdr_agent -d dcdr_agent -c "SELECT extname FROM pg_extension WHERE extname='vector';"
+docker exec -it dcdr-agent-pg psql -U dcdr_agent -d dcdr_agent -c "\d document_chunks"
 ```
 
 ### 连 Redis
@@ -91,7 +91,7 @@ docker exec -it dcdr-agent-redis redis-cli ping
 ```bash
 mvn spring-boot:run -Dspring-boot.run.profiles=pg
 # 或打包后：
-java -jar target/dcdr-agent-1.0.0.jar --spring.profiles.active=pg
+java -jar target/dcdr-agent-<version>.jar --spring.profiles.active=pg   # 产物名随 pom 的 version 变化
 ```
 
 > `application-pg.yml` 中 `ddl-auto: update`：表结构的**规范来源**仍是 `docs/sql/*.sql`，但 JPA 会在应用启动时自动补齐**新增**的表 / 列 / 索引（只做 ADD，不删列、不改已存在列的类型）。
@@ -162,5 +162,5 @@ netstat -ano | findstr :5432
    CREATE USER java_agent WITH PASSWORD 'java_agent';
    GRANT ALL PRIVILEGES ON DATABASE java_agent TO java_agent;
    ```
-4. 执行 schema：`psql -U java_agent -d java_agent -f docs/sql/v2.0_schema.sql`
+4. 执行 schema：`psql -U dcdr_agent -d dcdr_agent -f docs/sql/v2.0_schema.sql`
 5. Redis 可用 Windows 版或 WSL 内 `apt install redis-server` 启动。

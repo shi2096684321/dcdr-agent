@@ -1,6 +1,7 @@
 package com.dcdr.agent.auth.jwt;
 
 import com.dcdr.agent.auth.config.AuthProperties;
+import com.dcdr.agent.common.util.SecretGuard;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.JwtException;
@@ -39,7 +40,13 @@ public class JwtUtil {
 
     @PostConstruct
     public void init() {
-        byte[] keyBytes = properties.getJwt().getSecret().getBytes(StandardCharsets.UTF_8);
+        AuthProperties.Jwt jwt = properties.getJwt();
+        // 默认密钥是公开可知的: 用它签发的 Token 谁都能伪造。这里直接拒绝启动, 而不是打一行
+        // 容易被启动日志淹没的 WARN —— 详见 SecretGuard 的类注释
+        SecretGuard.rejectPublicDefault(SecretGuard.JWT_SECRET, jwt.getSecret(),
+                AuthProperties.Jwt.DEFAULT_SECRET, jwt.isAllowDefaultSecret());
+
+        byte[] keyBytes = jwt.getSecret().getBytes(StandardCharsets.UTF_8);
         // HMAC-SHA256 要求密钥 >= 256 bit (32 字节); 不足则补齐避免 WeakKeyException
         if (keyBytes.length < 32) {
             byte[] padded = new byte[32];

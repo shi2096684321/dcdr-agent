@@ -33,6 +33,12 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public
       SPRING_DATASOURCE_USERNAME: dcdr_agent
       SPRING_DATASOURCE_PASSWORD: dcdr_agent
+      # ===== 启动期密钥校验(SecretGuard)要求的两项密钥 =====
+      # 用 :? 声明为**必填**: 未在 .env / 环境变量中提供时 compose 在启动前就报错,
+      # 而不是让服务用公开可知的默认密钥跑起来(那种状态不会自己暴露)。
+      # 生成: openssl rand -hex 32
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 未设置: 请在 .env 中注入一个随机值}
+      MODEL_API_KEY_SECRET: ${MODEL_API_KEY_SECRET:?MODEL_API_KEY_SECRET 未设置: 请在 .env 中注入一个随机值(勿与 JWT_SECRET 复用)}
       # 模型 API Key (用户按需在 .env 或环境变量提供, 缺省 demo-key 仅用于启动不报错)
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-demo-key}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-demo-key}

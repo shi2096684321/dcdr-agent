@@ -73,9 +73,27 @@ class ApiKeyCipherTest {
         }
 
         @Test
-        @DisplayName("主密钥未配置时走兜底密钥, 仍可用(但会告警)")
-        void worksWithFallbackSecret() {
-            ApiKeyCipher cipher = cipherWithSecret(null);
+        @DisplayName("未配置主密钥时拒绝启动 —— 不允许静默使用公开可知的兜底密钥")
+        void rejectsMissingSecret() {
+            // 旧行为是"用兜底密钥照常工作, 只打一行 WARN" —— 那正是最危险的形态:
+            // 服务照常可用, 而用户 Key 的密文其实用公开密钥加密, 拿到库即可解出。
+            assertThrows(IllegalStateException.class, () -> cipherWithSecret(null));
+        }
+
+        @Test
+        @DisplayName("把内置默认值原样写回配置同样被拒 —— 只判空会漏掉这一种")
+        void rejectsShippedDefaultSecret() {
+            assertThrows(IllegalStateException.class,
+                    () -> cipherWithSecret(AgentProperties.ModelsConfig.DEFAULT_API_KEY_SECRET));
+        }
+
+        @Test
+        @DisplayName("显式放行后仍可用兜底密钥 —— 给「仅本机开发」留出逃逸口")
+        void fallbackUsableWhenExplicitlyAllowed() {
+            AgentProperties properties = new AgentProperties();
+            properties.getModels().setAllowDefaultKeySecret(true);   // opt-out
+            ApiKeyCipher cipher = new ApiKeyCipher(properties);
+            cipher.init();
 
             assertEquals(PLAINTEXT, cipher.decrypt(cipher.encrypt(PLAINTEXT)));
         }

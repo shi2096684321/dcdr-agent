@@ -94,9 +94,27 @@ public class AgentProperties {
 
     @Data
     public static class ModelsConfig {
+
+        /**
+         * 内置兜底主密钥 —— <b>公开可知, 仅供占位</b>。
+         * <p>提为常量而不是留在 {@code ApiKeyCipher} 里: {@code SecretGuard} 要按它判定"是否仍是默认值"。
+         */
+        public static final String DEFAULT_API_KEY_SECRET = "dcdr-agent-model-api-key-secret-default";
+
         private String defaultChat = "qwen-chat";
-        /** 用户自定义模型 apiKey 的 AES 加密主密钥(>=16 字节)。生产用环境变量 MODEL_API_KEY_SECRET 注入; 缺省回退内置值 */
+
+        /**
+         * 用户自定义模型 apiKey 的 AES 加密主密钥(>=16 字节)。
+         * <p>用环境变量 MODEL_API_KEY_SECRET 注入; 缺省/为空会被 {@code SecretGuard} 拒绝启动 ——
+         * 加密主密钥公开可知时, 拿到库里的密文就能解出用户真实的 Key。
+         */
         private String apiKeySecret;
+
+        /**
+         * 是否允许使用内置兜底主密钥(默认否)。
+         * <p>同上: 只应在"本机开发、库里没有真实用户 Key"时打开。
+         */
+        private boolean allowDefaultKeySecret = false;
         private List<ModelConfig> chat = new ArrayList<>();
         private List<ModelConfig> image = new ArrayList<>();
         private List<ModelConfig> video = new ArrayList<>();

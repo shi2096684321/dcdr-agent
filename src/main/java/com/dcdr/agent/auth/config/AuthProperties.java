@@ -41,8 +41,25 @@ public class AuthProperties {
 
     @Data
     public static class Jwt {
-        /** HMAC-SHA256 密钥; 生产环境务必通过环境变量/外部配置注入, 避免硬编码泄露 */
-        private String secret = "dcdr-agent-v22-default-secret-key-change-me-in-production-please-32bytes";
+
+        /**
+         * 随仓发布的默认密钥 —— <b>公开可知, 仅供占位</b>。
+         * <p>单独提为常量: {@code SecretGuard} 要按它判定"是否仍是默认值", 而这里又是它的初始化值 ——
+         * 两处各写一份字面量的话, 改了这边忘了那边就会让校验静默失效。
+         */
+        public static final String DEFAULT_SECRET =
+                "dcdr-agent-v22-default-secret-key-change-me-in-production-please-32bytes";
+
+        /** HMAC-SHA256 密钥; 生产环境务必通过环境变量 JWT_SECRET 注入(缺省会被 SecretGuard 拒绝启动) */
+        private String secret = DEFAULT_SECRET;
+
+        /**
+         * 是否允许使用内置默认密钥(默认否)。
+         * <p>开启后启动不再被拦, 但 Token 可被任何人伪造 —— 只应在"仅本机、不对外暴露"时打开。
+         * 之所以做成配置而不是判断 profile: 是否生产环境无法从代码可靠推断, 判断权交给部署方。
+         */
+        private boolean allowDefaultSecret = false;
+
         /** Access Token 有效期 */
         private Duration accessTtl = Duration.ofHours(24);
         /** Refresh Token 有效期 */

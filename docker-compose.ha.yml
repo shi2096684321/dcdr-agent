@@ -73,6 +73,10 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public
       SPRING_DATASOURCE_USERNAME: dcdr_agent
       SPRING_DATASOURCE_PASSWORD: dcdr_agent
+      # 与 app 服务同口径(见 docker-compose.yml 注释): 两项密钥必填, 且两实例必须一致,
+      # 否则同一份 Token 在实例间互相不认(多实例场景下表现为"刷新后随机 401")
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 未设置: 请在 .env 中注入一个随机值}
+      MODEL_API_KEY_SECRET: ${MODEL_API_KEY_SECRET:?MODEL_API_KEY_SECRET 未设置: 请在 .env 中注入一个随机值(勿与 JWT_SECRET 复用)}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-demo-key}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-demo-key}
       ZHIPU_API_KEY: ${ZHIPU_API_KEY:-demo-key}

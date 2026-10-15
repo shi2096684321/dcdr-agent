@@ -1,7 +1,7 @@
-# dcdr-agent V2.1 容器构建 (多阶段, 对应 F-30)
+# dcdr-agent 容器构建 (多阶段)
 #
 # 设计:
-#   Stage 1 (builder): maven:3.9-eclipse-temurin-17 编译打包, 产出 dcdr-agent-1.0.0.jar
+#   Stage 1 (builder): maven:3.9-eclipse-temurin-17 编译打包, 产出 dcdr-agent-<pom.version>.jar
 #   Stage 2 (runtime): eclipse-temurin:17-jre-alpine 仅运行, 镜像体积 ~250MB
 #
 # 选 alpine JRE 而非完整 JDK 的理由: 运行期不需要 javac, alpine 基镜像 ~80MB,
@@ -32,8 +32,11 @@ RUN apk add --no-cache tzdata curl \
 
 WORKDIR /app
 
-# 从 builder 拷构建产物
-COPY --from=builder /build/target/dcdr-agent-1.0.0.jar app.jar
+# 从 builder 拷构建产物。
+# 用通配符而不是写死文件名: 产物名 = artifactId-version.jar, 会随 pom 的 <version> 变化 ——
+# 写死 dcdr-agent-<某版本>.jar 之后, 版本一升就会卡在这里构建失败, 而报错只说"找不到文件",
+# 不容易联想到"版本号变了"。repackage 产生的 .jar.original 不被 *.jar 匹配, 不会误选。
+COPY --from=builder /build/target/*.jar app.jar
 
 # 数据落盘目录(uploads/generated/videos/kb), 由 compose 挂卷持久化
 RUN mkdir -p /app/data

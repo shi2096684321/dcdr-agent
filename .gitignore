@@ -41,6 +41,9 @@ frontend/.env.local
 frontend/.env.*.local
 # 后端/部署本地环境变量 (docker compose 读取; 含沙箱 API Key 等, 不入库)
 .env
+# 变体与临时备份同样不入库 —— 否则"备份一份 .env"就会变成新的泄露路径
+.env.*
+!.env.example
 
 # ===== Runtime artifacts (不应入库) =====
 # 应用运行时数据整体不入库: 知识库文档/上传文件/生成图片/H2 数据库等均为用户运行时数据

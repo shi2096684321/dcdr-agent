@@ -43,14 +43,17 @@ public class ApiKeyCipher {
 
     @PostConstruct
     void init() {
-        String secret = null;
-        if (properties.getModels() != null) {
-            secret = properties.getModels().getApiKeySecret();
-        }
+        AgentProperties.ModelsConfig models = properties.getModels();
+        String secret = models == null ? null : models.getApiKeySecret();
+        boolean allowed = models != null && models.isAllowDefaultKeySecret();
+
+        // 主密钥公开可知 => 库里的密文可被解出。默认直接拒绝启动, 详见 SecretGuard 类注释
+        SecretGuard.rejectPublicDefault(SecretGuard.MODEL_KEY_SECRET, secret,
+                AgentProperties.ModelsConfig.DEFAULT_API_KEY_SECRET, allowed);
+
         if (secret == null || secret.isBlank()) {
-            // 兜底: 极低概率走到这里(未配置), 用固定派生的密钥, 并告警提示生产务必注入
-            secret = "dcdr-agent-model-api-key-secret-default";
-            log.warn("agent.models.api-key-secret 未配置, 使用内置兜底密钥(生产务必通过 MODEL_API_KEY_SECRET 注入)");
+            // 走到这里说明已显式放行(否则上一行就抛了): 仍给一个确定值, 保证加密与解密自洽
+            secret = AgentProperties.ModelsConfig.DEFAULT_API_KEY_SECRET;
         }
         try {
             byte[] digest = sha256(secret);

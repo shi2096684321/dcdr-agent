@@ -86,6 +86,9 @@
 
 ```bash
 # 后端（Java 17）
+# 两项密钥必填：启动期会校验（见下方「破坏性变更」）
+export JWT_SECRET=$(openssl rand -hex 32)
+export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)
 mvn spring-boot:run
 
 # 前端
@@ -105,6 +108,28 @@ npm run dev
 | [v3.1_feedback_schema.sql](sql/v3.1_feedback_schema.sql) | F-48：反馈表 |
 
 > 规划文档中提到的 `docs/sql/v3.1_schema.sql` 单文件**并不存在**，实际按功能拆为上述 5 个脚本。
+
+### ⚠️ 破坏性变更：两项密钥从"有默认值"改为必填
+
+v3.1.0 起 `JWT_SECRET` 与 `MODEL_API_KEY_SECRET` **必须显式注入**，否则**服务拒绝启动**（`SecretGuard`，报错里直接给出生成命令）。原因：这两个内置默认值随仓发布、**公开可知**，而它们不会自己暴露 —— 服务照常跑、功能照常用，只有"密钥是公开的"被静默吞掉：
+
+| 密钥 | 不配置的后果 |
+|---|---|
+| `JWT_SECRET` | 签名密钥公开 → 任何人都能**伪造任意用户（含 admin）的 Token**，不需要任何密码 |
+| `MODEL_API_KEY_SECRET` | 加密主密钥公开 → 拿到数据库里的密文即可**解出用户真实的模型 API Key** |
+
+生成随机值：
+
+```bash
+openssl rand -hex 32                                                   # Linux / macOS（两个密钥各生成一次）
+[guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')      # PowerShell
+```
+
+- **Docker 部署**：写入 `.env`。compose 已把两项声明为必填（`${VAR:?}`），未设置会在**启动前**报错
+- **本机快速跑通**：可用 `agent.auth.jwt.allow-default-secret=true` 与 `agent.models.allow-default-key-secret=true` 显式放行（**仅限不对外暴露的环境**）
+- ⚠️ 更换 `JWT_SECRET` 会使**所有已签发的 Token 立即失效**，用户需重新登录（这是预期的安全属性，不是 bug）
+- ⚠️ **已保存的用户自定义模型需要重新填一次 API Key**：升级前若没配 `MODEL_API_KEY_SECRET`，库里的密文是用当时的默认主密钥加密的 —— 换成新密钥后解不出来，页面会提示"主密钥可能已变更, 请重新保存该模型"。这是换密钥的必然结果，不是数据损坏。
+  建议接受这一次性重填；**不要**为了省事把新密钥设成旧默认值（那个值同样随仓公开，等于没换）。
 
 ### ⚠️ 升级注意：随仓配置里"默认开启"的三项
 
