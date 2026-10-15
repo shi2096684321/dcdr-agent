@@ -131,9 +131,12 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # 仅自动执行 V2.0 建表脚本。V3.1 起的增量脚本(docs/sql/v3.1_*.sql)不在此自动执行,
-      # 需按 docs/RELEASE-v3.1.0.md「快速开始」里的脚本清单一、二、三…按序手工执行。
-      - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      # 全量初始化: initdb 目录里的脚本会在**首次建库**(数据卷为空)时按文件名字母序自动执行,
+      # 故全新部署无需手工执行任何 SQL。文件名的 01/02/03 前缀就是排序用。
+      # 已有数据卷不会重跑(升级见 docs/RELEASE-v3.1.0.md 的升级路径; 应用侧另有 ddl-auto=update 兜底补表)。
+      - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_v2.0_schema.sql:ro
+      - ./docs/sql/v3.0_schema.sql:/docker-entrypoint-initdb.d/02_v3.0_schema.sql:ro
+      - ./docs/sql/v3.1_schema.sql:/docker-entrypoint-initdb.d/03_v3.1_schema.sql:ro
       # PG 数据仍用命名卷 (V3.1 实测: 无法 bind mount 到 Windows 宿主目录, initdb 权限检查会失败,
       # 详见文件头说明)。数据安全的兜底是下面这个**落宿主机**的备份挂载 + 定时 pg_dump。
       - pgdata:/var/lib/postgresql/data

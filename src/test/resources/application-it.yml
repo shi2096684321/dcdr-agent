@@ -24,17 +24,13 @@ spring:
     init:
       # PG 是非嵌入式数据库, 必须显式 always(默认 embedded 不会对 PG 生效)
       mode: always
-      # 顺序: 先基础(V2.0 → V3.0 主 schema), 再各版本增量
+      # 顺序: 每主版本一个文件, 按版本递增; 文件内部段落已按依赖排序
+      # (v3.1 内 f44 建的 agent_definition_versions 会被 expert_skill ALTER, 顺序不能反。
+      #  2026-10-15 合并前该清单漏了 v3.1_expert_skill_schema.sql —— 技能表从未在 IT 库建过)
       schema-locations:
         - file:docs/sql/v2.0_schema.sql
         - file:docs/sql/v3.0_schema.sql
-        - file:docs/sql/v3.0_beta_schema.sql
-        - file:docs/sql/v3.0_llm_trace_schema.sql
-        - file:docs/sql/v3.0_rc_schema.sql
-        - file:docs/sql/v3.1_f44_governance_schema.sql
-        - file:docs/sql/v3.1_feedback_schema.sql
-        - file:docs/sql/v3.1_memory_schema.sql
-        - file:docs/sql/v3.1_ownership_schema.sql
+        - file:docs/sql/v3.1_schema.sql
         - file:docs/sql/v3.2_rag_hybrid_schema.sql
       # 脚本执行失败即让上下文启动失败 —— 这正是本 profile 要暴露的问题
       continue-on-error: false

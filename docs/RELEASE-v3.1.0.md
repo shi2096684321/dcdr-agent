@@ -18,7 +18,7 @@
 - 技能市场：接入 SkillHub 作为**发现层**（状态 / 分类 / 排序 / 搜索 / 安装），`/api/skill-market`
 - 技能目录注入 system prompt + 平台级 `skill_load` 工具（**不受 Agent 工具白名单限制**，由平台机制保证"看得见就取得到"）
 - 专家体系：专家工作台（专家 / 自动化 / 运维三个 Hub）+ 专家维度字段（profession / category / tags / quick-prompts）
-- 表 `skill_definitions`、`agent_definitions` 扩列，见 [docs/sql/v3.1_expert_skill_schema.sql](sql/v3.1_expert_skill_schema.sql)；设计见 [docs/17-专家与技能体系.md](17-专家与技能体系.md)
+- 表 `skill_definitions`、`agent_definitions` 扩列，见 [docs/sql/v3.1_schema.sql](sql/v3.1_schema.sql)（「F-45 专家与技能」段落）；设计见 [docs/17-专家与技能体系.md](17-专家与技能体系.md)
 - ⚠️ **范围调整**：规划中 F-45 为「**远程模板市场**」，实际交付的是「专家与技能体系」；**远程模板仓库（`agent.market.remote-repos[]`）未交付**（`docs/17` §9.4 已记录）
 
 **代码执行沙箱（F-43）**
@@ -30,7 +30,7 @@
 **治理完善（F-44）**
 - **Agent 版本管理**：变更生成全量快照（`agent_definition_versions`）、历史版本 diff、回滚、模板发布钉版本；工作流版本复用既有 `workflow_versions`，不迁移不改名
 - **成本分析报表**：`GET /api/monitor/cost/report`、`/cost/export`（CSV），按时间 / 模型 / 来源 / 用户多维聚合；前端 `MonitorView.vue` 页签化并新增"成本分析"
-- SQL 见 [docs/sql/v3.1_f44_governance_schema.sql](sql/v3.1_f44_governance_schema.sql)
+- SQL 见 [docs/sql/v3.1_schema.sql](sql/v3.1_schema.sql)（「F-44 治理」段落）
 
 **灾备与高可用落地（F-46）**
 - **多实例集群协调**：集中式限流（`RateLimitStore` 的 Redis / 内存双实现）+ 定时任务租约锁（`ClusterLock`），替换原先"每实例各算各的"限流与"每个实例都会跑一遍"的定时任务
@@ -51,12 +51,12 @@
 - **LLM 自动抽取**：每隔 N 轮回看原文，输出 ADD / UPDATE / DELETE / NOOP 做冲突消解；**DELETE 走归档而非硬删**（模型判断是概率性的，归档可一键恢复）；代码侧 2-gram 查重兜底；单次条数上限
 - **两层开关**：部署闸门 `agent.memory.auto-extract.enabled`（决定要不要付这笔周期性模型费用）**且** 用户同意 `users.auto_memory_enabled`（可空三态：未表态时跟随部署默认）
 - **可见与可管**：记忆页展示、编辑、归档、恢复；自动写入的条目带「**自动记录**」标识与来源会话；概览显示召回策略（由实际参数生成，不写死文案）与开关状态
-- 表结构与列见 [docs/sql/v3.1_memory_schema.sql](sql/v3.1_memory_schema.sql)；召回健康度巡检 [docs/eval/memory-health.sql](eval/memory-health.sql)
+- 表结构与列见 [docs/sql/v3.1_schema.sql](sql/v3.1_schema.sql)（「长期记忆」段落）；召回健康度巡检 [docs/eval/memory-health.sql](eval/memory-health.sql)
 
 **回答反馈（F-48，计划外新增）**
 - 回答点赞 / 点踩 + 原因标签采集（`message_feedback` 表，唯一索引防重复）
 - 反馈看板：好评率趋势 + 差评归因；接口 `/api/feedback/*`
-- SQL 见 [docs/sql/v3.1_feedback_schema.sql](sql/v3.1_feedback_schema.sql)
+- SQL 见 [docs/sql/v3.1_schema.sql](sql/v3.1_schema.sql)（「回答反馈」段落）
 
 **检索与联网**
 - RAG 重排接入：dashscope 走官方 `QwenScoringModel`，OpenAI 兼容走自研 `OpenAiCompatibleScoringModel`（默认关闭，`agent.rag.retrieval.rerank.*`）
@@ -97,17 +97,20 @@ npm install
 npm run dev
 ```
 
-版本号已升至 **3.1.0**（`pom.xml`）。数据库为增量升级，按序执行 `docs/sql/` 下的 V3.1 脚本（均可重复执行）：
+版本号已升至 **3.1.0**（`pom.xml`）。
 
-| 脚本 | 内容 |
-|---|---|
-| [v3.1_ownership_schema.sql](sql/v3.1_ownership_schema.sql) | F-41：`projects.user_id` + 索引 |
-| [v3.1_f44_governance_schema.sql](sql/v3.1_f44_governance_schema.sql) | F-44：Agent 版本快照表 / 模板版本列 / 成本报表索引 |
-| [v3.1_memory_schema.sql](sql/v3.1_memory_schema.sql) | 长期记忆：记忆表 + 来源列 + `sessions.agent_id` + `users.auto_memory_enabled` |
-| [v3.1_expert_skill_schema.sql](sql/v3.1_expert_skill_schema.sql) | F-45：技能表 + 专家维度列 |
-| [v3.1_feedback_schema.sql](sql/v3.1_feedback_schema.sql) | F-48：反馈表 |
+**数据库：全新部署零手工操作** —— `docker compose up -d` 会按版本顺序自动执行 `docs/sql/` 下的全部建表脚本（`01_v2.0 → 02_v3.0 → 03_v3.1`，见 `docker-compose.yml` 的 initdb 挂载）。
 
-> 规划文档中提到的 `docs/sql/v3.1_schema.sql` 单文件**并不存在**，实际按功能拆为上述 5 个脚本。
+**从旧版本升级**（已有数据卷，initdb 不会重跑）：
+
+```bash
+# 每主版本一个文件，一条命令即可（脚本全部幂等，可重复执行）
+psql -U dcdr_agent -d dcdr_agent \
+  -f docs/sql/v3.0_schema.sql -f docs/sql/v3.1_schema.sql
+```
+
+> 脚本文件已于发布后合并（2026-10-15）：原 `v3.1_ownership / f44_governance / memory / expert_skill / feedback` 五个分脚本并入 **`docs/sql/v3.1_schema.sql`**（段落顺序即依赖顺序 —— f44 建的 `agent_definition_versions` 会被 expert_skill 段 ALTER）；原 v3.0 的 beta / rc / llm_trace 三个分脚本并入 **`docs/sql/v3.0_schema.sql`**。各段落保留了来源标注。
+> 另：应用侧 `ddl-auto=update` 会自动补齐表与列，SQL 脚本的价值在于可控、可审查 —— `document_chunks.embedding` 的 `VECTOR` 类型与 pgvector 扩展必须由脚本创建，JPA 建不出来。
 
 ### ⚠️ 破坏性变更：两项密钥从"有默认值"改为必填
 

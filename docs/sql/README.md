@@ -8,6 +8,20 @@
 
 ---
 
+## 〇、脚本清单（2026-10-15 合并后）
+
+| 文件 | 内容 | 说明 |
+|---|---|---|
+| `v2.0_schema.sql` | 基础表（users / knowledge_bases / documents / document_chunks / agent_definitions / workflow_definitions / sessions / projects / messages / generations / audit_logs 等）+ pgvector 扩展 | initdb 的 `01_`，也是升级的起点 |
+| `v3.0_schema.sql` | routing_logs / webhook_endpoints / workflow_executions → workflow_versions / llm_usage_logs / template_shares → tenants → llm_call_logs | `02_`；由原 beta / rc / llm_trace 三个分脚本合并，段落保留来源标注 |
+| `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback | `03_`；由原 5 个功能分脚本合并，**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
+| `v3.2_rag_hybrid_schema.sql` | 混合检索（pg_trgm + trigram GIN） | 未随 v3.1 发布，不进 initdb；仅 IT profile 加载 |
+
+> **升级路径**：从旧库升级 = 按版本逐个执行（或一条 psql 带多个 `-f`，见第九节）；
+> 全新部署 = `docker compose up -d` 自动完成。应用侧 `ddl-auto=update` 始终兜底补齐表与列。
+
+---
+
 ## 一、前置条件
 
 - 已安装 **Docker Desktop**（Windows / macOS）或 **Docker Engine + docker-compose**（Linux）
@@ -32,8 +46,8 @@ docker compose up -d
 启动后自动完成：
 1. 拉取 `pgvector/pgvector:pg16` 与 `redis:7-alpine` 镜像
 2. 创建数据库 `dcdr_agent`、用户/密码 `dcdr_agent` / `dcdr_agent`
-3. 挂载 `docs/sql/v2.0_schema.sql` 到初始化目录，**自动建表（含 pgvector 扩展）**
-   （仅 V2.0 表；V3.1 起的增量脚本 `docs/sql/v3.1_*.sql` 不自动执行，需按 `docs/RELEASE-v3.1.0.md` 手工按序执行）
+3. 挂载 `docs/sql/` 下 v2.0 / v3.0 / v3.1 三个脚本到初始化目录（`01_/02_/03_` 前缀排序），
+   **首次建库时自动全量执行（含 pgvector 扩展）** —— 全新部署无需手工执行任何 SQL
 4. 数据持久化到名为 `pgdata` 的 Docker 卷
 
 ### 查看状态与日志
@@ -126,7 +140,7 @@ docker compose up -d
 - **改密码**：同时修改 `POSTGRES_PASSWORD` 与 `application-pg.yml` 的 `spring.datasource.password`
 - **改库名**：修改 `POSTGRES_DB`，并同步 `application-pg.yml` 的 URL
 - **仅本机访问**：端口映射 `"5432:5432"` 已限定本机；如需局域网访问保持不变即可
-- **修改 schema**：编辑 `docs/sql/v2.0_schema.sql` 后执行 `docker compose down -v && docker compose up -d` 重新建库
+- **修改 schema**：编辑 `docs/sql/` 下对应版本的脚本后执行 `docker compose down -v && docker compose up -d` 重新建库（initdb 只在数据卷为空时执行）
 
 ---
 
@@ -160,10 +174,14 @@ netstat -ano | findstr :5432
    - 将 `vector.dll` 放到 `PostgreSQL\16\lib`，`vector.control` / `vector--*sql` 放到 `PostgreSQL\16\share\extension`
 3. 建库并授权：
    ```sql
-   CREATE DATABASE java_agent;
-   \c java_agent
-   CREATE USER java_agent WITH PASSWORD 'java_agent';
-   GRANT ALL PRIVILEGES ON DATABASE java_agent TO java_agent;
+   CREATE DATABASE dcdr_agent;
+   \c dcdr_agent
+   CREATE USER dcdr_agent WITH PASSWORD 'dcdr_agent';
+   GRANT ALL PRIVILEGES ON DATABASE dcdr_agent TO dcdr_agent;
    ```
-4. 执行 schema：`psql -U dcdr_agent -d dcdr_agent -f docs/sql/v2.0_schema.sql`
+4. 执行 schema（一条命令、三个文件按序；全部幂等可重复执行）：
+   ```bash
+   psql -U dcdr_agent -d dcdr_agent \
+     -f docs/sql/v2.0_schema.sql -f docs/sql/v3.0_schema.sql -f docs/sql/v3.1_schema.sql
+   ```
 5. Redis 可用 Windows 版或 WSL 内 `apt install redis-server` 启动。

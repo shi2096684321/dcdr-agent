@@ -1,3 +1,12 @@
+-- ==========================================================================
+-- V3.0 数据库增量脚本(routing/webhook/工作流执行 → 版本与用量/模板 → 多租户 → LLM 调用链)
+-- (2026-10-15 由多个分脚本合并而来; 各段落保留原文件头说明,
+--  段落顺序 = 历史演进/依赖顺序; 全部语句幂等, 可重复执行)
+-- ==========================================================================
+
+-- ---------------------------------------------------------------------------
+-- [1/4] 来源: v3.0_schema.sql
+-- ---------------------------------------------------------------------------
 -- ============================================================================
 -- dcdr-agent V3.0 数据库 schema 增量 (PostgreSQL 16 + pgvector)
 -- 用途: V3.0-alpha 智能路由 / 触发层扩展 / 执行容错
@@ -67,3 +76,136 @@ CREATE TABLE IF NOT EXISTS workflow_executions (
 CREATE INDEX IF NOT EXISTS idx_wfexec_workflow ON workflow_executions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_wfexec_user     ON workflow_executions(user_id);
 CREATE INDEX IF NOT EXISTS idx_wfexec_status   ON workflow_executions(status);
+
+-- ---------------------------------------------------------------------------
+-- [2/4] 来源: v3.0_beta_schema.sql
+-- ---------------------------------------------------------------------------
+-- ============================================================================
+-- dcdr-agent V3.0-beta 数据库 schema 增量 (PostgreSQL 16 + pgvector)
+-- 用途: V3.0-beta 治理与可观测性 / 模板市场 / 可视化 DAG 编排
+--   - F-34 治理与可观测性: workflow_versions (工作流版本历史)
+--                            llm_usage_logs (LLM 调用 token 记录)
+--   - F-35 模板市场:       template_shares (模板分享记录)
+--   - F-32 可视化 DAG:     workflow_definitions.dag_json (DAG 格式, 与 steps_json 并存)
+-- 执行顺序: 在 v3.0_schema.sql 之后执行; 均使用 CREATE TABLE IF NOT EXISTS / ALTER ADD COLUMN IF NOT EXISTS,
+--           可在已有库上重复执行。
+-- ============================================================================
+
+-- 1. F-34 工作流版本历史 (文档 §8.2)
+CREATE TABLE IF NOT EXISTS workflow_versions (
+    id               VARCHAR(64)  PRIMARY KEY,
+    workflow_id      VARCHAR(64)  REFERENCES workflow_definitions(id) ON DELETE CASCADE,
+    version          INT          NOT NULL,
+    name             VARCHAR(255),
+    description      TEXT,
+    mode             VARCHAR(32),
+    steps_json       TEXT         NOT NULL,
+    dag_json         TEXT,
+    change_note      VARCHAR(255),
+    created_by       VARCHAR(64),
+    created_at       TIMESTAMP    NOT NULL DEFAULT now(),
+    UNIQUE(workflow_id, version)
+);
+
+-- 2. F-34 LLM 调用 token 记录 (文档 §8.3)
+CREATE TABLE IF NOT EXISTS llm_usage_logs (
+    id                     VARCHAR(64)  PRIMARY KEY,
+    user_id                VARCHAR(64),
+    session_id             VARCHAR(64),
+    workflow_execution_id  VARCHAR(64),
+    source                 VARCHAR(16)  NOT NULL,        -- chat / workflow / routing
+    model                  VARCHAR(128),
+    input_tokens           INT,
+    output_tokens          INT,
+    total_tokens           INT,
+    cost_amount            DECIMAL(10,6),
+    created_at             TIMESTAMP    NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_llmusage_user    ON llm_usage_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_llmusage_time    ON llm_usage_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_llmusage_model   ON llm_usage_logs(model);
+CREATE INDEX IF NOT EXISTS idx_llmusage_userday ON llm_usage_logs(user_id, created_at);
+
+-- 3. F-35 模板分享记录 (文档 §9.4)
+CREATE TABLE IF NOT EXISTS template_shares (
+    id               VARCHAR(64)  PRIMARY KEY,
+    user_id          VARCHAR(64)  REFERENCES users(id) ON DELETE CASCADE,
+    type             VARCHAR(16)  NOT NULL,        -- agent / workflow
+    target_id        VARCHAR(64)  NOT NULL,
+    title            VARCHAR(255),
+    description      TEXT,
+    category         VARCHAR(64),
+    tags             TEXT,                          -- 逗号分隔标签
+    clone_count      INT          NOT NULL DEFAULT 0,
+    rating_sum       INT          NOT NULL DEFAULT 0,
+    rating_count     INT          NOT NULL DEFAULT 0,
+    enabled          BOOLEAN      NOT NULL DEFAULT true,
+    created_at       TIMESTAMP    NOT NULL DEFAULT now(),
+    UNIQUE(type, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tplshare_category ON template_shares(category);
+
+-- 4. F-32 可视化 DAG: workflow_definitions 增加 dag_json 列 (与 steps_json 并存)
+ALTER TABLE workflow_definitions ADD COLUMN IF NOT EXISTS dag_json TEXT;
+
+-- ---------------------------------------------------------------------------
+-- [3/4] 来源: v3.0_rc_schema.sql
+-- ---------------------------------------------------------------------------
+-- =====================================================================
+-- V3.0-rc 数据库扩展 (F-36 配额型多租户; 完整 SaaS 化不实施, 见 docs/12-未来可扩展项记录.md)
+-- 执行前提: 已执行 v2.0_schema.sql / v3.0_schema.sql / v3.0_beta_schema.sql
+-- 注意: pg / H2 均由 JPA (ddl-auto=update) 在启动时自动补齐缺失的表与列, 本脚本无需手工执行
+--       (脚本保留用于补齐 JPA 不生成的 COMMENT 与特殊索引; 全部语句可重复执行)
+-- =====================================================================
+
+-- F-36 租户表
+CREATE TABLE IF NOT EXISTS tenants (
+    id               VARCHAR(64)  PRIMARY KEY,
+    name             VARCHAR(255) NOT NULL,
+    plan             VARCHAR(32)  NOT NULL DEFAULT 'free',    -- free / pro / enterprise
+    max_users        INT          NOT NULL DEFAULT 5,
+    max_agents       INT          NOT NULL DEFAULT 10,
+    max_workflows    INT          NOT NULL DEFAULT 20,
+    max_tokens_month BIGINT       NOT NULL DEFAULT 1000000,
+    status           VARCHAR(16)  NOT NULL DEFAULT 'active',  -- active / suspended
+    created_at       TIMESTAMP    NOT NULL DEFAULT now()
+);
+
+-- 用户归属租户 (可空: null = 平台直属用户, 不参与租户配额)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64) REFERENCES tenants(id);
+CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id);
+
+-- 月 token 用量按租户聚合走 llm_usage_logs JOIN users, 已有 idx_llmusage_user_day 索引支撑
+
+-- ---------------------------------------------------------------------------
+-- [4/4] 来源: v3.0_llm_trace_schema.sql
+-- ---------------------------------------------------------------------------
+-- =====================================================================
+-- v3.0 增量(LLM 调用链独立日志): 命名沿用 v3.0_* 规范
+-- 依赖: 无 (独立表, 与 messages 解耦)
+-- 背景: 每次对话请求落一条记录, 保存该次请求触发的完整 LLM 调用链
+--       (路由判断 / 各生成轮 / 工具步骤 / token / 总耗时 / 结束原因),
+--       供前端"调用链日志"独立页面分页查看(不进对话内容)。
+-- 注意: pg / H2 均由 JPA (ddl-auto=update) 在启动时自动补齐缺失的表与列, 本脚本无需手工执行
+--       (脚本保留用于补齐 JPA 不生成的 COMMENT 与特殊索引; 全部语句可重复执行)。
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS llm_call_logs (
+    id                  VARCHAR(64) PRIMARY KEY,
+    turn_id             VARCHAR(16),
+    user_id             VARCHAR(64),
+    session_id          VARCHAR(64),
+    user_message        TEXT,
+    end_signal          VARCHAR(32),
+    llm_calls           INTEGER DEFAULT 0,
+    tool_steps          INTEGER DEFAULT 0,
+    total_in_tokens     BIGINT  DEFAULT 0,
+    total_out_tokens    BIGINT  DEFAULT 0,
+    total_duration_ms   BIGINT  DEFAULT 0,
+    chain               TEXT,
+    steps_json          TEXT,
+    created_at          TIMESTAMP NOT NULL
+);
+
+-- 用户维度 + 时间维度索引(分页查询 userId+createdAt 倒序)
+CREATE INDEX IF NOT EXISTS idx_llmcall_user_time ON llm_call_logs (user_id, created_at);

@@ -5,7 +5,7 @@
 ### 已实现（2026-09-15）
 - **分层作用域**：用户级（`agent_id` 为空，跨 Agent 通用）+ Agent 级（`agent_id` 非空，该 Agent 专属），
   冲突时 **Agent 级覆盖用户级**（局部优先于全局）。
-- **数据层**：`long_term_memories` 表（建表脚本 `docs/sql/v3.1_memory_schema.sql`）；
+- **数据层**：`long_term_memories` 表（建表脚本 `docs/sql/v3.1_schema.sql（长期记忆段落，原 v3.1_memory_schema.sql）`）；
   补齐 `sessions.agent_id` —— 原先 `agentId` 只在请求中临时传入做配置覆盖、从不落库，
   导致 Agent 级记忆无归属依据、会话内切换 Agent 后历史无法归因。
 - **召回策略（本阶段无向量）**：常驻（`pinned` / 重要度 ≥ 0.9 / 画像·偏好·纠正三类）
@@ -1123,7 +1123,7 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
     反馈 / 创作项目 / 生成记录 共 11 类资源的归属判定全部收敛到 `OwnershipGuard`。
   - **口径统一**：越权与不存在一律 **404**（原先混用 403/404，403 可被用于资源枚举探测）；
     越权尝试统一写审计 `access_denied`；admin 统一放行；匿名仅在 `auth.enabled=false` 时兼容放行。
-  - `ProjectEntity` 补 `userId` 归属列 + PG DDL 脚本 `docs/sql/v3.1_ownership_schema.sql`。
+  - `ProjectEntity` 补 `userId` 归属列 + PG DDL 脚本 `docs/sql/v3.1_schema.sql（归属段落，原 v3.1_ownership_schema.sql）`。
   - 已验证（H2 启动 + 端到端）：**会话域 9 项 + 创作项目域 8 项**横向越权矩阵全部符合预期 ——
     用户 A 访问/删除自己的资源返回 200；用户 B 跨用户读取/改名/改人设/读消息/删消息/导出/删除一律 404。
     详见 `docs/10-完整测试用例文档.md` §2.1。
@@ -1187,7 +1187,7 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
   - **前端**：`AgentView.vue` 加「版本历史」弹窗（版本表 + 勾选两版对比 + 回滚；diff 只展示变化字段、左右并排高亮）
     + 编辑框加「变更说明」；`MonitorView.vue` 顶部改为页签（执行监控 / **成本分析** / 回答反馈），
     成本页含 粒度切换、日期区间、趋势条、模型占比、Top 用户、逐卡导出 CSV（不引 echarts，沿用现有手写 CSS 图）。
-  - **脚本/配置**：`docs/sql/v3.1_f44_governance_schema.sql`（幂等）+ `application.yml` 的 `agent.v3.cost.pricing`。
+  - **脚本/配置**：`docs/sql/v3.1_schema.sql（治理段落，原 v3.1_f44_governance_schema.sql）`（幂等）+ `application.yml` 的 `agent.v3.cost.pricing`。
   - **端到端实测**（在 18081 端口另起实例验证，未动 8080 上正在运行的应用）：
     创建→v1、更新→v2、版本列表 2 版；diff 精确列出「描述/角色设定/工具/温度」
     （`工具: [calculator] -> [calculator, time]`、`温度: [0.30] -> [0.80]`）；回滚 v1 后定义还原且历史变 3 版
@@ -1198,7 +1198,7 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
     （qwen-plus 占 58.8% token 但仅 5.2% 金额）；非全局视图 `byUser=null`（权限口径正确）；
     CSV 前 3 字节 `EF BB BF`、`Content-Disposition` 正常、金额列有值。验证后临时数据与测试 Agent 已清理。
   - ⚠️ **需重启应用**加载新代码（`ddl-auto=update` 启动时会补表，但索引/外键以
-    `v3.1_f44_governance_schema.sql` 为准）。
+    `v3.1_schema.sql（治理段落，原 v3.1_f44_governance_schema.sql）` 为准）。
   - ⚠️ 已知限制（沿用工作流侧现状，未引入重试框架）：版本号 `max+1` 存在并发竞态，
     冲突时靠唯一约束兜底、该次快照被静默丢弃（有 warn 日志）。
 - ✅ **V3.1 F-47 工具结果体积治理**（2026-09-28）：
