@@ -377,3 +377,24 @@ CREATE INDEX IF NOT EXISTS idx_feedback_session ON message_feedback(session_id, 
 CREATE INDEX IF NOT EXISTS idx_feedback_created ON message_feedback(created_at);
 CREATE INDEX IF NOT EXISTS idx_feedback_rating  ON message_feedback(rating);
 CREATE INDEX IF NOT EXISTS idx_feedback_user    ON message_feedback(user_id);
+
+-- ---------------------------------------------------------------------------
+-- [追加 2026-10-15] 来源: v3.2_rag_hybrid_schema.sql
+-- 混合检索(向量 + BM25/RRF)已随 V3.1 交付且随仓默认开启(agent.rag.retrieval.hybrid.enabled=true),
+-- 其索引必须随建库创建 —— 故这段 DDL 并入 v3.1, 不再以 v3.2 名义单独存在
+-- (此前它不进 initdb, 全新部署会漏掉这个索引, 混合检索退化为顺序扫描)。
+-- ---------------------------------------------------------------------------
+-- ============================================================
+-- V3.2 框架化: 混合检索(BM25 全文)可选索引(增量, 非破坏)
+-- ------------------------------------------------------------
+-- 仅当 agent.rag.retrieval.hybrid.enabled=true 时才需要执行。
+-- 纯向量检索默认关闭混合, 无需此索引即可正常运行。
+-- ============================================================
+
+-- 全文检索所需扩展 + content 的 trigram GIN 索引,
+-- 用于 document_chunks 的 to_tsvector 加速(ts_vector 表达式等价)
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- content 列 trigram 索引(支持 LIKE/trigram 匹配; BM25 走 to_tsvector 等价 GIN)
+CREATE INDEX IF NOT EXISTS idx_chunk_content_trgm
+    ON document_chunks USING gin (content gin_trgm_ops);

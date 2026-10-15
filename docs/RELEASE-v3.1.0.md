@@ -59,6 +59,7 @@
 - SQL 见 [docs/sql/v3.1_schema.sql](sql/v3.1_schema.sql)（「回答反馈」段落）
 
 **检索与联网**
+- **混合检索（向量 + BM25 全文，RRF 融合）**：`agent.rag.retrieval.hybrid.*`，随仓默认开启；所需 pg_trgm 扩展与 GIN 索引已并入建库脚本（见下方脚本合并说明）
 - RAG 重排接入：dashscope 走官方 `QwenScoringModel`，OpenAI 兼容走自研 `OpenAiCompatibleScoringModel`（默认关闭，`agent.rag.retrieval.rerank.*`）
 - **自建联网搜索替代 Tavily**：`SearxngWebSearchTool`（`web_search`）+ 结果清洗与正文提取，MCP Tavily 服务已移除
 - RAG 注入加固（边界标记 / 长度预算）与**引用忠实度校验**（回答中的 `[[n]]` 必须落在本次来源集内，违规写 citation 步骤）
@@ -109,7 +110,7 @@ psql -U dcdr_agent -d dcdr_agent \
   -f docs/sql/v3.0_schema.sql -f docs/sql/v3.1_schema.sql
 ```
 
-> 脚本文件已于发布后合并（2026-10-15）：原 `v3.1_ownership / f44_governance / memory / expert_skill / feedback` 五个分脚本并入 **`docs/sql/v3.1_schema.sql`**（段落顺序即依赖顺序 —— f44 建的 `agent_definition_versions` 会被 expert_skill 段 ALTER）；原 v3.0 的 beta / rc / llm_trace 三个分脚本并入 **`docs/sql/v3.0_schema.sql`**。各段落保留了来源标注。
+> 脚本文件已于发布后合并（2026-10-15）：原 `v3.1_ownership / f44_governance / memory / expert_skill / feedback` 五个分脚本并入 **`docs/sql/v3.1_schema.sql`**（段落顺序即依赖顺序 —— f44 建的 `agent_definition_versions` 会被 expert_skill 段 ALTER）；原 v3.0 的 beta / rc / llm_trace 三个分脚本并入 **`docs/sql/v3.0_schema.sql`**；原 **`v3.2_rag_hybrid_schema.sql`**（混合检索所需的 pg_trgm 扩展与 GIN 索引）同样并入 `v3.1_schema.sql` —— 混合检索已随本版交付且随仓默认开启，这段索引此前不进 initdb，全新部署会漏掉。各段落保留了来源标注。
 > 另：应用侧 `ddl-auto=update` 会自动补齐表与列，SQL 脚本的价值在于可控、可审查 —— `document_chunks.embedding` 的 `VECTOR` 类型与 pgvector 扩展必须由脚本创建，JPA 建不出来。
 
 ### ⚠️ 破坏性变更：两项密钥从"有默认值"改为必填

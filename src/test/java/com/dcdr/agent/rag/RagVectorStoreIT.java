@@ -128,7 +128,7 @@ class RagVectorStoreIT {
                 "SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'", String.class);
 
         assertFalse(extensions.isEmpty(),
-                "v3.2_rag_hybrid_schema.sql 应启用 pg_trgm —— 为空说明该脚本未被加载或执行失败");
+                "v3.1_schema.sql 的「混合检索索引」段落应启用 pg_trgm —— 为空说明该脚本未被加载或执行失败");
     }
 
     @Test

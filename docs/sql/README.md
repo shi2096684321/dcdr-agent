@@ -14,8 +14,7 @@
 |---|---|---|
 | `v2.0_schema.sql` | 基础表（users / knowledge_bases / documents / document_chunks / agent_definitions / workflow_definitions / sessions / projects / messages / generations / audit_logs 等）+ pgvector 扩展 | initdb 的 `01_`，也是升级的起点 |
 | `v3.0_schema.sql` | routing_logs / webhook_endpoints / workflow_executions → workflow_versions / llm_usage_logs / template_shares → tenants → llm_call_logs | `02_`；由原 beta / rc / llm_trace 三个分脚本合并，段落保留来源标注 |
-| `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback | `03_`；由原 5 个功能分脚本合并，**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
-| `v3.2_rag_hybrid_schema.sql` | 混合检索（pg_trgm + trigram GIN） | 未随 v3.1 发布，不进 initdb；仅 IT profile 加载 |
+| `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback → 混合检索索引（pg_trgm + trigram GIN） | `03_`；由原 5 个功能分脚本合并（2026-10-15 又并入原 v3.2 的混合检索索引 —— 该能力已随 v3.1 交付且随仓默认开启），**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
 
 > **升级路径**：从旧库升级 = 按版本逐个执行（或一条 psql 带多个 `-f`，见第九节）；
 > 全新部署 = `docker compose up -d` 自动完成。应用侧 `ddl-auto=update` 始终兜底补齐表与列。

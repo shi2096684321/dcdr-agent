@@ -8,7 +8,8 @@
 #  为什么要这样做:
 #    若仅靠 Hibernate 的 ddl-auto 从实体推导建表, 就测不出"生产建库脚本本身是否正确",
 #    更测不出脚本里 JPA 生成不了的部分 —— 如 COMMENT、部分索引(WHERE)、DESC 排序索引,
-#    以及 v3.2_rag_hybrid_schema.sql 中 FTS 所依赖的 pg_trgm 扩展与 trigram GIN 索引。
+#    以及混合检索 FTS 所依赖的 pg_trgm 扩展与 trigram GIN 索引
+    #    （该 DDL 已于 2026-10-15 从 v3.2_rag_hybrid_schema.sql 并入 v3.1_schema.sql）。
 #    本 profile 让集成测试走"脚本建表 + JPA update 补齐", 与 application-pg.yml 完全同构。
 #
 #  注意: schema-locations 用 file: 相对路径, 相对工作目录(项目根)。
@@ -31,6 +32,5 @@ spring:
         - file:docs/sql/v2.0_schema.sql
         - file:docs/sql/v3.0_schema.sql
         - file:docs/sql/v3.1_schema.sql
-        - file:docs/sql/v3.2_rag_hybrid_schema.sql
       # 脚本执行失败即让上下文启动失败 —— 这正是本 profile 要暴露的问题
       continue-on-error: false
