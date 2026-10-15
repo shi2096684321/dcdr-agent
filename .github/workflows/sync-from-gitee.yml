@@ -1,0 +1,27 @@
+name: Sync from Gitee
+
+# 单向镜像: gitee 是源头, 本工作流定时把 gitee 的 master / develop / tags
+# 拉过来推到本仓库(GitHub)。不要直接在 GitHub 上改代码 —— 会被下一次同步覆盖。
+on:
+  schedule:
+    - cron: '0 0 * * *'      # 每天 UTC 0 点(北京时间早上 8 点)检查一次
+    # 想改成每周一检查: 注释掉上面那行, 启用下面这行
+    # - cron: '0 0 * * 1'
+  workflow_dispatch:          # 允许在 Actions 页签手动触发(Run workflow)
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write         # 允许推送到本仓库
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # 全量历史, 否则 push 会因缺历史对象失败
+      - name: Pull from Gitee and push
+        run: |
+          git remote add gitee https://gitee.com/shi-zhun/dcdr-agent.git
+          git fetch gitee master develop --tags
+          git push origin gitee/master:master
+          git push origin gitee/develop:develop
+          git push origin --tags
