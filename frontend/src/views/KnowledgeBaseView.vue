@@ -3,7 +3,7 @@
     <!-- 左侧: 知识库列表 -->
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
       <div class="sidebar-header">
-        <button class="new-btn gradient-bg" @click="openCreateDialog">+ 新建知识库</button>
+        <button class="new-btn" @click="openCreateDialog">+ 新建知识库</button>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起">«</button>
       </div>
       <div class="kb-list">
@@ -474,17 +474,17 @@ onMounted(() => { loadKnowledgeBases() })
 .sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
 .sidebar-header { padding: 20px 16px; border-bottom: 1px solid var(--dcdr-border); position: relative; }
 .collapse-btn { position: absolute; right: 10px; top: 22px; width: 26px; height: 26px; border: none; border-radius: 6px; background: var(--dcdr-bg-subtle); color: var(--dcdr-text-3); cursor: pointer; font-size: 16px; line-height: 1; }
-.collapse-btn:hover { background: rgba(102,126,234,0.12); color: var(--dcdr-accent); }
+.collapse-btn:hover { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); }
 .sidebar-expand { position: absolute; left: 0; top: 14px; z-index: 50; width: 26px; height: 36px; border: none; border-radius: 0 8px 8px 0; background: var(--dcdr-accent); color: #fff; cursor: pointer; font-size: 16px; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
-.new-btn { width: 100%; height: 44px; color: #fff; border: none; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.35); }
-.new-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102, 126, 234, 0.45); }
+.new-btn { width: 100%; height: 38px; color: var(--dcdr-accent-soft); font-size: 13px; font-weight: 500; cursor: pointer; border-radius: var(--dcdr-radius-inner); border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash); transition: background 0.2s ease, border-color 0.2s ease; }
+.new-btn:hover { background: var(--dcdr-active); border-color: var(--dcdr-accent); }
 
 .kb-list { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .kb-list::-webkit-scrollbar { width: 4px; }
 .kb-list::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 4px; }
 .kb-item { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; transition: all 0.2s ease; }
 .kb-item:hover { background: var(--dcdr-bg-subtle); }
-.kb-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%); border: 1px solid rgba(102,126,234,0.15); }
+.kb-item.active { background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); border: 1px solid var(--dcdr-accent-wash); }
 .kb-icon { font-size: 20px; flex-shrink: 0; }
 .kb-info { flex: 1; min-width: 0; }
 .kb-name { font-size: 14px; color: var(--dcdr-text-1); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 6px; }
@@ -505,15 +505,15 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .kb-title { font-size: 18px; font-weight: 600; color: var(--dcdr-text-1); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .kb-desc-full { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-3); margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
-.upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(102,126,234,0.4); }
+.upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px var(--dcdr-accent-line); }
+.upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px var(--dcdr-accent-line); }
 .upload-btn.disabled { opacity: 0.5; cursor: not-allowed; }
 .refresh-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 14px;
   border: 1px solid var(--dcdr-border); border-radius: 10px; background: var(--dcdr-surface); color: var(--dcdr-text-2);
   font-size: 13px; cursor: pointer; user-select: none; transition: all 0.2s;
 }
-.refresh-btn:hover:not(:disabled) { border-color: var(--dcdr-accent); color: var(--dcdr-accent); background: rgba(102,126,234,0.06); }
+.refresh-btn:hover:not(:disabled) { border-color: var(--dcdr-accent); color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .refresh-btn .spin { display: inline-block; animation: kb-spin 0.8s linear infinite; }
 @keyframes kb-spin { to { transform: rotate(360deg); } }
@@ -526,7 +526,7 @@ onMounted(() => { loadKnowledgeBases() })
 /* 文档列表 */
 .doc-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 24px; }
 .doc-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; transition: all 0.2s; }
-.doc-item:hover { border-color: var(--dcdr-accent-wash); box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.doc-item:hover { border-color: var(--dcdr-accent-wash); box-shadow: 0 2px 8px var(--dcdr-accent-wash); }
 .doc-icon { font-size: 24px; flex-shrink: 0; }
 .doc-info { flex: 1; min-width: 0; }
 .doc-name { font-size: 14px; color: var(--dcdr-text-1); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -549,13 +549,13 @@ onMounted(() => { loadKnowledgeBases() })
 .search-form { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 12px; padding: 16px; }
 .search-options { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
 .opt-label { font-size: 13px; color: var(--dcdr-text-2); }
-.search-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 18px; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; margin-left: auto; transition: all 0.2s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
+.search-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 18px; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; margin-left: auto; transition: all 0.2s; box-shadow: 0 3px 10px var(--dcdr-accent-line); }
 .search-btn:hover:not(:disabled) { transform: translateY(-1px); }
 .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .search-results { display: flex; flex-direction: column; gap: 10px; }
 .result-item { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 14px 16px; transition: all 0.2s; }
-.result-item:hover { border-color: var(--dcdr-accent-wash); box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.result-item:hover { border-color: var(--dcdr-accent-wash); box-shadow: 0 2px 8px var(--dcdr-accent-wash); }
 .result-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
 .result-rank { font-size: 13px; font-weight: 700; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); padding: 2px 10px; border-radius: 12px; }
 .result-score { font-size: 13px; font-weight: 600; }
@@ -569,7 +569,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-empty .empty-icon.large { font-size: 72px; margin-bottom: 16px; }
 .kb-empty h2 { font-size: 22px; color: var(--dcdr-text-1); margin: 0 0 8px; }
 .kb-empty p { font-size: 14px; margin: 0 0 24px; }
-.new-here-btn { height: 40px; padding: 0 24px; border: none; border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 4px 15px rgba(102,126,234,0.35); }
+.new-here-btn { height: 40px; padding: 0 24px; border: none; border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 4px 15px var(--dcdr-accent-line); }
 
 /* 可见性提示 */
 .vis-tip { margin-top: 6px; font-size: 12px; color: var(--dcdr-text-3); line-height: 1.5; }

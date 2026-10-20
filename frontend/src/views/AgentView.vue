@@ -547,7 +547,7 @@ onMounted(() => {
 .agent-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
 .agent-item { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
 .agent-item:hover { background: var(--dcdr-bg); }
-.agent-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.12) 0%, rgba(118,75,162,0.10) 100%); }
+.agent-item.active { background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); }
 .agent-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
 .agent-info { flex: 1; min-width: 0; }
 .agent-name { font-size: 13px; font-weight: 500; color: var(--dcdr-text-1); display: flex; align-items: center; gap: 4px; }

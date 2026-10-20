@@ -190,17 +190,17 @@
             <div class="input-actions">
             <!-- 文生图按钮 -->
             <button class="action-btn" title="文生图（AI 绘图）：请先在输入框填写图片描述" @click="sendImage"
-                    :disabled="streaming">🎨</button>
+                    :disabled="streaming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6L13.7 9.2L19.3 10.9L13.7 12.6L12 18.2L10.3 12.6L4.7 10.9L10.3 9.2L12 3.6Z"/><path d="M18.6 16.2L19.3 18.3L21.4 19L19.3 19.7L18.6 21.8L17.9 19.7L15.8 19L17.9 18.3L18.6 16.2Z"/></svg></button>
             <!-- 联网搜索开关 -->
             <button class="action-btn" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
-                    @click="$emit('update:webSearch', !webSearch)" :disabled="streaming">🌐</button>
+                    @click="$emit('update:webSearch', !webSearch)" :disabled="streaming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.2"/><path d="M3.8 12H20.2"/><path d="M12 3.8C14.6 6.3 16.2 9 16.2 12C16.2 15 14.6 17.7 12 20.2C9.4 17.7 7.8 15 7.8 12C7.8 9 9.4 6.3 12 3.8Z"/></svg></button>
             <!-- 深度思考开关(仅思考型模型生效): 关闭时跳过思考直接作答, 更快更省 -->
             <button class="action-btn" :class="{active: thinkingEnabled}" title="深度思考：开启后模型先思考再作答（仅思考型模型生效），关闭更快更省"
-                    @click="$emit('update:thinkingEnabled', !thinkingEnabled)" :disabled="streaming">🧠</button>
+                    @click="$emit('update:thinkingEnabled', !thinkingEnabled)" :disabled="streaming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 4.4C7 4.4 5 6.4 5 9C5 9.7 5.2 10.4 5.4 11C4.5 11.7 4 12.8 4 14C4 15.9 5.5 17.4 7.4 17.4H8.4V19.6"/><path d="M14.4 4.4C17 4.4 19 6.4 19 9C19 9.7 18.8 10.4 18.6 11C19.5 11.7 20 12.8 20 14C20 15.9 18.5 17.4 16.6 17.4H15.6V19.6"/><path d="M9.6 4.4V8M14.4 4.4V8"/></svg></button>
             <!-- 图片上传按钮 -->
             <label class="action-btn" title="上传图片/视频">
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
-              📎
+              <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 8.2L9.2 15.4C8 16.6 6.1 16.6 4.9 15.4C3.7 14.2 3.7 12.3 4.9 11.1L12.1 3.9C13.7 2.3 16.3 2.3 17.9 3.9C19.5 5.5 19.5 8.1 17.9 9.7L10.7 16.9C9.7 17.9 8.1 17.9 7.1 16.9C6.1 15.9 6.1 14.3 7.1 13.3L13.7 6.7"/></svg>
             </label>
             <!-- 知识库选择(RAG 检索增强): 登录用户可见; 显式选择=强意图, 后端走强制检索(命中带引用/未命中明说)。
                  普通用户仅显示自己的 USER 级库(PLATFORM 级是管理员统一配置的无感增强, 不出现在选择器);
@@ -240,7 +240,8 @@
             </div>
             <button class="send-btn gradient-bg" @click="streaming ? stop() : send()"
                     :disabled="(!input.trim() && !selectedFiles.length) && !streaming">
-              {{ streaming ? '■' : '➤' }}
+              <svg v-if="!streaming" class="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.4V5"/><path d="M5.6 11.4L12 5L18.4 11.4"/></svg>
+            <svg v-else class="ic-send" viewBox="0 0 24 24" fill="currentColor"><rect x="7.2" y="7.2" width="9.6" height="9.6" rx="1.6"/></svg>
             </button>
           </div>
         </div>
@@ -1100,11 +1101,11 @@ onMounted(() => { loadSessions() })
 .session-list::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 4px; }
 .session-item { padding: 12px 14px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; }
 .session-item:hover { background: var(--dcdr-bg-subtle); }
-.session-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.1) 0%, rgba(118,75,162,0.08) 100%); color: var(--dcdr-accent); font-weight: 500; border: 1px solid rgba(102,126,234,0.15); }
+.session-item.active { background: var(--dcdr-accent-wash); color: var(--dcdr-text-1); font-weight: 500; border: 1px solid var(--dcdr-accent-line); }
 .session-title { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rename-btn, .delete-btn, .export-btn, .settings-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: var(--dcdr-text-3); opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
 .session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn, .session-item:hover .settings-btn { opacity: 1; }
-.rename-btn:hover { color: var(--dcdr-accent); background: rgba(102,126,234,0.1); }
+.rename-btn:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .settings-btn:hover { color: var(--dcdr-warning); background: rgba(230,162,60,0.1); }
 .export-btn:hover { color: var(--dcdr-success); background: rgba(103,194,58,0.1); }
 .delete-btn:hover { color: var(--dcdr-danger); background: rgba(245,108,108,0.1); }
@@ -1234,36 +1235,39 @@ onMounted(() => { loadSessions() })
 
 /* 输入框 */
 .input-box { max-width: 780px; margin: 0 auto; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-card); padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--dcdr-shadow-card); transition: border-color 0.2s ease, box-shadow 0.2s ease; }
-.input-box:focus-within { border-color: var(--dcdr-accent); box-shadow: 0 4px 25px rgba(102,126,234,0.15); }
+.input-box:focus-within { border-color: var(--dcdr-accent-line); box-shadow: 0 4px 25px var(--dcdr-accent-wash); }
 .input-foot { display: flex; align-items: center; gap: 10px; }
 .input-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .input-meta { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-text-3); white-space: nowrap; }
 .action-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; transition: all 0.2s; color: var(--dcdr-text-2); background: var(--dcdr-bg-subtle); border: none; }
 .action-btn:hover { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); }
-.action-btn.active { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); color: var(--dcdr-accent); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.action-btn .ic { width: 17px; height: 17px; }
+.send-btn .ic-send { width: 15px; height: 15px; }
+.send-btn { display: inline-flex; align-items: center; justify-content: center; }
+.action-btn.active { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 /* 知识库多选下拉: 与 action-btn 同高, 选中时高亮 */
 .kb-select { width: 130px; flex-shrink: 0; }
 .kb-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
 .kb-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.kb-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.kb-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 .kb-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
 .kb-select :deep(.el-select__tags-text) { font-size: 12px; }
 /* V3.1 技能选择下拉: 复用 kb-select 样式 */
 .skill-select { width: 116px; flex-shrink: 0; }
 .skill-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
 .skill-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.skill-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.skill-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 .skill-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
 .skill-select :deep(.el-select__tags-text) { font-size: 12px; }
 /* V2.3 Agent 选择下拉: 复用 kb-select 样式 */
 .agent-select { width: 120px; flex-shrink: 0; }
 .agent-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
 .agent-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.agent-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
+.agent-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 .agent-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
 .input-box textarea { width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.65; max-height: 160px; font-family: inherit; padding: 2px 2px 0; background: transparent; color: var(--dcdr-text-1); }
-.send-btn { flex: none; width: 34px; height: 34px; border: none; border-radius: var(--dcdr-radius-pill); color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
-.send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 6px 18px rgba(102,126,234,0.45); }
+.send-btn { flex: none; width: 34px; height: 34px; border: none; border-radius: var(--dcdr-radius-pill); color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: var(--dcdr-glow-accent); }
+.send-btn:hover:not(:disabled) { filter: brightness(1.08); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
 .input-hint { text-align: center; font-size: 12px; color: var(--dcdr-text-3); margin-top: 8px; }

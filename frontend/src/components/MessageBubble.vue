@@ -488,8 +488,8 @@ async function withdraw() {
 .msg-bubble :deep(th) { background: var(--dcdr-bg-subtle); font-weight: 600; }
 
 /* 引用角标: 圆形数字(deepseek 风格) */
-.msg-bubble :deep(.cite) { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; min-width: 18px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; font-size: 11px; font-weight: 600; text-decoration: none; margin: 0 2px; vertical-align: super; line-height: 1; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; box-shadow: 0 1px 3px rgba(102,126,234,0.3); position: relative; top: -1px; }
-.msg-bubble :deep(.cite:hover) { transform: scale(1.15); box-shadow: 0 2px 8px rgba(102,126,234,0.5); }
+.msg-bubble :deep(.cite) { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; min-width: 18px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; font-size: 11px; font-weight: 600; text-decoration: none; margin: 0 2px; vertical-align: super; line-height: 1; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease; box-shadow: 0 1px 3px var(--dcdr-accent-line); position: relative; top: -1px; }
+.msg-bubble :deep(.cite:hover) { transform: scale(1.15); box-shadow: 0 2px 8px var(--dcdr-accent-line); }
 .msg-bubble :deep(.cite .cite-num) { pointer-events: none; }
 
 /* 正文下方精简汇总行 */
@@ -501,7 +501,7 @@ async function withdraw() {
 /* 引用来源卡片列表 */
 .sources-list { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
 .source-card { padding: 12px 14px; border: 1px solid var(--dcdr-border); border-radius: 12px; background: var(--dcdr-surface); box-shadow: 0 2px 8px rgba(0,0,0,0.04); scroll-margin: 80px; transition: all 0.2s ease; }
-.source-card.highlight { border-color: var(--dcdr-accent); box-shadow: 0 0 0 2px var(--dcdr-accent-wash), 0 2px 12px rgba(102,126,234,0.15); animation: citeFlash 1.2s ease; }
+.source-card.highlight { border-color: var(--dcdr-accent); box-shadow: 0 0 0 2px var(--dcdr-accent-wash), 0 2px 12px var(--dcdr-accent-wash); animation: citeFlash 1.2s ease; }
 @keyframes citeFlash { 0% { background: #667eea14; } 100% { background: var(--dcdr-surface); } }
 .source-card-head { display: flex; align-items: center; gap: 8px; }
 .source-index { flex-shrink: 0; width: 22px; height: 22px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
@@ -549,7 +549,7 @@ async function withdraw() {
 .btn-primary:hover { color: #fff; opacity: 0.9; }
 
 /* 编辑历史消息 */
-.edit-box { background: var(--dcdr-surface); border: 1px solid var(--dcdr-accent-wash); border-radius: 14px; padding: 10px; box-shadow: 0 2px 8px rgba(102,126,234,0.08); }
+.edit-box { background: var(--dcdr-surface); border: 1px solid var(--dcdr-accent-wash); border-radius: 14px; padding: 10px; box-shadow: 0 2px 8px var(--dcdr-accent-wash); }
 .edit-textarea { width: 100%; min-height: 84px; resize: vertical; border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-bg-subtle); color: var(--dcdr-text-1); padding: 10px 12px; font-size: 14px; line-height: 1.6; outline: none; font-family: inherit; box-sizing: border-box; }
 .edit-textarea:focus { border-color: var(--dcdr-accent); background: var(--dcdr-surface); }
 
@@ -561,7 +561,7 @@ async function withdraw() {
 .msg-feedback { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
 .fb-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 28px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); border-radius: 8px; cursor: pointer; font-size: 14px; line-height: 1; transition: all 0.2s; filter: grayscale(0.65); }
 .fb-btn:hover:not(:disabled) { border-color: var(--dcdr-accent); background: var(--dcdr-accent-wash); filter: none; }
-.fb-btn.active { border-color: transparent; background: linear-gradient(135deg, rgba(102,126,234,0.2) 0%, rgba(118,75,162,0.16) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.45); filter: none; }
+.fb-btn.active { border-color: transparent; background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); filter: none; }
 .fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .fb-state { font-size: 12px; color: var(--dcdr-text-3); }
 .fb-undo { border: none; background: none; color: var(--dcdr-accent); cursor: pointer; font-size: 12px; padding: 0 2px; }

@@ -926,7 +926,7 @@ onMounted(() => {
 .wf-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
 .wf-item { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
 .wf-item:hover { background: var(--dcdr-bg); }
-.wf-item.active { background: linear-gradient(135deg, rgba(102,126,234,0.12) 0%, rgba(118,75,162,0.10) 100%); }
+.wf-item.active { background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); }
 .wf-icon { width: 32px; height: 32px; border-radius: 8px; background: var(--dcdr-bg); display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
 .wf-info { flex: 1; min-width: 0; }
 .wf-name { font-size: 13px; font-weight: 500; color: var(--dcdr-text-1); display: flex; align-items: center; gap: 4px; }
