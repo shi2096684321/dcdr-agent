@@ -1,61 +1,64 @@
 <template>
   <header class="app-header">
-    <div class="logo">
-      <img :src="logoUrl" class="logo-img" alt="DCDR" />
-      <span>DCDR</span>
+    <div class="brand">
+      <img class="brand-mark" :src="logoUrl" alt="DCDR" />
+      <span class="brand-name">DCDR</span>
+      <span class="brand-ver">v3.1</span>
     </div>
+
+    <!-- 全局命令入口：一级导航已在左侧轨道，这里只留"去哪儿"的兜底搜索 -->
+    <button type="button" class="command" @click="emit('open-command')">
+      <span class="command-icon" v-html="ICON_SEARCH" />
+      <span class="command-text">搜索会话、Agent、工作流…</span>
+      <kbd class="command-kbd">⌘K</kbd>
+    </button>
+
     <div class="header-right">
-      <div class="mode-switch">
-        <div class="mode-tab" :class="{active: mode==='chat'}" @click="$emit('update:mode', 'chat')">对话</div>
-        <div class="mode-tab" :class="{active: mode==='creative'}" @click="$emit('update:mode', 'creative')">创作</div>
-        <!-- 知识库开放给普通用户(可管理自己的 USER 级; 平台级只读), 登录即可使用 -->
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='knowledge'}" @click="$emit('update:mode', 'knowledge')">知识库</div>
-        <!-- 专家工作台: 专家 / 技能 / 技能市场 / 专家市场 四个二级页共用一个顶栏入口 -->
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='expert'}" @click="$emit('update:mode', 'expert')">专家</div>
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='memory'}" @click="$emit('update:mode', 'memory')">记忆</div>
-        <!-- 自动化: 工作流 / DAG 编排 / 定时任务 -->
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='auto'}" @click="$emit('update:mode', 'auto')">自动化</div>
-        <!-- 运维: 监控与成本 / 调用链 / 智能路由 / 检索健康(仅管理员) -->
-        <div v-if="authStore.isLoggedIn" class="mode-tab" :class="{active: mode==='ops'}" @click="$emit('update:mode', 'ops')">运维</div>
-        <div v-if="authStore.isAdmin" class="mode-tab" :class="{active: mode==='admin'}" @click="$emit('update:mode', 'admin')">管理</div>
-      </div>
-      <button class="web-search-toggle" :class="{active: webSearch}" title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
-              @click="emit('update:webSearch', !webSearch)">
-        <span class="ws-icon">🌐</span>
+      <button
+        type="button"
+        class="ws-toggle"
+        :class="{ 'is-active': webSearch }"
+        title="联网搜索：开启后优先调用联网检索获取实时/权威信息"
+        @click="emit('update:webSearch', !webSearch)"
+      >
+        <span class="ws-icon" v-html="ICON_GLOBE" />
         <span class="ws-label">联网搜索</span>
       </button>
-      <el-select :modelValue="currentModel" placeholder="选择模型" style="width:220px" @change="onModelChange">
+
+      <el-select :model-value="currentModel" placeholder="选择模型" class="model-select" @change="onModelChange">
         <el-option-group label="对话模型">
           <el-option v-for="m in platformChatModels" :key="m.name" :label="m.label" :value="m.name">
-            <span>{{ m.label }}</span><el-tag size="small" style="margin-left:8px">对话</el-tag>
+            <span>{{ m.label }}</span><el-tag size="small" style="margin-left: 8px">对话</el-tag>
           </el-option>
         </el-option-group>
         <el-option-group v-if="customModels.length" label="我的自定义模型">
           <el-option v-for="m in customModels" :key="m.name" :label="m.label" :value="m.name">
-            <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left:8px">自定义</el-tag>
+            <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left: 8px">自定义</el-tag>
           </el-option>
         </el-option-group>
         <el-option-group label="图片生成">
           <el-option v-for="m in imageModels" :key="m.name" :label="m.label" :value="m.name">
-            <span>{{ m.label }}</span><el-tag size="small" type="danger" style="margin-left:8px">图片</el-tag>
+            <span>{{ m.label }}</span><el-tag size="small" type="danger" style="margin-left: 8px">图片</el-tag>
           </el-option>
         </el-option-group>
         <el-option-group label="视频生成">
           <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name">
-            <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left:8px">视频</el-tag>
+            <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left: 8px">视频</el-tag>
           </el-option>
         </el-option-group>
         <el-option :value="MANAGE_MODELS" label="管理自定义模型">
-          <span style="color:#667eea">＋ 管理自定义模型</span>
+          <span class="manage-models">＋ 管理自定义模型</span>
         </el-option>
       </el-select>
+
+      <ThemeToggle />
 
       <!-- V2.2 用户菜单 -->
       <el-dropdown v-if="authStore.isLoggedIn" trigger="click" @command="onUserCommand">
         <div class="user-trigger">
-          <el-avatar :size="32" class="user-avatar">{{ avatarLetter }}</el-avatar>
+          <el-avatar :size="30" class="user-avatar">{{ avatarLetter }}</el-avatar>
           <span class="user-name">{{ authStore.username }}</span>
-          <el-tag v-if="authStore.isAdmin" type="danger" size="small" effect="dark">admin</el-tag>
+          <span v-if="authStore.isAdmin" class="user-role">admin</span>
         </div>
         <template #dropdown>
           <el-dropdown-menu>
@@ -112,7 +115,7 @@
   <el-dialog v-model="umFormVisible" :title="umTitle" width="500px">
     <el-form label-width="92px">
       <el-form-item label="选择厂商">
-        <el-select v-model="umPreset" placeholder="内置常见厂商(自动填 endpoint)" clearable filterable style="width:100%">
+        <el-select v-model="umPreset" placeholder="内置常见厂商(自动填 endpoint)" clearable filterable style="width: 100%">
           <el-option v-for="p in PRESETS" :key="p.label" :label="p.label" :value="p.label">
             <span>{{ p.label }}</span>
             <span class="um-preset-url">{{ p.baseUrl }}</span>
@@ -156,6 +159,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
 import { changePassword } from '@/api/auth'
 import { getUserModels, createUserModel, updateUserModel, deleteUserModel, extractMessage } from '@/api'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 import logoUrl from '@/assets/dcdr-logo.png'
 
 // 模型下拉中的"管理自定义模型"哨兵选项值
@@ -173,21 +177,24 @@ const PRESETS = [
   { label: 'SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', model: 'deepseek-ai/DeepSeek-V3' }
 ]
 
+const ICON_SEARCH = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="11" cy="11" r="7.2" stroke="currentColor" stroke-width="1.9"/><path d="M16.4 16.4L21 21" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/></svg>`
+
+const ICON_GLOBE = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="8.2" stroke="currentColor" stroke-width="1.9"/><path d="M3.8 12H20.2" stroke="currentColor" stroke-width="1.9"/><path d="M12 3.8C14.6 6.3 16.2 9 16.2 12C16.2 15 14.6 17.7 12 20.2C9.4 17.7 7.8 15 7.8 12C7.8 9 9.4 6.3 12 3.8Z" stroke="currentColor" stroke-width="1.9"/></svg>`
+
 const props = defineProps({
   models: { type: Array, default: () => [] },
   currentModel: { type: String, default: '' },
-  mode: { type: String, default: 'chat' },
   webSearch: { type: Boolean, default: false }
 })
-const emit = defineEmits(['update:currentModel', 'update:mode', 'update:webSearch', 'show-auth'])
+const emit = defineEmits(['update:currentModel', 'update:mode', 'update:webSearch', 'show-auth', 'open-command'])
 
 const authStore = useAuthStore()
 const modelStore = useModelStore()
 
-const platformChatModels = computed(() => props.models.filter(m => m.type === 'CHAT' && !isCustom(m)))
-const customModels = computed(() => props.models.filter(m => m.type === 'CHAT' && isCustom(m)))
-const imageModels = computed(() => props.models.filter(m => m.type === 'IMAGE'))
-const videoModels = computed(() => props.models.filter(m => m.type === 'VIDEO'))
+const platformChatModels = computed(() => props.models.filter((m) => m.type === 'CHAT' && !isCustom(m)))
+const customModels = computed(() => props.models.filter((m) => m.type === 'CHAT' && isCustom(m)))
+const imageModels = computed(() => props.models.filter((m) => m.type === 'IMAGE'))
+const videoModels = computed(() => props.models.filter((m) => m.type === 'VIDEO'))
 
 const avatarLetter = computed(() => (authStore.username || '?').charAt(0).toUpperCase())
 
@@ -197,7 +204,7 @@ function onModelChange(val) {
     return
   }
   emit('update:currentModel', val)
-  const m = props.models.find(x => x.name === val)
+  const m = props.models.find((x) => x.name === val)
   emit('update:mode', m && m.uiMode === 'creative' ? 'creative' : 'chat')
 }
 
@@ -208,14 +215,14 @@ const umItems = ref([])
 const umFormVisible = ref(false)
 const umSaving = ref(false)
 const umPreset = ref('')
-const anyPreset = computed(() => PRESETS.find(p => p.label === umPreset.value))
+const anyPreset = computed(() => PRESETS.find((p) => p.label === umPreset.value))
 const defaultModelPlaceholder = computed(() => (anyPreset.value ? `如: ${anyPreset.value.model}` : 'deepseek-chat'))
 const umForm = reactive({ id: '', name: '', baseUrl: '', apiKey: '', model: '', temperature: 0.7, maxTokens: 2000, enabled: true })
 const umTitle = computed(() => (umForm.id ? '编辑自定义模型' : '新增自定义模型'))
 
 // 选中内置厂商后自动填 endpoint, 名称留空则带上厂商名
 watch(umPreset, (val) => {
-  const p = PRESETS.find(x => x.label === val)
+  const p = PRESETS.find((x) => x.label === val)
   if (!p) return
   if (umForm.baseUrl === '' || !umForm.id) umForm.baseUrl = p.baseUrl
   if (!umForm.name.trim()) umForm.name = p.label
@@ -258,8 +265,14 @@ function openUmCreate() {
 function openUmEdit(m) {
   umPreset.value = ''
   Object.assign(umForm, {
-    id: m.id, name: m.name, baseUrl: m.baseUrl, apiKey: '',
-    model: m.model, temperature: m.temperature, maxTokens: m.maxTokens, enabled: m.enabled
+    id: m.id,
+    name: m.name,
+    baseUrl: m.baseUrl,
+    apiKey: '',
+    model: m.model,
+    temperature: m.temperature,
+    maxTokens: m.maxTokens,
+    enabled: m.enabled
   })
   umFormVisible.value = true
 }
@@ -271,9 +284,14 @@ async function submitUm() {
   umSaving.value = true
   try {
     const payload = {
-      name: umForm.name.trim() || umForm.model.trim(), provider: 'openai-compatible', baseUrl: umForm.baseUrl.trim(),
-      apiKey: umForm.apiKey.trim(), model: umForm.model.trim(),
-      temperature: umForm.temperature, maxTokens: umForm.maxTokens, enabled: umForm.enabled
+      name: umForm.name.trim() || umForm.model.trim(),
+      provider: 'openai-compatible',
+      baseUrl: umForm.baseUrl.trim(),
+      apiKey: umForm.apiKey.trim(),
+      model: umForm.model.trim(),
+      temperature: umForm.temperature,
+      maxTokens: umForm.maxTokens,
+      enabled: umForm.enabled
     }
     if (umForm.id) await updateUserModel(umForm.id, payload)
     else await createUserModel(payload)
@@ -300,16 +318,19 @@ function deleteUm(m) {
       } catch (e) {
         ElMessage.error(extractMessage(e) || '删除失败')
       }
-    }).catch(() => {})
+    })
+    .catch(() => {})
 }
 
 function onUserCommand(cmd) {
   if (cmd === 'logout') {
-    ElMessageBox.confirm('确定要退出登录吗?', '提示', { type: 'warning' }).then(async () => {
-      await authStore.logout()
-      ElMessage.success('已退出登录')
-      emit('update:mode', 'chat')
-    }).catch(() => {})
+    ElMessageBox.confirm('确定要退出登录吗?', '提示', { type: 'warning' })
+      .then(async () => {
+        await authStore.logout()
+        ElMessage.success('已退出登录')
+        emit('update:mode', 'chat')
+      })
+      .catch(() => {})
   } else if (cmd === 'admin') {
     emit('update:mode', 'admin')
   } else if (cmd === 'password') {
@@ -349,32 +370,254 @@ async function submitChangePassword() {
 </script>
 
 <style scoped>
-.app-header { height: 56px; background: #fff; border-bottom: 1px solid #e8e8e8; display: flex; align-items: center; padding: 0 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); z-index: 100; }
-.logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
-.logo-img { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; }
-.header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-.mode-switch { display: flex; background: #f5f7fa; border-radius: 8px; padding: 3px; }
-.mode-tab { padding: 5px 16px; font-size: 13px; border-radius: 6px; cursor: pointer; color: #606266; user-select: none; }
-.mode-tab.active { background: #fff; color: #667eea; font-weight: 500; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
-.web-search-toggle { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 14px; border-radius: 8px; border: 1px solid #dcdfe6; background: #f5f7fa; color: #606266; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.2s; }
-.web-search-toggle:hover { border-color: #667eea66; color: #667eea; }
-.web-search-toggle.active { background: linear-gradient(135deg, rgba(102,126,234,0.16) 0%, rgba(118,75,162,0.14) 100%); border-color: rgba(102,126,234,0.5); color: #667eea; font-weight: 500; }
-.web-search-toggle .ws-icon { font-size: 15px; }
-.user-trigger { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 4px 8px; border-radius: 8px; transition: background 0.2s; }
-.user-trigger:hover { background: #f5f7fa; }
-.user-avatar { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #fff; font-weight: 600; font-size: 14px; }
-.user-name { font-size: 13px; color: #303133; max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-header {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  height: var(--dcdr-header-h);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  background: var(--dcdr-header-bg);
+  border-bottom: 1px solid var(--dcdr-border);
+  backdrop-filter: blur(14px);
+}
 
-/* 自定义模型管理对话框样式 */
-.um-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.um-tip { color: #86909c; font-size: 13px; flex: 1; }
-.um-list { max-height: 420px; overflow-y: auto; }
-.um-item { display: flex; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid #f2f3f5; }
-.um-item:last-child { border-bottom: none; }
-.um-info { flex: 1; }
-.um-name { font-weight: 500; font-size: 14px; margin-right: 8px; }
-.um-model { color: #86909c; font-size: 12px; }
-.um-ops { display: flex; gap: 4px; }
-.um-empty { text-align: center; padding: 40px 0; color: #86909c; }
-.um-preset-url { float: right; color: #86909c; font-size: 12px; margin-left: 16px; }
+/* ---------- 品牌 ---------- */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  object-fit: cover;
+  box-shadow: var(--dcdr-glow-accent);
+}
+
+.brand-name {
+  font-family: var(--dcdr-font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--dcdr-text-1);
+}
+
+.brand-ver {
+  font-family: var(--dcdr-font-mono);
+  font-size: 9.5px;
+  padding: 2px 6px;
+  border-radius: var(--dcdr-radius-pill);
+  background: var(--dcdr-hover);
+  color: var(--dcdr-text-2);
+}
+
+/* ---------- 全局命令框 ---------- */
+.command {
+  width: 360px;
+  max-width: 34vw;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 12px;
+  border-radius: var(--dcdr-radius-pill);
+  border: 1px solid var(--dcdr-border);
+  background: var(--dcdr-hover);
+  color: var(--dcdr-text-3);
+  transition: border-color var(--dcdr-dur) var(--dcdr-ease);
+}
+
+.command:hover {
+  border-color: rgba(46, 167, 255, 0.45);
+}
+
+.command-icon {
+  display: flex;
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
+.command-text {
+  flex: 1;
+  text-align: left;
+  font-size: 12.5px;
+  color: var(--dcdr-text-3);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.command-kbd {
+  font-family: var(--dcdr-font-mono);
+  font-size: 9.5px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: var(--dcdr-hover);
+  border: 1px solid var(--dcdr-border);
+  color: var(--dcdr-text-3);
+}
+
+/* ---------- 右侧 ---------- */
+.header-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+}
+
+.ws-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--dcdr-radius-pill);
+  border: 1px solid var(--dcdr-border);
+  background: var(--dcdr-hover);
+  color: var(--dcdr-text-2);
+  font-size: 12.5px;
+  transition:
+    color var(--dcdr-dur) var(--dcdr-ease),
+    border-color var(--dcdr-dur) var(--dcdr-ease),
+    background var(--dcdr-dur) var(--dcdr-ease);
+}
+
+.ws-toggle:hover {
+  color: var(--dcdr-text-1);
+  border-color: rgba(46, 167, 255, 0.45);
+}
+
+.ws-toggle.is-active {
+  background: var(--dcdr-accent-wash);
+  border-color: rgba(46, 167, 255, 0.5);
+  color: var(--dcdr-accent-soft);
+  font-weight: 500;
+}
+
+.ws-icon {
+  display: flex;
+  width: 14px;
+  height: 14px;
+}
+
+.model-select {
+  width: 212px;
+}
+
+.manage-models {
+  color: var(--dcdr-accent);
+}
+
+/* ---------- 用户 ---------- */
+.user-trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: var(--dcdr-radius-pill);
+  cursor: pointer;
+  transition: background var(--dcdr-dur) var(--dcdr-ease);
+}
+
+.user-trigger:hover {
+  background: var(--dcdr-hover);
+}
+
+.user-avatar {
+  background: linear-gradient(135deg, var(--dcdr-accent-2) 0%, var(--dcdr-accent) 100%);
+  color: #fff;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.user-name {
+  font-size: 12.5px;
+  color: var(--dcdr-text-1);
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-role {
+  font-family: var(--dcdr-font-mono);
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: var(--dcdr-radius-pill);
+  background: rgba(255, 143, 163, 0.16);
+  color: var(--dcdr-danger);
+}
+
+/* ---------- 自定义模型管理对话框 ---------- */
+.um-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.um-tip {
+  color: var(--dcdr-text-2);
+  font-size: 13px;
+  flex: 1;
+}
+
+.um-list {
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.um-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--dcdr-border);
+}
+
+.um-item:last-child {
+  border-bottom: none;
+}
+
+.um-info {
+  flex: 1;
+}
+
+.um-name {
+  font-weight: 500;
+  font-size: 14px;
+  margin-right: 8px;
+}
+
+.um-model {
+  color: var(--dcdr-text-3);
+  font-size: 12px;
+  font-family: var(--dcdr-font-mono);
+}
+
+.um-ops {
+  display: flex;
+  gap: 4px;
+}
+
+.um-empty {
+  text-align: center;
+  padding: 40px 0;
+  color: var(--dcdr-text-3);
+}
+
+.um-preset-url {
+  float: right;
+  color: var(--dcdr-text-3);
+  font-size: 12px;
+  margin-left: 16px;
+}
 </style>

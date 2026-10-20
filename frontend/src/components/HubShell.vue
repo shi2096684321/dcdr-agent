@@ -45,24 +45,30 @@ const emit = defineEmits(['update:tab'])
   flex: none;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   padding: 7px 24px;
-  background: #fff;
-  border-bottom: 1px solid #e8e8e8;
+  background: var(--dcdr-header-bg);
+  border-bottom: 1px solid var(--dcdr-border);
+  backdrop-filter: blur(14px);
 }
 .hub-tab {
-  padding: 6px 14px;
-  font-size: 13px;
-  color: #606266;
+  padding: 6px 13px;
+  font-size: 12.5px;
+  color: var(--dcdr-text-3);
   background: transparent;
-  border: none;
-  border-radius: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--dcdr-radius-pill);
   cursor: pointer;
   user-select: none;
-  transition: background 0.2s, color 0.2s;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
-.hub-tab:hover { background: #f2f3f5; color: #667eea; }
-.hub-tab.active { background: #eef2ff; color: #667eea; font-weight: 500; }
+.hub-tab:hover { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
+.hub-tab.active {
+  background: var(--dcdr-accent-wash);
+  border-color: rgba(46, 167, 255, 0.45);
+  color: var(--dcdr-accent-soft);
+  font-weight: 500;
+}
 
 /* 子页要在这里"填满并自己滚": overflow:hidden + min-height:0 缺一个, 长列表就会把外层撑开 */
 .hub-body { flex: 1; display: flex; overflow: hidden; min-height: 0; min-width: 0; }
