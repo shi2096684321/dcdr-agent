@@ -119,22 +119,26 @@ async function handleRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background:
+    radial-gradient(1100px 720px at 22% -12%, rgba(46, 167, 255, 0.22), transparent 62%),
+    radial-gradient(900px 640px at 92% 112%, rgba(147, 129, 255, 0.18), transparent 62%),
+    var(--dcdr-bg);
   padding: 20px;
 }
 .auth-card {
-  background: #fff;
-  border-radius: 16px;
+  background: var(--dcdr-surface);
+  border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-card);
   padding: 36px 40px;
   width: 100%;
   max-width: 420px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  box-shadow: var(--dcdr-shadow-pop);
 }
 .auth-header { display: flex; align-items: center; gap: 14px; margin-bottom: 28px; }
 .auth-logo { width: 48px; height: 48px; border-radius: 12px; object-fit: cover; }
-.auth-title { font-size: 22px; font-weight: 600; color: #1f2937; margin: 0; }
-.auth-subtitle { font-size: 13px; color: #6b7280; margin: 4px 0 0; }
+.auth-title { font-size: 22px; font-weight: 600; color: var(--dcdr-text-1); margin: 0; }
+.auth-subtitle { font-size: 13px; color: var(--dcdr-text-2); margin: 4px 0 0; }
 .auth-tabs :deep(.el-tabs__header) { margin-bottom: 20px; }
 .auth-submit { width: 100%; margin-top: 8px; }
-.auth-tip { font-size: 12px; color: #9ca3af; text-align: center; margin: 12px 0 0; }
+.auth-tip { font-size: 12px; color: var(--dcdr-text-3); text-align: center; margin: 12px 0 0; }
 </style>

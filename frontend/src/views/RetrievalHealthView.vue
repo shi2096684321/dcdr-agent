@@ -176,7 +176,7 @@ function renderChart() {
         name: '零命中率',
         type: 'bar',
         data: trend.map((p) => p.zeroHitRate),
-        itemStyle: { color: '#f56c6c' },
+        itemStyle: { color: 'var(--dcdr-danger)' },
         barMaxWidth: 22
       },
       {
@@ -186,7 +186,7 @@ function renderChart() {
         smooth: true,
         connectNulls: true,
         data: trend.map((p) => p.avgTopScore),
-        itemStyle: { color: '#667eea' }
+        itemStyle: { color: 'var(--dcdr-accent)' }
       },
       {
         name: '检索次数',
@@ -242,37 +242,37 @@ watch(days, () => {
 </script>
 
 <style scoped>
-.retrieval-health { flex: 1; overflow-y: auto; padding: 20px 24px; background: #f7f8fa; }
+.retrieval-health { flex: 1; overflow-y: auto; padding: 20px 24px; background: var(--dcdr-bg-subtle); }
 .rh-toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .rh-title { display: flex; align-items: center; gap: 10px; }
-.rh-h1 { font-size: 18px; font-weight: 600; color: #303133; }
-.rh-sub { font-size: 12px; color: #86909c; }
+.rh-h1 { font-size: 18px; font-weight: 600; color: var(--dcdr-text-1); }
+.rh-sub { font-size: 12px; color: var(--dcdr-text-3); }
 .rh-actions { display: flex; align-items: center; gap: 12px; }
 .rh-body { display: flex; flex-direction: column; gap: 16px; }
 
 /* KPI 卡片: 与 MonitorView 的统计卡片保持同一视觉语言 */
 .rh-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
 .stat-card {
-  background: #fff; border: 1px solid #ebeef5; border-radius: 10px;
+  background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px;
   padding: 16px; text-align: center; transition: border-color 0.2s;
 }
-.stat-card.warn { border-color: #f56c6c; background: #fef0f0; }
-.stat-card .s-value { font-size: 24px; font-weight: 600; color: #303133; }
-.stat-card.warn .s-value { color: #f56c6c; }
-.stat-card .s-label { font-size: 12px; color: #86909c; margin-top: 6px; }
+.stat-card.warn { border-color: var(--dcdr-danger); background: var(--dcdr-bg-subtle); }
+.stat-card .s-value { font-size: 24px; font-weight: 600; color: var(--dcdr-text-1); }
+.stat-card.warn .s-value { color: var(--dcdr-danger); }
+.stat-card .s-label { font-size: 12px; color: var(--dcdr-text-3); margin-top: 6px; }
 .delta { margin-left: 6px; font-size: 11px; }
-.delta.up { color: #67c23a; }
-.delta.down { color: #f56c6c; }
+.delta.up { color: var(--dcdr-success); }
+.delta.down { color: var(--dcdr-danger); }
 
 .rh-prev {
-  font-size: 12px; color: #86909c;
-  background: #fff; border: 1px solid #ebeef5; border-radius: 8px; padding: 10px 14px;
+  font-size: 12px; color: var(--dcdr-text-3);
+  background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 10px 14px;
 }
 
 .rh-card { border-radius: 10px; }
-.card-title { font-weight: 600; color: #303133; }
-.card-hint { margin-left: 12px; font-size: 12px; color: #86909c; }
+.card-title { font-weight: 600; color: var(--dcdr-text-1); }
+.card-hint { margin-left: 12px; font-size: 12px; color: var(--dcdr-text-3); }
 .rh-chart { height: 300px; }
-.rh-empty { text-align: center; color: #86909c; padding: 40px 0; }
-.cell-warn { color: #f56c6c; font-weight: 500; }
+.rh-empty { text-align: center; color: var(--dcdr-text-3); padding: 40px 0; }
+.cell-warn { color: var(--dcdr-danger); font-weight: 500; }
 </style>

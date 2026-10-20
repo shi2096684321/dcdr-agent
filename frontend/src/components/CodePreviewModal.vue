@@ -77,14 +77,14 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 <style scoped>
 .code-preview-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.72); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 32px; animation: cpFade 0.18s ease; }
 @keyframes cpFade { from { opacity: 0; } to { opacity: 1; } }
-.cp-panel { width: min(1100px, 100%); height: min(760px, 100%); background: #fff; border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 72px rgba(0, 0, 0, 0.4); }
-.cp-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #e8ecf4; background: #f8fafc; }
-.cp-icon { color: #2e9e6b; font-size: 12px; }
-.cp-title { font-size: 14px; font-weight: 600; color: #1f2937; }
-.cp-lang { font-size: 11px; color: #2563eb; background: #e8f0ff; border-radius: 6px; padding: 2px 8px; font-family: monospace; }
+.cp-panel { width: min(1100px, 100%); height: min(760px, 100%); background: var(--dcdr-surface); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 72px rgba(0, 0, 0, 0.4); }
+.cp-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--dcdr-border); background: var(--dcdr-surface); }
+.cp-icon { color: var(--dcdr-success); font-size: 12px; }
+.cp-title { font-size: 14px; font-weight: 600; color: var(--dcdr-text-1); }
+.cp-lang { font-size: 11px; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); border-radius: 6px; padding: 2px 8px; font-family: monospace; }
 .cp-actions { margin-left: auto; display: flex; gap: 8px; }
-.cp-btn { border: 1px solid #d7dded; background: #fff; color: #4a5568; font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; }
-.cp-btn:hover { border-color: #667eea; color: #667eea; }
-.cp-close:hover { border-color: #f56c6c; color: #f56c6c; }
-.cp-frame { flex: 1; width: 100%; border: none; background: #fff; }
+.cp-btn { border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); color: var(--dcdr-text-2); font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; }
+.cp-btn:hover { border-color: var(--dcdr-accent); color: var(--dcdr-accent); }
+.cp-close:hover { border-color: var(--dcdr-danger); color: var(--dcdr-danger); }
+.cp-frame { flex: 1; width: 100%; border: none; background: var(--dcdr-surface); }
 </style>

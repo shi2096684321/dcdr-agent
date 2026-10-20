@@ -21,19 +21,19 @@
       <div class="palette">
         <div class="p-title">添加节点</div>
         <div class="p-item" @click="addNode('agent')">
-          <span class="p-icon" style="background:#667eea">A</span> 专家节点
+          <span class="p-icon" style="background:var(--dcdr-accent)">A</span> 专家节点
         </div>
         <div class="p-item" @click="addNode('condition')">
-          <span class="p-icon" style="background:#e6a23c">?</span> 条件分支
+          <span class="p-icon" style="background:var(--dcdr-warning)">?</span> 条件分支
         </div>
         <div class="p-item" @click="addNode('router')">
           <span class="p-icon" style="background:#8b5cf6">⇢</span> 路由节点
         </div>
         <div class="p-item" @click="addNode('approval')">
-          <span class="p-icon" style="background:#f56c6c">☑</span> 人工审批
+          <span class="p-icon" style="background:var(--dcdr-danger)">☑</span> 人工审批
         </div>
         <div class="p-item" @click="addNode('merge')">
-          <span class="p-icon" style="background:#67c23a">M</span> 分支合并
+          <span class="p-icon" style="background:var(--dcdr-success)">M</span> 分支合并
         </div>
         <div class="p-hint">
           <div>· 拖动节点调整布局</div>
@@ -56,7 +56,7 @@
           <rect width="100%" height="100%" fill="url(#grid)"/>
           <!-- 边 -->
           <g v-for="e in edges" :key="e.source + '->' + e.target" class="edge" @click="selectEdge(e)">
-            <path :d="edgePath(e)" fill="none" :stroke="selectedEdge === e ? '#f56c6c' : '#b9c0cc'" stroke-width="2" marker-end="url(#arrow)"/>
+            <path :d="edgePath(e)" fill="none" :stroke="selectedEdge === e ? 'var(--dcdr-danger)' : '#b9c0cc'" stroke-width="2" marker-end="url(#arrow)"/>
             <text v-if="e.label" :x="edgeMid(e).x" :y="edgeMid(e).y - 6" text-anchor="middle" class="edge-label">{{ e.label }}</text>
           </g>
           <defs>
@@ -65,7 +65,7 @@
             </marker>
           </defs>
           <!-- 连线预览 -->
-          <path v-if="linking" :d="previewPath" fill="none" stroke="#667eea" stroke-width="2" stroke-dasharray="6 4"/>
+          <path v-if="linking" :d="previewPath" fill="none" stroke="var(--dcdr-accent)" stroke-width="2" stroke-dasharray="6 4"/>
           <!-- 节点 -->
           <g v-for="n in nodes" :key="n.id" class="node"
              :transform="`translate(${n.position.x},${n.position.y})`"
@@ -521,49 +521,49 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.dag-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: #f5f7fa; }
+.dag-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--dcdr-bg-subtle); }
 .dag-header { padding: 16px 24px 0; }
-.dag-header h2 { margin: 0 0 2px; font-size: 20px; color: #303133; }
-.subtitle { margin: 0; font-size: 13px; color: #909399; }
+.dag-header h2 { margin: 0 0 2px; font-size: 20px; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); }
 .dag-toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 24px; }
 .dag-body { flex: 1; display: flex; min-height: 0; margin: 0 24px 20px; gap: 12px; }
 
-.palette { width: 180px; background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 12px; flex-shrink: 0; }
-.p-title { font-weight: 600; font-size: 13px; color: #303133; margin-bottom: 10px; }
+.palette { width: 180px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 12px; flex-shrink: 0; }
+.p-title { font-weight: 600; font-size: 13px; color: var(--dcdr-text-1); margin-bottom: 10px; }
 .p-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer;
-  font-size: 13px; color: #606266; margin-bottom: 6px; border: 1px dashed transparent; }
-.p-item:hover { background: #f5f7fa; border-color: #d3dce9; }
+  font-size: 13px; color: var(--dcdr-text-2); margin-bottom: 6px; border: 1px dashed transparent; }
+.p-item:hover { background: var(--dcdr-bg-subtle); border-color: var(--dcdr-border); }
 .p-icon { width: 24px; height: 24px; border-radius: 6px; color: #fff; font-size: 12px; display: inline-flex;
   align-items: center; justify-content: center; font-weight: 600; }
-.p-hint { margin-top: 12px; font-size: 12px; color: #a8abb2; line-height: 1.8; }
+.p-hint { margin-top: 12px; font-size: 12px; color: var(--dcdr-text-3); line-height: 1.8; }
 
-.canvas-wrap { flex: 1; background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; overflow: auto; position: relative; }
+.canvas-wrap { flex: 1; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; overflow: auto; position: relative; }
 .canvas-svg { display: block; }
-.empty-tip { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: #909399; font-size: 13px; }
+.empty-tip { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: var(--dcdr-text-3); font-size: 13px; }
 .node { cursor: grab; }
 .node-box { fill: #fff; stroke: #b9c0cc; stroke-width: 1.5; }
-.node-box.nt-agent { stroke: #667eea; }
-.node-box.nt-condition { stroke: #e6a23c; }
+.node-box.nt-agent { stroke: var(--dcdr-accent); }
+.node-box.nt-condition { stroke: var(--dcdr-warning); }
 .node-box.nt-router { stroke: #8b5cf6; }
-.node-box.nt-approval { stroke: #f56c6c; }
-.node-box.nt-merge { stroke: #67c23a; }
+.node-box.nt-approval { stroke: var(--dcdr-danger); }
+.node-box.nt-merge { stroke: var(--dcdr-success); }
 .node-box.selected { stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(102,126,234,0.35)); }
 .node-box.linking { stroke-dasharray: 6 3; }
 .node-label { font-size: 13px; font-weight: 600; fill: #303133; }
 .node-sub { font-size: 11px; fill: #909399; }
-.anchor { fill: #667eea; cursor: crosshair; }
+.anchor { fill: var(--dcdr-accent); cursor: crosshair; }
 .anchor:hover { r: 8; }
 .edge { cursor: pointer; }
-.edge:hover path { stroke: #f56c6c; }
-.edge-label { font-size: 11px; fill: #e6a23c; }
+.edge:hover path { stroke: var(--dcdr-danger); }
+.edge-label { font-size: 11px; fill: var(--dcdr-warning); }
 
-.props { width: 260px; background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 12px; flex-shrink: 0; overflow-y: auto; }
-.p-tip { font-size: 12px; color: #909399; line-height: 1.8; margin: 6px 0; }
+.props { width: 260px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 12px; flex-shrink: 0; overflow-y: auto; }
+.p-tip { font-size: 12px; color: var(--dcdr-text-3); line-height: 1.8; margin: 6px 0; }
 
 .run-result { font-size: 13px; line-height: 1.8; }
 .run-status { font-weight: 600; margin-bottom: 8px; }
-.run-status.success { color: #67c23a; }
-.run-status.failed { color: #f56c6c; }
-.run-error { color: #f56c6c; }
-.run-final { margin-top: 8px; padding-top: 8px; border-top: 1px solid #f0f0f0; color: #606266; }
+.run-status.success { color: var(--dcdr-success); }
+.run-status.failed { color: var(--dcdr-danger); }
+.run-error { color: var(--dcdr-danger); }
+.run-final { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--dcdr-border); color: var(--dcdr-text-2); }
 </style>

@@ -456,45 +456,45 @@ onMounted(() => {
 /* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
 .memory-mode { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 960px; margin: 0 auto; }
 .memory-header { margin-bottom: 16px; }
-.memory-header h2 { margin: 0 0 4px; font-size: 20px; color: #1d2129; }
-.subtitle { margin: 0; font-size: 13px; color: #86909c; line-height: 1.7; }
+.memory-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); line-height: 1.7; }
 /* 与知识库的选用指引: 视觉权重低于正文说明, 但常驻可见 —— "这条该放哪"的疑问随时会产生 */
-.scope-tip { margin: 8px 0 0; padding: 8px 12px; font-size: 12.5px; color: #667eea;
-  background: #f2f4ff; border-radius: 8px; line-height: 1.7; }
+.scope-tip { margin: 8px 0 0; padding: 8px 12px; font-size: 12.5px; color: var(--dcdr-accent);
+  background: var(--dcdr-bg-subtle); border-radius: 8px; line-height: 1.7; }
 
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
-.stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: #86909c; }
+.stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--dcdr-text-3); }
 .stat-item { white-space: nowrap; }
 /* 有"从未命中"的记忆时给个视觉提示 —— 它们是纯成本, 值得被注意到 */
-.stat-warn { color: #e6a23c; font-weight: 500; }
+.stat-warn { color: var(--dcdr-warning); font-weight: 500; }
 /* 自动记忆开关: 标签 + 开关 + 状态说明排一行 */
 .auto-switch { display: inline-flex; align-items: center; gap: 6px; }
 .auto-label { cursor: help; }
 /* 开启时用主色: 提示"这里的内容可能不再是全部手写的" */
-.auto-on { color: #667eea; font-weight: 500; }
-.auto-note { font-size: 12px; color: #909399; cursor: help; }
+.auto-on { color: var(--dcdr-accent); font-weight: 500; }
+.auto-note { font-size: 12px; color: var(--dcdr-text-3); cursor: help; }
 
 .retrieval-tip {
-  font-size: 12px; color: #667eea; background: #f2f4ff;
+  font-size: 12px; color: var(--dcdr-accent); background: var(--dcdr-bg-subtle);
   border-radius: 6px; padding: 6px 10px; margin-bottom: 12px;
   line-height: 1.6;   /* 说明按实际参数生成, 会占两三行 */
 }
 
 .memory-list { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
-.memory-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
+.memory-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
 .memory-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
 .memory-card.inactive { opacity: 0.6; border-left: 3px solid #c0c4cc; }
 .mc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.mc-agent { font-size: 12px; color: #e6a23c; }
-.mc-never-hit { font-size: 11px; color: #c0c4cc; }
-.mc-importance { font-size: 11px; color: #86909c; }
-.mc-time { font-size: 11px; color: #a0a4ab; margin-left: auto; }
-.mc-content { font-size: 13px; color: #1d2129; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
-.mc-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: #86909c; }
-.mc-meta b { color: #606266; font-weight: 500; }
+.mc-agent { font-size: 12px; color: var(--dcdr-warning); }
+.mc-never-hit { font-size: 11px; color: var(--dcdr-text-3); }
+.mc-importance { font-size: 11px; color: var(--dcdr-text-3); }
+.mc-time { font-size: 11px; color: var(--dcdr-text-3); margin-left: auto; }
+.mc-content { font-size: 13px; color: var(--dcdr-text-1); line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
+.mc-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--dcdr-text-3); }
+.mc-meta b { color: var(--dcdr-text-2); font-weight: 500; }
 .mc-ops { display: flex; gap: 4px; margin-top: 8px; }
 
-.empty-tip { text-align: center; color: #a0a4ab; padding: 60px 20px; font-size: 13px; line-height: 1.8; }
-.opt-note { float: right; color: #a0a4ab; font-size: 12px; margin-left: 16px; }
-.form-note { margin-left: 12px; font-size: 12px; color: #a0a4ab; }
+.empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 13px; line-height: 1.8; }
+.opt-note { float: right; color: var(--dcdr-text-3); font-size: 12px; margin-left: 16px; }
+.form-note { margin-left: 12px; font-size: 12px; color: var(--dcdr-text-3); }
 </style>

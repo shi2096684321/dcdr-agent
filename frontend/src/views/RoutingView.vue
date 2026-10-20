@@ -174,39 +174,39 @@ onMounted(() => {
 /* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
 .routing-mode { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 960px; margin: 0 auto; }
 .routing-header { margin-bottom: 16px; }
-.routing-header h2 { margin: 0 0 4px; font-size: 20px; color: #1d2129; }
-.subtitle { margin: 0; font-size: 13px; color: #86909c; }
+.routing-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); }
 
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: #86909c; }
-.stat-item.success { color: #67c23a; }
-.stat-item.warn { color: #e6a23c; }
+.stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--dcdr-text-3); }
+.stat-item.success { color: var(--dcdr-success); }
+.stat-item.warn { color: var(--dcdr-warning); }
 
 .log-list { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
-.log-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
+.log-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
 .log-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.log-card.low-conf { border-left: 3px solid #e6a23c; }
+.log-card.low-conf { border-left: 3px solid var(--dcdr-warning); }
 .log-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.log-target { font-size: 13px; font-weight: 500; color: #667eea; }
-.log-tokens { font-size: 11px; color: #86909c; }
-.log-time { font-size: 11px; color: #a0a4ab; margin-left: auto; }
-.log-message { font-size: 13px; color: #1d2129; line-height: 1.6; word-break: break-word; }
-.log-message .rl, .log-reason .rl { color: #86909c; font-size: 12px; }
-.log-reason { font-size: 12px; color: #606266; margin-top: 6px; line-height: 1.6; }
+.log-target { font-size: 13px; font-weight: 500; color: var(--dcdr-accent); }
+.log-tokens { font-size: 11px; color: var(--dcdr-text-3); }
+.log-time { font-size: 11px; color: var(--dcdr-text-3); margin-left: auto; }
+.log-message { font-size: 13px; color: var(--dcdr-text-1); line-height: 1.6; word-break: break-word; }
+.log-message .rl, .log-reason .rl { color: var(--dcdr-text-3); font-size: 12px; }
+.log-reason { font-size: 12px; color: var(--dcdr-text-2); margin-top: 6px; line-height: 1.6; }
 
-.empty-tip { text-align: center; color: #a0a4ab; padding: 60px 20px; font-size: 13px; line-height: 1.8; }
+.empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 13px; line-height: 1.8; }
 
 /* ===== 详情抽屉 ===== */
 .card-foot { margin-top: 8px; }
-.detail-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #667eea; background: #f2f4ff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.detail-toggle:hover { background: #e6eaff; }
+.detail-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dcdr-accent); background: var(--dcdr-bg-subtle); border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.detail-toggle:hover { background: var(--dcdr-bg-subtle); }
 .d-grid { display: grid; grid-template-columns: 100px 1fr; gap: 8px 10px; font-size: 13px; align-items: baseline; }
-.d-k { color: #86909c; font-size: 12px; }
-.d-v { color: #1d2129; word-break: break-all; }
+.d-k { color: var(--dcdr-text-3); font-size: 12px; }
+.d-v { color: var(--dcdr-text-1); word-break: break-all; }
 .d-v.mono { font-family: monospace; }
-.d-note { font-size: 11px; color: #c0c4cc; }
+.d-note { font-size: 11px; color: var(--dcdr-text-3); }
 .d-block { margin-top: 14px; }
-.d-pre { margin: 4px 0 0; background: #f8f9fc; border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.d-pre { margin: 4px 0 0; background: var(--dcdr-bg-subtle); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 
 .pager { margin-top: 20px; display: flex; justify-content: center; }
 </style>

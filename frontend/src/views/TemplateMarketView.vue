@@ -235,20 +235,20 @@ onMounted(() => { load() })
 </script>
 
 <style scoped>
-.market-mode { flex: 1; overflow-y: auto; padding: 24px 28px; background: #f5f7fa; }
-.market-header h2 { margin: 0 0 4px; font-size: 20px; color: #303133; }
-.subtitle { margin: 0 0 16px; font-size: 13px; color: #909399; }
+.market-mode { flex: 1; overflow-y: auto; padding: 24px 28px; background: var(--dcdr-bg-subtle); }
+.market-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
+.subtitle { margin: 0 0 16px; font-size: 13px; color: var(--dcdr-text-3); }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; min-height: 200px; }
-.tpl-card { background: #fff; border: 1px solid #e8e8e8; border-radius: 10px; padding: 14px 16px;
+.tpl-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 14px 16px;
   display: flex; flex-direction: column; gap: 8px; transition: box-shadow 0.2s; }
 .tpl-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
 .tpl-head { display: flex; align-items: center; gap: 8px; }
-.tpl-title { font-weight: 600; font-size: 15px; color: #303133; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tpl-desc { font-size: 13px; color: #606266; min-height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.tpl-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: #909399; }
+.tpl-title { font-weight: 600; font-size: 15px; color: var(--dcdr-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tpl-desc { font-size: 13px; color: var(--dcdr-text-2); min-height: 36px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tpl-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--dcdr-text-3); }
 .tpl-tags { display: flex; gap: 6px; flex-wrap: wrap; }
-.tpl-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; border-top: 1px solid #f0f0f0; padding-top: 10px; }
-.empty-tip { grid-column: 1 / -1; text-align: center; color: #909399; padding: 60px 0; line-height: 2; }
+.tpl-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; border-top: 1px solid var(--dcdr-border); padding-top: 10px; }
+.empty-tip { grid-column: 1 / -1; text-align: center; color: var(--dcdr-text-3); padding: 60px 0; line-height: 2; }
 .pager { margin-top: 16px; display: flex; justify-content: center; }
 </style>

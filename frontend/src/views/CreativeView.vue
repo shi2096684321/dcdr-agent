@@ -805,12 +805,12 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   --text: #e9ebf2;
   --text-2: #9ea4b3;
   --text-3: #646b7d;
-  --accent: #8b7ff5;
-  --accent-2: #b06bff;
-  --accent-glow: rgba(139, 127, 245, 0.35);
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
+  --accent: var(--dcdr-accent);
+  --accent-2: var(--dcdr-accent-2);
+  --accent-glow: var(--dcdr-accent-wash);
+  --success: var(--dcdr-success);
+  --warning: var(--dcdr-warning);
+  --danger: var(--dcdr-danger);
   --radius-card: 14px;
   --radius-input: 10px;
   --radius-pill: 999px;
@@ -821,6 +821,20 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
     radial-gradient(1000px 700px at 100% 100%, rgba(118, 75, 162, 0.18), transparent 55%),
     var(--bg-base);
   color: var(--text);
+}
+
+/* 浅色主题：创作页自带一套暗色局部令牌，这里补另一套取值，让它跟着全局主题翻面 */
+:global(:root[data-theme='light']) .creative-mode {
+  --bg-base: var(--dcdr-bg);
+  --bg-glow: rgba(10, 114, 214, 0.14);
+  --surface: rgba(11, 18, 32, 0.035);
+  --surface-2: rgba(11, 18, 32, 0.06);
+  --surface-hover: rgba(11, 18, 32, 0.08);
+  --border: rgba(11, 18, 32, 0.1);
+  --border-strong: rgba(11, 18, 32, 0.16);
+  --text: var(--dcdr-text-1);
+  --text-2: var(--dcdr-text-2);
+  --text-3: var(--dcdr-text-3);
 }
 
 /* ===== 自定义滚动条 ===== */
@@ -991,7 +1005,7 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   background: linear-gradient(135deg, var(--success), #2dd4bf);
   border-color: transparent; box-shadow: 0 0 12px rgba(52, 211, 153, 0.4);
 }
-.switch input:checked + .slider:before { transform: translateX(18px); background: #fff; }
+.switch input:checked + .slider:before { transform: translateX(18px); background: var(--dcdr-surface); }
 
 .thread-status {
   display: flex; align-items: center; gap: 9px; margin-top: 18px;

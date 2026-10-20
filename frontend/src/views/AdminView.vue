@@ -155,9 +155,9 @@ const activeTab = ref('stats')
 const statsLoading = ref(false)
 const stats = ref({})
 const statCards = computed(() => [
-  { label: '用户总数', value: stats.value.userCount ?? '-', icon: '👥', color: '#667eea' },
+  { label: '用户总数', value: stats.value.userCount ?? '-', icon: '👥', color: 'var(--dcdr-accent)' },
   { label: '启用用户', value: stats.value.activeUserCount ?? '-', icon: '✅', color: '#52c41a' },
-  { label: '管理员', value: stats.value.adminCount ?? '-', icon: '🔑', color: '#f5222d' },
+  { label: '管理员', value: stats.value.adminCount ?? '-', icon: '🔑', color: 'var(--dcdr-danger)' },
   { label: '会话总数', value: stats.value.sessionCount ?? '-', icon: '💬', color: '#722ed1' },
   { label: '知识库数', value: stats.value.knowledgeBaseCount ?? '-', icon: '📚', color: '#fa8c16' },
   { label: '文档总数', value: stats.value.documentCount ?? '-', icon: '📄', color: '#13c2c2' },
@@ -331,13 +331,13 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.admin-container { padding: 20px; height: 100%; overflow: auto; background: #f5f7fa; }
-.admin-tabs { background: #fff; border-radius: 8px; padding: 16px 20px; }
+.admin-container { padding: 20px; height: 100%; overflow: auto; background: var(--dcdr-bg-subtle); }
+.admin-tabs { background: var(--dcdr-surface); border-radius: 8px; padding: 16px 20px; }
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-.stat-card { background: #fff; border: 1px solid #ebeef5; border-radius: 10px; padding: 18px; display: flex; align-items: center; gap: 14px; }
+.stat-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 18px; display: flex; align-items: center; gap: 14px; }
 .stat-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; color: #fff; }
 .stat-info { flex: 1; }
-.stat-value { font-size: 24px; font-weight: 600; color: #1f2937; }
+.stat-value { font-size: 24px; font-weight: 600; color: var(--dcdr-text-1); }
 .stat-label { font-size: 13px; color: #6b7280; margin-top: 2px; }
 </style>
