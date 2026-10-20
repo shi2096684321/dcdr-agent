@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" role="img" aria-label="DCDR">
+  <title>DCDR · 方括核心</title>
+  <!-- 两句括号是「工作台/容器」；中间的实心圆是被托住的那一个智能体 -->
+  <path d="M8.6 3.6H4.4V20.4H8.6" stroke="#2EA7FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M15.4 3.6H19.6V20.4H15.4" stroke="#2EA7FF" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="12" cy="12" r="3.2" fill="#9381FF"/>
+</svg>
