@@ -793,18 +793,22 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 </script>
 
 <style scoped>
-/* ===== 设计令牌 ===== */
+/* ===== 设计令牌 =====
+   这页早于全站令牌层，自带一套 --surface / --text。现在全部改为派生全局令牌，
+   两套主题自动跟随 —— 不要再写 `:global(:root[data-theme='light']) .creative-mode`
+   那种覆盖块：scoped 样式里那个写法会被错误解析，选择器落不到本页元素上
+   （同一个错误之前把 <html> 的 opacity 打成了 0.1，整站发灰）。 */
 .creative-mode {
-  --bg-base: #0c0e14;
-  --bg-glow: #1a1530;
-  --surface: rgba(255, 255, 255, 0.035);
-  --surface-2: rgba(255, 255, 255, 0.06);
-  --surface-hover: rgba(255, 255, 255, 0.08);
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --text: #e9ebf2;
-  --text-2: #9ea4b3;
-  --text-3: #646b7d;
+  --bg-base: var(--dcdr-bg);
+  --bg-glow: var(--dcdr-accent-wash);
+  --surface: var(--dcdr-surface-glass);
+  --surface-2: var(--dcdr-hover);
+  --surface-hover: var(--dcdr-hover);
+  --border: var(--dcdr-border);
+  --border-strong: var(--dcdr-border-strong);
+  --text: var(--dcdr-text-1);
+  --text-2: var(--dcdr-text-2);
+  --text-3: var(--dcdr-text-3);
   --accent: var(--dcdr-accent);
   --accent-2: var(--dcdr-accent-2);
   --accent-glow: var(--dcdr-accent-wash);
@@ -818,30 +822,16 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   flex: 1; display: flex; overflow: hidden; position: relative;
   background:
     radial-gradient(1200px 800px at 0% 0%, var(--bg-glow), transparent 55%),
-    radial-gradient(1000px 700px at 100% 100%, rgba(118, 75, 162, 0.18), transparent 55%),
+    radial-gradient(1000px 700px at 100% 100%, var(--dcdr-accent-wash), transparent 55%),
     var(--bg-base);
   color: var(--text);
-}
-
-/* 浅色主题：创作页自带一套暗色局部令牌，这里补另一套取值，让它跟着全局主题翻面 */
-:global(:root[data-theme='light']) .creative-mode {
-  --bg-base: var(--dcdr-bg);
-  --bg-glow: rgba(10, 114, 214, 0.14);
-  --surface: rgba(11, 18, 32, 0.035);
-  --surface-2: rgba(11, 18, 32, 0.06);
-  --surface-hover: rgba(11, 18, 32, 0.08);
-  --border: rgba(11, 18, 32, 0.1);
-  --border-strong: rgba(11, 18, 32, 0.16);
-  --text: var(--dcdr-text-1);
-  --text-2: var(--dcdr-text-2);
-  --text-3: var(--dcdr-text-3);
 }
 
 /* ===== 自定义滚动条 ===== */
 .creative-mode ::-webkit-scrollbar { width: 8px; height: 8px; }
 .creative-mode ::-webkit-scrollbar-track { background: transparent; }
-.creative-mode ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: var(--radius-pill); }
-.creative-mode ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.2); }
+.creative-mode ::-webkit-scrollbar-thumb { background: var(--dcdr-scroll-thumb); border-radius: var(--radius-pill); }
+.creative-mode ::-webkit-scrollbar-thumb:hover { background: var(--dcdr-scroll-thumb-hover); }
 
 /* ===== 侧边栏 ===== */
 .sidebar {

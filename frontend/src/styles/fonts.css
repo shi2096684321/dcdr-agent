@@ -1,0 +1,35 @@
+/* ==========================================================================
+   字体
+   --------------------------------------------------------------------------
+   只自托管等宽字体 JetBrains Mono（拉丁子集，3 个字重共 ~65KB，OFL 授权，
+   授权文本见 src/assets/fonts/LICENSE-JetBrainsMono.txt）。
+
+   中文正文不打包字体：Noto Sans SC 全量汉字的 woff2 子集合计 6–8MB，
+   为"字面率一致"付这个成本不划算，改为按字形接近程度排序系统字体。
+   若确实要求跨平台像素级一致，把 Noto Sans SC 的 unicode-range 子集
+   自托管进来、替换 --dcdr-font-sans 的第一顺位即可。
+   ========================================================================== */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../assets/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2');
+}

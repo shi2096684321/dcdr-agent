@@ -225,13 +225,13 @@ watch(
   position: absolute;
   border-radius: 50%;
   filter: blur(80px);
-  opacity: 0.9;
+  /* 深色下辉光是"光"，浅色下它只能是"极淡的冷色阴影"，否则整屏发灰。
+     强度由令牌控制 —— 不要在这里写 :global(:root[data-theme='light']) 覆盖：
+     那个写法在 scoped 样式里会被错误解析，把 opacity 落到 <html> 上，
+     导致整个页面（含正文）被压到一成不透明度。 */
+  opacity: var(--dcdr-glow-opacity);
 }
 
-/* 浅色主题下辉光只留三成，否则整屏发灰 */
-:global(:root[data-theme='light']) .app-bg__glow {
-  opacity: 0.28;
-}
 
 .app-bg__glow--cyan {
   top: -46%;

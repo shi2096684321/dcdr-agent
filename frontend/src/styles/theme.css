@@ -15,7 +15,12 @@
 
 :root {
   /* 与主题无关的常量 */
-  --dcdr-font-sans: 'Inter', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  /* Inter 从未被引入过，写在第一位只会让浏览器白找一轮。中文按字形接近程度排序：
+     PingFang（mac）→ HarmonyOS Sans / MiSans（国产设备）→ 思源黑体系 → 雅黑（Windows 兜底）。
+     等宽只用于数字与状态，中文落进去会回退到系统字体，属预期。 */
+  --dcdr-font-sans: 'PingFang SC', 'HarmonyOS Sans SC', 'MiSans', 'Source Han Sans SC',
+    'Noto Sans CJK SC', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, -apple-system,
+    sans-serif;
   --dcdr-font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 
   --dcdr-radius-card: 16px;
@@ -47,13 +52,17 @@
   --dcdr-surface: #10141f;
   --dcdr-surface-2: #171c2a;
   --dcdr-surface-glass: rgba(255, 255, 255, 0.035);
+  /* 极浅的层次底，用于列表/侧栏这类不该抢眼的容器 */
+  --dcdr-surface-faint: rgba(255, 255, 255, 0.025);
 
   --dcdr-border: rgba(255, 255, 255, 0.08);
   --dcdr-border-strong: rgba(255, 255, 255, 0.16);
 
   --dcdr-text-1: #f2f6ff;
-  --dcdr-text-2: #8a96b4;
-  --dcdr-text-3: #5e6782;
+  --dcdr-text-2: #9aa5bf;
+  /* 原 #5e6782 在 surface 上仅 3.27:1，而它承载的是 9.5–11px 的元信息，
+     小字需要更高对比而非更低。提到 5.5:1 后仍明显弱于 text-2（7.45:1），层级不塌。 */
+  --dcdr-text-3: #818da8;
   --dcdr-text-inverse: #ffffff;
 
   --dcdr-accent: #2ea7ff;
@@ -83,6 +92,8 @@
 
   /* 背景网格线（App.vue 的装饰层用） */
   --dcdr-grid: rgba(255, 255, 255, 0.035);
+  /* 辉光强度：深色下是氛围主光源 */
+  --dcdr-glow-opacity: 0.9;
 }
 
 /* ---------------------------------- 浅色 ---------------------------------- */
@@ -94,25 +105,30 @@
   --dcdr-surface: #ffffff;
   --dcdr-surface-2: #fbfcfe;
   --dcdr-surface-glass: rgba(255, 255, 255, 0.78);
+  --dcdr-surface-faint: rgba(11, 18, 32, 0.03);
 
   --dcdr-border: rgba(11, 18, 32, 0.1);
   --dcdr-border-strong: rgba(11, 18, 32, 0.18);
 
   --dcdr-text-1: #10131c;
-  --dcdr-text-2: #5b6478;
-  --dcdr-text-3: #8b94a8;
+  --dcdr-text-2: #454e61;
+  /* 原 #8b94a8 在 #f6f8fc 上只有 2.86:1 —— 浅色模式"看不清"的主因。
+     取 #5f6a80 后在最深的叠加底 #e9eaec 上仍有 4.52:1，与 text-2 的 8.1:1 仍拉得开。 */
+  --dcdr-text-3: #5f6a80;
   --dcdr-text-inverse: #ffffff;
 
-  /* 浅色下强调色同色相压深两档，保证在 #f6f8fc 上对比度 ≥ 4.5:1 */
-  --dcdr-accent: #0a72d6;
-  --dcdr-accent-soft: #3e8fe0;
-  --dcdr-accent-2: #6e56e8;
-  --dcdr-accent-wash: rgba(10, 114, 214, 0.1);
-  --dcdr-accent-grad: linear-gradient(135deg, #0a72d6 0%, #6e56e8 100%);
+  /* 浅色下强调色同色相压深两档：原 #0a72d6 恰好卡在 4.50，压到 #0864bd 得 5.54，
+     同时让白字按钮的对比更稳。 */
+  --dcdr-accent: #0864bd;
+  --dcdr-accent-soft: #1c6fc4;
+  --dcdr-accent-2: #5b45cf;
+  --dcdr-accent-wash: rgba(8, 100, 189, 0.1);
+  --dcdr-accent-grad: linear-gradient(135deg, #0864bd 0%, #5b45cf 100%);
 
-  --dcdr-success: #0a9a6b;
-  --dcdr-warning: #b4770b;
-  --dcdr-danger: #d63a54;
+  /* 语义色原来只按"看着对"取，实测在浅底上 3.4–4.3，小字不可读，统一压深 */
+  --dcdr-success: #067a55;
+  --dcdr-warning: #8f5f06;
+  --dcdr-danger: #c22c45;
 
   --dcdr-header-bg: rgba(255, 255, 255, 0.82);
   --dcdr-rail-bg: rgba(255, 255, 255, 0.6);
@@ -128,6 +144,8 @@
   --dcdr-scroll-thumb-hover: rgba(11, 18, 32, 0.28);
 
   --dcdr-grid: rgba(11, 18, 32, 0.05);
+  /* 浅色下只留一成：再高就成灰雾，压住正文 */
+  --dcdr-glow-opacity: 0.1;
 }
 
 /* ==========================================================================

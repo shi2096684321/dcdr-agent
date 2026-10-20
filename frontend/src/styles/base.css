@@ -15,12 +15,15 @@ body {
   font-family: var(--dcdr-font-sans);
   background: var(--dcdr-bg);
   color: var(--dcdr-text-1);
-  font-size: 14px;
-  line-height: 1.5;
+  /* 设计稿的正文是 13px，原来 14px 会让所有默认字号偏大一档，
+     叠在密集面板里显得"后台管理系统"。 */
+  font-size: 13px;
+  line-height: 1.55;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  font-feature-settings: 'kern' 1;
 }
 
 #app {

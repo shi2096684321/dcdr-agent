@@ -503,7 +503,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-main { flex: 1; display: flex; flex-direction: column; background: var(--dcdr-bg-subtle); overflow: hidden; }
 .kb-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px; background: var(--dcdr-surface); border-bottom: 1px solid var(--dcdr-border); gap: 12px; }
 .kb-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.kb-title { font-size: 18px; font-weight: 600; color: var(--dcdr-surface-2); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
+.kb-title { font-size: 18px; font-weight: 600; color: var(--dcdr-text-1); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .kb-desc-full { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-3); margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px rgba(102,126,234,0.3); }
 .upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px rgba(102,126,234,0.4); }
