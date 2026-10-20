@@ -10,7 +10,6 @@
         <div v-for="kb in knowledgeBases" :key="kb.id"
              class="kb-item" :class="{active: kb.id === currentKbId}"
              @click="selectKb(kb.id)">
-          <div class="kb-icon">{{ kb.visibility === 'PLATFORM' ? '🏛️' : '📚' }}</div>
           <div class="kb-info">
             <div class="kb-name">
               {{ kb.name }}
@@ -25,7 +24,7 @@
             </div>
             <div class="kb-desc" v-if="kb.description" :title="kb.description">{{ kb.description }}</div>
           </div>
-          <button v-if="canEditKb(kb)" class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除">🗑</button>
+          <button v-if="canEditKb(kb)" class="kb-delete-btn" @click.stop="removeKb(kb)" title="删除"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 7.2H19.4"/><path d="M9.4 7.2V5.4C9.4 4.8 9.8 4.4 10.4 4.4H13.6C14.2 4.4 14.6 4.8 14.6 5.4V7.2"/><path d="M6.6 7.2L7.4 19C7.4 19.6 7.9 20 8.5 20H15.5C16.1 20 16.6 19.6 16.6 19L17.4 7.2"/></svg></button>
         </div>
         <div v-if="!knowledgeBases.length && !loading" class="empty-tip">
           暂无知识库<br/>点击上方按钮创建
@@ -58,100 +57,99 @@
             </button>
             <label v-if="canEditKb(currentKb)" class="upload-btn gradient-bg" :class="{disabled: uploading}">
               <input type="file" ref="fileInput" @change="handleUpload" accept=".pdf,.docx,.txt,.md,.markdown,.html,.htm" hidden :disabled="uploading" />
-              <span v-if="!uploading">📎 上传文档</span>
+              <span v-if="!uploading"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 8.2L9.2 15.4C8 16.6 6.1 16.6 4.9 15.4C3.7 14.2 3.7 12.3 4.9 11.1L12.1 3.9C13.7 2.3 16.3 2.3 17.9 3.9C19.5 5.5 19.5 8.1 17.9 9.7L10.7 16.9C9.7 17.9 8.1 17.9 7.1 16.9C6.1 15.9 6.1 14.3 7.1 13.3L13.7 6.7"/></svg>上传文档</span>
               <span v-else>上传中…</span>
             </label>
             <el-tag v-else type="info" effect="plain">平台级知识库 · 只读</el-tag>
           </div>
         </div>
 
-        <el-tabs v-model="activeTab" class="kb-tabs">
-          <!-- 文档管理 -->
-          <el-tab-pane label="文档管理" name="documents">
+        <div class="kb-body">
+          <!-- 文档表 -->
+          <div class="doc-panel">
+            <div class="doc-head">
+              <span class="dh-name">文档</span>
+              <span class="dh-size">大小 · 分块</span>
+              <span class="dh-status">状态</span>
+              <span class="dh-act"></span>
+            </div>
             <div class="doc-list">
               <div v-for="doc in documents" :key="doc.id" class="doc-item">
-                <div class="doc-icon">{{ fileIcon(doc.fileType) }}</div>
-                <div class="doc-info">
-                  <div class="doc-name">{{ doc.filename }}</div>
-                  <div class="doc-meta">
-                    <span>{{ formatSize(doc.fileSize) }}</span>
-                    <span>·</span>
-                    <span>{{ doc.chunkCount || 0 }} 块</span>
-                    <span>·</span>
-                    <span>{{ formatDate(doc.createdAt) }}</span>
-                  </div>
-                </div>
-                <div class="doc-status">
-                  <el-tag :type="statusTagType(doc.status)" size="small">
-                    {{ statusLabel(doc.status) }}
-                  </el-tag>
+                <span class="doc-name" :title="doc.filename">{{ doc.filename }}</span>
+                <span class="doc-meta">{{ formatSize(doc.fileSize) }} · {{ doc.chunkCount || 0 }} 块</span>
+                <span class="doc-status" :class="'st-' + String(doc.status || '').toLowerCase()">
+                  {{ statusLabel(doc.status) }}
                   <el-tooltip v-if="doc.errorMsg" :content="doc.errorMsg" placement="top">
-                    <span class="error-hint">⚠</span>
+                    <span class="error-hint">!</span>
                   </el-tooltip>
-                </div>
-                <div class="doc-actions" v-if="canEditKb(currentKb)">
+                </span>
+                <span class="doc-actions" v-if="canEditKb(currentKb)">
                   <button class="doc-action-btn" @click="reprocessDoc(doc)" title="重新入库"
-                          :disabled="doc.status === 'indexing'">↻</button>
-                  <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">🗑</button>
-                </div>
+                          :disabled="doc.status === 'indexing'">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12A8 8 0 1 1 17.2 6.1"/><path d="M20 4.6V9.4H15.2"/></svg>
+                  </button>
+                  <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 7.2H19.4"/><path d="M9.4 7.2V5.4C9.4 4.8 9.8 4.4 10.4 4.4H13.6C14.2 4.4 14.6 4.8 14.6 5.4V7.2"/><path d="M6.6 7.2L7.4 19C7.4 19.6 7.9 20 8.5 20H15.5C16.1 20 16.6 19.6 16.6 19L17.4 7.2"/></svg>
+                  </button>
+                </span>
               </div>
               <div v-if="!documents.length && !docsLoading" class="empty-docs">
-                <div class="empty-icon">📄</div>
                 <p>暂无文档</p>
                 <span>支持 PDF / Word / TXT / Markdown / HTML</span>
               </div>
             </div>
-          </el-tab-pane>
+          </div>
 
-          <!-- 检索测试 -->
-          <el-tab-pane label="检索测试" name="search">
-            <div class="search-panel">
-              <div class="search-form">
-                <el-input v-model="searchQuery" type="textarea" :rows="2"
-                          placeholder="输入测试问题，查看检索到的文档片段及相似度分数"
-                          @keydown.ctrl.enter="runSearch" />
-                <div class="search-options">
-                  <el-switch v-model="multiSearch" size="small" active-text="多知识库" />
-                  <el-select v-if="multiSearch" v-model="multiSearchKbIds" multiple collapse-tags
-                             placeholder="选择知识库" size="small" style="width: 220px">
-                    <el-option v-for="k in knowledgeBases" :key="k.id" :label="k.name" :value="k.id" />
-                  </el-select>
-                  <span class="opt-label">Top-K:</span>
-                  <el-input-number v-model="searchTopK" :min="1" :max="20" :step="1" size="small" />
-                  <button class="search-btn gradient-bg" @click="runSearch" :disabled="searching || !searchQuery.trim()">
-                    <span v-if="!searching">🔍 检索</span>
-                    <span v-else>检索中…</span>
-                  </button>
-                </div>
+          <!-- 检索测试：与文档表同屏。原来藏在第二个 tab 里，调完参数要来回切，
+               看不到"这条知识库到底好不好用" -->
+          <aside class="search-panel">
+            <div class="sp-head">
+              <span class="sp-title">检索测试</span>
+              <span class="sp-mode">HYBRID · RRF</span>
+            </div>
+            <textarea class="sp-query" v-model="searchQuery" rows="3"
+                      placeholder="输入测试问题，查看命中片段与相似度"
+                      @keydown.ctrl.enter="runSearch"></textarea>
+            <div class="sp-params">
+              <div class="sp-row">
+                <span class="sp-k">召回条数 topK</span>
+                <el-input-number v-model="searchTopK" :min="1" :max="20" :step="1"
+                                 size="small" controls-position="right" style="width: 96px" />
               </div>
-
-              <div class="search-results">
-                <div v-for="(r, idx) in searchResults" :key="r.chunkId" class="result-item">
-                  <div class="result-header">
-                    <span class="result-rank">#{{ idx + 1 }}</span>
-                    <span class="result-score" :style="{color: scoreColor(r.score)}">
-                      相似度 {{ (r.score * 100).toFixed(1) }}%
-                    </span>
-                    <el-tag size="small" type="info">{{ kbName(r.kbId) }}</el-tag>
-                    <el-tag size="small" type="info">{{ r.filename || r.documentId }}</el-tag>
-                    <span class="result-chunk">块 #{{ r.chunkIndex }}</span>
-                  </div>
-                  <div class="result-content">{{ r.content }}</div>
+              <div class="sp-row">
+                <span class="sp-k">多知识库</span>
+                <el-switch v-model="multiSearch" size="small" />
+              </div>
+              <el-select v-if="multiSearch" v-model="multiSearchKbIds" multiple collapse-tags
+                         placeholder="选择知识库" size="small" style="width: 100%">
+                <el-option v-for="k in knowledgeBases" :key="k.id" :label="k.name" :value="k.id" />
+              </el-select>
+            </div>
+            <button class="sp-run" @click="runSearch" :disabled="searching || !searchQuery.trim()">
+              {{ searching ? '检索中…' : '检索' }}
+            </button>
+            <div class="sp-results">
+              <div v-for="(r, idx) in searchResults" :key="r.chunkId" class="result-item">
+                <div class="result-header">
+                  <span class="result-score" :style="{ color: scoreColor(r.score) }">{{ (r.score * 100).toFixed(1) }}%</span>
+                  <span class="result-rank">#{{ idx + 1 }}</span>
+                  <span class="result-file" :title="r.filename || r.documentId">{{ r.filename || r.documentId }}</span>
                 </div>
-                <div v-if="!searchResults.length && searchDone" class="empty-results">
-                  未检索到相关片段（可调低相似度阈值或换问题重试）
-                </div>
-                <div v-if="!searchResults.length && !searchDone" class="empty-results">
-                  输入问题并点击检索，查看 RAG 检索效果
-                </div>
+                <div class="result-content">{{ r.content }}</div>
+              </div>
+              <div v-if="!searchResults.length && searchDone" class="empty-results">
+                未检索到相关片段（可调低相似度阈值或换问题重试）
+              </div>
+              <div v-if="!searchResults.length && !searchDone" class="empty-results">
+                输入问题后检索，这里会列出命中的块与相似度
               </div>
             </div>
-          </el-tab-pane>
-        </el-tabs>
+          </aside>
+        </div>
       </template>
 
       <div v-else class="kb-empty">
-        <div class="empty-icon large">📚</div>
+        <div class="empty-icon large"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.2C5 4 6 3.2 7.2 3.2H18.6V17.4H7.2C6 17.4 5 18.2 5 19.4V5.2Z"/><path d="M18.6 17.4V21H7.2"/><path d="M9 7.6H14.6"/></svg></div>
         <h2>知识库管理</h2>
         <p>选择左侧知识库或新建一个，开始管理文档与检索测试</p>
         <button class="new-here-btn gradient-bg" @click="openCreateDialog">+ 新建知识库</button>
@@ -460,7 +458,7 @@ function statusTagType(s) {
 function scoreColor(s) {
   if (s >= 0.7) return 'var(--dcdr-success)'
   if (s >= 0.5) return 'var(--dcdr-warning)'
-  return '#909399'
+  return 'var(--dcdr-text-3)'
 }
 
 onMounted(() => { loadKnowledgeBases() })
@@ -470,7 +468,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-mode { flex: 1; display: flex; overflow: hidden; height: 100%; position: relative; }
 
 /* 侧边栏 */
-.sidebar { width: 280px; background: linear-gradient(180deg, var(--dcdr-surface) 0%, var(--dcdr-surface) 100%); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(0,0,0,0.03); transition: width 0.25s ease; }
+.sidebar { width: 300px; background: linear-gradient(180deg, var(--dcdr-surface) 0%, var(--dcdr-surface) 100%); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; box-shadow: 2px 0 12px rgba(0,0,0,0.03); transition: width 0.25s ease; }
 .sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
 .sidebar-header { padding: 20px 16px; border-bottom: 1px solid var(--dcdr-border); position: relative; }
 .collapse-btn { position: absolute; right: 10px; top: 22px; width: 26px; height: 26px; border: none; border-radius: 6px; background: var(--dcdr-bg-subtle); color: var(--dcdr-text-3); cursor: pointer; font-size: 16px; line-height: 1; }
@@ -492,6 +490,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-item.active .kb-name { color: var(--dcdr-accent); }
 .kb-meta { font-size: 11px; color: var(--dcdr-text-3); margin-top: 2px; display: flex; gap: 4px; }
 .kb-desc { font-size: 12px; color: var(--dcdr-text-2); margin-top: 4px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.kb-delete-btn .ic { width: 14px; height: 14px; }
 .kb-delete-btn { border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); opacity: 0; padding: 4px 6px; border-radius: 6px; font-size: 13px; flex-shrink: 0; transition: all 0.2s; }
 .kb-item:hover .kb-delete-btn { opacity: 1; }
 .kb-delete-btn:hover { color: var(--dcdr-danger); background: rgba(245,108,108,0.1); }
@@ -505,6 +504,7 @@ onMounted(() => { loadKnowledgeBases() })
 .kb-toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .kb-title { font-size: 18px; font-weight: 600; color: var(--dcdr-text-1); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; }
 .kb-desc-full { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-3); margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-btn .ic { width: 15px; height: 15px; }
 .upload-btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 10px; color: #fff; font-size: 13px; cursor: pointer; user-select: none; transition: all 0.25s; box-shadow: 0 3px 10px var(--dcdr-accent-line); }
 .upload-btn:hover:not(.disabled) { transform: translateY(-1px); box-shadow: 0 5px 14px var(--dcdr-accent-line); }
 .upload-btn.disabled { opacity: 0.5; cursor: not-allowed; }
@@ -518,40 +518,97 @@ onMounted(() => { loadKnowledgeBases() })
 .refresh-btn .spin { display: inline-block; animation: kb-spin 0.8s linear infinite; }
 @keyframes kb-spin { to { transform: rotate(360deg); } }
 
-.kb-tabs { flex: 1; overflow: hidden; display: flex; flex-direction: column; padding: 0 24px; }
-.kb-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
-.kb-tabs :deep(.el-tabs__content) { flex: 1; overflow-y: auto; padding-top: 12px; }
-.kb-tabs :deep(.el-tab-pane) { height: 100%; }
+/* 文档表 + 检索测试 同屏 */
+.kb-body { flex: 1; display: flex; gap: 16px; padding: 0 24px 20px; overflow: hidden; }
 
-/* 文档列表 */
-.doc-list { display: flex; flex-direction: column; gap: 8px; padding-bottom: 24px; }
-.doc-item { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; transition: all 0.2s; }
-.doc-item:hover { border-color: var(--dcdr-accent-wash); box-shadow: 0 2px 8px var(--dcdr-accent-wash); }
-.doc-icon { font-size: 24px; flex-shrink: 0; }
-.doc-info { flex: 1; min-width: 0; }
-.doc-name { font-size: 14px; color: var(--dcdr-text-1); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc-meta { font-size: 11px; color: var(--dcdr-text-3); margin-top: 4px; display: flex; gap: 4px; }
-.doc-status { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.error-hint { color: var(--dcdr-danger); cursor: help; }
-.doc-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.doc-action-btn { border: none; background: var(--dcdr-bg-subtle); cursor: pointer; font-size: 14px; width: 30px; height: 30px; border-radius: 8px; color: var(--dcdr-text-2); transition: all 0.2s; }
+.doc-panel {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-inner); overflow: hidden;
+}
+.doc-head {
+  display: flex; align-items: center; gap: 10px; height: 36px; flex: none;
+  padding: 0 16px; background: var(--dcdr-surface-faint);
+  border-bottom: 1px solid var(--dcdr-border);
+}
+.doc-head span {
+  font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 1px;
+  color: var(--dcdr-text-3); text-transform: uppercase;
+}
+.dh-name { flex: 1; }
+.dh-size { width: 150px; flex: none; }
+.dh-status { width: 68px; flex: none; }
+.dh-act { width: 68px; flex: none; }
+
+.doc-list { flex: 1; overflow-y: auto; }
+.doc-item {
+  display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 16px;
+  border-bottom: 1px solid var(--dcdr-border); transition: background 0.15s ease;
+}
+.doc-item:last-child { border-bottom: none; }
+.doc-item:hover { background: var(--dcdr-hover); }
+.doc-name { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-meta { width: 150px; flex: none; font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
+.doc-status {
+  width: 68px; flex: none; display: flex; align-items: center; gap: 4px;
+  font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-success);
+}
+.doc-status.st-indexing { color: var(--dcdr-warning); }
+.doc-status.st-failed { color: var(--dcdr-danger); }
+.error-hint { color: var(--dcdr-danger); cursor: help; font-weight: 700; }
+.doc-actions { width: 68px; flex: none; display: flex; gap: 4px; justify-content: flex-end; }
+.doc-action-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
+  cursor: pointer; color: var(--dcdr-text-3); transition: all 0.15s;
+}
+.doc-action-btn .ic { width: 15px; height: 15px; }
 .doc-action-btn:hover { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); }
-.doc-action-btn.danger:hover { background: #f56c6c15; color: var(--dcdr-danger); }
+.doc-action-btn.danger:hover { background: var(--dcdr-accent-wash); color: var(--dcdr-danger); }
 .doc-action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.empty-docs { text-align: center; padding: 80px 20px; color: var(--dcdr-text-3); }
-.empty-icon { font-size: 48px; margin-bottom: 12px; }
-.empty-docs p { font-size: 15px; margin: 0 0 6px; color: var(--dcdr-text-3); }
-.empty-docs span { font-size: 12px; }
+.empty-docs { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: 100%; min-height: 200px; color: var(--dcdr-text-3); }
+.empty-docs p { font-size: 13px; }
+.empty-docs span { font-size: 11px; color: var(--dcdr-text-3); }
 
-/* 检索测试 */
-.search-panel { display: flex; flex-direction: column; gap: 16px; padding-bottom: 24px; }
-.search-form { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 12px; padding: 16px; }
-.search-options { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
-.opt-label { font-size: 13px; color: var(--dcdr-text-2); }
-.search-btn { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 18px; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; margin-left: auto; transition: all 0.2s; box-shadow: 0 3px 10px var(--dcdr-accent-line); }
-.search-btn:hover:not(:disabled) { transform: translateY(-1px); }
-.search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 检索测试面板 */
+.search-panel {
+  width: 340px; flex: none; display: flex; flex-direction: column; gap: 12px;
+  padding: 14px; background: var(--dcdr-surface-faint);
+  border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner);
+  overflow-y: auto;
+}
+.sp-head { display: flex; align-items: center; justify-content: space-between; }
+.sp-title { font-size: 12px; font-weight: 500; color: var(--dcdr-text-1); }
+.sp-mode { font-family: var(--dcdr-font-mono); font-size: 9px; letter-spacing: 0.8px; color: var(--dcdr-text-3); }
+.sp-query {
+  width: 100%; resize: none; padding: 10px; font-family: inherit; font-size: 11.5px; line-height: 1.6;
+  color: var(--dcdr-text-1); background: var(--dcdr-surface-faint);
+  border: 1px solid var(--dcdr-accent-line); border-radius: 10px; outline: none;
+}
+.sp-query::placeholder { color: var(--dcdr-text-3); }
+.sp-params { display: flex; flex-direction: column; gap: 8px; }
+.sp-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sp-k { font-size: 11px; color: var(--dcdr-text-2); }
+.sp-run {
+  height: 32px; border: 1px solid var(--dcdr-accent-line); border-radius: 999px;
+  background: var(--dcdr-accent-wash); color: var(--dcdr-accent-soft);
+  font-family: inherit; font-size: 12px; cursor: pointer; transition: all 0.15s;
+}
+.sp-run:hover:not(:disabled) { background: var(--dcdr-active); }
+.sp-run:disabled { opacity: 0.45; cursor: not-allowed; }
+.sp-results { display: flex; flex-direction: column; gap: 8px; }
+.result-item { padding: 10px; border-radius: 10px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); }
+.result-item:hover { border-color: var(--dcdr-accent-line); }
+.result-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.result-score { font-family: var(--dcdr-font-mono); font-size: 9.5px; font-weight: 700; }
+.result-rank { font-family: var(--dcdr-font-mono); font-size: 9px; color: var(--dcdr-text-3); }
+.result-file {
+  font-family: var(--dcdr-font-mono); font-size: 9px; color: var(--dcdr-text-3);
+  margin-left: auto; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.result-content { font-size: 10.5px; line-height: 1.6; color: var(--dcdr-text-2); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.empty-results { padding: 16px 4px; font-size: 10.5px; line-height: 1.7; color: var(--dcdr-text-3); }
 
 .search-results { display: flex; flex-direction: column; gap: 10px; }
 .result-item { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 14px 16px; transition: all 0.2s; }
@@ -566,7 +623,8 @@ onMounted(() => { loadKnowledgeBases() })
 
 /* 空状态 */
 .kb-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--dcdr-text-3); }
-.kb-empty .empty-icon.large { font-size: 72px; margin-bottom: 16px; }
+.kb-empty .empty-icon.large svg { width: 44px; height: 44px; stroke: var(--dcdr-text-3); }
+.empty-icon.large { font-size: 72px; margin-bottom: 16px; }
 .kb-empty h2 { font-size: 22px; color: var(--dcdr-text-1); margin: 0 0 8px; }
 .kb-empty p { font-size: 14px; margin: 0 0 24px; }
 .new-here-btn { height: 40px; padding: 0 24px; border: none; border-radius: 10px; color: #fff; font-size: 14px; cursor: pointer; box-shadow: 0 4px 15px var(--dcdr-accent-line); }
