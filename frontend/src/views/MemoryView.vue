@@ -33,45 +33,14 @@
       </el-select>
       <el-button size="small" @click="load" :loading="loading">刷新</el-button>
       <el-button size="small" type="danger" plain :disabled="!memories.length" @click="clearAll">清空全部</el-button>
-      <div class="stat-block">
-        <span class="stat-item">活跃 {{ summary.active ?? 0 }} 条</span>
-        <span class="stat-item">用户级 {{ summary.userLevel ?? 0 }}</span>
-        <span class="stat-item">专家级 {{ summary.agentLevel ?? 0 }}</span>
-        <!-- 从未命中 = 活跃且命中数为 0: 每轮都要过一遍召回与打分, 却从未进过上下文 -->
-        <span class="stat-item" :class="{ 'stat-warn': neverHitCount > 0 }">
-          从未命中 {{ neverHitCount }} 条
-        </span>
-        <!-- 自动记忆开关 —— 由用户自己决定"要不要让 AI 替我记"。
-             它和部署方的 agent.memory.auto-extract.enabled 是两回事：后者是能力闸门（决定费用），
-             这里是用户同意；两者都开才生效，所以部署关着时开关禁用并写明原因，
-             而不是让用户对着一个点不动的开关猜 -->
-        <span class="stat-item auto-switch">
-          <span class="auto-label" :class="{ 'auto-on': summary.autoExtractEnabled }"
-                :title="autoExtractTip">自动记忆</span>
-          <el-switch
-            size="small"
-            :model-value="!!summary.autoExtractEnabled"
-            :disabled="!summary.autoExtractAllowed"
-            :loading="autoExtractSaving"
-            @change="onToggleAutoExtract"
-          />
-          <span v-if="!summary.autoExtractAllowed" class="auto-note">部署未开启</span>
-          <template v-else>
-            <!-- 未表态要写出来：否则用户会以为"现在的状态"是自己选的 -->
-            <span v-if="summary.autoExtractChoice === AUTO_EXTRACT_CHOICE.DEFAULT" class="auto-note"
-                  title="当前跟随部署配置；拨动开关即成为你自己的选择">{{ summary.autoExtractChoiceLabel }}</span>
-            <el-button v-else size="small" text type="primary" @click="onResetAutoExtract">恢复默认</el-button>
-          </template>
-        </span>
-      </div>
+
     </div>
 
     <!-- 策略说明由后端按实际参数生成(常驻类型 / 条数上限 / 重要度阈值 / 预算裁剪),
          所以它会比一句话长 —— 但它解释了"为什么这条没被注入""为什么这条一直占着位置" -->
-    <div class="retrieval-tip" v-if="summary.retrieval">
-      <b>当前召回策略：</b>{{ summary.retrieval }}
-    </div>
 
+
+    <div class="memory-body">
     <div class="memory-list" v-loading="loading">
       <div v-for="m in filteredMemories" :key="m.id" class="memory-card" :class="{ inactive: m.status !== 'ACTIVE' }">
         <div class="mc-head">
@@ -126,6 +95,55 @@
         暂无长期记忆<br />
         点击「新增记忆」手动添加，例如「我是 Java 后端工程师，主要使用 Spring Boot」
       </div>
+    </div>
+
+      <!-- 右栏：把「当前召回策略」和「类型分布」从工具栏里挪出来。
+           它们解释的是"为什么这条没被注入""为什么这条一直占位置"，属于需要随时对照的参考信息，
+           塞在筛选器旁边既挤又容易被忽略。 -->
+      <aside class="memory-side">
+        <div class="ms-card">
+          <div class="ms-card-title">当前召回策略</div>
+          <div class="ms-text" v-if="summary.retrieval"><b>当前召回策略：</b>{{ summary.retrieval }}
+          </div>
+        </div>
+        <div class="ms-card">
+          <div class="ms-card-title">记忆分布</div>
+          <div class="ms-stats">
+
+            <span class="stat-item">活跃 {{ summary.active ?? 0 }} 条</span>
+            <span class="stat-item">用户级 {{ summary.userLevel ?? 0 }}</span>
+            <span class="stat-item">专家级 {{ summary.agentLevel ?? 0 }}</span>
+            <!-- 从未命中 = 活跃且命中数为 0: 每轮都要过一遍召回与打分, 却从未进过上下文 -->
+            <span class="stat-item" :class="{ 'stat-warn': neverHitCount > 0 }">
+            从未命中 {{ neverHitCount }} 条
+            </span>
+            <!-- 自动记忆开关 —— 由用户自己决定"要不要让 AI 替我记"。
+               它和部署方的 agent.memory.auto-extract.enabled 是两回事：后者是能力闸门（决定费用），
+               这里是用户同意；两者都开才生效，所以部署关着时开关禁用并写明原因，
+               而不是让用户对着一个点不动的开关猜 -->
+            <span class="stat-item auto-switch">
+            <span class="auto-label" :class="{ 'auto-on': summary.autoExtractEnabled }"
+                  :title="autoExtractTip">自动记忆</span>
+            <el-switch
+              size="small"
+              :model-value="!!summary.autoExtractEnabled"
+              :disabled="!summary.autoExtractAllowed"
+              :loading="autoExtractSaving"
+              @change="onToggleAutoExtract"
+            />
+            <span v-if="!summary.autoExtractAllowed" class="auto-note">部署未开启</span>
+            <template v-else>
+              <!-- 未表态要写出来：否则用户会以为"现在的状态"是自己选的 -->
+              <span v-if="summary.autoExtractChoice === AUTO_EXTRACT_CHOICE.DEFAULT" class="auto-note"
+                    title="当前跟随部署配置；拨动开关即成为你自己的选择">{{ summary.autoExtractChoiceLabel }}</span>
+              <el-button v-else size="small" text type="primary" @click="onResetAutoExtract">恢复默认</el-button>
+            </template>
+            </span>
+
+          </div>
+        </div>
+      </aside>
+
     </div>
 
     <!-- 新增 / 编辑记忆 -->
@@ -454,7 +472,7 @@ onMounted(() => {
 
 <style scoped>
 /* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
-.memory-mode { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 960px; margin: 0 auto; }
+.memory-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 18px 24px 20px; }
 .memory-header { margin-bottom: 16px; }
 .memory-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
 .subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); line-height: 1.7; }
@@ -480,17 +498,36 @@ onMounted(() => {
   line-height: 1.6;   /* 说明按实际参数生成, 会占两三行 */
 }
 
-.memory-list { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
-.memory-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
-.memory-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+.memory-body { flex: 1; display: flex; gap: 16px; min-height: 0; }
+.memory-list { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; min-height: 0; overflow-y: auto; padding-right: 4px; }
+
+/* 右栏：召回策略 + 记忆分布 */
+.memory-side { width: 300px; flex: none; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+.ms-card {
+  display: flex; flex-direction: column; gap: 9px; padding: 13px;
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-inner);
+}
+.ms-card-title { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 1.2px; color: var(--dcdr-text-3); }
+.ms-text { font-size: 11px; line-height: 1.7; color: var(--dcdr-text-2); }
+.ms-stats { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 11px; color: var(--dcdr-text-2); }
+.ms-stats .stat-item { display: inline-flex; align-items: center; gap: 6px; font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
+.ms-stats .stat-warn { color: var(--dcdr-warning); }
+.ms-stats .auto-switch { display: inline-flex; align-items: center; gap: 6px; }
+.ms-stats .auto-label { font-size: 10px; color: var(--dcdr-text-2); }
+.ms-stats .auto-label.auto-on { color: var(--dcdr-success); }
+.ms-stats .auto-note { font-size: 9.5px; color: var(--dcdr-text-3); }
+.memory-card { background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner); padding: 13px 14px; transition: border-color .18s, background .18s; }
+.memory-card:hover { border-color: var(--dcdr-accent-line); }
+
 .memory-card.inactive { opacity: 0.6; border-left: 3px solid #c0c4cc; }
 .mc-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .mc-agent { font-size: 12px; color: var(--dcdr-warning); }
 .mc-never-hit { font-size: 11px; color: var(--dcdr-text-3); }
 .mc-importance { font-size: 11px; color: var(--dcdr-text-3); }
 .mc-time { font-size: 11px; color: var(--dcdr-text-3); margin-left: auto; }
-.mc-content { font-size: 13px; color: var(--dcdr-text-1); line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
-.mc-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--dcdr-text-3); }
+.mc-content { font-size: 12.5px; color: var(--dcdr-text-1); line-height: 1.65; word-break: break-word; white-space: pre-wrap; }
+.mc-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 7px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.2px; color: var(--dcdr-text-3); }
 .mc-meta b { color: var(--dcdr-text-2); font-weight: 500; }
 .mc-ops { display: flex; gap: 4px; margin-top: 8px; }
 
