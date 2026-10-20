@@ -4,7 +4,7 @@
     <!-- 左侧: Agent 列表 -->
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
       <div class="sidebar-header">
-        <button class="new-btn gradient-bg" @click="openCreateDialog">+ 新建专家</button>
+        <button class="new-btn" @click="openCreateDialog">+ 新建专家</button>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起">«</button>
       </div>
       <div class="agent-list">
@@ -538,21 +538,22 @@ onMounted(() => {
 
 <style scoped>
 .agent-mode { flex: 1; display: flex; overflow: hidden; }
-.sidebar { width: 280px; background: var(--dcdr-bg-subtle); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; transition: width 0.2s; }
+.sidebar { width: 300px; background: var(--dcdr-surface-faint); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; transition: width 0.2s; }
 .sidebar.collapsed { width: 0; overflow: hidden; }
 .sidebar-expand { position: absolute; left: 0; top: 56px; width: 20px; height: 40px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-left: none; border-radius: 0 6px 6px 0; cursor: pointer; z-index: 10; }
 .sidebar-header { padding: 12px; display: flex; gap: 8px; align-items: center; }
-.new-btn { flex: 1; padding: 8px 12px; border: none; border-radius: 8px; color: #fff; font-size: 13px; cursor: pointer; }
+.new-btn { flex: 1; height: 38px; padding: 0 12px; border-radius: var(--dcdr-radius-inner); border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash); color: var(--dcdr-accent-soft); font-size: 13px; font-weight: 500; cursor: pointer; transition: background .2s, border-color .2s; }
+.new-btn:hover { background: var(--dcdr-active); border-color: var(--dcdr-accent); }
 .collapse-btn { width: 28px; height: 32px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); border-radius: 6px; cursor: pointer; color: var(--dcdr-text-3); }
 .agent-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
-.agent-item { display: flex; gap: 10px; padding: 10px; border-radius: 8px; cursor: pointer; margin-bottom: 4px; }
+.agent-item { display: flex; gap: 10px; padding: 10px; border-radius: var(--dcdr-radius-inner); border: 1px solid transparent; cursor: pointer; margin-bottom: 4px; transition: background .15s, border-color .15s; }
 .agent-item:hover { background: var(--dcdr-bg); }
-.agent-item.active { background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); }
-.agent-avatar { width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
+.agent-item.active { background: var(--dcdr-accent-wash); border-color: var(--dcdr-accent-line); }
+.agent-avatar { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; flex-shrink: 0; }
 .agent-info { flex: 1; min-width: 0; }
 .agent-name { font-size: 13px; font-weight: 500; color: var(--dcdr-text-1); display: flex; align-items: center; gap: 4px; }
 .agent-name .tag { transform: scale(0.85); }
-.agent-meta { font-size: 11px; color: var(--dcdr-text-3); margin-top: 2px; display: flex; gap: 4px; }
+.agent-meta { font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.2px; color: var(--dcdr-text-3); margin-top: 2px; display: flex; gap: 4px; }
 .agent-owner { font-size: 11px; color: var(--dcdr-danger); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-desc { font-size: 11px; color: var(--dcdr-text-3); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-tip { text-align: center; color: var(--dcdr-text-3); font-size: 13px; padding: 40px 12px; line-height: 1.8; }
