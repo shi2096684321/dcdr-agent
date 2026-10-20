@@ -1,10 +1,35 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#06070f">
   <link rel="icon" type="image/png" href="/dcdr-logo.png">
   <title>一人公司多模态 AI 助手工作台</title>
+  <!-- 首屏防闪烁：必须在样式与 Vue 挂载之前决定主题，否则深色用户会先看到一帧白 -->
+  <script>
+    (function () {
+      var KEY = 'dcdr-theme';
+      var root = document.documentElement;
+      try {
+        var stored = localStorage.getItem(KEY);
+        var mode = stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'dark';
+        var dark = mode === 'dark' ||
+          (mode === 'auto' && window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches);
+        var theme = dark ? 'dark' : 'light';
+        root.setAttribute('data-theme', theme);
+        if (dark) root.classList.add('dark');
+        root.style.colorScheme = theme;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#06070f' : '#f6f8fc');
+      } catch (e) {
+        // localStorage 被禁（隐私模式）：按深色兜底
+        root.setAttribute('data-theme', 'dark');
+        root.classList.add('dark');
+      }
+    })();
+  </script>
 </head>
 <body>
   <div id="app"></div>

@@ -1,4 +1,123 @@
-/* 全局基础重置 */
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f0f2f5; height: 100vh; overflow: hidden; }
-#app { height: 100vh; display: flex; flex-direction: column; }
+/* 全局基础重置 —— 只做"地基"，视觉一律走 theme.css 的令牌 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: var(--dcdr-font-sans);
+  background: var(--dcdr-bg);
+  color: var(--dcdr-text-1);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--dcdr-text-1);
+}
+
+a {
+  color: var(--dcdr-accent);
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+button {
+  cursor: pointer;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+::selection {
+  background: var(--dcdr-accent-wash);
+  color: var(--dcdr-text-1);
+}
+
+/* 键盘可见焦点：鼠标点击不出现，Tab 才出现 */
+:focus-visible {
+  outline: 2px solid var(--dcdr-accent);
+  outline-offset: 2px;
+}
+
+/* 滚动条：细、半透明、不抢视线 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--dcdr-scroll-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--dcdr-scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--dcdr-scroll-thumb-hover);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 切换主题时的过渡：只在切换瞬间挂到 <html> 上，避免常驻拖累渲染 */
+html.theme-switching,
+html.theme-switching * {
+  transition:
+    background-color 200ms var(--dcdr-ease),
+    border-color 200ms var(--dcdr-ease),
+    color 200ms var(--dcdr-ease),
+    box-shadow 200ms var(--dcdr-ease) !important;
+}
+
+/* 尊重"减少动态效果" */
+@media (prefers-reduced-motion: reduce) {
+  html.theme-switching,
+  html.theme-switching * {
+    transition: none !important;
+  }
+}

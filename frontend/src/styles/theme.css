@@ -1,0 +1,252 @@
+/* ==========================================================================
+   DCDR 设计令牌 · Design Tokens
+   --------------------------------------------------------------------------
+   一套结构，两套取值。切换主题不改布局、圆角与字号，只改色彩与投影。
+   深色是默认主题（html[data-theme="dark"]），浅色由 [data-theme="light"] 覆盖。
+
+   命名约定：
+     --dcdr-bg*       页面底色
+     --dcdr-surface*  卡片 / 面板
+     --dcdr-text-*    文字层级（1 主 / 2 次 / 3 弱）
+     --dcdr-accent*   强调色（唯一主导色）
+     --dcdr-*         其余语义
+   组件里请只用这些变量，不要再写死 #fff / #606266。
+   ========================================================================== */
+
+:root {
+  /* 与主题无关的常量 */
+  --dcdr-font-sans: 'Inter', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  --dcdr-font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+  --dcdr-radius-card: 16px;
+  --dcdr-radius-inner: 10px;
+  --dcdr-radius-pill: 999px;
+
+  --dcdr-header-h: 64px;
+  --dcdr-rail-w: 64px;
+
+  --dcdr-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dcdr-dur: 180ms;
+
+  /* 代码块：两套主题下都保持深色（浅色主题里的浅色代码块反而更难读） */
+  --dcdr-code-bg: #0b101c;
+  --dcdr-code-bar: #111827;
+  --dcdr-code-fg: #dbe4f5;
+  --dcdr-code-dim: #8fa3c8;
+  --dcdr-code-border: rgba(255, 255, 255, 0.1);
+  --dcdr-code-ok: #6ee7a8;
+}
+
+/* ---------------------------------- 深色 ---------------------------------- */
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --dcdr-bg: #06070f;
+  --dcdr-bg-subtle: #0a0d17;
+  --dcdr-surface: #10141f;
+  --dcdr-surface-2: #171c2a;
+  --dcdr-surface-glass: rgba(255, 255, 255, 0.035);
+
+  --dcdr-border: rgba(255, 255, 255, 0.08);
+  --dcdr-border-strong: rgba(255, 255, 255, 0.16);
+
+  --dcdr-text-1: #f2f6ff;
+  --dcdr-text-2: #8a96b4;
+  --dcdr-text-3: #5e6782;
+  --dcdr-text-inverse: #ffffff;
+
+  --dcdr-accent: #2ea7ff;
+  --dcdr-accent-soft: #b1e2ff;
+  --dcdr-accent-2: #9381ff;
+  --dcdr-accent-wash: rgba(46, 167, 255, 0.16);
+  --dcdr-accent-grad: linear-gradient(135deg, #2ea7ff 0%, #9381ff 100%);
+
+  --dcdr-success: #13ddc4;
+  --dcdr-warning: #fbbf24;
+  --dcdr-danger: #ff8fa3;
+
+  /* 结构件 */
+  --dcdr-header-bg: rgba(255, 255, 255, 0.03);
+  --dcdr-rail-bg: rgba(255, 255, 255, 0.02);
+  --dcdr-hover: rgba(255, 255, 255, 0.05);
+  --dcdr-active: rgba(46, 167, 255, 0.12);
+
+  /* 投影：深色下靠描边 + 辉光分层，投影只做沉底 */
+  --dcdr-shadow-card: 0 1px 0 rgba(0, 0, 0, 0.35), 0 10px 30px rgba(0, 0, 0, 0.35);
+  --dcdr-shadow-pop: 0 20px 60px rgba(0, 0, 0, 0.55);
+  --dcdr-glow-accent: 0 0 18px rgba(46, 167, 255, 0.35);
+
+  /* 滚动条 */
+  --dcdr-scroll-thumb: rgba(255, 255, 255, 0.14);
+  --dcdr-scroll-thumb-hover: rgba(255, 255, 255, 0.24);
+
+  /* 背景网格线（App.vue 的装饰层用） */
+  --dcdr-grid: rgba(255, 255, 255, 0.035);
+}
+
+/* ---------------------------------- 浅色 ---------------------------------- */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --dcdr-bg: #f6f8fc;
+  --dcdr-bg-subtle: #eef2f8;
+  --dcdr-surface: #ffffff;
+  --dcdr-surface-2: #fbfcfe;
+  --dcdr-surface-glass: rgba(255, 255, 255, 0.78);
+
+  --dcdr-border: rgba(11, 18, 32, 0.1);
+  --dcdr-border-strong: rgba(11, 18, 32, 0.18);
+
+  --dcdr-text-1: #10131c;
+  --dcdr-text-2: #5b6478;
+  --dcdr-text-3: #8b94a8;
+  --dcdr-text-inverse: #ffffff;
+
+  /* 浅色下强调色同色相压深两档，保证在 #f6f8fc 上对比度 ≥ 4.5:1 */
+  --dcdr-accent: #0a72d6;
+  --dcdr-accent-soft: #3e8fe0;
+  --dcdr-accent-2: #6e56e8;
+  --dcdr-accent-wash: rgba(10, 114, 214, 0.1);
+  --dcdr-accent-grad: linear-gradient(135deg, #0a72d6 0%, #6e56e8 100%);
+
+  --dcdr-success: #0a9a6b;
+  --dcdr-warning: #b4770b;
+  --dcdr-danger: #d63a54;
+
+  --dcdr-header-bg: rgba(255, 255, 255, 0.82);
+  --dcdr-rail-bg: rgba(255, 255, 255, 0.6);
+  --dcdr-hover: rgba(11, 18, 32, 0.045);
+  --dcdr-active: rgba(10, 114, 214, 0.1);
+
+  /* 浅色下靠实色 + 投影分层 */
+  --dcdr-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
+  --dcdr-shadow-pop: 0 20px 48px rgba(16, 24, 40, 0.16);
+  --dcdr-glow-accent: 0 4px 14px rgba(10, 114, 214, 0.22);
+
+  --dcdr-scroll-thumb: rgba(11, 18, 32, 0.16);
+  --dcdr-scroll-thumb-hover: rgba(11, 18, 32, 0.28);
+
+  --dcdr-grid: rgba(11, 18, 32, 0.05);
+}
+
+/* ==========================================================================
+   Element Plus 映射
+   两套主题都覆盖，避免 EP 自带的 #409eff / #141414 混进来
+   ========================================================================== */
+:root {
+  --el-font-family: var(--dcdr-font-sans);
+  --el-color-primary: var(--dcdr-accent);
+  --el-color-success: var(--dcdr-success);
+  --el-color-warning: var(--dcdr-warning);
+  --el-color-danger: var(--dcdr-danger);
+  --el-color-error: var(--dcdr-danger);
+  --el-color-info: var(--dcdr-text-2);
+
+  --el-bg-color: var(--dcdr-surface);
+  --el-bg-color-page: var(--dcdr-bg);
+  --el-bg-color-overlay: var(--dcdr-surface-2);
+
+  --el-text-color-primary: var(--dcdr-text-1);
+  --el-text-color-regular: var(--dcdr-text-2);
+  --el-text-color-secondary: var(--dcdr-text-3);
+  --el-text-color-placeholder: var(--dcdr-text-3);
+  --el-text-color-disabled: var(--dcdr-text-3);
+
+  --el-border-color: var(--dcdr-border);
+  --el-border-color-light: var(--dcdr-border);
+  --el-border-color-lighter: var(--dcdr-border);
+  --el-border-color-extra-light: var(--dcdr-border);
+  --el-border-color-dark: var(--dcdr-border-strong);
+  --el-border-color-darker: var(--dcdr-border-strong);
+
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+
+  --el-box-shadow: var(--dcdr-shadow-card);
+  --el-box-shadow-light: var(--dcdr-shadow-card);
+  --el-box-shadow-lighter: var(--dcdr-shadow-card);
+}
+
+:root,
+:root[data-theme='dark'] {
+  --el-fill-color: rgba(255, 255, 255, 0.06);
+  --el-fill-color-light: rgba(255, 255, 255, 0.05);
+  --el-fill-color-lighter: rgba(255, 255, 255, 0.035);
+  --el-fill-color-extra-light: rgba(255, 255, 255, 0.025);
+  --el-fill-color-blank: transparent;
+  --el-fill-color-dark: rgba(255, 255, 255, 0.08);
+  --el-fill-color-darker: rgba(255, 255, 255, 0.1);
+  --el-mask-color: rgba(3, 5, 12, 0.7);
+  --el-disabled-bg-color: rgba(255, 255, 255, 0.03);
+}
+
+:root[data-theme='light'] {
+  --el-fill-color: #eef2f8;
+  --el-fill-color-light: #f2f5fa;
+  --el-fill-color-lighter: #f7f9fc;
+  --el-fill-color-extra-light: #fafbfd;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-dark: #e6ebf3;
+  --el-fill-color-darker: #dde4ee;
+  --el-mask-color: rgba(255, 255, 255, 0.72);
+  --el-disabled-bg-color: #f2f5fa;
+}
+
+/* ==========================================================================
+   基础工具类（新组件优先用这些，别再造轮子）
+   ========================================================================== */
+.dcdr-card {
+  background: var(--dcdr-surface-glass);
+  border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-card);
+}
+
+.dcdr-mono {
+  font-family: var(--dcdr-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 文字层级 */
+.dcdr-t1 { color: var(--dcdr-text-1); }
+.dcdr-t2 { color: var(--dcdr-text-2); }
+.dcdr-t3 { color: var(--dcdr-text-3); }
+
+/* 胶囊页签 / 胶囊按钮 */
+.dcdr-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--dcdr-radius-pill);
+  font-size: 12px;
+  color: var(--dcdr-text-3);
+  cursor: pointer;
+  transition: background var(--dcdr-dur) var(--dcdr-ease), color var(--dcdr-dur) var(--dcdr-ease);
+}
+
+.dcdr-pill:hover {
+  background: var(--dcdr-hover);
+  color: var(--dcdr-text-1);
+}
+
+.dcdr-pill.is-active {
+  background: var(--dcdr-accent-wash);
+  border: 1px solid rgba(46, 167, 255, 0.45);
+  color: var(--dcdr-accent-soft);
+  font-weight: 500;
+}
+
+/* 状态点：用小圆点 + 同色辉光表达状态，替代 el-tag 实心色块 */
+.dcdr-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dcdr-success);
+  box-shadow: 0 0 8px var(--dcdr-success);
+  flex: none;
+}
+.dcdr-dot.is-warn { background: var(--dcdr-warning); box-shadow: 0 0 8px var(--dcdr-warning); }
+.dcdr-dot.is-danger { background: var(--dcdr-danger); box-shadow: 0 0 8px var(--dcdr-danger); }
+.dcdr-dot.is-idle { background: var(--dcdr-text-3); box-shadow: none; }

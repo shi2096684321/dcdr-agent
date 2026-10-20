@@ -1,4 +1,14 @@
-/* 项目通用渐变背景工具类(被多个组件引用, 需全局可用) */
-.gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-.gradient-green { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
-.gradient-orange { background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); }
+/* 项目通用渐变工具类(被多个组件引用, 需全局可用)
+   注意: 这里只做「品牌色映射」, 类名保持不变, 避免改动几十处引用点。
+   原先分别是紫蓝 / 绿青 / 橙粉渐变, 现在统一到主题强调色, 并随主题切换。 */
+.gradient-bg {
+  background: var(--dcdr-accent-grad);
+}
+
+.gradient-green {
+  background: linear-gradient(135deg, var(--dcdr-success) 0%, var(--dcdr-accent) 100%);
+}
+
+.gradient-orange {
+  background: linear-gradient(135deg, var(--dcdr-accent-2) 0%, var(--dcdr-accent) 100%);
+}
