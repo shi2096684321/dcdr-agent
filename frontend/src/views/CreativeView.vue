@@ -3,7 +3,7 @@
     <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false" title="展开侧边栏">»</button>
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
       <div class="sidebar-header">
-        <button class="new-btn gradient-orange" @click="newProject">+ 新建项目</button>
+        <button class="new-btn" @click="newProject">+ 新建项目</button>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起侧边栏">«</button>
       </div>
       <div class="project-list">
@@ -835,8 +835,8 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 
 /* ===== 侧边栏 ===== */
 .sidebar {
-  width: 264px; display: flex; flex-direction: column;
-  background: rgba(255, 255, 255, 0.025);
+  width: 340px; display: flex; flex-direction: column;
+  background: var(--dcdr-surface-faint);
   border-right: 1px solid var(--border);
   backdrop-filter: blur(20px);
   transition: width 0.3s var(--ease);
@@ -1027,7 +1027,7 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 /* ===== 预览区 ===== */
 .preview-area {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  position: relative; background: rgba(0, 0, 0, 0.2);
+  position: relative; background: var(--dcdr-surface-faint);
 }
 .empty { text-align: center; color: var(--text-3); }
 .empty-icon {
