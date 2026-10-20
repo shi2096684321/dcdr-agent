@@ -2,7 +2,7 @@
   <div class="chat-mode">
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
       <div class="sidebar-header">
-        <button class="new-btn gradient-bg" @click="newSession">+ 新建对话</button>
+        <button class="new-btn" @click="newSession">+ 新建对话</button>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起侧边栏">«</button>
       </div>
       <div class="session-list">
@@ -160,7 +160,11 @@
         </div>
 
         <div class="input-box">
-          <div class="input-actions">
+          <textarea v-model="input" placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+                    @keydown.enter.exact.prevent="send" rows="1"
+                    :style="{ maxHeight: selectedFiles.length ? '80px' : '160px' }"></textarea>
+          <div class="input-foot">
+            <div class="input-actions">
             <!-- 文生图按钮 -->
             <button class="action-btn" title="文生图（AI 绘图）：请先在输入框填写图片描述" @click="sendImage"
                     :disabled="streaming">🎨</button>
@@ -208,17 +212,75 @@
               <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
             </el-select>
           </div>
-          <textarea v-model="input" placeholder="输入消息，Enter发送，Shift+Enter换行"
-                    @keydown.enter.exact.prevent="send" rows="1"
-                    :style="{ maxHeight: selectedFiles.length ? '80px' : '160px' }"></textarea>
-          <button class="send-btn gradient-bg" @click="streaming ? stop() : send()"
-                  :disabled="(!input.trim() && !selectedFiles.length) && !streaming">
-            {{ streaming ? '■' : '➤' }}
-          </button>
+            <div class="input-meta mono">
+              {{ messages.length }} 条 · {{ selectedKbIds.length ? selectedKbIds.length + ' 库' : '无知识库' }} · Enter 发送
+            </div>
+            <button class="send-btn gradient-bg" @click="streaming ? stop() : send()"
+                    :disabled="(!input.trim() && !selectedFiles.length) && !streaming">
+              {{ streaming ? '■' : '➤' }}
+            </button>
+          </div>
         </div>
         <div class="input-hint">支持上传图片、视频进行对话分析</div>
       </div>
     </div>
+
+    <!-- 右侧上下文面板：只呈现真实状态，不放占位内容。
+         「工具 / 链路追踪」需要接 ToolRegistry 与 trace 数据，属下一阶段（B），
+         这里不做假 tab。 -->
+    <aside v-if="panelOpen" class="context-panel">
+      <div class="ctx-head">
+        <span class="ctx-title">上下文</span>
+        <button class="ctx-collapse" @click="panelOpen = false" title="收起面板">»</button>
+      </div>
+
+      <div class="ctx-card">
+        <div class="ctx-card-title">运行参数</div>
+        <div class="ctx-row">
+          <span class="ctx-k">模型</span>
+          <span class="ctx-v mono">{{ currentModel || '未选择' }}</span>
+        </div>
+        <div class="ctx-row">
+          <span class="ctx-k">联网搜索</span>
+          <span class="ctx-v" :class="{ on: webSearch }">{{ webSearch ? '已开启' : '关闭' }}</span>
+        </div>
+        <div class="ctx-row">
+          <span class="ctx-k">深度思考</span>
+          <span class="ctx-v" :class="{ on: thinkingEnabled }">{{ thinkingEnabled ? '已开启' : '关闭' }}</span>
+        </div>
+        <div class="ctx-row">
+          <span class="ctx-k">对话消息</span>
+          <span class="ctx-v mono">{{ messages.length }} 条</span>
+        </div>
+      </div>
+
+      <div class="ctx-card">
+        <div class="ctx-card-title">本轮增强</div>
+        <div class="ctx-row">
+          <span class="ctx-k">专家</span>
+          <span class="ctx-v">{{ currentAgentName || '默认' }}</span>
+        </div>
+        <div class="ctx-row">
+          <span class="ctx-k">知识库</span>
+          <span class="ctx-v mono">{{ selectedKbIds.length ? selectedKbIds.length + ' 库' : '未选择' }}</span>
+        </div>
+        <div v-if="selectedKbNames.length" class="ctx-list">
+          <span v-for="n in selectedKbNames" :key="n" class="ctx-chip">{{ n }}</span>
+        </div>
+        <div class="ctx-row">
+          <span class="ctx-k">技能</span>
+          <span class="ctx-v mono">{{ selectedSkillNames.length ? selectedSkillNames.length + ' 个' : '未选择' }}</span>
+        </div>
+        <div v-if="selectedSkillNames.length" class="ctx-list">
+          <span v-for="n in selectedSkillNames" :key="n" class="ctx-chip">{{ n }}</span>
+        </div>
+      </div>
+
+      <div class="ctx-foot mono">
+        {{ currentSessionId ? '会话 #' + currentSessionId : '新会话 · 尚未保存' }}
+      </div>
+    </aside>
+    <button v-else class="panel-expand" @click="panelOpen = true" title="展开上下文面板">«</button>
 
     <!-- 会话设置弹窗: 定制会话角色设定(人设/偏好), 由平台包装后转述给模型, 不覆盖平台系统约束 -->
     <el-dialog v-model="settingsVisible" title="会话设置 · 角色设定" width="560px" append-to-body>
@@ -396,6 +458,13 @@ function onSkillDropdownOpen(open) {
 const agents = ref([])
 const selectedAgentId = ref('')
 const agentLoading = ref(false)
+
+/* 右侧上下文面板：全部读真实状态，不造数据 */
+const panelOpen = ref(true)
+const currentAgentName = computed(() => agents.value.find((a) => a.id === selectedAgentId.value)?.name || '')
+const selectedKbNames = computed(() =>
+  selectableKnowledgeBases.value.filter((k) => selectedKbIds.value.includes(k.id)).map((k) => k.name)
+)
 
 async function loadAgents() {
   agentLoading.value = true
@@ -946,15 +1015,63 @@ onMounted(() => { loadSessions() })
 .chat-mode { flex: 1; display: flex; overflow: hidden; height: 100%; position: relative; }
 
 /* 侧边栏 */
-.sidebar { width: 280px; background: var(--dcdr-surface-glass); backdrop-filter: blur(14px); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; transition: width 0.25s ease; }
+.sidebar { width: 240px; background: var(--dcdr-surface-glass); backdrop-filter: blur(14px); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; transition: width 0.25s ease; }
 .sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
-.sidebar-header { padding: 20px 16px; border-bottom: 1px solid var(--dcdr-border); position: relative; }
-.collapse-btn { position: absolute; right: 10px; top: 22px; width: 26px; height: 26px; border: none; border-radius: 6px; background: var(--dcdr-bg-subtle); color: var(--dcdr-text-3); cursor: pointer; font-size: 16px; line-height: 1; }
-.collapse-btn:hover { background: rgba(102,126,234,0.12); color: var(--dcdr-accent); }
+.sidebar-header { display: flex; align-items: center; gap: 8px; padding: 14px 12px; border-bottom: 1px solid var(--dcdr-border); }
+.collapse-btn { flex: none; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; color: var(--dcdr-text-3); cursor: pointer; font-size: 15px; line-height: 1; transition: all 0.15s; }
+.collapse-btn:hover { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
 .sidebar-expand { position: absolute; left: 0; top: 14px; z-index: 50; width: 26px; height: 36px; border: none; border-radius: 0 8px 8px 0; background: var(--dcdr-accent); color: #fff; cursor: pointer; font-size: 16px; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
-.sidebar-expand:hover { background: #5568d3; }
-.new-btn { width: 100%; height: 44px; color: #fff; border: none; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.3s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: 0 4px 15px rgba(102, 126, 234, 0.35); }
-.new-btn:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(102, 126, 234, 0.45); }
+.sidebar-expand:hover { filter: brightness(1.08); }
+
+/* ---------- 右侧上下文面板 ----------
+   尺寸按设计稿：轨道 64 + 侧栏 240 + 对话 836 + 面板 300 = 1440。 */
+.context-panel {
+  width: 300px; flex: none; display: flex; flex-direction: column; gap: 14px;
+  padding: 16px; background: var(--dcdr-surface-faint);
+  border-left: 1px solid var(--dcdr-border); backdrop-filter: blur(14px);
+  overflow-y: auto;
+}
+.ctx-head { display: flex; align-items: center; justify-content: space-between; height: 20px; }
+.ctx-title { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 1.2px; color: var(--dcdr-text-3); }
+.ctx-collapse {
+  border: none; background: transparent; color: var(--dcdr-text-3); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 6px; transition: all 0.15s;
+}
+.ctx-collapse:hover { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
+
+.ctx-card {
+  display: flex; flex-direction: column; gap: 9px; padding: 13px;
+  border-radius: var(--dcdr-radius-inner); background: var(--dcdr-surface-faint);
+  border: 1px solid var(--dcdr-border);
+}
+.ctx-card-title { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 1.2px; color: var(--dcdr-text-3); }
+.ctx-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.ctx-k { flex: none; font-size: 11px; color: var(--dcdr-text-2); }
+.ctx-v { font-size: 11px; color: var(--dcdr-text-1); text-align: right; word-break: break-all; }
+.ctx-v.mono { font-family: var(--dcdr-font-mono); font-size: 10.5px; }
+.ctx-v.on { color: var(--dcdr-success); }
+.ctx-list { display: flex; flex-wrap: wrap; gap: 5px; }
+.ctx-chip {
+  font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-text-2);
+  background: var(--dcdr-hover); border: 1px solid var(--dcdr-border);
+  border-radius: 999px; padding: 2px 7px;
+}
+.ctx-foot { margin-top: auto; padding-top: 6px; font-size: 9.5px; color: var(--dcdr-text-3); }
+
+.panel-expand {
+  position: absolute; right: 0; top: 14px; z-index: 50; width: 26px; height: 36px;
+  border: none; border-radius: 8px 0 0 8px; background: var(--dcdr-accent); color: #fff;
+  cursor: pointer; font-size: 14px; box-shadow: 0 0 12px var(--dcdr-accent-wash);
+}
+.panel-expand:hover { filter: brightness(1.08); }
+
+/* 窄屏自动收起：1240 以下主区再让 300 给面板，消息会被挤成一条 */
+@media (max-width: 1240px) {
+  .context-panel { display: none; }
+  .panel-expand { display: none; }
+}
+.new-btn { flex: 1; min-width: 0; height: 38px; color: var(--dcdr-accent-soft); font-size: 13px; font-weight: 500; cursor: pointer; border-radius: var(--dcdr-radius-inner); border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash); transition: background 0.2s ease, border-color 0.2s ease; }
+.new-btn:hover { background: var(--dcdr-active); border-color: var(--dcdr-accent); }
 .session-list { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .session-list::-webkit-scrollbar { width: 4px; }
 .session-list::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 4px; }
@@ -1082,9 +1199,11 @@ onMounted(() => { loadSessions() })
 .file-name { font-size: 10px; color: var(--dcdr-text-3); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 
 /* 输入框 */
-.input-box { max-width: 844px; margin: 0 auto; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 16px; padding: 12px 16px; display: flex; gap: 10px; align-items: flex-end; box-shadow: 0 4px 20px rgba(0,0,0,0.06); transition: all 0.25s ease; }
+.input-box { max-width: 780px; margin: 0 auto; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-card); padding: 12px 14px 10px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--dcdr-shadow-card); transition: border-color 0.2s ease, box-shadow 0.2s ease; }
 .input-box:focus-within { border-color: var(--dcdr-accent); box-shadow: 0 4px 25px rgba(102,126,234,0.15); }
-.input-actions { display: flex; gap: 4px; padding-bottom: 4px; }
+.input-foot { display: flex; align-items: center; gap: 10px; }
+.input-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.input-meta { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-text-3); white-space: nowrap; }
 .action-btn { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 10px; cursor: pointer; font-size: 18px; transition: all 0.2s; color: var(--dcdr-text-2); background: var(--dcdr-bg-subtle); border: none; }
 .action-btn:hover { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); }
 .action-btn.active { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); color: var(--dcdr-accent); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
@@ -1108,8 +1227,8 @@ onMounted(() => { loadSessions() })
 .agent-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
 .agent-select.active :deep(.el-select__wrapper) { background: linear-gradient(135deg, rgba(102,126,234,0.18) 0%, rgba(118,75,162,0.15) 100%); box-shadow: inset 0 0 0 1px rgba(102,126,234,0.35); }
 .agent-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
-.input-box textarea { flex: 1; border: none; outline: none; resize: none; font-size: 14px; line-height: 1.6; max-height: 160px; font-family: inherit; padding: 4px 0; background: transparent; }
-.send-btn { width: 40px; height: 40px; border: none; border-radius: 10px; color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
+.input-box textarea { width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.65; max-height: 160px; font-family: inherit; padding: 2px 2px 0; background: transparent; color: var(--dcdr-text-1); }
+.send-btn { flex: none; width: 34px; height: 34px; border: none; border-radius: var(--dcdr-radius-pill); color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: 0 4px 12px rgba(102,126,234,0.35); }
 .send-btn:hover:not(:disabled) { transform: scale(1.05); box-shadow: 0 6px 18px rgba(102,126,234,0.45); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 

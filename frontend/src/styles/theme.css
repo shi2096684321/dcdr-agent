@@ -69,6 +69,7 @@
   --dcdr-accent-soft: #b1e2ff;
   --dcdr-accent-2: #9381ff;
   --dcdr-accent-wash: rgba(46, 167, 255, 0.16);
+  --dcdr-accent-line: rgba(46, 167, 255, 0.42);
   --dcdr-accent-grad: linear-gradient(135deg, #2ea7ff 0%, #9381ff 100%);
 
   --dcdr-success: #13ddc4;
@@ -123,6 +124,7 @@
   --dcdr-accent-soft: #1c6fc4;
   --dcdr-accent-2: #5b45cf;
   --dcdr-accent-wash: rgba(8, 100, 189, 0.1);
+  --dcdr-accent-line: rgba(8, 100, 189, 0.38);
   --dcdr-accent-grad: linear-gradient(135deg, #0864bd 0%, #5b45cf 100%);
 
   /* 语义色原来只按"看着对"取，实测在浅底上 3.4–4.3，小字不可读，统一压深 */
