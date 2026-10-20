@@ -5,7 +5,6 @@
       <el-tab-pane label="系统概览" name="stats">
         <div class="stats-grid" v-loading="statsLoading">
           <div class="stat-card" v-for="item in statCards" :key="item.label">
-            <div class="stat-icon" :style="{ background: item.color }">{{ item.icon }}</div>
             <div class="stat-info">
               <div class="stat-value">{{ item.value }}</div>
               <div class="stat-label">{{ item.label }}</div>
@@ -25,18 +24,16 @@
           <el-table-column prop="email" label="邮箱" min-width="180" show-overflow-tooltip />
           <el-table-column label="角色" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.role === 'admin' ? 'danger' : 'info'" size="small">{{ row.role }}</el-tag>
+              <span class="cell-role" :class="{ admin: row.role === 'admin' }">{{ row.role }}</span>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="100">
             <template #default="{ row }">
-              <el-tag :type="row.status === 'active' ? 'success' : 'warning'" size="small">
-                {{ row.status === 'active' ? '启用' : '禁用' }}
-              </el-tag>
+              <span class="cell-status" :class="row.status === 'active' ? 'on' : 'off'">{{ row.status === 'active' ? '启用' : '禁用' }}</span>
             </template>
           </el-table-column>
           <el-table-column prop="createdAt" label="注册时间" min-width="160">
-            <template #default="{ row }">{{ formatDate(row.createdAt) }}</template>
+            <template #default="{ row }"><span class="cell-mono">{{ formatDate(row.createdAt) }}</span></template>
           </el-table-column>
           <el-table-column label="操作" width="220" fixed="right">
             <template #default="{ row }">
@@ -331,13 +328,33 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.admin-container { padding: 20px; height: 100%; overflow: auto; background: var(--dcdr-bg-subtle); }
-.admin-tabs { background: var(--dcdr-surface); border-radius: 8px; padding: 16px 20px; }
+.admin-container { height: 100%; overflow: auto; }
+.admin-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 24px; }
+.admin-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+.admin-tabs :deep(.el-tabs__active-bar) { display: none; }
+.admin-tabs :deep(.el-tabs__item) {
+  height: 26px; line-height: 26px; margin: 10px 3px; padding: 0 12px !important;
+  font-size: 12px; color: var(--dcdr-text-3); border-radius: 999px;
+  transition: background 0.15s, color 0.15s;
+}
+.admin-tabs :deep(.el-tabs__item:hover) { color: var(--dcdr-text-1); }
+.admin-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash);
+  box-shadow: inset 0 0 0 1px var(--dcdr-accent-line);
+}
+.admin-tabs :deep(.el-tabs__content) { padding: 18px 24px 24px; }
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-.stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
-.stat-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 18px; display: flex; align-items: center; gap: 14px; }
+.stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+.stat-info { display: flex; flex-direction: column-reverse; gap: 7px; }
+.stat-card { display: flex; flex-direction: column; gap: 7px; padding: 16px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner); }
 .stat-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; color: #fff; }
 .stat-info { flex: 1; }
-.stat-value { font-size: 24px; font-weight: 600; color: var(--dcdr-text-1); }
-.stat-label { font-size: 13px; color: #6b7280; margin-top: 2px; }
+.stat-value { font-family: var(--dcdr-font-mono); font-size: 24px; font-weight: 700; letter-spacing: -0.5px; color: var(--dcdr-text-1); }
+.stat-label { font-family: var(--dcdr-font-mono); font-size: 10.5px; letter-spacing: 1px; color: var(--dcdr-text-3); }
+.cell-role { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-2); }
+.cell-role.admin { color: var(--dcdr-danger); }
+.cell-status { font-family: var(--dcdr-font-mono); font-size: 10px; }
+.cell-status.on { color: var(--dcdr-success); }
+.cell-status.off { color: var(--dcdr-warning); }
+.cell-mono { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
 </style>
