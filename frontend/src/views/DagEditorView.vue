@@ -20,20 +20,9 @@
       <!-- 节点面板 -->
       <div class="palette">
         <div class="p-title">添加节点</div>
-        <div class="p-item" @click="addNode('agent')">
-          <span class="p-icon" style="background:var(--dcdr-accent)">A</span> 专家节点
-        </div>
-        <div class="p-item" @click="addNode('condition')">
-          <span class="p-icon" style="background:var(--dcdr-warning)">?</span> 条件分支
-        </div>
-        <div class="p-item" @click="addNode('router')">
-          <span class="p-icon" style="background:#8b5cf6">⇢</span> 路由节点
-        </div>
-        <div class="p-item" @click="addNode('approval')">
-          <span class="p-icon" style="background:var(--dcdr-danger)">☑</span> 人工审批
-        </div>
-        <div class="p-item" @click="addNode('merge')">
-          <span class="p-icon" style="background:var(--dcdr-success)">M</span> 分支合并
+        <div class="p-item" v-for="p in PALETTE" :key="p.type" @click="addNode(p.type)">
+          <svg class="p-icon" viewBox="0 0 24 24" :class="'pi-' + p.type" v-html="NODE_ICONS[p.type]" />
+          <span class="p-text">{{ p.label }}</span>
         </div>
         <div class="p-hint">
           <div>· 拖动节点调整布局</div>
@@ -49,19 +38,19 @@
         <svg class="canvas-svg" :width="canvasW" :height="canvasH">
           <!-- 网格 -->
           <defs>
-            <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#f0f1f5" stroke-width="1"/>
+            <pattern id="grid" width="80" height="80" patternUnits="userSpaceOnUse">
+              <path d="M 80 0 L 0 0 0 80" fill="none" stroke="var(--dcdr-grid)" stroke-width="1"/>
             </pattern>
           </defs>
           <rect width="100%" height="100%" fill="url(#grid)"/>
           <!-- 边 -->
           <g v-for="e in edges" :key="e.source + '->' + e.target" class="edge" @click="selectEdge(e)">
-            <path :d="edgePath(e)" fill="none" :stroke="selectedEdge === e ? 'var(--dcdr-danger)' : '#b9c0cc'" stroke-width="2" marker-end="url(#arrow)"/>
+            <path :d="edgePath(e)" class="edge-path" :class="{ selected: selectedEdge === e }" fill="none" stroke-width="1.6" marker-end="url(#arrow)"/>
             <text v-if="e.label" :x="edgeMid(e).x" :y="edgeMid(e).y - 6" text-anchor="middle" class="edge-label">{{ e.label }}</text>
           </g>
           <defs>
             <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-              <path d="M 0 0 L 10 5 L 0 10 z" fill="#b9c0cc"/>
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--dcdr-accent)" fill-opacity="0.55"/>
             </marker>
           </defs>
           <!-- 连线预览 -->
@@ -70,11 +59,14 @@
           <g v-for="n in nodes" :key="n.id" class="node"
              :transform="`translate(${n.position.x},${n.position.y})`"
              @mousedown="startDrag(n, $event)" @click.stop="selectNode(n)">
-            <rect width="180" height="52" rx="8" class="node-box" :class="['nt-' + n.type, { selected: selectedNode === n, linking: linking && linkFrom === n }]"/>
-            <text x="12" y="22" class="node-label">{{ nodeIcon(n.type) }} {{ n.data?.label || n.id }}</text>
-            <text x="12" y="40" class="node-sub">{{ nodeSub(n) }}</text>
+            <rect :width="NODE_W" :height="NODE_H" rx="12" class="node-box" :class="['nt-' + n.type, { selected: selectedNode === n, linking: linking && linkFrom === n }]"/>
+            <!-- 类型图标：与全站同一套线性语言，不用字母徽标 -->
+            <g class="node-icon" transform="translate(12,10) scale(0.625)" :class="'ni-' + n.type" v-html="NODE_ICONS[n.type]" />
+            <text x="33" y="22" class="node-type">{{ nodeTypeLabel(n.type) }}</text>
+            <text x="12" y="44" class="node-name">{{ n.data?.label || n.id }}</text>
+            <text x="12" y="60" class="node-sub">{{ nodeSub(n) }}</text>
             <!-- 连线锚点 -->
-            <circle v-if="!linking" cx="180" cy="26" r="6" class="anchor" @mousedown.stop="startLink(n, $event)"/>
+            <circle v-if="!linking" :cx="NODE_W" :cy="NODE_H / 2" r="6" class="anchor" @mousedown.stop="startLink(n, $event)"/>
           </g>
         </svg>
         <div v-if="!nodes.length" class="empty-tip">从左侧添加节点开始编排</div>
@@ -200,8 +192,8 @@ import {
 // 从工作流页跳转时携带目标工作流 ID, 挂载后自动选中加载
 const props = defineProps({ initialWorkflowId: { type: String, default: '' } })
 
-const NODE_W = 180
-const NODE_H = 52
+const NODE_W = 150
+const NODE_H = 72
 
 const workflows = ref([])
 const agents = ref([])
@@ -235,7 +227,22 @@ const canvasH = ref(900)
 const editableWorkflows = computed(() => (workflows.value || []).filter(w => w.editable !== false && !w.isTemplate))
 const canvasWrap = ref(null)
 
-const nodeIcon = (t) => ({ agent: 'A', condition: '?', router: '⇢', approval: '☑', merge: 'M' })[t] || 'N'
+/* 节点类型图标：一处定义，画布与调色板共用，避免两处各画一遍导致风格漂移 */
+const NODE_ICONS = {
+  agent: '<path d="M12 3L19 6V11.5C19 16 15.8 19.4 12 21C8.2 19.4 5 16 5 11.5V6L12 3Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.8 11.8L11.2 14.2L15.4 9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  condition: '<path d="M12 3.6L20.4 12L12 20.4L3.6 12L12 3.6Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.8 12H15.2" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  router: '<circle cx="6" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="18" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M8.4 6H15.6M6 8.4V12C6 13.1 6.9 14 8 14H12V15.6M18 8.4V12C18 13.1 17.1 14 16 14H12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  approval: '<rect x="4.6" y="4.6" width="6" height="6" rx="1.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="13.4" y="4.6" width="6" height="6" rx="1.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><rect x="4.6" y="13.4" width="6" height="6" rx="1.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.6 16.4L15.4 18.2L18.6 14.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>',
+  merge: '<path d="M4 8V6C4 4.9 4.9 4 6 4H8M16 4H18C19.1 4 20 4.9 20 6V8M20 16V18C20 19.1 19.1 20 18 20H16M8 20H6C4.9 20 4 19.1 4 18V16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 12H15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>'
+}
+const PALETTE = [
+  { type: 'agent', label: '专家节点' },
+  { type: 'condition', label: '条件分支' },
+  { type: 'router', label: '路由节点' },
+  { type: 'approval', label: '人工审批' },
+  { type: 'merge', label: '分支合并' }
+]
+const nodeTypeLabel = (t) => ({ agent: 'AGENT', condition: 'CONDITION', router: 'ROUTER', approval: 'APPROVAL', merge: 'MERGE' })[t] || 'NODE'
 const conditionPlaceholder = computed(() => {
   return selectedNode.value?.data?.conditionMode === 'expr'
     ? "形如 contains(${n1.output},'YES')"
@@ -533,29 +540,46 @@ onMounted(async () => {
 .p-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer;
   font-size: 13px; color: var(--dcdr-text-2); margin-bottom: 6px; border: 1px dashed transparent; }
 .p-item:hover { background: var(--dcdr-bg-subtle); border-color: var(--dcdr-border); }
-.p-icon { width: 24px; height: 24px; border-radius: 6px; color: #fff; font-size: 12px; display: inline-flex;
-  align-items: center; justify-content: center; font-weight: 600; }
+.p-icon { width: 16px; height: 16px; flex: none; }
+.p-text { font-size: 12.5px; color: var(--dcdr-text-2); }
+.p-item:hover .p-text { color: var(--dcdr-text-1); }
 .p-hint { margin-top: 12px; font-size: 12px; color: var(--dcdr-text-3); line-height: 1.8; }
 
-.canvas-wrap { flex: 1; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; overflow: auto; position: relative; }
+.canvas-wrap { flex: 1; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner); overflow: auto; position: relative; }
 .canvas-svg { display: block; }
 .empty-tip { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: var(--dcdr-text-3); font-size: 13px; }
 .node { cursor: grab; }
-.node-box { fill: #fff; stroke: #b9c0cc; stroke-width: 1.5; }
-.node-box.nt-agent { stroke: var(--dcdr-accent); }
-.node-box.nt-condition { stroke: var(--dcdr-warning); }
-.node-box.nt-router { stroke: #8b5cf6; }
-.node-box.nt-approval { stroke: var(--dcdr-danger); }
-.node-box.nt-merge { stroke: var(--dcdr-success); }
-.node-box.selected { stroke-width: 3; filter: drop-shadow(0 2px 6px rgba(102,126,234,0.35)); }
+.node-box { fill: var(--dcdr-surface-2); stroke: var(--dcdr-border-strong); stroke-width: 1; }
+.node-box.nt-agent { stroke: var(--dcdr-accent-line); }
+.node-box.nt-condition { stroke: color-mix(in srgb, var(--dcdr-warning) 45%, transparent); }
+.node-box.nt-router { stroke: var(--dcdr-accent-line); }
+.node-box.nt-approval { stroke: color-mix(in srgb, var(--dcdr-danger) 45%, transparent); }
+.node-box.nt-merge { stroke: color-mix(in srgb, var(--dcdr-success) 45%, transparent); }
+.node-box.selected { stroke: var(--dcdr-accent); stroke-width: 1.5; filter: drop-shadow(0 0 14px var(--dcdr-accent-wash)); }
 .node-box.linking { stroke-dasharray: 6 3; }
-.node-label { font-size: 13px; font-weight: 600; fill: #303133; }
-.node-sub { font-size: 11px; fill: #909399; }
-.anchor { fill: var(--dcdr-accent); cursor: crosshair; }
+.node-icon { color: var(--dcdr-accent); }
+.node-type { font-family: var(--dcdr-font-mono); font-size: 8.5px; letter-spacing: 0.6px; fill: var(--dcdr-text-3); }
+.node-name { font-size: 12.5px; font-weight: 500; fill: var(--dcdr-text-1); }
+.node-sub { font-size: 10px; fill: var(--dcdr-text-3); }
+.anchor { fill: var(--dcdr-accent); cursor: crosshair; opacity: 0.5; transition: opacity 0.15s; }
+.node:hover .anchor { opacity: 1; }
+.node { cursor: grab; }
+.ni-condition { color: var(--dcdr-warning); }
+.ni-router { color: var(--dcdr-accent-2); }
+.ni-approval { color: var(--dcdr-danger); }
+.ni-merge { color: var(--dcdr-success); }
+.pi-agent { color: var(--dcdr-accent); }
+.pi-condition { color: var(--dcdr-warning); }
+.pi-router { color: var(--dcdr-accent-2); }
+.pi-approval { color: var(--dcdr-danger); }
+.pi-merge { color: var(--dcdr-success); }
+.edge-path { stroke: var(--dcdr-accent); stroke-opacity: 0.45; }
+.edge-path.selected { stroke: var(--dcdr-danger); stroke-opacity: 1; stroke-width: 2; }
+.edge-label { font-family: var(--dcdr-font-mono); font-size: 9.5px; fill: var(--dcdr-text-3); }
 .anchor:hover { r: 8; }
 .edge { cursor: pointer; }
 .edge:hover path { stroke: var(--dcdr-danger); }
-.edge-label { font-size: 11px; fill: var(--dcdr-warning); }
+
 
 .props { width: 260px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 12px; flex-shrink: 0; overflow-y: auto; }
 .p-tip { font-size: 12px; color: var(--dcdr-text-3); line-height: 1.8; margin: 6px 0; }

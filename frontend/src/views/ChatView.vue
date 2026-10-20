@@ -43,23 +43,46 @@
       <!-- 消息列表 -->
       <div class="messages" ref="msgBox">
         <div v-if="messages.length === 0 && !streaming" class="welcome">
-          <img :src="logoUrl" class="welcome-icon" alt="DCDR" />
-          <h2>你好，我是 DCDR</h2>
-          <p>支持文字对话、图片理解、视频分析</p>
-          <div class="quick-actions">
-            <div class="quick-card" @click="quickSend('帮我分析这张图片')">
-              <span class="quick-icon">🖼️</span>
-              <span>图片理解</span>
-            </div>
-            <div class="quick-card" @click="quickSend('描述这个视频的内容')">
-              <span class="quick-icon">🎬</span>
-              <span>视频分析</span>
-            </div>
-            <div class="quick-card" @click="quickSend('帮我创作一张图片')">
-              <span class="quick-icon">🎨</span>
-              <span>AI绘图</span>
-            </div>
+          <div class="welcome-badge">
+            <img :src="logoUrl" class="welcome-icon" alt="DCDR" />
           </div>
+          <h2>你好，我是 DCDR</h2>
+          <p>文字对话、图片理解、视频分析，也可以直接让我画</p>
+          <div class="quick-actions">
+            <button class="quick-card" @click="quickSend('帮我分析这张图片')">
+              <svg class="quick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3.2" y="4.4" width="17.6" height="15.2" rx="2.6" stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="8.8" cy="9.8" r="1.7" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M3.6 16.8L8.4 12.6L13 16.8L16.4 14L20.4 17.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="quick-text">
+                <b>图片理解</b>
+                <i>上传截图或照片</i>
+              </span>
+            </button>
+            <button class="quick-card" @click="quickSend('描述这个视频的内容')">
+              <svg class="quick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3.2" y="5.4" width="13.4" height="13.2" rx="2.4" stroke="currentColor" stroke-width="1.7"/>
+                <path d="M16.6 10.4L20.4 8.2V15.8L16.6 13.6" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M6.8 9.4H11.4M6.8 12.2H10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+              <span class="quick-text">
+                <b>视频分析</b>
+                <i>逐帧理解与摘要</i>
+              </span>
+            </button>
+            <button class="quick-card" @click="quickSend('帮我创作一张图片')">
+              <svg class="quick-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 3.4L13.6 8.8L19 10.4L13.6 12L12 17.4L10.4 12L5 10.4L10.4 8.8L12 3.4Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M18.2 15.6L18.9 17.7L21 18.4L18.9 19.1L18.2 21.2L17.5 19.1L15.4 18.4L17.5 17.7L18.2 15.6Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+              </svg>
+              <span class="quick-text">
+                <b>AI 绘图</b>
+                <i>用一句话生成图片</i>
+              </span>
+            </button>
+          </div>
+          <div class="welcome-hint mono">Enter 发送 · Shift + Enter 换行 · 支持图片与视频附件</div>
         </div>
 
         <!-- 已持久化消息项 -->
@@ -1096,15 +1119,26 @@ onMounted(() => { loadSessions() })
 .messages::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 6px; }
 
 /* 欢迎页 */
-.welcome { text-align: center; padding-top: 100px; max-width: 600px; margin: 0 auto; }
-.welcome-icon { width: 80px; height: 80px; border-radius: 20px; object-fit: cover; margin-bottom: 20px; box-shadow: 0 8px 30px rgba(102,126,234,0.25); }
-.welcome h2 { font-size: 28px; color: var(--dcdr-text-1); margin-bottom: 10px; font-weight: 700; }
-.welcome p { color: var(--dcdr-text-2); font-size: 15px; margin-bottom: 32px; }
-.quick-actions { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
-.quick-card { display: flex; align-items: center; gap: 10px; padding: 14px 20px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 14px; cursor: pointer; transition: all 0.25s ease; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
-.quick-card:hover { border-color: var(--dcdr-accent); box-shadow: 0 4px 16px rgba(102,126,234,0.15); transform: translateY(-2px); }
-.quick-icon { font-size: 22px; }
-.quick-card span:last-child { font-size: 14px; color: var(--dcdr-text-1); font-weight: 500; }
+.welcome { text-align: center; padding-top: 84px; max-width: 620px; margin: 0 auto; }
+.welcome-icon { width: 64px; height: 64px; border-radius: 18px; object-fit: cover; margin-bottom: 18px; box-shadow: var(--dcdr-shadow-card), 0 0 0 1px var(--dcdr-border); }
+.welcome h2 { font-size: 24px; color: var(--dcdr-text-1); margin-bottom: 8px; font-weight: 700; letter-spacing: -0.2px; }
+.welcome p { color: var(--dcdr-text-2); font-size: 13px; margin-bottom: 28px; }
+
+/* 快捷入口：线性图形 + 双行文案，不用 emoji —— emoji 在深色底上自带彩色描边，
+   和整套 1.7px 线性图标不是一套语言，且各平台字形差异大。 */
+.quick-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.quick-card {
+  display: flex; align-items: center; gap: 10px; padding: 11px 14px; text-align: left;
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: 12px; cursor: pointer; font-family: inherit;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+.quick-card:hover { border-color: var(--dcdr-accent-line); background: var(--dcdr-accent-wash); transform: translateY(-1px); }
+.quick-icon { width: 18px; height: 18px; flex: none; color: var(--dcdr-accent); }
+.quick-text { display: flex; flex-direction: column; gap: 2px; }
+.quick-text b { font-size: 12.5px; font-weight: 500; color: var(--dcdr-text-1); }
+.quick-text i { font-size: 10.5px; font-style: normal; color: var(--dcdr-text-3); }
+.welcome-hint { margin-top: 22px; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.2px; color: var(--dcdr-text-3); }
 
 /* 流式输出项(复用消息项样式) */
 .msg-item { display: flex; gap: 14px; margin-bottom: 28px; max-width: 900px; margin-left: auto; margin-right: auto; width: 100%; animation: fadeInUp 0.3s ease; }
