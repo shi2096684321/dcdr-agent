@@ -66,8 +66,8 @@ openssl rand -hex 32
 ### 1.3 第二步：启动依赖（PostgreSQL / Redis / Zipkin / SearXNG）
 
 ```bash
-docker compose up -d          # 只起中间件，应用在本机跑
-docker compose ps             # 等 postgres、redis 变成 healthy
+docker-compose -f docker-compose.yml up -d          # 只起中间件，应用在本机跑
+docker ps             # 等 postgres、redis 变成 healthy
 ```
 
 首次建库时 `docs/sql/v2.0|v3.0|v3.1_schema.sql` 会被自动执行，**无需手工建表**。
