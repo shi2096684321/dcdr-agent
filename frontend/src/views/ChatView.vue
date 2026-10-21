@@ -12,7 +12,11 @@
                    @click.stop @keyup.enter="saveRename(s.id)" @keyup.esc="cancelRename" @blur="saveRename(s.id)" />
           </template>
           <template v-else>
-            <span class="session-title">{{ s.title }}</span>
+            <span class="session-title" :title="s.title">{{ s.title }}</span>
+            <!-- 操作按钮收进绝对定位的浮层：它们在正常流里会固定吃掉 ~120px 宽度，
+                 侧边栏只有 150px 左右，标题因此被压成"生产级回..."。悬停才浮出，
+                 不参与布局，标题可以占到整行宽度。 -->
+            <div class="session-actions">
             <button class="rename-btn" @click.stop="startRename(s)" title="重命名">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
             </button>
@@ -33,6 +37,7 @@
             <button class="delete-btn" @click.stop="removeSession(s)" title="删除">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14M9.5 7V5.2c0-.7.5-1.2 1.2-1.2h2.6c.7 0 1.2.5 1.2 1.2V7M7 7l.8 11.3c0 .9.8 1.7 1.7 1.7h5c.9 0 1.7-.8 1.7-1.7L17 7"/></svg>
             </button>
+            </div>
           </template>
         </div>
       </div>
@@ -1111,13 +1116,18 @@ onMounted(() => { loadSessions() })
 .session-list { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .session-list::-webkit-scrollbar { width: 4px; }
 .session-list::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 4px; }
-.session-item { padding: 12px 14px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; }
+.session-item { padding: 12px 14px; border-radius: 10px; cursor: pointer; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; transition: all 0.2s ease; position: relative; }
 .session-item:hover { background: var(--dcdr-bg-subtle); }
 .session-item.active { background: var(--dcdr-accent-wash); color: var(--dcdr-text-1); font-weight: 500; border: 1px solid var(--dcdr-accent-line); }
-.session-title { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rename-btn, .delete-btn, .export-btn, .settings-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); opacity: 0; padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+/* 标题最多两行：侧边栏只有 ~150px，操作按钮若在正常流里会固定吃掉 ~120px，
+   长标题（如"生产级回归-会话A（改名）"）就会退化成"生产级回..."。 */
+.session-title { font-size: 13px; flex: 1; min-width: 0; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+/* 操作按钮：悬停才浮出，绝对定位不参与布局（见模板注释） */
+.session-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 2px; padding-left: 10px; border-radius: 8px; background: var(--dcdr-bg-subtle); opacity: 0; pointer-events: none; transition: opacity 0.16s ease; }
+.session-item.active .session-actions { background: var(--dcdr-accent-wash); }
+.session-item:hover .session-actions { opacity: 1; pointer-events: auto; }
+.rename-btn, .delete-btn, .export-btn, .settings-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
 .rename-btn svg, .delete-btn svg, .export-btn svg, .settings-btn svg { width: 13px; height: 13px; }
-.session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn, .session-item:hover .settings-btn { opacity: 1; }
 .rename-btn:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .settings-btn:hover { color: var(--dcdr-warning); background: rgba(230,162,60,0.1); }
 .export-btn:hover { color: var(--dcdr-success); background: rgba(103,194,58,0.1); }
