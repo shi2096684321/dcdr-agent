@@ -6,7 +6,7 @@
 }
 
 .gradient-green {
-  background: linear-gradient(135deg, var(--dcdr-success) 0%, var(--dcdr-accent) 100%);
+  background: var(--dcdr-accent-grad);
 }
 
 .gradient-orange {

@@ -1,219 +1,234 @@
 <template>
   <div class="creative-mode">
-    <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false" title="展开侧边栏">»</button>
-    <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
-      <div class="sidebar-header">
-        <button class="new-btn" @click="newProject">+ 新建项目</button>
-        <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起侧边栏">«</button>
-      </div>
-      <div class="project-list">
-        <div v-for="p in projects" :key="p.id" class="project-item" :class="{active: p.id===currentProjectId}" @click="switchProject(p.id)">
-          <input v-if="editingId===p.id" v-model="editingName" class="proj-edit-input" @click.stop
-                 @keyup.enter="saveEdit" @keyup.esc="cancelEdit" @blur="saveEdit" />
-          <span v-else class="proj-name">{{ p.name }}</span>
-          <div class="proj-actions" @click.stop>
-            <span class="meta">{{ p.generationCount }} 张</span>
-            <button class="icon-btn" title="重命名" @click="startEdit(p)">✎</button>
-            <button class="icon-btn danger" title="删除" @click="removeProject(p)">🗑</button>
-          </div>
+    <!-- ===== 左栏: 生成控制面板 ===== -->
+    <aside class="control-panel">
+      <div class="cp-tabs">
+        <!-- 图片 / 视频 生成切换 -->
+        <div class="gen-type-tabs">
+          <div class="gtab" :class="{active: genType==='image'}" @click="genType='image'">图片生成</div>
+          <div class="gtab" :class="{active: genType==='video'}" @click="genType='video'">视频生成</div>
         </div>
+      </div>
+
+      <div class="cp-body">
+        <!-- 图片生成控制面板 -->
+        <template v-if="genType==='image'">
+          <div class="model-card">
+            <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
+            <div class="model-select-wrap">
+              <el-select :model-value="selectedImageModel" @update:model-value="onSelectImageModel" placeholder="选择图片模型" size="default" style="width:100%">
+                <el-option v-for="m in imageModels" :key="m.name" :label="m.label" :value="m.name" />
+              </el-select>
+            </div>
+          </div>
+          <div class="section-title">提示词</div>
+          <textarea v-model="prompt" class="prompt-input" placeholder="描述你想生成的画面..." rows="5"></textarea>
+          <div class="section-title">参考图 (可选)</div>
+          <div class="upload-zone" @click="$refs.fileInput.click()">
+            <span v-if="!referImage" class="placeholder">点击上传 · 挑张参考图</span>
+            <img v-else :src="referImage" class="refer-preview" />
+            <input type="file" ref="fileInput" accept="image/*" style="display:none" @change="onUpload" />
+          </div>
+          <div class="section-title">参数</div>
+          <div class="param-row"><span>尺寸</span>
+            <select v-model="size" class="select"><option value="1024x1024">1024x1024</option><option value="1024x1536">1024x1536</option><option value="1536x1024">1536x1024</option><option value="2048x2048">2048x2048</option><option value="2688x1536">2688x1536</option><option value="1536x2688">1536x2688</option></select>
+          </div>
+          <div class="param-row"><span>风格</span>
+            <select v-model="styleVal" class="select"><option value="vivid">生动</option><option value="natural">自然</option><option value="anime">动漫</option><option value="oil">油画</option></select>
+          </div>
+          <div class="param-row"><span>生成数量</span>
+            <select v-model.number="n" class="select"><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option><option :value="6">6</option></select>
+          </div>
+          <div class="param-row"><span>智能改写</span>
+            <label class="switch"><input type="checkbox" v-model="promptExtend" /><span class="slider"></span></label>
+          </div>
+          <div class="param-row"><span>水印</span>
+            <label class="switch"><input type="checkbox" v-model="watermark" /><span class="slider"></span></label>
+          </div>
+          <div class="section-title">反向提示词 (可选)</div>
+          <textarea v-model="negativePrompt" class="prompt-input" placeholder="描述不希望出现的内容，如：低分辨率、肢体畸形、画面过饱和..." rows="3"></textarea>
+        </template>
+
+        <!-- 视频生成控制面板 -->
+        <template v-else>
+          <div class="model-card">
+            <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
+            <div class="model-select-wrap">
+              <el-select :model-value="selectedVideoModel" @update:model-value="onSelectVideoModel" placeholder="选择视频模型" size="default" style="width:100%">
+                <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name" />
+              </el-select>
+            </div>
+          </div>
+          <div class="section-title">提示词</div>
+          <textarea v-model="videoPrompt" class="prompt-input" placeholder="描述你想要生成的视频画面..." rows="5"></textarea>
+          <div class="section-title">首帧参考图 (可选)</div>
+          <div class="upload-zone" @click="$refs.videoFileInput.click()">
+            <span v-if="!videoReferImage" class="placeholder">点击上传首帧参考图（图生视频）</span>
+            <img v-else :src="videoReferImage" class="refer-preview" />
+            <input type="file" ref="videoFileInput" accept="image/*" style="display:none" @change="onVideoUpload" />
+          </div>
+          <template v-if="capEndImage">
+            <div class="section-title">尾帧参考图 (首尾帧模式, 可选)</div>
+            <div class="upload-zone" @click="$refs.videoEndFileInput.click()">
+              <span v-if="!videoEndImage" class="placeholder">点击上传尾帧参考图（需配合首帧）</span>
+              <img v-else :src="videoEndImage" class="refer-preview" />
+              <input type="file" ref="videoEndFileInput" accept="image/*" style="display:none" @change="onVideoEndUpload" />
+            </div>
+            <p v-if="!videoReferImage" class="param-hint">尾帧需配合首帧参考图一起使用</p>
+          </template>
+          <template v-if="capNegativePrompt">
+            <div class="section-title">反向提示词 (可选)</div>
+            <textarea v-model="videoNegativePrompt" class="prompt-input" placeholder="描述不希望出现的画面，例如：模糊、变形、文字..." rows="2"></textarea>
+          </template>
+          <template v-if="capSeed">
+            <div class="param-row"><span>随机种子</span>
+              <input v-model.number="videoSeed" type="number" class="num-input" placeholder="留空随机" />
+            </div>
+          </template>
+          <div class="section-title">参数</div>
+          <div class="param-row"><span>时长</span>
+            <select v-model.number="videoDuration" class="select"><option :value="5">5 秒</option><option :value="10">10 秒</option></select>
+          </div>
+          <div class="param-row"><span>比例</span>
+            <select v-model="videoAspect" class="select"><option value="16:9">16:9 横版</option><option value="9:16">9:16 竖版</option><option value="1:1">1:1 方形</option></select>
+          </div>
+        </template>
+      </div>
+
+      <div class="cp-footer">
+        <div class="thread-status" :class="{busy: activePool && activePool.available === 0}">
+          <span class="ts-dot"></span>
+          <span class="ts-text">{{ genType === 'image' ? '生成线程' : '视频线程' }} 可用 <b>{{ activePool ? activePool.available : '-' }}</b> / {{ activePool ? activePool.maxPoolSize : '-' }}<template v-if="activePool">（活跃 {{ activePool.activeCount }}）</template></span>
+        </div>
+        <button v-if="genType==='image'" class="gen-btn gradient-green" @click="generate" :disabled="!prompt.trim() || generating">{{ generating ? '生成中...' : `生成 ${n} 张` }}</button>
+        <button v-else class="gen-btn gradient-green" @click="generateVideo" :disabled="!videoPrompt.trim() || videoGenerating">{{ videoGenerating ? '生成中...' : '生成视频' }}</button>
       </div>
     </aside>
-    <div class="control-panel">
-      <!-- 图片 / 视频 生成切换 -->
-      <div class="gen-type-tabs">
-        <div class="gtab" :class="{active: genType==='image'}" @click="genType='image'">图片生成</div>
-        <div class="gtab" :class="{active: genType==='video'}" @click="genType='video'">视频生成</div>
-      </div>
-      <template v-if="genType==='image'">
-      <div class="model-card">
-        <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
-        <div class="model-select-wrap">
-          <el-select :model-value="selectedImageModel" @update:model-value="onSelectImageModel" placeholder="选择图片模型" size="default" style="width:100%">
-            <el-option v-for="m in imageModels" :key="m.name" :label="m.label" :value="m.name" />
-          </el-select>
-        </div>
-      </div>
-      <div class="section-title">参考图 (可选)</div>
-      <div class="upload-zone" @click="$refs.fileInput.click()">
-        <span v-if="!referImage" class="placeholder">点击上传参考图</span>
-        <img v-else :src="referImage" class="refer-preview" />
-        <input type="file" ref="fileInput" accept="image/*" style="display:none" @change="onUpload" />
-      </div>
-      <div class="section-title">提示词</div>
-      <textarea v-model="prompt" class="prompt-input" placeholder="描述你想生成的画面..." rows="5"></textarea>
-      <div class="section-title">参数</div>
-      <div class="param-row"><span>尺寸</span>
-        <select v-model="size" class="select"><option value="1024x1024">1024x1024</option><option value="1024x1536">1024x1536</option><option value="1536x1024">1536x1024</option><option value="2048x2048">2048x2048</option><option value="2688x1536">2688x1536</option><option value="1536x2688">1536x2688</option></select>
-      </div>
-      <div class="param-row"><span>风格</span>
-        <select v-model="styleVal" class="select"><option value="vivid">生动</option><option value="natural">自然</option><option value="anime">动漫</option><option value="oil">油画</option></select>
-      </div>
-      <div class="section-title">反向提示词 (可选)</div>
-      <textarea v-model="negativePrompt" class="prompt-input" placeholder="描述不希望出现的内容，如：低分辨率、肢体畸形、画面过饱和..." rows="3"></textarea>
-      <div class="param-row"><span>生成数量</span>
-        <select v-model.number="n" class="select"><option :value="1">1</option><option :value="2">2</option><option :value="3">3</option><option :value="4">4</option><option :value="5">5</option><option :value="6">6</option></select>
-      </div>
-      <div class="param-row"><span>智能改写</span>
-        <label class="switch"><input type="checkbox" v-model="promptExtend" /><span class="slider"></span></label>
-      </div>
-      <div class="param-row"><span>水印</span>
-        <label class="switch"><input type="checkbox" v-model="watermark" /><span class="slider"></span></label>
-      </div>
-      <div class="thread-status" :class="{busy: threadStats && threadStats.imagePool && threadStats.imagePool.available === 0}">
-        <span class="ts-dot"></span>
-        <span class="ts-text">生成线程 可用 <b>{{ threadStats?.imagePool ? threadStats.imagePool.available : '-' }}</b> / {{ threadStats?.imagePool ? threadStats.imagePool.maxPoolSize : '-' }}<template v-if="threadStats?.imagePool">（活跃 {{ threadStats.imagePool.activeCount }}）</template></span>
-      </div>
-      <button class="gen-btn gradient-green" @click="generate" :disabled="!prompt.trim() || generating">{{ generating ? '生成中...' : '生成' }}</button>
-      </template>
 
-      <!-- 视频生成控制面板 -->
-      <template v-else>
-        <div class="model-card">
-          <div class="model-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
-          <div class="model-select-wrap">
-          <el-select :model-value="selectedVideoModel" @update:model-value="onSelectVideoModel" placeholder="选择视频模型" size="default" style="width:100%">
-              <el-option v-for="m in videoModels" :key="m.name" :label="m.label" :value="m.name" />
-          </el-select>
-          </div>
-        </div>
-        <div class="section-title">提示词</div>
-        <textarea v-model="videoPrompt" class="prompt-input" placeholder="描述你想要生成的视频画面..." rows="5"></textarea>
-        <div class="section-title">首帧参考图 (可选)</div>
-        <div class="upload-zone" @click="$refs.videoFileInput.click()">
-          <span v-if="!videoReferImage" class="placeholder">点击上传首帧参考图（图生视频）</span>
-          <img v-else :src="videoReferImage" class="refer-preview" />
-          <input type="file" ref="videoFileInput" accept="image/*" style="display:none" @change="onVideoUpload" />
-        </div>
-        <template v-if="capEndImage">
-          <div class="section-title">尾帧参考图 (首尾帧模式, 可选)</div>
-          <div class="upload-zone" @click="$refs.videoEndFileInput.click()">
-            <span v-if="!videoEndImage" class="placeholder">点击上传尾帧参考图（需配合首帧）</span>
-            <img v-else :src="videoEndImage" class="refer-preview" />
-            <input type="file" ref="videoEndFileInput" accept="image/*" style="display:none" @change="onVideoEndUpload" />
-          </div>
-          <p v-if="!videoReferImage" class="param-hint">尾帧需配合首帧参考图一起使用</p>
-        </template>
-        <template v-if="capNegativePrompt">
-          <div class="section-title">反向提示词 (可选)</div>
-          <textarea v-model="videoNegativePrompt" class="prompt-input" placeholder="描述不希望出现的画面，例如：模糊、变形、文字..." rows="2"></textarea>
-        </template>
-        <template v-if="capSeed">
-          <div class="param-row"><span>随机种子</span>
-            <input v-model.number="videoSeed" type="number" class="num-input" placeholder="留空随机" />
-          </div>
-        </template>
-        <div class="param-row"><span>时长</span>
-          <select v-model.number="videoDuration" class="select"><option :value="5">5 秒</option><option :value="10">10 秒</option></select>
-        </div>
-        <div class="param-row"><span>比例</span>
-          <select v-model="videoAspect" class="select"><option value="16:9">16:9 横版</option><option value="9:16">9:16 竖版</option><option value="1:1">1:1 方形</option></select>
-        </div>
-        <div class="thread-status" :class="{busy: threadStats && threadStats.videoPool && threadStats.videoPool.available === 0}">
-          <span class="ts-dot"></span>
-          <span class="ts-text">视频线程 可用 <b>{{ threadStats?.videoPool ? threadStats.videoPool.available : '-' }}</b> / {{ threadStats?.videoPool ? threadStats.videoPool.maxPoolSize : '-' }}<template v-if="threadStats?.videoPool">（活跃 {{ threadStats.videoPool.activeCount }}）</template></span>
-        </div>
-        <button class="gen-btn gradient-green" @click="generateVideo" :disabled="!videoPrompt.trim() || videoGenerating">{{ videoGenerating ? '生成中...' : '生成视频' }}</button>
-      </template>
-    </div>
+    <!-- ===== 右栏: 预览 + 信息条 + 胶片条 ===== -->
     <div class="preview-area">
-      <template v-if="genType==='image'">
-      <div v-if="images.length===0 && !generating" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">输入提示词并点击生成</p></div>
-      <!-- 选中失败记录: 用破裂图片占位 + 错误原因 -->
-      <div v-else-if="!generating && selectedGenFailed" class="failed-preview">
-        <div class="failed-preview-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg>
+      <div class="pv-header">
+        <div class="pv-title-wrap">
+          <el-select v-model="currentProjectId" filterable placeholder="选择项目" size="default" class="proj-select" @change="switchProject">
+            <el-option v-for="p in projects" :key="p.id" :label="p.name" :value="p.id" />
+          </el-select>
+          <span class="pv-tag">{{ genType === 'image' ? 'IMAGE' : 'VIDEO' }} · {{ genType === 'image' ? imageTotal : videoTotal }} {{ genType === 'image' ? '张' : '个' }}</span>
         </div>
-        <p class="failed-preview-title">图片生成失败</p>
-        <p class="failed-preview-msg" v-if="currentSel && currentSel.errorMessage">{{ currentSel.errorMessage }}</p>
-      </div>
-      <img v-else-if="currentImg && !generating" :src="currentImg" class="result-img" />
-      <div v-if="generating" class="gen-progress">
-        <div class="progress-head">
-          <span class="progress-text">正在生成图片 {{ doneCount }} / {{ totalCount }}</span>
-        </div>
-        <div class="loading-grid">
-          <div v-for="(g, i) in liveImages" :key="i" class="loading-tile"
-               :class="{done: g && g.resultUrl, failed: g && g.status === 'failed'}">
-            <img v-if="g && g.resultUrl" :src="g.resultUrl" class="tile-img" />
-            <div v-else class="tile-shimmer"></div>
-            <div class="tile-bar"><i></i></div>
-            <span v-if="g && g.status === 'failed'" class="tile-fail">失败</span>
-            <span v-else-if="g && g.resultUrl" class="tile-done">完成</span>
-          </div>
+        <div class="pv-actions">
+          <button class="pv-btn" @click="newProject">+ 新建项目</button>
+          <el-dropdown @command="onProjectCommand">
+            <button class="pv-icon-btn" title="项目操作">⋯</button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="rename">重命名项目</el-dropdown-item>
+                <el-dropdown-item command="delete" divided>删除项目</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <button class="pv-btn primary" :disabled="exporting || exportCount === 0" @click="exportZip">
+            {{ exporting ? '打包中...' : '导出 ZIP' }}
+          </button>
         </div>
       </div>
-      <div v-if="imageTotal>0" class="history">
-        <div class="hist-pages">
-          <button class="hist-nav" :disabled="historyPage<=1" @click="changeImagePage(historyPage-1)" title="上一页">‹</button>
-          <div class="thumb-list">
-            <div v-for="item in pagedHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:selIdx===item.idx, failed: item.g.status === 'failed'}" :title="item.g.status === 'failed' ? (item.g.errorMessage || '生成失败') : ''" @click="selIdx=item.idx">
-              <img v-if="item.g.resultUrl" :src="item.g.resultUrl" />
-              <span v-else class="thumb-broken">🖼</span>
-            </div>
-          </div>
-          <button class="hist-nav" :disabled="historyPage>=historyTotalPages" @click="changeImagePage(historyPage+1)" title="下一页">›</button>
-        </div>
-        <div class="hist-meta">{{ historyPage }} / {{ historyTotalPages }} · 共 {{ imageTotal }} 张</div>
-      </div>
-      <div v-if="!generating && (currentImg || currentSel)" class="actions">
-        <button class="act primary" @click="regenerate">重新生成</button>
-        <button class="act secondary" @click="openDetail(currentSel)">查看详情</button>
-        <a v-if="currentImg" class="act secondary" :href="currentImg" download>下载</a>
-      </div>
-      </template>
 
-      <!-- 视频预览 -->
-      <template v-else>
-        <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="video-progress">
-          <div class="vp-stage-icon">{{ videoStageIcon }}</div>
-          <div class="vp-status">{{ videoStageLabel }}</div>
-          <div class="vp-bar"><i :style="{ width: videoProgressPercent + '%' }"></i></div>
-          <div class="vp-metrics">
-            <div class="vp-metric">
-              <span class="vp-metric-label">排队耗时</span>
-              <span class="vp-metric-value">{{ videoQueueText }}</span>
-            </div>
-            <div class="vp-metric">
-              <span class="vp-metric-label">渲染用时</span>
-              <span class="vp-metric-value">{{ videoRenderText }}</span>
-            </div>
+      <div class="pv-stage">
+        <!-- 图片预览 -->
+        <template v-if="genType==='image'">
+          <div v-if="!generating && images.length===0" class="empty">
+            <img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">输入提示词并点击生成</p>
           </div>
-          <div class="vp-stage-track">
-            <span class="vp-stage" :class="{active: videoStageIndex>=0, done: videoStageIndex>0}">① 排队</span>
-            <span class="vp-stage" :class="{active: videoStageIndex>=1, done: videoStageIndex>1}">② 渲染</span>
-            <span class="vp-stage" :class="{active: videoStageIndex>=2, done: videoStageIndex>2}">③ 收尾</span>
+          <!-- 选中失败记录: 用破裂图片占位 + 错误原因 -->
+          <div v-else-if="!generating && selectedGenFailed" class="failed-preview">
+            <div class="failed-preview-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg>
+            </div>
+            <p class="failed-preview-title">图片生成失败</p>
+            <p class="failed-preview-msg" v-if="currentSel && currentSel.errorMessage">{{ currentSel.errorMessage }}</p>
           </div>
-          <p class="vp-tip">视频生成无真实进度，进度为阶段估算；排队/渲染时间取自后端真实时间节点</p>
-        </div>
-        <div v-else-if="!currentVideo && !resultVideo && !currentVideoSelFailed" class="empty"><img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p></div>
-        <!-- 选中失败视频记录: 占位展示 -->
-        <div v-else-if="currentVideoSelFailed" class="failed-preview">
-          <div class="failed-preview-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg></div>
-          <p class="failed-preview-title">视频生成失败</p>
-          <p class="failed-preview-msg" v-if="currentVideoSelFailed.errorMessage">{{ currentVideoSelFailed.errorMessage }}</p>
-        </div>
-        <video v-else :src="currentVideo || resultVideo" class="result-img" controls autoplay loop></video>
-        <div v-if="(currentVideo || resultVideo || currentVideoSelFailed) && !videoGenerating" class="actions">
-          <a v-if="currentVideo || resultVideo" class="act secondary" :href="currentVideo || resultVideo" download>下载</a>
-          <button class="act secondary" @click="openDetail(currentVideoSelFailed || videos[videoSelIdx])">查看详情</button>
-        </div>
-        <!-- 视频历史缩略图 -->
-        <div v-if="videoTotal>0" class="history">
-          <div class="hist-pages">
-            <button class="hist-nav" :disabled="videoHistoryPage<=1" @click="changeVideoPage(videoHistoryPage-1)" title="上一页">‹</button>
-            <div class="thumb-list">
-              <div v-for="item in pagedVideoHistory" :key="item.g.id || item.idx" class="thumb" :class="{active:videoSelIdx===item.idx, failed: item.g.status === 'failed'}" :title="item.g.status === 'failed' ? (item.g.errorMessage || '生成失败') : ''" @click="videoSelIdx=item.idx">
-                <video v-if="item.g.resultUrl" :src="item.g.resultUrl" class="thumb-video" muted preload="metadata"></video>
-                <span v-else class="thumb-broken">🎬</span>
-                <button class="thumb-detail" title="查看详情" @click.stop="openDetail(item.g)">ⓘ</button>
+          <img v-else-if="currentImg" :src="currentImg" class="result-img" />
+          <div v-else-if="generating" class="empty">
+            <img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>正在生成 {{ doneCount }} / {{ totalCount }}</p><p class="hint">结果会实时出现在下方胶片条</p>
+          </div>
+          <div v-else class="empty">
+            <img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成</p><p class="hint">从下方胶片条选择一张查看</p>
+          </div>
+          <div v-if="!generating && (currentImg || currentSel)" class="stage-actions">
+            <button class="act primary" @click="regenerate">重新生成</button>
+            <button class="act secondary" @click="openDetail(currentSel)">查看详情</button>
+            <a v-if="currentImg" class="act secondary" :href="currentImg" download>下载</a>
+          </div>
+        </template>
+
+        <!-- 视频预览 -->
+        <template v-else>
+          <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="video-progress">
+            <div class="vp-stage-icon">{{ videoStageIcon }}</div>
+            <div class="vp-status">{{ videoStageLabel }}</div>
+            <div class="vp-bar"><i :style="{ width: videoProgressPercent + '%' }"></i></div>
+            <div class="vp-metrics">
+              <div class="vp-metric">
+                <span class="vp-metric-label">排队耗时</span>
+                <span class="vp-metric-value">{{ videoQueueText }}</span>
+              </div>
+              <div class="vp-metric">
+                <span class="vp-metric-label">渲染用时</span>
+                <span class="vp-metric-value">{{ videoRenderText }}</span>
               </div>
             </div>
-            <button class="hist-nav" :disabled="videoHistoryPage>=videoHistoryTotalPages" @click="changeVideoPage(videoHistoryPage+1)" title="下一页">›</button>
+            <div class="vp-stage-track">
+              <span class="vp-stage" :class="{active: videoStageIndex>=0, done: videoStageIndex>0}">① 排队</span>
+              <span class="vp-stage" :class="{active: videoStageIndex>=1, done: videoStageIndex>1}">② 渲染</span>
+              <span class="vp-stage" :class="{active: videoStageIndex>=2, done: videoStageIndex>2}">③ 收尾</span>
+            </div>
+            <p class="vp-tip">视频生成无真实进度，进度为阶段估算；排队/渲染时间取自后端真实时间节点</p>
           </div>
-          <div class="hist-meta">{{ videoHistoryPage }} / {{ videoHistoryTotalPages }} · 共 {{ videoTotal }} 个</div>
+          <div v-else-if="!currentVideo && !resultVideo && !currentVideoSelFailed" class="empty">
+            <img :src="logoUrl" class="empty-icon" alt="DCDR" /><p>等待生成视频</p><p class="hint">输入提示词并点击生成视频</p>
+          </div>
+          <!-- 选中失败视频记录: 占位展示 -->
+          <div v-else-if="currentVideoSelFailed" class="failed-preview">
+            <div class="failed-preview-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2" opacity="0.35"/><path d="M9 15l3-6 3 6M10 17h4" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 5l14 14" stroke="currentColor" stroke-opacity="0.6" stroke-dasharray="2 3" stroke-linecap="round"/></svg></div>
+            <p class="failed-preview-title">视频生成失败</p>
+            <p class="failed-preview-msg" v-if="currentVideoSelFailed.errorMessage">{{ currentVideoSelFailed.errorMessage }}</p>
+          </div>
+          <video v-else :src="currentVideo || resultVideo" class="result-img" controls autoplay loop></video>
+          <div v-if="(currentVideo || resultVideo || currentVideoSelFailed) && !videoGenerating" class="stage-actions">
+            <a v-if="currentVideo || resultVideo" class="act secondary" :href="currentVideo || resultVideo" download>下载</a>
+            <button class="act secondary" @click="openDetail(currentVideoSelFailed || videos[videoSelIdx])">查看详情</button>
+          </div>
+        </template>
+      </div>
+
+      <!-- 参数信息条: 等宽字体, 一眼看清这条结果是怎么来的 -->
+      <div class="pv-info" v-if="selMetaText">
+        <span class="pi-meta">{{ selMetaText }}</span>
+        <span class="pi-variant" v-if="selVariantText">{{ selVariantText }}</span>
+      </div>
+
+      <!-- 胶片条: 生成中显示实时任务, 空闲显示当前历史页 -->
+      <div class="filmstrip" v-if="filmCells.length">
+        <div class="film-head">
+          <span class="film-title">{{ filmGenerating ? '正在生成' : '本次生成' }}</span>
+          <span v-if="filmGenerating" class="film-count">{{ doneCount }} / {{ totalCount }}</span>
+          <div class="film-nav" v-else>
+            <button class="hist-nav" :disabled="filmPage<=1" @click="filmGo(filmPage-1)" title="上一页">‹</button>
+            <span class="hist-meta">{{ filmPage }} / {{ filmTotalPages }} · 共 {{ filmTotal }} {{ genType === 'image' ? '张' : '个' }}</span>
+            <button class="hist-nav" :disabled="filmPage>=filmTotalPages" @click="filmGo(filmPage+1)" title="下一页">›</button>
+          </div>
         </div>
-      </template>
+        <div class="film-grid">
+          <div v-for="cell in filmCells" :key="cell.key" class="film-cell"
+               :class="{active: cell.idx>=0 && cell.idx===selIdx, failed: cell.failed, video: cell.video}"
+               @click="cell.idx>=0 && selectFilm(cell)">
+            <img v-if="cell.url && !cell.video" :src="cell.url" class="cell-img" />
+            <video v-else-if="cell.url && cell.video" :src="cell.url" class="cell-img" muted preload="metadata"></video>
+            <div v-else class="cell-shimmer"></div>
+            <span v-if="cell.label" class="cell-label">{{ cell.label }}</span>
+            <div v-if="cell.busy" class="cell-bar"><i></i></div>
+            <button v-else-if="cell.idx>=0" class="cell-detail" title="查看详情" @click.stop="openDetail(genAt(cell))">ⓘ</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- 详情弹窗 -->
@@ -227,13 +242,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getProjects, createProject, generateImage, getGeneration, getGenerations,
   getThreadPoolStats, deleteProject, renameProject
 } from '@/api'
 import { generateVideo as submitVideoTask, getVideoStatus } from '@/api/video'
+import { buildZip, downloadBlob } from '@/utils/zip'
 import logoUrl from '@/assets/dcdr-logo.png'
 import GenerationDetailDialog from '@/components/GenerationDetailDialog.vue'
 
@@ -266,10 +282,6 @@ watch([selectedImageModel, selectedVideoModel, genType], () => {
   emit('update:currentModel', genType.value === 'video' ? selectedVideoModel.value : selectedImageModel.value)
 })
 const projects = ref([])
-
-// 项目内联重命名状态
-const editingId = ref(null)
-const editingName = ref('')
 const currentProjectId = ref(null)
 const prompt = ref('')
 const referImage = ref('')
@@ -289,19 +301,21 @@ const liveImages = ref([])
 // 生成线程池运行态(可用线程等), 仅用于展示
 const threadStats = ref(null)
 let threadTimer = null
+// 当前类型对应的线程池(图片/视频各一套), 供底部状态条展示
+const activePool = computed(() => genType.value === 'image' ? threadStats.value?.imagePool : threadStats.value?.videoPool)
 async function loadThreadPoolStats() {
   try { threadStats.value = await getThreadPoolStats() } catch (e) { /* 非关键指标, 忽略 */ }
 }
 const images = ref([])       // 当前页的图片 generation 对象数组 (后端分页)
 const selIdx = ref(-1)
-// 历史缩略图分页 (后端分页)
-const HISTORY_PAGE_SIZE = 8
+// 胶片条一页 4 格, 与"本次生成"的 4 格展位一致
+const HISTORY_PAGE_SIZE = 4
 const historyPage = ref(1)
 const imageTotal = ref(0)
 const historyTotalPages = computed(() => Math.max(1, Math.ceil(imageTotal.value / HISTORY_PAGE_SIZE)))
 const pagedHistory = computed(() => images.value.map((g, idx) => ({ g, idx })))
 const detailGen = ref(null)    // 当前查看的 generation
-const sidebarCollapsed = ref(false)
+const exporting = ref(false)   // ZIP 打包中
 // ===== 视频生成状态 =====
 const videoPrompt = ref('')
 const videoDuration = ref(5)
@@ -388,110 +402,162 @@ const pagedVideoHistory = computed(() => videos.value.map((g, idx) => ({ g, idx 
 const currentVideo = computed(() => videoSelIdx.value >= 0 ? videos.value[videoSelIdx.value]?.resultUrl : null)
 // 选中的失败视频记录(用于占位/详情展示)
 const currentVideoSelFailed = computed(() => videoSelIdx.value >= 0 && videos.value[videoSelIdx.value]?.status === 'failed' ? videos.value[videoSelIdx.value] : null)
-async function generateVideo() {
-  if (!videoPrompt.value.trim() || videoGenerating.value) return
-  if (!currentProjectId.value) await ensureProject()
-  videoGenerating.value = true
-  resultVideo.value = ''
-  videoStatus.value = 'pending'
-  // 初始化阶段式进度
-  videoStageIndex.value = 0
-  videoStartTs.value = Date.now()
-  videoStageStartTs.value = videoStartTs.value
-  // 清空后端时间节点, 待轮询回填(createdAt 兜底用本地提交时刻)
-  videoCreatedAtMs.value = videoStartTs.value
-  videoStartedAtMs.value = 0
-  videoDurationMs.value = 0
-  startVideoProgressTicker()
-  try {
-    const data = await submitVideoTask({
-      prompt: videoPrompt.value,
-      model: selectedVideoModel.value,
-      duration: videoDuration.value,
-      aspectRatio: videoAspect.value,
-      referImage: videoReferImage.value || null,
-      endImage: capEndImage.value ? (videoEndImage.value || null) : null,
-      negativePrompt: capNegativePrompt.value ? (videoNegativePrompt.value || null) : null,
-      seed: capSeed.value ? (videoSeed.value || null) : null,
-      projectId: currentProjectId.value
-    })
-    // 后端返回 pending 任务, 启动轮询
-    startVideoPolling(data.id)
-  } catch (e) {
-    ElMessage.error(e?.message || '视频生成失败')
-    videoStatus.value = ''
-    stopVideoProgress()
-  }
-}
-function startVideoPolling(id) {
-  stopVideoPolling()
-    const tick = async () => {
-    try {
-      const st = await getVideoStatus(id)
-      videoStatus.value = st.status
-      // 回填后端真实时间节点
-      if (st.createdAt) videoCreatedAtMs.value = new Date(st.createdAt).getTime()
-      if (st.startedAt) videoStartedAtMs.value = st.startedAt
-      if (st.durationMs) videoDurationMs.value = st.durationMs
-      if (st.status === 'completed' || st.status === 'succeeded') {
-        // 真实完成, 进度拉满
-        videoStageIndex.value = 3
-        resultVideo.value = st.resultUrl
-        stopVideoPolling()
-        stopVideoProgress()
-        // 刷新历史并定位到刚生成的视频
-        if (currentProjectId.value) await loadProjectImages(currentProjectId.value, [st.id])
-      } else if (st.status === 'processing') {
-        // 后端真实回写: 已拿到线程, 进入渲染阶段(②)
-        if (videoStageIndex.value < 1) {
-          videoStageIndex.value = 1
-          videoStageStartTs.value = videoNow.value
-        }
-      } else if (st.status === 'pending') {
-        // 后端真实状态: 仍在队列中排队(①), 保底置阶段 0
-        videoStageIndex.value = 0
-        videoStageStartTs.value = videoStartTs.value
-      } else if (st.status === 'failed') {
-        ElMessage.error(st.error || '视频生成失败')
-        stopVideoPolling()
-        stopVideoProgress()
-      }
-    } catch (e) {
-      // 单次查询失败仅提示, 不清进度 ticker, 也不停轮询(下次重试)
-      ElMessage.warning(e?.message || '查询视频状态失败，将自动重试')
-    }
-  }
-  tick()
-  videoPollTimer = setInterval(tick, 3000)
-}
-function startVideoProgressTicker() {
-  stopVideoProgressTicker()
-  // 仅刷新响应式时钟 videoNow(驱动进度%/已等待时长重算)
-  // 阶段(排队/渲染/收尾)完全由轮询返回的 status 决定, 不再用前端计时伪造推进
-  videoRafTimer = setInterval(() => {
-    videoNow.value = Date.now()
-    // 安全上限: 超过 10 分钟仍无结果, 停止估算并提示(避免无限卡)
-    if ((videoNow.value - videoStartTs.value) / 1000 > 600) {
-      stopVideoProgress()
-      ElMessage.error('视频生成超时（>10 分钟），请稍后在历史中查看或重试')
-    }
-  }, 1000)
-}
-function stopVideoProgressTicker() {
-  if (videoRafTimer) { clearInterval(videoRafTimer); videoRafTimer = null }
-}
-// 统一收尾: 仅清理进度 ticker 与状态(由生成成功/失败调用, 不被轮询错误误杀)
-function stopVideoProgress() {
-  stopVideoProgressTicker()
-  videoGenerating.value = false
-}
-function stopVideoPolling() {
-  if (videoPollTimer) { clearInterval(videoPollTimer); videoPollTimer = null }
-}
 const currentImg = computed(() => selIdx.value >= 0 ? images.value[selIdx.value]?.resultUrl : null)
 // 当前选中的记录对象(含失败记录, 用于占位/详情/重生成)
 const currentSel = computed(() => selIdx.value >= 0 ? images.value[selIdx.value] : null)
 const selectedGenFailed = computed(() => currentSel.value && currentSel.value.status === 'failed')
+
+/** 解析后端存的 paramsJson(可能为空或脏数据) */
+function parseParams(g) {
+  if (!g?.paramsJson) return {}
+  try { return JSON.parse(g.paramsJson) || {} } catch (e) { return {} }
+}
+function pad2(v) { return String(v).padStart(2, '0') }
+// 错误信息兜底提取(接口异常时 e 可能是 Error / {message} / 字符串)
+function extractMessage(e) {
+  if (!e) return ''
+  if (typeof e === 'string') return e
+  return e.message || e.error || ''
+}
+
+// ===== 胶片条 =====
+// 生成中: 展示实时任务格(完成一张填一张); 空闲: 展示当前历史页
+const filmCells = computed(() => {
+  if (genType.value === 'image') {
+    if (generating.value) {
+      return liveImages.value.map((g, i) => ({
+        key: 'live-' + i,
+        url: g?.resultUrl || '',
+        video: false,
+        failed: g?.status === 'failed',
+        busy: !g || (!g.resultUrl && g.status !== 'failed'),
+        label: g?.status === 'failed' ? '失败' : (g?.resultUrl ? '' : '生成中'),
+        idx: -1
+      }))
+    }
+    return pagedHistory.value.map(item => ({
+      key: item.g.id || ('h-' + item.idx),
+      url: item.g.resultUrl || '',
+      video: false,
+      failed: item.g.status === 'failed',
+      busy: false,
+      label: item.g.status === 'failed' ? '失败' : '',
+      idx: item.idx
+    }))
+  }
+  if (videoGenerating.value) {
+    return [{
+      key: 'live-video', url: '', video: true, failed: false,
+      busy: true, label: videoStageLabel.value, idx: -1
+    }]
+  }
+  return pagedVideoHistory.value.map(item => ({
+    key: item.g.id || ('v-' + item.idx),
+    url: item.g.resultUrl || '',
+    video: true,
+    failed: item.g.status === 'failed',
+    busy: false,
+    label: item.g.status === 'failed' ? '失败' : '',
+    idx: item.idx
+  }))
+})
+const filmGenerating = computed(() => genType.value === 'image' ? generating.value : videoGenerating.value)
+const filmPage = computed(() => genType.value === 'image' ? historyPage.value : videoHistoryPage.value)
+const filmTotalPages = computed(() => genType.value === 'image' ? historyTotalPages.value : videoHistoryTotalPages.value)
+const filmTotal = computed(() => genType.value === 'image' ? imageTotal.value : videoTotal.value)
+function filmGo(p) {
+  if (genType.value === 'image') changeImagePage(p)
+  else changeVideoPage(p)
+}
+// 点击胶片格选中对应记录(图片/视频各自一套选中下标)
+function selectFilm(cell) {
+  if (genType.value === 'image') selIdx.value = cell.idx
+  else videoSelIdx.value = cell.idx
+}
+function genAt(cell) {
+  return genType.value === 'image' ? images.value[cell.idx] : videos.value[cell.idx]
+}
+
+// ===== 参数信息条 =====
+const selMetaText = computed(() => {
+  if (genType.value === 'image') {
+    const g = currentSel.value
+    if (!g) return ''
+    const p = parseParams(g)
+    const parts = [g.model, g.size]
+    if (p.seed != null && p.seed !== '') parts.push('seed ' + p.seed)
+    if (g.durationMs) parts.push((g.durationMs / 1000).toFixed(1) + ' s')
+    return parts.filter(Boolean).join(' · ')
+  }
+  const g = videoSelIdx.value >= 0 ? videos.value[videoSelIdx.value] : null
+  if (!g) return ''
+  const p = parseParams(g)
+  const parts = [g.model]
+  if (p.duration) parts.push(String(p.duration))
+  if (p.aspectRatio) parts.push(p.aspectRatio)
+  if (g.durationMs) parts.push((g.durationMs / 1000).toFixed(1) + ' s')
+  return parts.filter(Boolean).join(' · ')
+})
+const selVariantText = computed(() => {
+  if (genType.value === 'image') {
+    if (selIdx.value < 0 || !images.value.length) return ''
+    return `变体 ${pad2(selIdx.value + 1)} / ${pad2(images.value.length)}`
+  }
+  if (videoSelIdx.value < 0 || !videos.value.length) return ''
+  return `片段 ${pad2(videoSelIdx.value + 1)} / ${pad2(videos.value.length)}`
+})
+
+// ===== 项目操作 =====
+const currentProjectName = computed(() => projects.value.find(p => p.id === currentProjectId.value)?.name || 'dcdr')
+// 当前页可导出的文件数(仅终态成功记录)
+const exportCount = computed(() => {
+  const list = genType.value === 'image' ? images.value : videos.value
+  return list.filter(g => g.resultUrl).length
+})
+async function onProjectCommand(cmd) {
+  const p = projects.value.find(x => x.id === currentProjectId.value)
+  if (!p) { ElMessage.warning('请先选择项目'); return }
+  if (cmd === 'rename') {
+    try {
+      const { value } = await ElMessageBox.prompt('新的项目名称', '重命名项目', {
+        inputValue: p.name,
+        inputPattern: /\S/,
+        inputErrorMessage: '名称不能为空',
+        confirmButtonText: '保存',
+        cancelButtonText: '取消'
+      })
+      await renameProject(p.id, String(value).trim())
+      await loadProjects()
+      ElMessage.success('已重命名')
+    } catch (e) { /* 用户取消 */ }
+  } else if (cmd === 'delete') {
+    await removeProject(p)
+  }
+}
+// 导出当前页所有成功文件为 ZIP(前端本地打包, 不经过后端)
+async function exportZip() {
+  const list = (genType.value === 'image' ? images.value : videos.value).filter(g => g.resultUrl)
+  if (!list.length) { ElMessage.warning('当前页没有可导出的文件'); return }
+  exporting.value = true
+  try {
+    const entries = []
+    for (const [i, g] of list.entries()) {
+      const resp = await fetch(g.resultUrl)
+      if (!resp.ok) throw new Error(`第 ${i + 1} 个文件下载失败 (${resp.status})`)
+      const buf = new Uint8Array(await resp.arrayBuffer())
+      const ext = (g.resultUrl.split('?')[0].match(/\.(\w{2,5})$/) || [])[1] || (genType.value === 'image' ? 'png' : 'mp4')
+      entries.push({ name: `${pad2(i + 1)}-${g.id || i}.${ext}`, data: buf })
+    }
+    downloadBlob(buildZip(entries), `${currentProjectName.value}.zip`)
+    ElMessage.success(`已打包 ${entries.length} 个文件`)
+  } catch (e) {
+    console.error('导出 ZIP 失败', e)
+    ElMessage.error('导出失败：' + (extractMessage(e) || '未知错误'))
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function loadProjects() { projects.value = await getProjects() }
 // 从后端分页加载某项目下历史生成记录 (图片/视频各自分页, 互不混入)
 // 加载当前页: 图片加载 historyPage, 视频加载 videoHistoryPage
@@ -619,9 +685,7 @@ function applyVideoParams({ params }) {
   const unfilled = []
   if (params.hasReferImage) unfilled.push('首帧参考图')
   if (params.hasEndImage) unfilled.push('尾帧参考图')
-  if (unfilled.length) {
-    ElMessage.info(unfilled.join('、') + '未保存，无法回填（仅记录使用了参考图）')
-  }
+  if (unfilled.length) ElMessage.info(unfilled.join('、') + '未保存，无法回填（仅记录使用了参考图）')
   closeDetail()
   ElMessage.success('已套用：' + (applied.join('、') || '无可用字段'))
 }
@@ -636,37 +700,6 @@ async function switchProject(id) {
   historyPage.value = 1
   videoHistoryPage.value = 1
   await loadProjectImages(id)
-}
-
-function startEdit(p) {
-  editingId.value = p.id
-  editingName.value = p.name
-  nextTick(() => {
-    const inp = document.querySelector('.proj-edit-input')
-    if (inp) inp.focus()
-  })
-}
-
-async function saveEdit() {
-  const id = editingId.value
-  if (!id) return
-  const name = editingName.value.trim()
-  editingId.value = null
-  editingName.value = ''
-  if (!name) return
-  const proj = projects.value.find(x => x.id === id)
-  if (proj && proj.name === name) return
-  try {
-    await renameProject(id, name)
-    await loadProjects()
-  } catch (e) {
-    console.error('重命名项目失败', e)
-  }
-}
-
-function cancelEdit() {
-  editingId.value = null
-  editingName.value = ''
 }
 
 async function removeProject(p) {
@@ -777,6 +810,106 @@ async function generate() {
     generating.value = false
   }
 }
+async function generateVideo() {
+  if (!videoPrompt.value.trim() || videoGenerating.value) return
+  if (!currentProjectId.value) await ensureProject()
+  videoGenerating.value = true
+  resultVideo.value = ''
+  videoStatus.value = 'pending'
+  // 初始化阶段式进度
+  videoStageIndex.value = 0
+  videoStartTs.value = Date.now()
+  videoStageStartTs.value = videoStartTs.value
+  // 清空后端时间节点, 待轮询回填(createdAt 兜底用本地提交时刻)
+  videoCreatedAtMs.value = videoStartTs.value
+  videoStartedAtMs.value = 0
+  videoDurationMs.value = 0
+  startVideoProgressTicker()
+  try {
+    const data = await submitVideoTask({
+      prompt: videoPrompt.value,
+      model: selectedVideoModel.value,
+      duration: videoDuration.value,
+      aspectRatio: videoAspect.value,
+      referImage: videoReferImage.value || null,
+      endImage: capEndImage.value ? (videoEndImage.value || null) : null,
+      negativePrompt: capNegativePrompt.value ? (videoNegativePrompt.value || null) : null,
+      seed: capSeed.value ? (videoSeed.value || null) : null,
+      projectId: currentProjectId.value
+    })
+    // 后端返回 pending 任务, 启动轮询
+    startVideoPolling(data.id)
+  } catch (e) {
+    ElMessage.error(e?.message || '视频生成失败')
+    videoStatus.value = ''
+    stopVideoProgress()
+  }
+}
+function startVideoPolling(id) {
+  stopVideoPolling()
+    const tick = async () => {
+    try {
+      const st = await getVideoStatus(id)
+      videoStatus.value = st.status
+      // 回填后端真实时间节点
+      if (st.createdAt) videoCreatedAtMs.value = new Date(st.createdAt).getTime()
+      if (st.startedAt) videoStartedAtMs.value = st.startedAt
+      if (st.durationMs) videoDurationMs.value = st.durationMs
+      if (st.status === 'completed' || st.status === 'succeeded') {
+        // 真实完成, 进度拉满
+        videoStageIndex.value = 3
+        resultVideo.value = st.resultUrl
+        stopVideoPolling()
+        stopVideoProgress()
+        // 刷新历史并定位到刚生成的视频
+        if (currentProjectId.value) await loadProjectImages(currentProjectId.value, [st.id])
+      } else if (st.status === 'processing') {
+        // 后端真实回写: 已拿到线程, 进入渲染阶段(②)
+        if (videoStageIndex.value < 1) {
+          videoStageIndex.value = 1
+          videoStageStartTs.value = videoNow.value
+        }
+      } else if (st.status === 'pending') {
+        // 后端真实状态: 仍在队列中排队(①), 保底置阶段 0
+        videoStageIndex.value = 0
+        videoStageStartTs.value = videoStartTs.value
+      } else if (st.status === 'failed') {
+        ElMessage.error(st.error || '视频生成失败')
+        stopVideoPolling()
+        stopVideoProgress()
+      }
+    } catch (e) {
+      // 单次查询失败仅提示, 不清进度 ticker, 也不停轮询(下次重试)
+      ElMessage.warning(e?.message || '查询视频状态失败，将自动重试')
+    }
+  }
+  tick()
+  videoPollTimer = setInterval(tick, 3000)
+}
+function startVideoProgressTicker() {
+  stopVideoProgressTicker()
+  // 仅刷新响应式时钟 videoNow(驱动进度%/已等待时长重算)
+  // 阶段(排队/渲染/收尾)完全由轮询返回的 status 决定, 不再用前端计时伪造推进
+  videoRafTimer = setInterval(() => {
+    videoNow.value = Date.now()
+    // 安全上限: 超过 10 分钟仍无结果, 停止估算并提示(避免无限卡)
+    if ((videoNow.value - videoStartTs.value) / 1000 > 600) {
+      stopVideoProgress()
+      ElMessage.error('视频生成超时（>10 分钟），请稍后在历史中查看或重试')
+    }
+  }, 1000)
+}
+function stopVideoProgressTicker() {
+  if (videoRafTimer) { clearInterval(videoRafTimer); videoRafTimer = null }
+}
+// 统一收尾: 仅清理进度 ticker 与状态(由生成成功/失败调用, 不被轮询错误误杀)
+function stopVideoProgress() {
+  stopVideoProgressTicker()
+  videoGenerating.value = false
+}
+function stopVideoPolling() {
+  if (videoPollTimer) { clearInterval(videoPollTimer); videoPollTimer = null }
+}
 onMounted(async () => {
   await loadProjects()
   // 模型列表由父组件注入(props), 此处初始化各自的默认选中(以对应类型为准)
@@ -833,89 +966,30 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 .creative-mode ::-webkit-scrollbar-thumb { background: var(--dcdr-scroll-thumb); border-radius: var(--radius-pill); }
 .creative-mode ::-webkit-scrollbar-thumb:hover { background: var(--dcdr-scroll-thumb-hover); }
 
-/* ===== 侧边栏 ===== */
-.sidebar {
-  width: 340px; display: flex; flex-direction: column;
+/* ===== 左栏: 生成控制面板 ===== */
+.control-panel {
+  width: 360px; flex: none; min-width: 0; display: flex; flex-direction: column;
   background: var(--dcdr-surface-faint);
   border-right: 1px solid var(--border);
   backdrop-filter: blur(20px);
-  transition: width 0.3s var(--ease);
 }
-.sidebar.collapsed { width: 0; min-width: 0; padding: 0; border-right: none; overflow: hidden; }
-.sidebar-header { padding: 18px; border-bottom: 1px solid var(--border); position: relative; }
-.collapse-btn {
-  position: absolute; right: 10px; top: 18px;
-  width: 28px; height: 28px; border: none; border-radius: 8px;
-  background: var(--surface); color: var(--text-2); cursor: pointer;
-  font-size: 15px; line-height: 1;
-  transition: all 0.2s var(--ease);
+.cp-tabs { flex: none; padding: 16px 18px 0; }
+.cp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 18px 20px; }
+.cp-footer {
+  flex: none; display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 18px 16px; border-top: 1px solid var(--border);
 }
-.collapse-btn:hover { background: var(--accent-glow); color: var(--accent); }
-.sidebar-expand {
-  position: absolute; left: 0; top: 14px; z-index: 50;
-  width: 26px; height: 38px; border: none; border-radius: 0 10px 10px 0;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
-  color: #fff; cursor: pointer; font-size: 15px;
-  box-shadow: 4px 0 16px var(--accent-glow);
-  transition: all 0.2s var(--ease);
-}
-.sidebar-expand:hover { filter: brightness(1.1); }
-.new-btn {
-  width: 100%; height: 42px; color: #fff; border: none;
-  border-radius: var(--radius-input); font-size: 14px; font-weight: 600;
-  cursor: pointer; letter-spacing: 0.02em;
-  box-shadow: 0 4px 18px rgba(250, 112, 154, 0.25);
-  transition: all 0.2s var(--ease);
-}
-.new-btn:hover { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 6px 22px rgba(250, 112, 154, 0.35); }
-.new-btn:active { transform: translateY(0); }
-
-.project-list { flex: 1; overflow-y: auto; padding: 10px; }
-.project-item {
-  padding: 11px 12px; border-radius: 10px; cursor: pointer; margin-bottom: 4px;
-  font-size: 13px; display: flex; justify-content: space-between; align-items: center;
-  border: 1px solid transparent;
-  transition: all 0.18s var(--ease);
-}
-.project-item:hover { background: var(--surface); border-color: var(--border); }
-.project-item.active {
-  background: linear-gradient(135deg, rgba(139, 127, 245, 0.16), rgba(176, 107, 255, 0.1));
-  border-color: rgba(139, 127, 245, 0.3);
-  color: #fff;
-  box-shadow: inset 0 0 0 1px rgba(139, 127, 245, 0.1);
-}
-.proj-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.proj-edit-input {
-  flex: 1; border: 1px solid var(--accent); border-radius: 8px; padding: 3px 8px;
-  font-size: 13px; outline: none; background: var(--surface-2); color: var(--text);
-}
-.proj-actions { display: flex; align-items: center; gap: 6px; margin-left: 8px; }
-.icon-btn {
-  border: none; background: transparent; cursor: pointer; color: var(--text-3);
-  font-size: 13px; line-height: 1; padding: 3px 5px; border-radius: 6px;
-  transition: all 0.18s var(--ease);
-}
-.icon-btn:hover { background: var(--surface-hover); color: var(--text); }
-.icon-btn.danger:hover { color: var(--danger); background: rgba(248, 113, 113, 0.12); }
-.meta { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ===== 图片/视频 切换 Tab ===== */
-.gen-type-tabs { display: flex; gap: 6px; margin-bottom: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 4px; }
+.gen-type-tabs { display: flex; gap: 6px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-pill); padding: 4px; }
 .gtab { flex: 1; text-align: center; padding: 8px 0; font-size: 13px; color: var(--text-2); border-radius: var(--radius-pill); cursor: pointer; transition: all 0.2s var(--ease); user-select: none; }
 .gtab:hover { color: var(--text); background: var(--surface-hover); }
 .gtab.active { color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2)); box-shadow: 0 2px 12px var(--accent-glow); }
 
-/* ===== 控制面板 ===== */
-.control-panel {
-  width: 348px; padding: 22px; overflow-y: auto;
-  background: rgba(255, 255, 255, 0.018);
-  border-right: 1px solid var(--border);
-  backdrop-filter: blur(20px);
-}
 .model-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-card); padding: 14px;
-  display: flex; align-items: center; gap: 12px; margin-bottom: 18px;
+  display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
   transition: all 0.2s var(--ease);
 }
 .model-card:hover { border-color: var(--border-strong); background: var(--surface-2); }
@@ -963,13 +1037,6 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 10px; font-size: 13px; color: var(--text-2);
 }
-.seed-input {
-  width: 130px; background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-input); padding: 7px 10px; color: var(--text);
-  font-size: 13px; outline: none; transition: all 0.2s var(--ease);
-}
-.seed-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-
 .select {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-input); padding: 7px 12px; color: var(--text);
@@ -978,13 +1045,13 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 }
 .select:hover { border-color: var(--border-strong); background: var(--surface-2); }
 .select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.select option { background: #1a1d2b; color: var(--text); }
+.select option { background: var(--dcdr-surface); color: var(--text); }
 
 .switch { position: relative; display: inline-block; width: 42px; height: 24px; }
 .switch input { opacity: 0; width: 0; height: 0; }
 .switch .slider {
   position: absolute; cursor: pointer; inset: 0;
-  background: rgba(255, 255, 255, 0.1); border-radius: var(--radius-pill);
+  background: var(--dcdr-hover); border-radius: var(--radius-pill);
   transition: 0.25s var(--ease); border: 1px solid var(--border);
 }
 .switch .slider:before {
@@ -998,7 +1065,7 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 .switch input:checked + .slider:before { transform: translateX(18px); background: var(--dcdr-surface); }
 
 .thread-status {
-  display: flex; align-items: center; gap: 9px; margin-top: 18px;
+  display: flex; align-items: center; gap: 9px;
   padding: 10px 12px; border-radius: 10px;
   background: var(--surface); border: 1px solid var(--border);
   font-size: 12px; color: var(--text-2);
@@ -1010,24 +1077,64 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 }
 .thread-status.busy .ts-dot { background: var(--warning); box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.18); }
 .thread-status .ts-text { line-height: 1.2; }
-.thread-status .ts-text b { color: var(--accent); font-weight: 600; }
+.thread-status .ts-text b { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
 .gen-btn {
-  width: 100%; height: 48px; border: none;
-  border-radius: var(--radius-card); font-size: 15px; font-weight: 600;
-  color: #fff; cursor: pointer; margin-top: 22px; letter-spacing: 0.02em;
-  box-shadow: 0 6px 24px rgba(67, 233, 123, 0.3);
+  width: 100%; height: 44px; border: none;
+  border-radius: var(--radius-pill); font-size: 14.5px; font-weight: 600;
+  color: #fff; cursor: pointer; letter-spacing: 0.02em;
+  box-shadow: 0 6px 22px rgba(46, 167, 255, 0.26);
   transition: all 0.2s var(--ease);
 }
-.gen-btn:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 8px 28px rgba(67, 233, 123, 0.4); }
+.gen-btn:hover:not(:disabled) { filter: brightness(1.08); transform: translateY(-1px); box-shadow: 0 10px 28px rgba(46, 167, 255, 0.36); }
 .gen-btn:active:not(:disabled) { transform: translateY(0); }
-.gen-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.gen-btn:disabled {
+  cursor: not-allowed; box-shadow: inset 0 0 0 1px var(--dcdr-border);
+  background: var(--dcdr-surface); color: var(--dcdr-text-3);
+}
 
-/* ===== 预览区 ===== */
+/* ===== 右栏: 预览 + 信息条 + 胶片条 ===== */
 .preview-area {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  position: relative; background: var(--dcdr-surface-faint);
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  background: var(--dcdr-surface-faint);
+}
+.pv-header {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--border);
+}
+.pv-title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.proj-select { width: 220px; flex: none; }
+.pv-tag {
+  font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 1px;
+  color: var(--text-3); text-transform: uppercase; white-space: nowrap;
+}
+.pv-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+.pv-btn {
+  height: 30px; padding: 0 14px; border-radius: var(--radius-pill);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-2);
+  font-size: 12.5px; cursor: pointer; white-space: nowrap;
+  transition: all 0.18s var(--ease);
+}
+.pv-btn:hover { color: var(--text); border-color: var(--border-strong); background: var(--surface-2); }
+.pv-btn.primary {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; border-color: transparent; box-shadow: 0 2px 12px var(--accent-glow);
+}
+.pv-btn.primary:hover { filter: brightness(1.08); }
+.pv-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.pv-icon-btn {
+  width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-3); cursor: pointer;
+  font-size: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+  transition: all 0.18s var(--ease);
+}
+.pv-icon-btn:hover { color: var(--text); background: var(--surface-2); border-color: var(--border-strong); }
+
+.pv-stage {
+  flex: 1; min-height: 0; position: relative; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 18px; padding: 22px 26px;
 }
 .empty { text-align: center; color: var(--text-3); }
 .empty-icon {
@@ -1035,15 +1142,16 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   margin-bottom: 18px; opacity: 0.4; filter: grayscale(0.3);
   animation: float 4s ease-in-out infinite;
 }
-.empty p { color: var(--text-2); font-size: 15px; font-weight: 500; }
+.empty p { color: var(--text-2); font-size: 15px; font-weight: 500; margin: 0; }
 .hint { font-size: 13px; color: var(--text-3); margin-top: 4px; font-weight: 400 !important; }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 
 .result-img {
-  max-width: 85%; max-height: 75vh; border-radius: 14px;
+  max-width: 100%; max-height: 100%; min-height: 0; border-radius: 14px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px var(--border);
   animation: fadein 0.4s var(--ease);
 }
+.stage-actions { display: flex; gap: 10px; flex: none; }
 
 /* ===== 失败记录占位(破裂图片) ===== */
 .failed-preview {
@@ -1064,52 +1172,6 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   word-break: break-all; line-height: 1.6;
   background: rgba(248, 113, 113, 0.08); border-radius: 8px; padding: 8px 12px;
 }
-.thumb-broken {
-  display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 100%; font-size: 24px;
-  color: rgba(248, 113, 113, 0.5);
-  background:
-    radial-gradient(circle at 30% 30%, rgba(248, 113, 113, 0.08), transparent 60%),
-    rgba(255, 255, 255, 0.03);
-}
-.thumb.failed { border-color: rgba(248, 113, 113, 0.3); opacity: 0.7; }
-.thumb.failed:hover { opacity: 1; }
-.thumb.failed.active { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2); opacity: 1; }
-
-.loading-grid {
-  flex: 1; display: flex; flex-wrap: wrap; align-content: center; justify-content: center;
-  gap: 16px; overflow: auto; margin-top: 20px; width: 100%; padding: 8px;
-}
-.loading-tile {
-  position: relative; width: 168px; height: 168px; border-radius: 14px;
-  overflow: hidden; background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--border);
-}
-.loading-tile .tile-shimmer {
-  position: absolute; inset: 0;
-  background: linear-gradient(100deg, rgba(255, 255, 255, 0.02) 30%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.02) 70%);
-  background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite;
-}
-.loading-tile .tile-img { width: 100%; height: 100%; object-fit: cover; animation: fadein 0.4s ease; }
-.loading-tile .tile-fail {
-  position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 0; text-align: center;
-  background: rgba(248, 113, 113, 0.9); color: #fff; font-size: 12px; font-weight: 500;
-  backdrop-filter: blur(4px);
-}
-.loading-tile .tile-done {
-  position: absolute; right: 6px; top: 6px; padding: 2px 9px; border-radius: var(--radius-pill);
-  background: rgba(52, 211, 153, 0.92); color: #04130d; font-size: 11px; font-weight: 600;
-}
-.loading-tile .tile-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0, 0, 0, 0.3); overflow: hidden; }
-.loading-tile .tile-bar > i { display: block; height: 100%; width: 40%; background: linear-gradient(90deg, var(--accent), var(--success)); animation: tile-indeterminate 1.3s ease-in-out infinite; }
-.loading-tile.done .tile-bar > i { width: 100%; animation: none; background: var(--success); }
-.loading-tile.failed .tile-bar > i { width: 100%; animation: none; background: var(--danger); }
-@keyframes tile-indeterminate { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
-@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
-@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
-
-.gen-progress { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; }
-.progress-head { width: 100%; max-width: 420px; color: var(--text); font-size: 14px; margin-bottom: 10px; font-weight: 500; }
 
 /* ===== 视频阶段式进度 ===== */
 .video-progress {
@@ -1130,11 +1192,11 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   transition: width 0.5s var(--ease);
   animation: vp-flow 1.6s linear infinite;
 }
-@keyframes vp-flow { 0% { background-position: 0% 0; } 100% { background-position: 200% 0; } }
-.vp-metrics { display: flex; gap: 10px; margin-top: 4px; }
-.vp-metric { flex: 1; background: rgba(125,108,240,0.06); border: 1px solid var(--border-1); border-radius: 8px; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; }
+@keyframes vp-flow { 0% { background-position: 0% 0%; } 100% { background-position: 200% 0%; } }
+.vp-metrics { display: flex; gap: 10px; margin-top: 4px; width: 100%; }
+.vp-metric { flex: 1; background: var(--accent-glow); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; display: flex; flex-direction: column; gap: 2px; }
 .vp-metric-label { font-size: 11px; color: var(--text-2); }
-.vp-metric-value { font-size: 14px; font-weight: 600; color: var(--primary); font-variant-numeric: tabular-nums; }
+.vp-metric-value { font-size: 14px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
 .vp-stage-track { display: flex; gap: 10px; margin-top: 4px; }
 .vp-stage {
   font-size: 12px; padding: 4px 12px; border-radius: var(--radius-pill);
@@ -1145,20 +1207,21 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 .vp-stage.done { color: var(--success); border-color: rgba(52, 211, 153, 0.4); background: rgba(52, 211, 153, 0.12); }
 .vp-tip { font-size: 11px; color: var(--text-3); margin: 0; text-align: center; }
 
+/* ===== 参数信息条 ===== */
+.pv-info {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 9px 20px; border-top: 1px solid var(--border);
+  font-family: var(--dcdr-font-mono); font-size: 10.5px; letter-spacing: 0.04em;
+  color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.pv-info .pi-variant { color: var(--text-2); flex: none; }
 
-.history {
-  position: absolute; right: 18px; top: 18px;
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 8px; border-radius: 14px;
-  background: rgba(0, 0, 0, 0.3); backdrop-filter: blur(12px);
-  border: 1px solid var(--border);
-  max-height: calc(100% - 100px);
-}
-.hist-pages { display: flex; align-items: center; gap: 6px; }
-.thumb-list {
-  display: flex; flex-direction: column; gap: 6px;
-  overflow-y: auto; max-height: calc(100vh - 240px); padding: 2px;
-}
+/* ===== 胶片条 ===== */
+.filmstrip { flex: none; padding: 14px 20px 18px; border-top: 1px solid var(--border); }
+.film-head { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.film-title { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.film-count { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.film-nav { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .hist-nav {
   width: 26px; height: 26px; flex-shrink: 0; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); color: var(--text-2);
@@ -1168,25 +1231,46 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
 }
 .hist-nav:hover:not(:disabled) { background: var(--accent-glow); color: var(--accent); border-color: var(--accent); }
 .hist-nav:disabled { opacity: 0.3; cursor: not-allowed; }
-.hist-meta { font-size: 11px; color: var(--text-3); text-align: center; font-variant-numeric: tabular-nums; padding-top: 2px; }
-.thumb {
-  width: 60px; height: 60px; border-radius: 10px; overflow: hidden; cursor: pointer;
-  border: 2px solid transparent; opacity: 0.5;
-  transition: all 0.2s var(--ease);
+.hist-meta { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.film-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.film-cell {
+  position: relative; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden;
+  background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border);
+  cursor: pointer; transition: all 0.18s var(--ease);
 }
-.thumb:hover { opacity: 0.85; }
-.thumb img { width: 100%; height: 100%; object-fit: cover; }
-.thumb-video { width: 100%; height: 100%; object-fit: cover; background: #000; }
-.thumb.active { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-.thumb-detail {
-  position: absolute; right: 3px; top: 3px; z-index: 2;
-  width: 18px; height: 18px; border-radius: 50%; line-height: 16px; text-align: center;
-  background: rgba(0,0,0,0.6); color: #fff; font-size: 11px; border: none; cursor: pointer;
+.film-cell.video { aspect-ratio: 16 / 9; }
+.film-cell .cell-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.film-cell:hover { border-color: var(--border-strong); }
+.film-cell.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+.film-cell.failed { border-color: rgba(248, 113, 113, 0.35); }
+.film-cell .cell-label {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 5px 0; text-align: center;
+  font-size: 11px; color: #fff; background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(4px);
+}
+.film-cell.failed .cell-label { background: rgba(248, 113, 113, 0.85); }
+.film-cell .cell-shimmer {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg, rgba(255, 255, 255, 0.02) 30%, rgba(255, 255, 255, 0.08) 50%, rgba(255, 255, 255, 0.02) 70%);
+  background-size: 200% 100%; animation: shimmer 1.4s ease-in-out infinite;
+}
+.film-cell .cell-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0, 0, 0, 0.3); overflow: hidden; }
+.film-cell .cell-bar > i {
+  display: block; height: 100%; width: 40%;
+  background: linear-gradient(90deg, var(--accent), var(--success));
+  animation: tile-indeterminate 1.3s ease-in-out infinite;
+}
+.film-cell .cell-detail {
+  position: absolute; right: 5px; top: 5px; z-index: 2;
+  width: 20px; height: 20px; border-radius: 50%; line-height: 18px; text-align: center;
+  background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 11px; border: none; cursor: pointer;
   opacity: 0; transition: opacity 0.15s ease;
 }
-.thumb:hover .thumb-detail { opacity: 1; }
+.film-cell:hover .cell-detail { opacity: 1; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@keyframes tile-indeterminate { 0% { transform: translateX(-110%); } 100% { transform: translateX(260%); } }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
 
-.actions { position: absolute; bottom: 30px; display: flex; gap: 10px; }
+/* ===== 操作按钮(预览区下方) ===== */
 .act {
   padding: 9px 20px; border: 1px solid var(--border); border-radius: var(--radius-pill);
   font-size: 13px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center;
@@ -1194,10 +1278,10 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   transition: all 0.2s var(--ease);
 }
 .act.primary {
-  background: linear-gradient(135deg, var(--success), #2dd4bf); color: #04130d;
-  border-color: transparent; box-shadow: 0 4px 18px rgba(52, 211, 153, 0.3);
+  background: var(--dcdr-accent-grad); color: #fff;
+  border-color: transparent; box-shadow: 0 4px 16px rgba(46, 167, 255, 0.28);
 }
 .act.primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
-.act.secondary { background: rgba(255, 255, 255, 0.08); color: var(--text); }
-.act.secondary:hover { background: rgba(255, 255, 255, 0.15); border-color: var(--border-strong); }
+.act.secondary { background: var(--surface); color: var(--text); }
+.act.secondary:hover { background: var(--surface-2); border-color: var(--border-strong); }
 </style>
