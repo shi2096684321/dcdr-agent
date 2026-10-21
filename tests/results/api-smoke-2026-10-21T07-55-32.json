@@ -1,0 +1,543 @@
+{
+  "base": "http://127.0.0.1:8080",
+  "startedAt": "2026-10-21T07-55-32",
+  "total": 51,
+  "pass": 49,
+  "fail": 1,
+  "skip": 1,
+  "created": {
+    "sessionId": "sess_1792569277940",
+    "agentId": "agent_44f06924f65343969ddcb8a943eda68b",
+    "kbId": "kb_179256927885934cced6",
+    "memId": "mem_33f0712a40aa49959c9e573006160964",
+    "projectId": "proj_1792569281107",
+    "workflowId": "wf_11f047699b4d438a8a1c9ce0e1b26336",
+    "scheduledTaskId": "sched_8706303f95104a96b30dc24de282e730"
+  },
+  "results": [
+    {
+      "id": "AUTH-01",
+      "module": "auth",
+      "desc": "未携带 Token 访问受保护接口应 401",
+      "http": 401,
+      "code": 401,
+      "message": "缺少认证 Token",
+      "ms": 235,
+      "verdict": "PASS"
+    },
+    {
+      "id": "AUTH-02",
+      "module": "auth",
+      "desc": "账号密码登录返回双 Token",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 405,
+      "verdict": "PASS"
+    },
+    {
+      "id": "AUTH-03",
+      "module": "auth",
+      "desc": "当前用户信息与角色",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 67,
+      "verdict": "PASS",
+      "note": "role=admin"
+    },
+    {
+      "id": "AUTH-04",
+      "module": "auth",
+      "desc": "用 Refresh Token 换新 Access Token",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 59,
+      "verdict": "PASS"
+    },
+    {
+      "id": "AUTH-05",
+      "module": "auth",
+      "desc": "refresh 后旧 access token 仍可用（期望 200）",
+      "http": 401,
+      "code": 401,
+      "message": "Token 已失效(已登出或已刷新), 请重新登录",
+      "ms": 16,
+      "verdict": "FAIL",
+      "note": "缺陷 DEF-01：refresh 后旧 token 被立即拉黑"
+    },
+    {
+      "id": "AUTH-06",
+      "module": "auth",
+      "desc": "非法 Token 被拒绝",
+      "http": 401,
+      "code": 401,
+      "message": "Token 无效",
+      "ms": 15,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-01",
+      "module": "session",
+      "desc": "会话列表可读取",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 33,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-02",
+      "module": "session",
+      "desc": "创建会话",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 52,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-03",
+      "module": "session",
+      "desc": "会话改名",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 55,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-04",
+      "module": "session",
+      "desc": "设置会话人设",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 85,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-05",
+      "module": "session",
+      "desc": "读取会话消息（新会话应为空）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 79,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-06",
+      "module": "session",
+      "desc": "导出会话为 Markdown",
+      "http": 200,
+      "code": null,
+      "message": "# 生产级回归-会话A（改名）\n\n- 会话 ID: `sess_1792569277940`\n- 模型: qwen-chat\n- 创建时间: 2026-10-21 15:54:37\n- 导出时间: 2026-10-21 15:54:38\n\n",
+      "ms": 87,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SESS-07",
+      "module": "session",
+      "desc": "访问不存在的会话返回\"不存在\"（防资源枚举）",
+      "http": 200,
+      "code": 404,
+      "message": "会话不存在",
+      "ms": 54,
+      "verdict": "PASS",
+      "note": "HTTP=200 业务码=404（不存在统一走 body 业务码，见报告 DEF-02）"
+    },
+    {
+      "id": "AGENT-01",
+      "module": "agent",
+      "desc": "内置专家模板列表",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 33,
+      "verdict": "PASS",
+      "note": "templates=6"
+    },
+    {
+      "id": "AGENT-02",
+      "module": "agent",
+      "desc": "创建自定义专家",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 112,
+      "verdict": "PASS"
+    },
+    {
+      "id": "AGENT-03",
+      "module": "agent",
+      "desc": "更新专家触发版本快照",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 116,
+      "verdict": "PASS"
+    },
+    {
+      "id": "AGENT-04",
+      "module": "agent",
+      "desc": "专家历史版本可查",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 98,
+      "verdict": "PASS",
+      "note": "versions=2"
+    },
+    {
+      "id": "AGENT-05",
+      "module": "agent",
+      "desc": "克隆专家",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 130,
+      "verdict": "PASS"
+    },
+    {
+      "id": "KB-01",
+      "module": "knowledge",
+      "desc": "创建知识库",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 66,
+      "verdict": "PASS"
+    },
+    {
+      "id": "KB-02",
+      "module": "knowledge",
+      "desc": "上传文档并入库（需向量化）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 192,
+      "verdict": "PASS"
+    },
+    {
+      "id": "KB-03",
+      "module": "knowledge",
+      "desc": "文档列表可读并回报入库终态",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 85,
+      "verdict": "PASS",
+      "note": "documents=1 status=indexing chunks=0"
+    },
+    {
+      "id": "KB-04",
+      "module": "knowledge",
+      "desc": "知识库检索返回结果",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 1577,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MEM-01",
+      "module": "memory",
+      "desc": "写入长期记忆（常驻）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 55,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MEM-02",
+      "module": "memory",
+      "desc": "写入第二条记忆（项目类）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 46,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MEM-03",
+      "module": "memory",
+      "desc": "记忆列表可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 35,
+      "verdict": "PASS",
+      "note": "memories=7"
+    },
+    {
+      "id": "MEM-04",
+      "module": "memory",
+      "desc": "记忆概览统计",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 65,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MEM-05",
+      "module": "memory",
+      "desc": "归档记忆",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 55,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MEM-06",
+      "module": "memory",
+      "desc": "恢复归档记忆",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 58,
+      "verdict": "PASS"
+    },
+    {
+      "id": "PROJ-01",
+      "module": "project",
+      "desc": "创建创作项目",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 30,
+      "verdict": "PASS"
+    },
+    {
+      "id": "PROJ-02",
+      "module": "project",
+      "desc": "项目列表可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 27,
+      "verdict": "PASS"
+    },
+    {
+      "id": "SKILL-01",
+      "module": "skill",
+      "desc": "内置技能列表",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 62,
+      "verdict": "PASS",
+      "note": "skills=4"
+    },
+    {
+      "id": "SKILL-02",
+      "module": "skill",
+      "desc": "技能市场分类",
+      "http": null,
+      "code": null,
+      "message": "外部技能市场不可达（本机网络/代理），实际 code=504 技能市场暂不可用(网络不可达或超时), 请稍后重试",
+      "ms": 0,
+      "verdict": "SKIP"
+    },
+    {
+      "id": "MKT-01",
+      "module": "market",
+      "desc": "专家市场模板列表",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 138,
+      "verdict": "PASS"
+    },
+    {
+      "id": "WF-01",
+      "module": "workflow",
+      "desc": "工作流模板列表",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 22,
+      "verdict": "PASS",
+      "note": "templates=5"
+    },
+    {
+      "id": "WF-02",
+      "module": "workflow",
+      "desc": "按模板结构创建工作流",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 65,
+      "verdict": "PASS",
+      "note": "mode=sequential steps=2"
+    },
+    {
+      "id": "WF-03",
+      "module": "workflow",
+      "desc": "工作流列表可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 19,
+      "verdict": "PASS"
+    },
+    {
+      "id": "WF-04",
+      "module": "workflow",
+      "desc": "执行历史可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 35,
+      "verdict": "PASS"
+    },
+    {
+      "id": "TASK-01",
+      "module": "schedule",
+      "desc": "创建定时任务（默认禁用，不触发真实调用）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 47,
+      "verdict": "PASS"
+    },
+    {
+      "id": "TASK-02",
+      "module": "schedule",
+      "desc": "定时任务列表可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 39,
+      "verdict": "PASS"
+    },
+    {
+      "id": "ADM-01",
+      "module": "admin",
+      "desc": "用户分页列表（admin 权限）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 45,
+      "verdict": "PASS",
+      "note": "users=1 total=1"
+    },
+    {
+      "id": "ADM-02",
+      "module": "admin",
+      "desc": "系统概览统计",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 95,
+      "verdict": "PASS"
+    },
+    {
+      "id": "ADM-03",
+      "module": "admin",
+      "desc": "审计日志可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 41,
+      "verdict": "PASS",
+      "note": "logs=n/a"
+    },
+    {
+      "id": "OPS-01",
+      "module": "ops",
+      "desc": "成本统计",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 51,
+      "verdict": "PASS"
+    },
+    {
+      "id": "OPS-02",
+      "module": "ops",
+      "desc": "模型调用统计",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 60,
+      "verdict": "PASS"
+    },
+    {
+      "id": "OPS-03",
+      "module": "ops",
+      "desc": "调用链日志可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 132,
+      "verdict": "PASS"
+    },
+    {
+      "id": "OPS-04",
+      "module": "ops",
+      "desc": "智能路由日志可读",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 79,
+      "verdict": "PASS"
+    },
+    {
+      "id": "OPS-05",
+      "module": "ops",
+      "desc": "检索健康概览（admin）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 80,
+      "verdict": "PASS"
+    },
+    {
+      "id": "OPS-06",
+      "module": "ops",
+      "desc": "线程池指标",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 9,
+      "verdict": "PASS"
+    },
+    {
+      "id": "MODEL-01",
+      "module": "model",
+      "desc": "模型列表（平台内置 + 自定义）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 20,
+      "verdict": "PASS",
+      "note": "models=6"
+    },
+    {
+      "id": "TEN-01",
+      "module": "tenant",
+      "desc": "租户列表（admin）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 29,
+      "verdict": "PASS"
+    },
+    {
+      "id": "CHAT-01",
+      "module": "chat",
+      "desc": "同步对话（真实调用模型）",
+      "http": 200,
+      "code": 200,
+      "message": "success",
+      "ms": 45021,
+      "verdict": "PASS",
+      "note": "model=qwen-chat answerLen=364 answerHead=### 结论\n该系统通过**“仅分配任务、零配置”**的极简交互与统一入口，为**一人公司及独立创作者**提供全栈 AI 协同能力，解决单人团队**人手匮乏、工"
+    }
+  ]
+}
