@@ -8,28 +8,163 @@
 
 [![Java](https://img.shields.io/badge/Java-17-ED8B00?logo=openjdk&logoColor=white)](https://www.oracle.com/java/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.3.5-6DB33F?logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
+[![WebFlux](https://img.shields.io/badge/WebFlux-Reactive-6DB33F?logo=spring&logoColor=white)](https://docs.spring.io/spring-framework/reference/web/webflux.html)
+[![LangChain4j](https://img.shields.io/badge/LangChain4j-1.19.0-1C3C3C)](https://docs.langchain4j.dev/)
+[![Vue](https://img.shields.io/badge/Vue-3.4-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
+[![Vite](https://img.shields.io/badge/Vite-5.4-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16%20%2B%20pgvector-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)](https://redis.io/)
+[![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 </div>
 
+![对话工作台](docs/images/02-chat.png)
+
 ---
 
-## 一、版本
+## 一、5 分钟跑起来
+
+### 1.1 环境要求
+
+| 组件 | 版本要求 | 用途 | 是否必需 |
+|---|---|---|---|
+| JDK | **17**（Spring Boot 3 要求） | 编译运行后端 | 必需 |
+| Maven | 3.8+ | 构建 | 必需 |
+| Docker + Compose | 20.10+ / compose v2 | 跑 PostgreSQL / Redis 等依赖 | 必需（也可用本机安装的 PG/Redis） |
+| Node.js | **18+**（推荐 20 / 22） | 前端构建，Vite 5 不支持 Node 16 | 仅前端需要 |
+| PostgreSQL | 16 + pgvector 扩展 | 业务库 + 向量库 | 由 compose 提供 |
+| Redis | 7 | 限流计数 / 定时任务租约锁 | 由 compose 提供 |
+
+默认端口占用：`8080`（后端）· `5173`（前端）· `5432`（PG）· `6379`（Redis）· `9411`（Zipkin）· `8888`（SearXNG）· `18080`（沙箱服务端）。
+
+> 只装 Docker 不装 JDK 也能跑：见 1.5 纯容器方式。
+
+### 1.2 第一步：生成两项必需密钥
+
+启动期 `SecretGuard` 会校验密钥，**为空或使用内置默认值会直接拒绝启动**（公开可知的 JWT 密钥 =
+任何人都能伪造 admin 的 Token）。
+
+```bash
+# 项目根目录创建 .env（已被 .gitignore 忽略；本地运行与 docker compose 都会自动读取）
+JWT_SECRET=<64 位随机十六进制>
+MODEL_API_KEY_SECRET=<另一份 64 位随机十六进制，不要复用>
+```
+
+生成随机值：
+
+```powershell
+# Windows PowerShell
+[guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+```
+
+```bash
+# Linux / macOS / Git Bash
+openssl rand -hex 32
+```
+
+### 1.3 第二步：启动依赖（PostgreSQL / Redis / Zipkin / SearXNG）
+
+```bash
+docker compose up -d          # 只起中间件，应用在本机跑
+docker compose ps             # 等 postgres、redis 变成 healthy
+```
+
+首次建库时 `docs/sql/v2.0|v3.0|v3.1_schema.sql` 会被自动执行，**无需手工建表**。
+
+### 1.4 第三步：启动后端
+
+```bash
+mvn -q compile -DskipTests    # 首次会下载依赖
+mvn spring-boot:run           # 默认 profile=pg，连本机 5432
+```
+
+看到 `Netty started on port 8080` 即成功。此时：
+
+- 接口文档：<http://localhost:8080/swagger-ui/index.html>
+- 健康检查：<http://localhost:8080/actuator/health>（**返回 DOWN 是预期**：见「九、已知限制」）
+
+### 1.5 第四步：启动前端
+
+```bash
+cd frontend
+npm install
+npm run dev                   # http://localhost:5173，已配好 /api 代理
+```
+
+> **Node 版本**：必须是 18+。Node 16 会报 `TypeError: crypto$2.getRandomValues is not a function`
+> —— Node 16 的 `globalThis.crypto` 没有 WebCrypto 的 `getRandomValues`，而 Vite 5.4 需要它。
+> 本机没装 nvm 时可用仓库内脚本（把便携版 Node 22 前置到 PATH，不改系统环境）：
+>
+> ```bat
+> cd frontend
+> dev.cmd          :: 启动开发服务器
+> build.cmd        :: 生产构建
+> node22.cmd       :: 打开一个已切到 Node 22 的命令行（装依赖用）
+> ```
+
+### 1.6 第五步：注册管理员
+
+浏览器打开 <http://localhost:5173> → 「注册」→ 填用户名密码。
+
+**空库的第一个注册用户自动成为 `admin`**（`AuthService`：`count()==0 ? admin : user`），
+仓库不预置任何默认账号。
+
+### 1.7 纯容器方式（不装 JDK）
+
+```bash
+docker compose up -d                                   # 1) 中间件
+docker compose -f docker-compose.app.yml up -d --build # 2) 应用（含前端静态资源）
+```
+
+应用容器与依赖通过固定网络 `dcdr-net` 互通，容器内按服务名访问 `postgres:5432` / `redis:6379`。
+详见 [`docs/18-本地运行与部署教程.md`](docs/18-本地运行与部署教程.md)。
+
+### 1.8 想接入真实模型？
+
+在 `.env` 里补上对应厂商的 Key（`DASHSCOPE_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` /
+`ZHIPU_API_KEY` / `KLING_API_KEY`），重启后端即可。不配 Key 时接口都能通，但
+**对话、向量化、检索、图片生成会调用失败**——这是外部依赖缺失，不是应用缺陷。
+
+---
+
+## 二、产品截图
+
+> 以下截图取自本仓库的真实运行实例（PostgreSQL 中有真实测试数据，非设计稿、非 mock）。
+
+| 登录 / 注册 | 对话工作台 |
+|---|---|
+| ![登录](docs/images/01-login.png) | ![对话](docs/images/02-chat.png) |
+
+| 专家工作台（我的专家 / 技能 / 技能市场 / 专家市场） | 长期记忆 |
+|---|---|
+| ![专家](docs/images/05-expert.png) | ![记忆](docs/images/06-memory.png) |
+
+| 自动化（工作流 / DAG 编排 / 定时任务） | 管理后台（系统概览 / 用户 / 审计） |
+|---|---|
+| ![自动化](docs/images/07-auto.png) | ![管理后台](docs/images/09-admin.png) |
+
+更多截图：`docs/images/03-creative.png`（创作）· `04-knowledge.png`（知识库与检索测试）· `08-ops.png`（运维监控与成本）。
+
+---
+
+## 三、版本
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v3.1.0** |
+| 当前版本 | **v3.1.0**（UI 分支 `feature/v3.2.0-ui`） |
 | 发布日期 | 2026-10-14 |
 | Java | 17 |
 | Spring Boot | 3.3.5 |
 | AI 框架 | LangChain4j 1.19.0 |
 | 构建工具 | Maven |
+| 自动化测试 | 392 条单元/装配测试，全部通过 |
 
-> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）→ **V3.1（统一归属框架 / 专家与技能体系 / 代码执行沙箱 / 版本与成本治理 / 多实例协调 / 长期记忆）**。发布说明见 [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)，历史版本见 `docs/RELEASE-*.md`。
+> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）→ **V3.1（统一归属框架 / 专家与技能体系 / 代码执行沙箱 / 版本与成本治理 / 多实例协调 / 长期记忆）**。发布说明见 [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)。
 
 ---
 
-## 二、特性总览
+## 四、特性总览
 
 ### 对话与多模态
 - 流式对话（SSE），支持上下文记忆与多轮会话
@@ -76,183 +211,120 @@
 
 ---
 
-## 三、技术栈
+## 五、技术栈
 
 | 层 | 技术 |
 |----|------|
 | 后端 | Spring Boot 3.3.5 · WebFlux (响应式) · Java 17 |
-| AI 框架 | LangChain4j 1.19.0（BOM 统一管理） |
-| 持久化 | Spring Data JPA · PostgreSQL 16 + pgvector（H2 仅作测试替身） · Redis |
-| 向量 | pgvector 余弦检索（RAG 模块） |
+| AI 框架 | LangChain4j 1.19.0（core）+ 1.19.0-beta29（社区集成，含 DashScope） |
+| 持久化 | Spring Data JPA · PostgreSQL 16 + pgvector（H2 仅作测试替身） · Redis 7 |
+| 检索 | pgvector 余弦 + BM25 全文，RRF 融合 + 可选重排 |
 | 可观测 | Micrometer Tracing · Zipkin · Prometheus · Actuator |
-| 前端 | Vue 3 · Vite · Element Plus · Pinia |
-| 部署 | Docker · docker-compose |
+| 前端 | Vue 3 · Vite 5 · Element Plus · Pinia · ECharts |
+| 沙箱 | opensandbox-server（自托管，业务侧零特权） |
+| 部署 | Docker · docker-compose（依赖与应用分离编排） |
 
 ---
 
-## 四、目录结构
+## 六、目录结构
 
 ```
 dcdr-agent/
 ├── pom.xml                        # Maven 构建 (JDK 17, v3.1.0)
 ├── Dockerfile / .dockerignore     # 多阶段构建; 凭据不进构建上下文
-├── docker-compose.yml             # 单机部署: agent / postgres / redis / searxng / opensandbox-server / zipkin
-├── docker-compose.ha.yml          # 多实例 + PG 主从 (profile: ha)
+├── docker-compose.yml             # 只含依赖: postgres / redis / zipkin / searxng / opensandbox-server
+├── docker-compose.app.yml         # 只含应用: agent（接入 dcdr-net 网络）
+├── docker-compose.ha.yml          # 多实例 + PG 主从（叠加文件, profile: ha）
 ├── docker/                        # nginx(SSE 反代) / pg-standby / searxng 配置
-├── scripts/                       # backup-db / restore-db / ha-standby-init / run-tests
-├── docs/                          # 需求 / 规划 / 发布说明 / SQL / 教程
-│   ├── 01-需求文档.md  14-V3.1规划文档.md  RELEASE-v3.1.0.md
-│   ├── 16-多实例与高可用演练.md  17-专家与技能体系.md
-│   ├── 18-本地运行与部署教程.md   # ← 从零跑起来 / Docker 部署 / 升级 / 常见问题
-│   ├── sql/                       # v2.0 / v3.0 / v3.1 建库脚本 + README(脚本清单)
+├── scripts/                       # 运维脚本（索引见 scripts/README.md）
+│   ├── backup-db.ps1              # PG 全量备份（每日 02:00）
+│   ├── restore-db.sh              # 备份恢复（演练/灾备）
+│   └── ha-standby-init.ps1        # 主从演练前置：复制角色 + pg_hba
+├── tests/
+│   ├── api-smoke.mjs              # 生产级接口回归（真实 HTTP，不 mock）
+│   ├── fixtures/                  # 回归用固定素材
+│   └── results/                   # 每次回归的逐条结果 JSON
+├── docs/                          # 需求 / 规划 / 发布说明 / SQL / 教程 / 测试报告
+│   ├── 18-本地运行与部署教程.md     # ← 从零跑起来 / Docker 部署 / 升级 / 常见问题
+│   ├── 19-生产级测试报告-v3.2.md    # ← 本轮回归的范围、结果、缺陷与限制
+│   ├── images/                    # 产品截图
+│   ├── sql/                       # v2.0 / v3.0 / v3.1 建库脚本
 │   └── eval/                      # memory-health / retrieval-health 巡检 SQL
 ├── src/main/java/com/dcdr/agent/
-│   ├── JavaAgentApplication.java
-│   ├── controller/                # REST 接口 (Chat/Agent/KnowledgeBase/Workflow/ScheduledTask/
-│   │                              #   Image/Video/Audio/Model/Auth/Routing/Webhook/Admin/
-│   │                              #   Memory/Skill/SkillMarket/Feedback/Monitor/UserModel...)
-│   ├── agent/
-│   │   ├── AgentOrchestrator.java # 多 Agent 编排核心 (含记忆注入 / RAG 注入加固 / 引用校验)
-│   │   ├── router/                # 智能路由 (IntentRouter, LLM 意图识别)
-│   │   ├── definition/            # Agent 定义 / 模板 / 版本管理 (AgentDefinitionService)
-│   │   ├── workflow/              # 工作流 (DAG 编排 / 执行容错 / 断点续跑 / 人工审批)
-│   │   ├── memory/                # 会话记忆 + longterm/(长期记忆: CRUD/召回/LLM 自动抽取/memory 工具)
-│   │   ├── governance/            # 成本记录与报表 (CostTracker / CostReportService)
-│   │   ├── feedback/ market/ version/ creative/ image/ prompt/ schedule/ session/ tenant/
-│   │   └── ModelRouter.java       # 模型路由
-│   ├── skill/                     # 技能体系 (定义/目录/加载) + skill/market/(SkillHub 发现层)
-│   ├── rag/                       # 知识库 RAG (retrieval 混合+重排 / tool 知识库搜索 / ocr / config)
-│   ├── auth/                      # 认证 / RBAC / ownership(统一归属框架, 14 类资源)
-│   ├── cluster/                   # 多实例协调 (Redis 限流 / 定时任务租约锁)
-│   ├── tool/                      # 工具 (sandbox 代码沙箱 / result 结果治理 / websearch 自建搜索 / mcp)
-│   ├── model/                     # 模型适配 (Chat/Image/Video/Audio, LangChain4j 框架化 + 熔断)
-│   ├── entity/ dto/ repository/   # JPA 实体 / DTO / 数据访问 (含 userId/visibility 隔离过滤)
-│   ├── service/ config/ common/ admin/ audit/
-│   │   └── common/util/SecretGuard.java   # 启动期默认密钥拦截(两项密钥必填)
-├── frontend/
-│   └── src/
-│       ├── api/                   # 接口封装 (@/api)
-│       ├── stores/                # Pinia (auth.js 认证 / model.js 全局模型列表)
-│       ├── constants/             # 后端枚举取值镜像 (仅用于判断; 展示文案由后端下发)
-│       ├── views/                 # Chat / Agent / KnowledgeBase / Workflow / DagEditor
-│       │                          #   / Memory / SkillManage / SkillMarket / HubShell(专家·自动化·运维)
-│       │                          #   / TemplateMarket / ScheduledTask / Routing / Monitor
-│       │                          #   / RetrievalHealth / LlmCallLog / Creative / Admin / Auth
-│       ├── components/            # AppHeader / MessageBubble(点赞点踩) 等
-│       └── App.vue                # 路由与全局模型加载
-└── data/                          # 运行时数据 (知识库文档/上传文件/生成图片/DB), 已加入 .gitignore 不入库
+│   ├── controller/                # REST 接口（29 个控制器 / ~150 端点）
+│   ├── agent/                     # 编排核心 / 路由 / 定义与版本 / 工作流 / 记忆 / 治理 / 反馈
+│   ├── skill/  rag/  auth/  cluster/  tool/  model/
+│   ├── entity/ dto/ repository/
+│   └── service/ config/ common/ admin/ audit/
+├── src/test/                      # 392 条单元/装配测试 + 5 个 *IT 集成测试
+└── data/                          # 运行时数据（文档/上传/生成物/备份），已 gitignore
 ```
 
 ---
 
-## 五、快速开始
-
-> **完整教程见 [`docs/18-本地运行与部署教程.md`](docs/18-本地运行与部署教程.md)** ——
-> 密钥生成、依赖启动、Docker 部署、升级路径与常见问题都在那里；下面是最短路径。
-
-### 5.1 后端 (JDK 17)
-
-```bash
-# 要求 JDK 17 (示例路径, 按本机调整)
-export JAVA_HOME=/path/to/jdk17
-
-# 两项密钥**必填**: 启动期会校验(SecretGuard), 为空或仍是内置默认值会被拒绝启动
-#   理由: 公开可知的 JWT 签名密钥 = 任何人都能伪造任意用户(含 admin)的 Token;
-#         公开可知的加密主密钥 = 拿到库里的密文即可解出用户真实的模型 API Key
-#
-# 推荐做法: 写进项目根目录的 .env（本地运行与 docker compose 都会读它, 见 application.yml 的
-# spring.config.import）—— 不必每次开 shell 都 export, 也不必往 IDE 运行配置里填:
-#   JWT_SECRET=<随机值>
-#   MODEL_API_KEY_SECRET=<随机值, 不要与上面复用>
-#
-# 生成随机值(Windows PowerShell):
-#   [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
-# 也可以直接注入环境变量(仅当前 shell 有效):
-export JWT_SECRET=$(openssl rand -hex 32)
-export MODEL_API_KEY_SECRET=$(openssl rand -hex 32)
-
-# 编译 (离线)
-mvn -q -o compile -DskipTests
-
-# 运行
-mvn spring-boot:run
-```
-
-> 注意：本项目使用 **Java 17**。若系统默认 `JAVA_HOME` 指向 JDK 8 等低版本，请先切换到 JDK 17 再构建。
-
-### 5.2 前端
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-### 5.3 Docker
-
-```bash
-docker compose up -d --build
-```
-
----
-
-## 六、主要 API
+## 七、主要 API
 
 | 模块 | 路径 | 说明 |
 |------|------|------|
-| 对话 | `POST /api/chat` / `GET /api/sessions` | 流式对话（含智能路由分发）、会话管理 |
-| Agent | `/api/agents` | 自定义 Agent 增删改查、克隆、模板 |
-| 知识库 | `/api/knowledge-bases` | 知识库与文档管理 (RAG) |
+| 认证 | `/api/auth` | 登录 / 注册 / 刷新 / 改密；JWT 双 Token（Access 24h / Refresh 7d） |
+| 对话 | `POST /api/chat` `/api/chat/stream` | 同步对话 / SSE 流式（含智能路由分发） |
+| 会话 | `/api/sessions` | 会话增删改查、人设、消息历史、导出 Markdown/JSON |
+| Agent | `/api/agents` | 自定义 Agent 增删改查、克隆、模板、版本与回滚 |
+| 知识库 | `/api/knowledge-bases` | 知识库与文档管理、单库/跨库检索（RAG） |
 | 工作流 | `/api/workflows` | 工作流定义、DAG 编排、执行 / 续跑 / 审批 |
-| 定时任务 | `/api/scheduled-tasks` | 定时任务调度 |
+| 定时任务 | `/api/scheduled-tasks` | Cron 调度（需 `schedule:manage`） |
 | 智能路由 | `/api/routing` | 路由日志分页查询 |
-| Webhook | `/api/webhooks` | Webhook 端点管理与外部触发 |
-| 多模态 | `/api/image` `/api/video` `/api/audio` | 图像 / 视频 / 音频生成 |
-| 模型 | `/api/models` | 模型列表（按 `type` 提供 CHAT/IMAGE/VIDEO） |
-| 认证 | `/api/auth` | 登录 / 注册 / 用户管理 |
-| 管理后台 | `/api/admin` `/api/tenants` | 用户管理 / 租户配额（仅 admin） |
-| 长期记忆 | `/api/memories` | 记忆 CRUD / 概览 / 归档恢复 / 「AI 自动记忆」开关 |
+| Webhook | `/api/webhooks` | 端点管理与外部触发（`POST /trigger/{token}` 公开） |
+| 多模态 | `/api/images` `/api/videos` `/api/audio` | 图像 / 视频 / 音频生成与状态查询 |
+| 模型 | `/api/models` `/api/user-models` | 平台内置模型 + 用户自定义模型（Key 加密存储） |
+| 长期记忆 | `/api/memories` | 记忆 CRUD / 概览 / 归档恢复 / AI 自动记忆开关 |
 | 技能 | `/api/skills` `/api/skill-market` | 技能定义管理 / 技能市场（分类·搜索·安装） |
 | 回答反馈 | `/api/feedback` | 点赞 / 点踩采集与看板统计 |
-| 治理 | `/api/monitor/cost/report` `/api/retrieval-health/overview` | 成本报表（CSV 导出）/ 检索健康度 |
-| 用户模型 | `/api/user-models` | 用户自定义模型（API Key 加密存储、不回显） |
+| 治理 | `/api/monitor/*` `/api/retrieval-health/overview` | 成本报表（CSV 导出）/ 检索健康度 |
+| 管理后台 | `/api/admin` `/api/tenants` | 用户管理 / 租户配额（仅 `user:manage`） |
 
 ---
 
-## 七、前端契约规范
+## 八、测试
 
-对外 DTO 的布尔字段统一使用 `@JsonProperty("isXxx")` 显式声明 JSON key，前后端命名一致：
+```bash
+# 1) 单元 + 装配测试（零外部依赖，约 1 分钟；需要 Docker 的用例会自行跳过）
+mvn test
 
-| 字段 | JSON key |
-|------|----------|
-| `AgentView.isPublic` / `isTemplate` | `isPublic` / `isTemplate` |
-| `SaveAgentRequest.isPublic` | `isPublic` |
-| `ModelInfo.isDefault` | `isDefault` |
+# 2) 生产级接口回归（需先启动后端与依赖；创建的数据会真实落库并保留）
+TEST_USER=admin TEST_PASS='<你的密码>' node tests/api-smoke.mjs
 
-全局模型列表由 `frontend/src/stores/model.js` 统一管理（`loadModels` 幂等，按 `type` 提供 `chatModels` / `imageModels` / `videoModels`），避免各视图重复请求。
+# 3) 集成测试（需 Docker；部分用例需要 DASHSCOPE_API_KEY，缺失时自动跳过）
+mvn verify
+```
 
----
-
-## 八、数据库升级
-
-- 从 V1.x 升级需执行 `docs/sql/v2.0_schema.sql`（新增 `agent_definition` / `knowledge_base` / `workflow_definition` / `scheduled_task` / `audit_log` 等表）。
-- 从 V2.x 升级到 V3.0 需执行 `docs/sql/v3.0_schema.sql`（新增 `routing_logs` / `webhook_endpoints` / `workflow_executions` 三表，脚本可重复执行）。
-- 升级到 V3.1 需执行 `docs/sql/v3.1_schema.sql`（长期记忆 / 归属 / 治理 / 技能 / 反馈 / 混合检索索引）。
-  全部脚本幂等可重复执行；**全新部署由 `docker compose up -d` 自动完成**，无需手工执行任何 SQL。
-
-存量 `agent_definitions.tools` / `kb_ids` 若为裸字符串（非 JSON 数组），后端已兼容解析，无需手动清洗。
+回归脚本覆盖 51 条用例，逐条记录 HTTP 状态、业务码、耗时与判定，结果落 `tests/results/*.json`。
+本轮实测结论、缺陷与未覆盖项见 [`docs/19-生产级测试报告-v3.2.md`](docs/19-生产级测试报告-v3.2.md)。
 
 ---
 
-## 九、相关文档
+## 九、已知限制
+
+- **`/actuator/health` 返回 DOWN**：`LlmProviderHealthIndicator` 会在 3 秒内探测所有启用的远程
+  模型 provider，**全部不可达即判 DOWN**。不配 Key / 无外网时必然 DOWN，不代表应用不可用；
+  业务接口可正常访问。生产部署建议把它从 readiness 里拆出去，避免被负载均衡摘除。
+- **不配模型 Key 时**：对话返回 `code=200` 但正文是 `调用失败: ...`；知识库文档状态为
+  `failed`（`error_msg` 记录厂商报错）；检索返回 500。这些都是外部依赖缺失。
+- **技能市场**依赖外部 SkillHub 可达，内网/代理环境下会返回 504。
+
+---
+
+## 十、相关文档
 
 - 需求文档：`docs/01-需求文档.md`
-- **本地运行与部署教程**：`docs/18-本地运行与部署教程.md`（从零跑起来 / Docker 部署 / 升级 / 常见问题）
+- **本地运行与部署教程**：`docs/18-本地运行与部署教程.md`
+- **生产级测试报告**：`docs/19-生产级测试报告-v3.2.md`
+- 运维脚本索引：`scripts/README.md`
 - V3.1 规划：`docs/14-V3.1规划文档.md`（V3.0 见 `docs/07-V3.0规划文档.md`）
 - 发布说明：`docs/RELEASE-v3.1.0.md`（历史版本见 `docs/RELEASE-*.md`）
 
 ---
 
-## 十、License
+## 十一、License
 
 [MIT](LICENSE)
