@@ -2,3 +2,5 @@
 @import './base.css';
 @import './theme.css';
 @import './gradients.css';
+/* 必须放在 theme.css 之后：它只调形状与尺寸，颜色仍读 --el-* 变量 */
+@import './element.css';

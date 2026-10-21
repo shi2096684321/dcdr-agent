@@ -162,7 +162,6 @@
         <!-- 视频预览 -->
         <template v-else>
           <div v-if="videoStatus==='pending' || videoStatus==='processing'" class="video-progress">
-            <div class="vp-stage-icon">{{ videoStageIcon }}</div>
             <div class="vp-status">{{ videoStageLabel }}</div>
             <div class="vp-bar"><i :style="{ width: videoProgressPercent + '%' }"></i></div>
             <div class="vp-metrics">
@@ -385,7 +384,6 @@ const videoRenderMs = computed(() => {
 })
 const videoQueueText = computed(() => fmtDuration(Math.floor(videoQueueMs.value / 1000)))
 const videoRenderText = computed(() => fmtDuration(Math.floor(videoRenderMs.value / 1000)))
-const videoStageIcon = computed(() => ['⏳', '🎬', '✨', '✅'][videoStageIndex.value] || '⏳')
 const videoStageLabel = computed(() => ['排队中...', '渲染中...', '收尾处理中...', '即将完成'][videoStageIndex.value] || '排队中...')
 function fmtDuration(sec) {
   const m = Math.floor(sec / 60), s = sec % 60
@@ -1178,7 +1176,6 @@ onUnmounted(() => { if (threadTimer) clearInterval(threadTimer); stopVideoPollin
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 14px; width: 100%; max-width: 420px; padding: 24px;
 }
-.vp-stage-icon { font-size: 46px; animation: vp-bob 2.2s ease-in-out infinite; }
 @keyframes vp-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
 .vp-status { font-size: 16px; font-weight: 600; color: var(--text); letter-spacing: 0.02em; }
 .vp-bar {

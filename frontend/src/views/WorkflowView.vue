@@ -241,7 +241,7 @@
         </el-tabs>
       </template>
       <div v-else class="empty-detail">
-        <div class="empty-icon">🔀</div>
+        <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h4.5c1.6 0 2.6 1 3.5 2.6L13 11M4 18h4.5c1.6 0 2.6-1 3.5-2.6L13 13"/><path d="M17 6l3 6-3 6"/></svg>
         <p>选择左侧工作流查看详情, 或新建一个工作流</p>
       </div>
     </div>
@@ -992,7 +992,7 @@ onMounted(() => {
 .fo-label { font-size: 13px; font-weight: 600; color: var(--dcdr-accent); margin-bottom: 6px; }
 
 .empty-detail { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--dcdr-text-3); gap: 12px; }
-.empty-icon { font-size: 56px; }
+.empty-icon { width: 54px; height: 54px; color: var(--dcdr-text-3); opacity: 0.5; }
 
 .form-step { background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 12px 0; margin-bottom: 12px; }
 .form-step-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }

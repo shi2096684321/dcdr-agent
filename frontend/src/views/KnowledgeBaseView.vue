@@ -430,10 +430,6 @@ function kbName(id) {
 }
 
 // ===== 工具方法 =====
-function fileIcon(type) {
-  const map = { pdf: '📕', docx: '📘', doc: '📘', txt: '📄', md: '📝', markdown: '📝', html: '🌐', htm: '🌐' }
-  return map[type] || '📄'
-}
 
 function formatSize(bytes) {
   if (!bytes) return '-'

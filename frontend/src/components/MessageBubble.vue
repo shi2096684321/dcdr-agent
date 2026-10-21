@@ -27,7 +27,7 @@
       <!-- 推理过程 -->
       <div v-if="msg.reasoningContent" class="msg-reasoning">
         <details>
-          <summary>💭 推理过程</summary>
+          <summary>推理过程</summary>
           <div v-html="renderReasoning(msg.reasoningContent)" @click="onBubbleClick"></div>
         </details>
       </div>
@@ -46,7 +46,8 @@
       <template v-else>
         <!-- 引用来源汇总行(正文上方): 联网搜索显示网页 favicon, 知识库片段显示📚 -->
         <div v-if="hasSources && msg.content" class="search-summary">
-          <span class="search-icon">{{ allKbSources ? '📚' : '🔍' }}</span>
+          <svg v-if="allKbSources" class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5C5 4.4 5.9 3.6 7 3.6h11v14.6H7c-1.1 0-2 .8-2 1.9V5.5z"/><path d="M18 18.2v3.2H7"/></svg>
+          <svg v-else class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="6.6"/><path d="M20 20l-3.6-3.6"/></svg>
           <span class="search-text">{{ allKbSources ? `已参考 ${msg.sources.length} 个知识库片段` : `已阅读 ${msg.sources.length } 个网页` }}</span>
           <div v-if="!allKbSources" class="favicon-stack">
             <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
@@ -92,9 +93,9 @@
         <!-- 工具调用过程(折叠): 本轮模型调用的工具清单 -->
         <div v-if="toolList.length" class="tool-invoke">
           <button class="tool-invoke-toggle" @click="toolOpen = !toolOpen">
-            <span class="tool-icon">🔧</span>
+            <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.2a4 4 0 0 1 5.3 5.1l-8.6 8.6a2.6 2.6 0 0 1-3.7-3.7l8.6-8.6"/><path d="M4.4 4.4l3.2 3.2"/></svg>
             <span>已调用 {{ toolList.length }} 个工具</span>
-            <span class="tool-caret">{{ toolOpen ? '▲' : '▼' }}</span>
+            <span class="tool-caret">{{ toolOpen ? '收起' : '展开' }}</span>
           </button>
           <div v-if="toolOpen" class="tool-invoke-list">
             <div v-for="(t, i) in toolList" :key="i" class="tool-item">
@@ -107,26 +108,39 @@
           </div>
         </div>
 
-        <div v-if="msg.interrupted" class="msg-interrupted">⚠ 已中断，以下为已生成的内容</div>
+        <div v-if="msg.interrupted" class="msg-interrupted">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5l8.2 14.5H3.8L12 4.5z"/><path d="M12 10v4M12 17h.01"/></svg>
+          已中断，以下为已生成的内容
+        </div>
 
         <!-- 元信息 -->
         <div v-if="msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
-          <span v-if="msg.durationMs != null">⏱ {{ (msg.durationMs / 1000).toFixed(1) }}s</span>
-          <span v-if="msg.tokenUsage != null">🪙 {{ msg.tokenUsage }} token</span>
+          <span v-if="msg.durationMs != null">{{ (msg.durationMs / 1000).toFixed(1) }}s</span>
+          <span v-if="msg.tokenUsage != null">{{ msg.tokenUsage }} token</span>
         </div>
 
         <!-- 操作: 编辑历史消息 / 重新生成助手回答 -->
         <div v-if="!streaming" class="msg-actions">
-          <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('start-edit', msg)" title="编辑并重新生成">✏️ 编辑</button>
-          <button v-if="msg.role === 'assistant'" class="btn btn-small" @click="$emit('retry', msg)" title="重新生成此回答">🔄 重新生成</button>
+          <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('start-edit', msg)" title="编辑并重新生成">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
+            编辑
+          </button>
+          <button v-if="msg.role === 'assistant'" class="btn btn-small" @click="$emit('retry', msg)" title="重新生成此回答">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.8 4v4.2h-4.2"/></svg>
+            重新生成
+          </button>
         </div>
 
         <!-- V3.1 F-48 回答反馈(收集): 点赞 / 点踩; 点踩可多选原因 -->
         <div v-if="canFeedback" class="msg-feedback">
           <button class="fb-btn" :class="{ active: feedback === 'up' }" :disabled="fbSubmitting"
-                  @click="quickUp" :title="feedback === 'up' ? '已点赞，点击取消' : '这个回答有帮助'">👍</button>
+                  @click="quickUp" :title="feedback === 'up' ? '已点赞，点击取消' : '这个回答有帮助'">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 10.5v9H4.4c-.8 0-1.4-.6-1.4-1.4v-6.2c0-.8.6-1.4 1.4-1.4H7z"/><path d="M7 10.5l4-6.3c1.3.2 2 1 2 2.3v2.6h5.1c1.3 0 2.3 1.2 2 2.5l-1.3 6c-.2.9-1 1.6-2 1.6H7"/></svg>
+          </button>
           <button class="fb-btn" :class="{ active: feedback === 'down' }" :disabled="fbSubmitting"
-                  @click="openDownPicker" :title="feedback === 'down' ? '已点踩，点击修改' : '这个回答没帮助'">👎</button>
+                  @click="openDownPicker" :title="feedback === 'down' ? '已点踩，点击修改' : '这个回答没帮助'">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 13.5v-9h2.6c.8 0 1.4.6 1.4 1.4v6.2c0 .8-.6 1.4-1.4 1.4H17z"/><path d="M17 13.5l-4 6.3c-1.3-.2-2-1-2-2.3v-2.6H5.9c-1.3 0-2.3-1.2-2-2.5l1.3-6c.2-.9 1-1.6 2-1.6H17"/></svg>
+          </button>
           <span v-if="feedback" class="fb-state">
             {{ feedback === 'up' ? '已点赞' : '已点踩' }}
             <button class="fb-undo" @click="withdraw" :disabled="fbSubmitting">撤销</button>
@@ -454,7 +468,7 @@ async function withdraw() {
 
 /* 联网搜索汇总行(正文上方) */
 .search-summary { display: flex; align-items: center; gap: 8px; padding: 6px 14px 8px 0; font-size: 13px; color: var(--dcdr-text-2); }
-.search-icon { font-size: 14px; }
+.search-icon { width: 14px; height: 14px; flex: none; }
 .search-text { font-weight: 500; }
 .favicon-stack { display: flex; }
 .favicon-stack .favicon-img { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--dcdr-border); background: var(--dcdr-bg-subtle); object-fit: cover; margin-left: -6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
@@ -521,13 +535,14 @@ async function withdraw() {
 .source-empty { color: var(--dcdr-text-3); font-style: italic; }
 .source-toggle { margin-top: 6px; background: none; border: none; color: var(--dcdr-accent); font-size: 12.5px; cursor: pointer; padding: 2px 0; }
 .source-toggle:hover { text-decoration: underline; }
-.msg-interrupted { margin-top: 6px; font-size: 12px; color: #d97706; background: rgba(217,119,6,0.1); border: 1px solid rgba(217,119,6,0.3); border-radius: 8px; padding: 4px 10px; }
+.msg-interrupted { margin-top: 6px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 10%, transparent); border: 1px solid color-mix(in srgb, var(--dcdr-warning) 32%, transparent); border-radius: 8px; padding: 4px 10px; }
+.msg-interrupted svg { width: 13px; height: 13px; flex: none; }
 
 /* 工具调用折叠提示 */
 .tool-invoke { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 10px; background: var(--dcdr-surface); overflow: hidden; }
 .tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--dcdr-text-2); text-align: left; }
 .tool-invoke-toggle:hover { background: var(--dcdr-bg-subtle); }
-.tool-icon { font-size: 13px; }
+.tool-icon { width: 13px; height: 13px; flex: none; }
 .tool-caret { margin-left: auto; color: var(--dcdr-text-3); }
 .tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
 .tool-item { border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-surface); padding: 8px 10px; }
@@ -545,6 +560,7 @@ async function withdraw() {
 .btn { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); color: var(--dcdr-text-2); padding: 5px 12px; border-radius: 8px; font-size: 12px; cursor: pointer; transition: all 0.2s; }
 .btn:hover { border-color: var(--dcdr-accent); color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .btn-small { padding: 4px 10px; font-size: 12px; }
+.btn-small svg { width: 12px; height: 12px; }
 .btn-primary { background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); border-color: transparent; color: #fff; }
 .btn-primary:hover { color: #fff; opacity: 0.9; }
 
@@ -559,9 +575,10 @@ async function withdraw() {
 
 /* ===== V3.1 F-48 回答反馈: 点赞/点踩 + 原因选择 ===== */
 .msg-feedback { margin-top: 8px; display: flex; align-items: center; gap: 8px; }
-.fb-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 28px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); border-radius: 8px; cursor: pointer; font-size: 14px; line-height: 1; transition: all 0.2s; filter: grayscale(0.65); }
-.fb-btn:hover:not(:disabled) { border-color: var(--dcdr-accent); background: var(--dcdr-accent-wash); filter: none; }
-.fb-btn.active { border-color: transparent; background: linear-gradient(135deg, var(--dcdr-accent-wash) 0%, var(--dcdr-accent-wash) 100%); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); filter: none; }
+.fb-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 28px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); border-radius: 8px; cursor: pointer; color: var(--dcdr-text-3); line-height: 1; transition: all 0.2s; }
+.fb-btn svg { width: 15px; height: 15px; }
+.fb-btn:hover:not(:disabled) { border-color: var(--dcdr-accent); color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
+.fb-btn.active { border-color: transparent; color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 .fb-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .fb-state { font-size: 12px; color: var(--dcdr-text-3); }
 .fb-undo { border: none; background: none; color: var(--dcdr-accent); cursor: pointer; font-size: 12px; padding: 0 2px; }

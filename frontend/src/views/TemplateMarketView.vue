@@ -35,9 +35,9 @@
         </div>
         <div class="tpl-desc">{{ t.description || '（无描述）' }}</div>
         <div class="tpl-meta">
-          <span class="meta-item">👤 {{ ownerLabel(t) }}</span>
-          <span class="meta-item">⬇ {{ t.cloneCount }} 次克隆</span>
-          <span class="meta-item">⭐ {{ t.ratingCount ? t.ratingAvg.toFixed(1) : '-' }} ({{ t.ratingCount }})</span>
+          <span class="meta-item">{{ ownerLabel(t) }}</span>
+          <span class="meta-item">{{ t.cloneCount }} 次克隆</span>
+          <span class="meta-item">{{ t.ratingCount ? t.ratingAvg.toFixed(1) : '-' }} 分 · {{ t.ratingCount }} 人评</span>
           <span v-if="t.category" class="meta-item">#{{ t.category }}</span>
         </div>
         <div class="tpl-tags" v-if="t.tags && t.tags.length">

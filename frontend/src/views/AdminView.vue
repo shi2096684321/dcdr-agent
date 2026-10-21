@@ -152,14 +152,14 @@ const activeTab = ref('stats')
 const statsLoading = ref(false)
 const stats = ref({})
 const statCards = computed(() => [
-  { label: '用户总数', value: stats.value.userCount ?? '-', icon: '👥', color: 'var(--dcdr-accent)' },
-  { label: '启用用户', value: stats.value.activeUserCount ?? '-', icon: '✅', color: '#52c41a' },
-  { label: '管理员', value: stats.value.adminCount ?? '-', icon: '🔑', color: 'var(--dcdr-danger)' },
-  { label: '会话总数', value: stats.value.sessionCount ?? '-', icon: '💬', color: '#722ed1' },
-  { label: '知识库数', value: stats.value.knowledgeBaseCount ?? '-', icon: '📚', color: '#fa8c16' },
-  { label: '文档总数', value: stats.value.documentCount ?? '-', icon: '📄', color: '#13c2c2' },
-  { label: '今日登录', value: stats.value.todayLoginCount ?? '-', icon: '🚪', color: '#eb2f96' },
-  { label: '今日对话', value: stats.value.todayChatCount ?? '-', icon: '🤖', color: '#1890ff' }
+  { label: '用户总数', value: stats.value.userCount ?? '-' },
+  { label: '启用用户', value: stats.value.activeUserCount ?? '-' },
+  { label: '管理员', value: stats.value.adminCount ?? '-' },
+  { label: '会话总数', value: stats.value.sessionCount ?? '-' },
+  { label: '知识库数', value: stats.value.knowledgeBaseCount ?? '-' },
+  { label: '文档总数', value: stats.value.documentCount ?? '-' },
+  { label: '今日登录', value: stats.value.todayLoginCount ?? '-' },
+  { label: '今日对话', value: stats.value.todayChatCount ?? '-' }
 ])
 
 async function loadStats() {
@@ -329,25 +329,14 @@ onMounted(() => {
 
 <style scoped>
 .admin-container { height: 100%; overflow: auto; }
+/* 页签的胶囊样式已在 styles/element.css 统一收口，这里只留页面自己的内外边距 */
 .admin-tabs :deep(.el-tabs__header) { margin: 0; padding: 0 24px; }
-.admin-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
-.admin-tabs :deep(.el-tabs__active-bar) { display: none; }
-.admin-tabs :deep(.el-tabs__item) {
-  height: 26px; line-height: 26px; margin: 10px 3px; padding: 0 12px !important;
-  font-size: 12px; color: var(--dcdr-text-3); border-radius: 999px;
-  transition: background 0.15s, color 0.15s;
-}
-.admin-tabs :deep(.el-tabs__item:hover) { color: var(--dcdr-text-1); }
-.admin-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash);
-  box-shadow: inset 0 0 0 1px var(--dcdr-accent-line);
-}
+.admin-tabs :deep(.el-tabs__item) { margin: 10px 0; }
 .admin-tabs :deep(.el-tabs__content) { padding: 18px 24px 24px; }
 .toolbar { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
 .stat-info { display: flex; flex-direction: column-reverse; gap: 7px; }
 .stat-card { display: flex; flex-direction: column; gap: 7px; padding: 16px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner); }
-.stat-icon { width: 48px; height: 48px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 22px; color: #fff; }
 .stat-info { flex: 1; }
 .stat-value { font-family: var(--dcdr-font-mono); font-size: 24px; font-weight: 700; letter-spacing: -0.5px; color: var(--dcdr-text-1); }
 .stat-label { font-family: var(--dcdr-font-mono); font-size: 10.5px; letter-spacing: 1px; color: var(--dcdr-text-3); }

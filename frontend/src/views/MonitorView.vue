@@ -410,7 +410,7 @@
         <el-table-column label="评价" width="76">
           <template #default="{ row }">
             <el-tag size="small" :type="row.rating === 'up' ? 'success' : 'danger'" effect="plain">
-              {{ row.rating === 'up' ? '👍 赞' : '👎 踩' }}
+              {{ row.rating === 'up' ? '赞' : '踩' }}
             </el-tag>
           </template>
         </el-table-column>
@@ -445,7 +445,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <div v-if="!fbList?.content?.length" class="empty-tip">窗口内暂无反馈记录（在对话里点👍/👎后出现）</div>
+      <div v-if="!fbList?.content?.length" class="empty-tip">窗口内暂无反馈记录（在对话里点「赞 / 踩」后出现）</div>
       <el-pagination v-if="(fbList?.totalElements || 0) > 0" small background
                      layout="prev, pager, next, total" :total="fbList.totalElements"
                      :page-size="fbPageSize" :current-page="fbPage + 1" @current-change="onFbPage"
@@ -735,21 +735,10 @@ onMounted(() => { reloadAll() })
 .fb-dim { font-size: 12px; color: var(--dcdr-text-3); }
 
 /* ===== V3.1 F-44.2 成本分析页签 ===== */
+/* 胶囊页签已在 styles/element.css 全站收口，这里只调本页的间距 */
 .monitor-tabs { margin-top: 4px; }
-/* 内层页签与管理后台统一: 胶囊, 不用 Element Plus 默认下划线 */
 .monitor-tabs :deep(.el-tabs__header) { margin: 0; }
-.monitor-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
-.monitor-tabs :deep(.el-tabs__active-bar) { display: none; }
-.monitor-tabs :deep(.el-tabs__item) {
-  height: 26px; line-height: 26px; margin: 6px 3px; padding: 0 12px !important;
-  font-size: 12px; color: var(--dcdr-text-3); border-radius: 999px;
-  transition: background 0.15s, color 0.15s;
-}
-.monitor-tabs :deep(.el-tabs__item:hover) { color: var(--dcdr-text-1); }
-.monitor-tabs :deep(.el-tabs__item.is-active) {
-  color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash);
-  box-shadow: inset 0 0 0 1px var(--dcdr-accent-line);
-}
+.monitor-tabs :deep(.el-tabs__item) { margin: 6px 0; }
 .monitor-tabs :deep(.el-tabs__content) { padding-top: 14px; }
 .cost-hint { font-size: 12px; color: var(--dcdr-text-3); }
 .cost-alert { margin-top: 4px; }

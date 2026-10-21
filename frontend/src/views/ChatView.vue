@@ -13,10 +13,16 @@
           </template>
           <template v-else>
             <span class="session-title">{{ s.title }}</span>
-            <button class="rename-btn" @click.stop="startRename(s)" title="重命名">✎</button>
-            <button class="settings-btn" @click.stop="openSettings(s)" title="会话设置(人设/约束)">⚙</button>
+            <button class="rename-btn" @click.stop="startRename(s)" title="重命名">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
+            </button>
+            <button class="settings-btn" @click.stop="openSettings(s)" title="会话设置(人设/约束)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M4.8 7.8l1.7 1.7M17.5 14.5l1.7 1.7M3.5 12h2M18.5 12h2M4.8 16.2l1.7-1.7M17.5 9.5l1.7-1.7"/></svg>
+            </button>
             <el-dropdown class="export-dropdown" trigger="click" @command="fmt => exportSession(s, fmt)" @click.stop>
-              <button class="export-btn" @click.stop title="导出对话">⬇</button>
+              <button class="export-btn" @click.stop title="导出对话">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10M8.5 11l3.5 3.5L15.5 11M5 18.5h14"/></svg>
+              </button>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item command="markdown">Markdown (.md)</el-dropdown-item>
@@ -24,7 +30,9 @@
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
-            <button class="delete-btn" @click.stop="removeSession(s)" title="删除">🗑</button>
+            <button class="delete-btn" @click.stop="removeSession(s)" title="删除">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14M9.5 7V5.2c0-.7.5-1.2 1.2-1.2h2.6c.7 0 1.2.5 1.2 1.2V7M7 7l.8 11.3c0 .9.8 1.7 1.7 1.7h5c.9 0 1.7-.8 1.7-1.7L17 7"/></svg>
+            </button>
           </template>
         </div>
       </div>
@@ -34,10 +42,12 @@
     <div class="chat-area">
       <!-- 上下文警告 -->
       <div v-if="contextWarning" class="context-warning">
-        <span class="cw-icon">⚠</span>
+        <svg class="cw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5l8.2 14.5H3.8L12 4.5z"/><path d="M12 10v4M12 17h.01"/></svg>
         <span class="cw-text">{{ contextWarning }}</span>
         <button class="cw-new" @click="newSession">开启新对话</button>
-        <button class="cw-close" @click="contextWarning = null" title="忽略">✕</button>
+        <button class="cw-close" @click="contextWarning = null" title="忽略">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
       </div>
 
       <!-- 消息列表 -->
@@ -107,7 +117,7 @@
             <div class="msg-role">DCDR</div>
             <div v-if="reasoningContent" class="msg-reasoning">
               <details open>
-                <summary>💭 推理过程</summary>
+                <summary>推理过程</summary>
                 <div v-html="renderReasoning(reasoningContent)" @click="onCodeClick"></div>
               </details>
             </div>
@@ -119,7 +129,7 @@
             </div>
             <div v-if="pipeline" class="search-pipeline">
               <div class="pipeline-head">
-                <span class="pipeline-icon">🌐</span>
+                <svg class="pipeline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8M12 3.6c2.3 2.4 3.5 5.3 3.5 8.4s-1.2 6-3.5 8.4c-2.3-2.4-3.5-5.3-3.5-8.4s1.2-6 3.5-8.4z"/></svg>
                 <span class="pipeline-title">联网搜索流水线</span>
                 <span v-if="pipeline.done" class="pipeline-done">完成</span>
               </div>
@@ -144,9 +154,9 @@
             <!-- 工具调用过程(实时): 收到 tool_call 块即累积展示, 无需刷新页面 -->
             <div v-if="streamToolInvocations.length" class="tool-invoke">
               <button class="tool-invoke-toggle" @click="streamToolOpen = !streamToolOpen">
-                <span class="tool-icon">🔧</span>
+                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.2a4 4 0 0 1 5.3 5.1l-8.6 8.6a2.6 2.6 0 0 1-3.7-3.7l8.6-8.6"/><path d="M4.4 4.4l3.2 3.2"/></svg>
                 <span>已调用 {{ streamToolInvocations.length }} 个工具</span>
-                <span class="tool-caret">{{ streamToolOpen ? '▲' : '▼' }}</span>
+                <span class="tool-caret">{{ streamToolOpen ? '收起' : '展开' }}</span>
               </button>
               <div v-if="streamToolOpen" class="tool-invoke-list">
                 <div v-for="(t, i) in streamToolInvocations" :key="t.id || i" class="tool-item">
@@ -175,8 +185,10 @@
           <div v-for="(file, idx) in selectedFiles" :key="idx" class="selected-file">
             <div class="file-preview">
               <img v-if="isImage(file)" :src="file.preview" alt="preview" />
-              <div v-else class="file-icon">📁</div>
-              <button class="remove-file" @click="removeFile(idx)">✕</button>
+              <svg v-else class="file-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 3.8H7.2c-.9 0-1.6.7-1.6 1.6v13.2c0 .9.7 1.6 1.6 1.6h9.6c.9 0 1.6-.7 1.6-1.6V8.6l-4.9-4.8z"/><path d="M13.4 3.9v4.7h5"/></svg>
+              <button class="remove-file" @click="removeFile(idx)" title="移除">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
             </div>
             <span class="file-name">{{ file.file.name }}</span>
           </div>
@@ -1103,7 +1115,8 @@ onMounted(() => { loadSessions() })
 .session-item:hover { background: var(--dcdr-bg-subtle); }
 .session-item.active { background: var(--dcdr-accent-wash); color: var(--dcdr-text-1); font-weight: 500; border: 1px solid var(--dcdr-accent-line); }
 .session-title { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rename-btn, .delete-btn, .export-btn, .settings-btn { border: none; background: transparent; cursor: pointer; font-size: 13px; color: var(--dcdr-text-3); opacity: 0; padding: 4px 6px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.rename-btn, .delete-btn, .export-btn, .settings-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); opacity: 0; padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.rename-btn svg, .delete-btn svg, .export-btn svg, .settings-btn svg { width: 13px; height: 13px; }
 .session-item:hover .rename-btn, .session-item:hover .delete-btn, .session-item:hover .export-btn, .session-item:hover .settings-btn { opacity: 1; }
 .rename-btn:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .settings-btn:hover { color: var(--dcdr-warning); background: rgba(230,162,60,0.1); }
@@ -1181,7 +1194,7 @@ onMounted(() => { loadSessions() })
 .tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--dcdr-text-2); text-align: left; }
 .tool-invoke-toggle:hover { background: var(--dcdr-bg-subtle); }
 .tool-invoke .tool-icon { font-size: 13px; }
-.tool-invoke .tool-caret { margin-left: auto; color: var(--dcdr-text-3); }
+.tool-invoke .tool-caret { margin-left: auto; color: var(--dcdr-text-3); font-size: 11px; }
 .tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
 .tool-invoke .tool-item { border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-surface); padding: 8px 10px; }
 .tool-invoke .tool-item-head { display: flex; align-items: center; gap: 8px; }
@@ -1191,7 +1204,7 @@ onMounted(() => { loadSessions() })
 /* 联网搜索三步流水线面板 */
 .search-pipeline { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 14px; padding: 14px 16px; margin-bottom: 4px; }
 .pipeline-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.pipeline-icon { font-size: 16px; }
+.pipeline-icon { width: 16px; height: 16px; flex: none; }
 .pipeline-title { font-weight: 700; color: var(--dcdr-text-1); font-size: 14px; }
 .pipeline-done { margin-left: auto; font-size: 11px; color: var(--dcdr-success); background: #2e9e6b1a; padding: 2px 10px; border-radius: 20px; font-weight: 600; }
 .pipeline-steps { display: flex; flex-direction: column; gap: 10px; }
@@ -1228,8 +1241,10 @@ onMounted(() => { loadSessions() })
 .selected-file { display: flex; flex-direction: column; align-items: center; gap: 4px; }
 .file-preview { position: relative; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 2px solid var(--dcdr-accent-wash); background: var(--dcdr-bg-subtle); }
 .file-preview img { width: 100%; height: 100%; object-fit: cover; }
-.file-icon { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 28px; }
-.remove-file { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(0,0,0,0.5); color: #fff; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.file-icon { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; color: var(--dcdr-text-3); }
+.file-icon svg { width: 26px; height: 26px; }
+.remove-file { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border-radius: 50%; border: none; background: rgba(0,0,0,0.5); color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0; }
+.remove-file svg { width: 9px; height: 9px; }
 .remove-file:hover { background: var(--dcdr-danger); }
 .file-name { font-size: 10px; color: var(--dcdr-text-3); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 
@@ -1274,10 +1289,11 @@ onMounted(() => { loadSessions() })
 
 /* 上下文警告 */
 .context-warning { max-width: 900px; margin: 12px auto 0; display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-surface) 100%); border: 1px solid var(--dcdr-border); border-radius: 12px; font-size: 13px; color: var(--dcdr-warning); animation: fadeInUp 0.3s ease; }
-.context-warning .cw-icon { font-size: 16px; }
+.context-warning .cw-icon { width: 15px; height: 15px; flex: none; }
 .context-warning .cw-text { flex: 1; line-height: 1.5; }
 .context-warning .cw-new { border: none; background: linear-gradient(135deg, #fa8c16 0%, #ff9c1a 100%); color: #fff; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; flex-shrink: 0; transition: all 0.2s; }
 .context-warning .cw-new:hover { box-shadow: 0 3px 10px rgba(250,140,22,0.35); }
-.context-warning .cw-close { border: none; background: transparent; color: var(--dcdr-warning); cursor: pointer; font-size: 16px; padding: 4px 8px; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.context-warning .cw-close { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; color: var(--dcdr-warning); cursor: pointer; padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.context-warning .cw-close svg { width: 13px; height: 13px; }
 .context-warning .cw-close:hover { background: var(--dcdr-bg-subtle); border-radius: 6px; }
 </style>
