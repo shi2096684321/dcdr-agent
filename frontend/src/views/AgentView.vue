@@ -35,10 +35,14 @@
               <div class="card-top">
                 <div class="agent-avatar">{{ avatarLetter(a.name) }}</div>
                 <div class="card-actions" @click.stop>
-                  <button v-if="a.editable" class="card-act" title="编辑" @click="editAgent(a)">✎</button>
+                  <button v-if="a.editable" class="card-act" title="编辑" @click="editAgent(a)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
+                </button>
                   <button class="card-act" title="版本历史" @click="openVersionsFor(a)">⏱</button>
                   <button v-if="!a.editable || a.isTemplate || isOthersAgent(a)" class="card-act" title="克隆" @click="cloneAgent(a)">⧉</button>
-                  <button v-if="a.editable" class="card-act danger" title="删除" @click="removeAgent(a)">✕</button>
+                  <button v-if="a.editable" class="card-act danger" title="删除" @click="removeAgent(a)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
                 </div>
               </div>
               <div class="card-name">
@@ -796,10 +800,11 @@ onMounted(() => {
 .agent-card:hover .card-actions { opacity: 1; }
 .card-act {
   width: 26px; height: 26px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface);
-  color: var(--dcdr-text-3); border-radius: 7px; cursor: pointer; font-size: 12px; line-height: 1;
+  color: var(--dcdr-text-3); border-radius: 7px; cursor: pointer; line-height: 1; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   transition: color 0.15s, border-color 0.15s;
 }
+.card-act svg { width: 12px; height: 12px; }
 .card-act:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border-strong); }
 .card-act.danger:hover { color: var(--dcdr-danger); border-color: var(--dcdr-danger); }
 .card-name { display: flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 600; color: var(--dcdr-text-1); }
@@ -847,7 +852,7 @@ onMounted(() => {
 /* ===== 详情弹窗 ===== */
 .detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 14px; border-bottom: 1px solid var(--dcdr-border); margin-bottom: 14px; flex-wrap: wrap; }
 .detail-title { display: flex; align-items: center; gap: 10px; }
-.detail-title h2 { margin: 0; font-size: 18px; }
+.detail-title h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .owner-alert { margin-bottom: 14px; }
 

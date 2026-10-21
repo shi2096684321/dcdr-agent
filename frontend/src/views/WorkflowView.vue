@@ -937,7 +937,7 @@ onMounted(() => {
 .wf-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--dcdr-surface); padding: 12px 20px 0; }
 .wf-toolbar { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--dcdr-border); }
 .wf-toolbar-left { display: flex; align-items: center; gap: 8px; }
-.wf-toolbar-left h2 { margin: 0; font-size: 18px; }
+.wf-toolbar-left h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .wf-desc-full { font-size: 12px; color: var(--dcdr-text-3); max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-toolbar-right { display: flex; gap: 8px; }
 .wf-tabs { flex: 1; display: flex; flex-direction: column; overflow: hidden; }

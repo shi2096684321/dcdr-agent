@@ -1212,7 +1212,7 @@ onMounted(() => { loadSessions() })
 .pstep.active, .pstep.done { opacity: 1; }
 .pstep-no { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--dcdr-surface-2); color: var(--dcdr-text-1); font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; transition: all 0.3s; }
 .pstep.active .pstep-no { background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: 0 0 0 4px var(--dcdr-accent-wash); }
-.pstep.done .pstep-no { background: linear-gradient(135deg, #34d399 0%, #059669 100%); }
+.pstep.done .pstep-no { background: linear-gradient(135deg, var(--dcdr-success) 0%, color-mix(in srgb, var(--dcdr-success) 70%, #000) 100%); }
 .pstep-text { display: flex; flex-direction: column; line-height: 1.35; }
 .pstep-text b { font-size: 13.5px; color: var(--dcdr-text-1); }
 .pstep-text i { font-size: 11.5px; color: var(--dcdr-text-3); font-style: normal; }
@@ -1291,7 +1291,7 @@ onMounted(() => { loadSessions() })
 .context-warning { max-width: 900px; margin: 12px auto 0; display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-surface) 100%); border: 1px solid var(--dcdr-border); border-radius: 12px; font-size: 13px; color: var(--dcdr-warning); animation: fadeInUp 0.3s ease; }
 .context-warning .cw-icon { width: 15px; height: 15px; flex: none; }
 .context-warning .cw-text { flex: 1; line-height: 1.5; }
-.context-warning .cw-new { border: none; background: linear-gradient(135deg, #fa8c16 0%, #ff9c1a 100%); color: #fff; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; flex-shrink: 0; transition: all 0.2s; }
+.context-warning .cw-new { border: none; background: linear-gradient(135deg, var(--dcdr-warning) 0%, color-mix(in srgb, var(--dcdr-warning) 78%, #fff) 100%); color: #fff; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; flex-shrink: 0; transition: all 0.2s; }
 .context-warning .cw-new:hover { box-shadow: 0 3px 10px rgba(250,140,22,0.35); }
 .context-warning .cw-close { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: none; background: transparent; color: var(--dcdr-warning); cursor: pointer; padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
 .context-warning .cw-close svg { width: 13px; height: 13px; }

@@ -706,7 +706,7 @@ onMounted(load)
 <style scoped>
 .skill-view { flex: 1; overflow-y: auto; padding: 20px 24px; background: var(--dcdr-bg-subtle); }
 .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
-.ph-left h2 { margin: 0 0 6px; font-size: 20px; }
+.ph-left h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
 .ph-left .sub { margin: 0; color: var(--dcdr-text-3); font-size: 13px; line-height: 1.6; max-width: 720px; }
 .ph-actions { display: flex; gap: 8px; flex-shrink: 0; }
 

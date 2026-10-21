@@ -686,8 +686,8 @@ onMounted(() => { reloadAll() })
 
 <style scoped>
 .monitor-mode { flex: 1; overflow-y: auto; padding: 24px 28px; background: var(--dcdr-bg-subtle); display: flex; flex-direction: column; gap: 16px; }
-.monitor-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
-.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); }
+.monitor-header h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 11.5px; color: var(--dcdr-text-3); line-height: 1.6; }
 .toolbar { display: flex; align-items: center; gap: 10px; }
 
 .quota-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 16px 20px; }

@@ -342,7 +342,7 @@ onMounted(() => {
 .task-main { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--dcdr-surface); padding: 12px 20px 20px; }
 .task-toolbar { display: flex; align-items: center; justify-content: space-between; padding-bottom: 12px; border-bottom: 1px solid var(--dcdr-border); }
 .task-toolbar-left { display: flex; align-items: center; gap: 8px; }
-.task-toolbar-left h2 { margin: 0; font-size: 18px; }
+.task-toolbar-left h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .task-toolbar-right { display: flex; gap: 8px; }
 
 .task-detail { padding: 16px 0; }

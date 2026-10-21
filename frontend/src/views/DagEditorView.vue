@@ -530,8 +530,8 @@ onMounted(async () => {
 <style scoped>
 .dag-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--dcdr-bg-subtle); }
 .dag-header { padding: 16px 24px 0; }
-.dag-header h2 { margin: 0 0 2px; font-size: 20px; color: var(--dcdr-text-1); }
-.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); }
+.dag-header h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 11.5px; color: var(--dcdr-text-3); line-height: 1.6; }
 .dag-toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 24px; }
 .dag-body { flex: 1; display: flex; min-height: 0; margin: 0 24px 20px; gap: 12px; }
 

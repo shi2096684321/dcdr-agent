@@ -6,7 +6,7 @@
         <span class="cp-title">运行预览</span>
         <span class="cp-lang">{{ langLabel(lang) }}</span>
         <div class="cp-actions">
-          <button class="cp-btn" @click="copy">{{ copied ? '✓ 已复制' : '复制代码' }}</button>
+          <button class="cp-btn" @click="copy"><template v-if="copied"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7"/></svg>已复制</template><template v-else>复制代码</template></button>
           <button class="cp-btn" @click="openInNewTab">新窗口打开</button>
           <button class="cp-btn cp-close" @click="close">关闭</button>
         </div>
@@ -83,7 +83,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 .cp-title { font-size: 14px; font-weight: 600; color: var(--dcdr-text-1); }
 .cp-lang { font-size: 11px; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); border-radius: 6px; padding: 2px 8px; font-family: monospace; }
 .cp-actions { margin-left: auto; display: flex; gap: 8px; }
-.cp-btn { border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); color: var(--dcdr-text-2); font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; }
+.cp-btn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--dcdr-border); background: var(--dcdr-surface); color: var(--dcdr-text-2); font-size: 12px; padding: 5px 12px; border-radius: 8px; cursor: pointer; transition: all 0.15s ease; }
+.cp-btn svg { width: 12px; height: 12px; }
 .cp-btn:hover { border-color: var(--dcdr-accent); color: var(--dcdr-accent); }
 .cp-close:hover { border-color: var(--dcdr-danger); color: var(--dcdr-danger); }
 .cp-frame { flex: 1; width: 100%; border: none; background: var(--dcdr-surface); }

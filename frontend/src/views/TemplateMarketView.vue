@@ -236,8 +236,8 @@ onMounted(() => { load() })
 
 <style scoped>
 .market-mode { flex: 1; overflow-y: auto; padding: 24px 28px; background: var(--dcdr-bg-subtle); }
-.market-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
-.subtitle { margin: 0 0 16px; font-size: 13px; color: var(--dcdr-text-3); }
+.market-header h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.subtitle { margin: 0 0 14px; font-size: 11.5px; color: var(--dcdr-text-3); line-height: 1.6; }
 .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
 .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; min-height: 200px; }
 .tpl-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 14px 16px;
