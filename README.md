@@ -152,15 +152,15 @@ docker compose -f docker-compose.app.yml up -d --build # 2) 应用（含前端�
 
 | 项 | 值 |
 |----|----|
-| 当前版本 | **v3.1.0**（UI 分支 `feature/v3.2.0-ui`） |
-| 发布日期 | 2026-10-14 |
+| 当前版本 | **v3.2.0-ui**（UI 版，后端能力同 v3.1.0） |
+| 发布日期 | 2026-10-21 |
 | Java | 17 |
 | Spring Boot | 3.3.5 |
 | AI 框架 | LangChain4j 1.19.0 |
 | 构建工具 | Maven |
 | 自动化测试 | 392 条单元/装配测试，全部通过 |
 
-> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）→ **V3.1（统一归属框架 / 专家与技能体系 / 代码执行沙箱 / 版本与成本治理 / 多实例协调 / 长期记忆）**。发布说明见 [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)。
+> 版本演进：V1.x（单轮对话）→ V2.0（知识库 / 认证 / 多 Agent）→ V2.1（RAG 增强）→ V2.2（RBAC / 审计 / 数据隔离）→ V2.3（自定义 Agent / 工作流 / 定时任务 / 流式图片）→ V3.0（智能路由 / 可视化 DAG / 执行容错 / LangChain4j 框架化 / 治理可观测）→ **V3.1（统一归属框架 / 专家与技能体系 / 代码执行沙箱 / 版本与成本治理 / 多实例协调 / 长期记忆）** → **V3.2.0-ui（设计令牌与 EP 覆盖层 / 深浅双主题 / 全站界面重构 / 编排拆分）**。发布说明见 [`docs/RELEASE-v3.2.0-ui.md`](docs/RELEASE-v3.2.0-ui.md)。
 
 ---
 
@@ -321,7 +321,7 @@ mvn verify
 - **生产级测试报告**：`docs/19-生产级测试报告-v3.2.md`
 - 运维脚本索引：`scripts/README.md`
 - V3.1 规划：`docs/14-V3.1规划文档.md`（V3.0 见 `docs/07-V3.0规划文档.md`）
-- 发布说明：`docs/RELEASE-v3.1.0.md`（历史版本见 `docs/RELEASE-*.md`）
+- 发布说明：`docs/RELEASE-v3.2.0-ui.md`（历史版本见 `docs/RELEASE-*.md`）
 
 ---
 

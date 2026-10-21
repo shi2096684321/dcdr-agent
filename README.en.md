@@ -4,7 +4,7 @@
 
 A production-grade Agent orchestration platform based on Spring Boot + Java 17 + LangChain4j, featuring intelligent routing, visual DAG workflow orchestration, fault-tolerant execution, knowledge base RAG, multimodal generation, and full observability (tracing / metrics / audit).
 
-Current version: **v3.1.0** (Release Notes: [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md)).
+Current version: **v3.2.0-ui** (Release Notes: [`docs/RELEASE-v3.2.0-ui.md`](docs/RELEASE-v3.2.0-ui.md)) — a UI-focused release: design tokens, dark/light theming, full UI rebuild; backend capabilities are those of v3.1.0.
 
 > Version note: v3.1.0 delivers the unified ownership framework (F-41), the expert & skill system (F-45, scope changed from the planned remote template market), the code execution sandbox (F-43), governance completion — agent versioning + cost report (F-44), multi-instance cluster coordination plus backup/restore drills (F-46), tool-result size governance (F-47), answer feedback (F-48), and long-term memory (P0 + P1 auto-extraction). Voice STT/TTS (F-42) and the remote template repository are **not** delivered in this release. See [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md).
 >
@@ -291,7 +291,8 @@ Adding a tool: implement the `Tool` interface and annotate with `@Component`; it
 - [`docs/18-本地运行与部署教程.md`](docs/18-本地运行与部署教程.md) (local run & deployment tutorial)
 - [`docs/14-V3.1规划文档.md`](docs/14-V3.1规划文档.md) (security / expert & skill / sandbox / governance / HA / memory)
 - [`docs/07-V3.0规划文档.md`](docs/07-V3.0规划文档.md) (intelligent routing / DAG / fault tolerance / hardening)
-- [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md) (current release)
+- [`docs/RELEASE-v3.2.0-ui.md`](docs/RELEASE-v3.2.0-ui.md) (current release)
+- [`docs/RELEASE-v3.1.0.md`](docs/RELEASE-v3.1.0.md) (previous milestone)
 - [`docs/RELEASE-v3.0.0.md`](docs/RELEASE-v3.0.0.md) (previous release)
 - [`docs/RELEASE-v3.0.0-alpha-self-impl.md`](docs/RELEASE-v3.0.0-alpha-self-impl.md) (v3.0 alpha milestone)
 - [`docs/03-V2.0规划文档.md`](docs/03-V2.0规划文档.md) (knowledge base / auth / multi-agent)
