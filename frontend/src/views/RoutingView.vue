@@ -101,34 +101,87 @@
                      v-model:current-page="page" @current-change="loadLogs" @size-change="onSizeChange" />
     </div>
 
-    <!-- 路由详情抽屉: 单次路由判断的完整信息(置信度/目标/token 消耗/判断依据) -->
-    <el-drawer v-model="detailVisible" size="560px" title="路由详情" append-to-body>
-      <template v-if="detailLog">
-        <div class="d-grid">
-          <span class="d-k">路由类型</span><span class="d-v">{{ routeTypeLabel(detailLog.routeType) }}</span>
-          <span class="d-k">命中目标</span><span class="d-v">{{ detailLog.targetName || detailLog.targetId || '-' }}</span>
-          <span class="d-k" v-if="detailLog.targetId">目标 ID</span><span class="d-v mono" v-if="detailLog.targetId">{{ detailLog.targetId }}</span>
-          <span class="d-k">置信度</span><span class="d-v">{{ formatConf(detailLog.confidence) }} <span :class="detailLog.highConfidence ? 'tag-ok' : 'tag-warn'">{{ detailLog.highConfidence ? '高置信 · 直采' : '低置信 · 已回退' }}</span></span>
-          <span class="d-k">会话 ID</span><span class="d-v mono">{{ detailLog.sessionId || '-' }}</span>
-          <template v-if="detailLog.userId && authStore.isAdmin">
-            <span class="d-k">用户</span><span class="d-v mono">{{ detailLog.userId }}</span>
-          </template>
-          <span class="d-k">时间</span><span class="d-v">{{ formatTime(detailLog.createdAt) }}</span>
-          <span class="d-k">Token 消耗</span><span class="d-v">入 {{ detailLog.inputTokens ?? '-' }} / 出 {{ detailLog.outputTokens ?? '-' }} / 共 {{ detailLog.totalTokens ?? '-' }} <span class="d-note">(路由探测成本, 不计入用户配额)</span></span>
+    <!-- 路由详情抽屉: 一次路由判断的完整凭据 —— 置信度离阈值多远, 是这页唯一要回答的问题 -->
+    <el-drawer v-model="detailVisible" size="540px" :with-header="false" append-to-body class="route-drawer">
+      <div v-if="detailLog" class="rd-wrap">
+        <!-- 粘性头部: 结论(命中谁 / 直采还是回退)必须在最上方一眼看到 -->
+        <header class="rd-head">
+          <div class="rd-head-top">
+            <span class="rd-title">路由详情</span>
+            <span class="rd-verdict" :class="detailLog.highConfidence ? 'is-ok' : 'is-warn'">
+              {{ detailLog.highConfidence ? '高置信 · 直采' : '低置信 · 已回退' }}
+            </span>
+            <button class="rd-close" @click="detailVisible = false" title="关闭">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+
+          <div class="rd-target">
+            <span class="rd-type" :class="'rt-' + detailLog.routeType">{{ routeTypeLabel(detailLog.routeType) }}</span>
+            <span class="rd-name" :class="{ none: !detailLog.targetName && !detailLog.targetId }">
+              {{ detailLog.targetName || detailLog.targetId || '未命中具体目标' }}
+            </span>
+          </div>
+
+          <!-- 置信度刻度: 数值本身说明不了什么, 离 0.80 阈值多远才说明问题 -->
+          <div class="rd-conf" v-if="detailLog.confidence != null">
+            <div class="rd-conf-row">
+              <span class="rd-conf-value" :class="detailLog.highConfidence ? 'is-ok' : 'is-warn'">{{ formatConf(detailLog.confidence) }}</span>
+              <span class="rd-conf-label">置信度 · 阈值 0.80</span>
+              <span class="rd-conf-gap" :class="detailLog.highConfidence ? 'is-ok' : 'is-warn'">{{ confGapText }}</span>
+            </div>
+            <div class="rd-conf-track">
+              <i class="rd-conf-fill" :class="detailLog.highConfidence ? 'is-ok' : 'is-warn'" :style="{ width: confPercent + '%' }"></i>
+              <span class="rd-conf-threshold"></span>
+            </div>
+          </div>
+          <div class="rd-conf" v-else>
+            <span class="rd-conf-label">这条走了直连, 没有产生路由置信度</span>
+          </div>
+
+          <div class="rd-metrics">
+            <span class="rd-metric"><b>{{ detailLog.totalTokens ?? '—' }}</b> token</span>
+            <span class="rd-time">{{ formatTime(detailLog.createdAt) }}</span>
+          </div>
+        </header>
+
+        <div class="rd-body">
+          <section class="rd-sec">
+            <div class="rd-label">用户消息</div>
+            <p class="rd-text">{{ detailLog.userMessage || '(空)' }}</p>
+          </section>
+
+          <section class="rd-sec">
+            <div class="rd-label">判断依据</div>
+            <p class="rd-text">{{ detailLog.reason || '（后端未记录判断依据）' }}</p>
+          </section>
+
+          <section class="rd-sec">
+            <div class="rd-label">命中目标</div>
+            <div class="rd-fields">
+              <span class="cf"><i>名称</i><b>{{ detailLog.targetName || '—' }}</b></span>
+              <span class="cf" v-if="detailLog.targetId"><i>ID</i><b class="mono">{{ detailLog.targetId }}</b></span>
+              <span class="cf"><i>会话</i><b class="mono">{{ detailLog.sessionId || '—' }}</b></span>
+              <span class="cf" v-if="detailLog.userId && authStore.isAdmin"><i>用户</i><b class="mono">{{ detailLog.userId }}</b></span>
+            </div>
+          </section>
+
+          <section class="rd-sec">
+            <div class="rd-label">路由探测成本</div>
+            <div class="rd-fields">
+              <span class="cf"><i>入</i><b>{{ detailLog.inputTokens ?? '—' }}</b></span>
+              <span class="cf"><i>出</i><b>{{ detailLog.outputTokens ?? '—' }}</b></span>
+              <span class="cf"><i>合计</i><b>{{ detailLog.totalTokens ?? '—' }}</b></span>
+            </div>
+            <p class="rd-note">路由判断消耗的 token 单独计量, 不计入用户配额</p>
+          </section>
+
+          <details class="rd-raw" v-if="detailLog.systemPrompt">
+            <summary>本次提交的 System Prompt</summary>
+            <pre class="rd-pre">{{ detailLog.systemPrompt }}</pre>
+          </details>
         </div>
-        <div class="d-block">
-          <div class="d-k">用户消息</div>
-          <pre class="d-pre">{{ detailLog.userMessage || '(空)' }}</pre>
-        </div>
-        <div class="d-block">
-          <div class="d-k">判断依据</div>
-          <pre class="d-pre">{{ detailLog.reason || '(无)' }}</pre>
-        </div>
-        <details class="d-raw" v-if="detailLog.systemPrompt">
-          <summary>本次提交的 System Prompt</summary>
-          <pre class="d-pre">{{ detailLog.systemPrompt }}</pre>
-        </details>
-      </template>
+      </div>
     </el-drawer>
   </div>
 </template>
@@ -140,6 +193,9 @@ import { getRoutingLogs, extractMessage } from '@/api'
 import { useAuthStore } from '@/stores/auth'
 
 const authStore = useAuthStore()
+
+/** 与后端智能路由的高置信阈值一致(0.8); 仅用于详情页的「差多少」文案 */
+const ROUTE_CONFIDENCE_THRESHOLD = 0.8
 const loading = ref(false)
 const logs = ref([])
 const total = ref(0)
@@ -177,6 +233,23 @@ const avgConfidence = computed(() => {
   if (!withConf.length) return '—'
   const sum = withConf.reduce((a, l) => a + Number(l.confidence || 0), 0)
   return (sum / withConf.length).toFixed(2)
+})
+
+/** 抽屉里那条置信度刻度的宽度百分比(置信度是 0~1) */
+const confPercent = computed(() => {
+  const c = detailLog.value && detailLog.value.confidence
+  if (c == null) return 0
+  return Math.max(0, Math.min(Number(c) * 100, 100))
+})
+
+/** 置信度离 0.80 阈值差多少 —— 比只看一个 0.71 更能说明该不该调阈值 */
+const confGapText = computed(() => {
+  const c = detailLog.value && detailLog.value.confidence
+  if (c == null) return ''
+  const gap = Number(c) - ROUTE_CONFIDENCE_THRESHOLD
+  return gap >= 0
+    ? `高出阈值 ${gap.toFixed(2)}`
+    : `低于阈值 ${Math.abs(gap).toFixed(2)}`
 })
 
 const totalTokens = computed(() =>
@@ -327,16 +400,94 @@ onMounted(() => {
 .empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 12.5px; line-height: 1.9; }
 .pager { margin-top: 16px; display: flex; justify-content: center; }
 
-/* ===== 详情抽屉 ===== */
-.d-grid { display: grid; grid-template-columns: 100px 1fr; gap: 9px 10px; font-size: 12.5px; align-items: baseline; }
-.d-k { color: var(--dcdr-text-3); }
-.d-v { color: var(--dcdr-text-1); word-break: break-all; }
-.d-v.mono { font-family: var(--dcdr-font-mono); }
-.d-note { font-size: 10.5px; color: var(--dcdr-text-3); }
-.tag-ok { color: var(--dcdr-success); font-family: var(--dcdr-font-mono); font-size: 10px; }
-.tag-warn { color: var(--dcdr-warning); font-family: var(--dcdr-font-mono); font-size: 10px; }
-.d-block { margin-top: 14px; }
-.d-pre { margin: 4px 0 0; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; font-family: var(--dcdr-font-mono); }
-.d-raw { margin-top: 12px; }
-.d-raw summary { font-size: 12px; color: var(--dcdr-accent-soft); cursor: pointer; user-select: none; }
+/* ===== 详情抽屉: 一次路由判断的凭据 ===== */
+/* body 的 padding/overflow 在 styles/element.css 里处理(drawer 会 teleport, scoped :deep 够不到) */
+.rd-wrap { height: 100%; display: flex; flex-direction: column; }
+
+.rd-head {
+  flex: none; padding: 16px 20px 14px;
+  background: var(--dcdr-surface); border-bottom: 1px solid var(--dcdr-border);
+}
+.rd-head-top { display: flex; align-items: center; gap: 10px; }
+.rd-title { font-size: 14.5px; font-weight: 600; color: var(--dcdr-text-1); }
+.rd-verdict { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; }
+.rd-verdict.is-ok { color: var(--dcdr-success); }
+.rd-verdict.is-warn { color: var(--dcdr-warning); }
+.rd-close {
+  margin-left: auto; width: 26px; height: 26px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--dcdr-text-3); cursor: pointer; transition: all 0.16s var(--dcdr-ease);
+}
+.rd-close svg { width: 13px; height: 13px; }
+.rd-close:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border); background: var(--dcdr-hover); }
+
+.rd-target { display: flex; align-items: baseline; gap: 8px; margin-top: 12px; }
+.rd-type { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; }
+.rd-name { font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.rd-name.none { font-size: 13px; font-weight: 400; color: var(--dcdr-text-3); }
+
+/* 置信度刻度: 数值 + 离阈值多远 + 一条带阈值刻线的进度条 */
+.rd-conf { margin-top: 13px; }
+.rd-conf-row { display: flex; align-items: baseline; gap: 8px; }
+.rd-conf-value { font-family: var(--dcdr-font-mono); font-size: 17px; font-weight: 600; line-height: 1; }
+.rd-conf-value.is-ok { color: var(--dcdr-success); }
+.rd-conf-value.is-warn { color: var(--dcdr-warning); }
+.rd-conf-label { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); }
+.rd-conf-gap { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 10px; }
+.rd-conf-gap.is-ok { color: var(--dcdr-success); }
+.rd-conf-gap.is-warn { color: var(--dcdr-warning); }
+.rd-conf-track {
+  position: relative; height: 5px; margin-top: 7px;
+  background: var(--dcdr-hover); border-radius: 999px; overflow: hidden;
+}
+.rd-conf-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; }
+.rd-conf-fill.is-ok { background: var(--dcdr-success); }
+.rd-conf-fill.is-warn { background: var(--dcdr-warning); }
+/* 阈值刻线画在 80% 处, 与上面文案里的 0.80 对应。
+   用底色在填充条上"挖"一道缺口, 比叠一根灰线更清楚 —— 灰线压在绿色上几乎看不见 */
+.rd-conf-threshold {
+  position: absolute; top: 0; bottom: 0; left: 80%; width: 2px;
+  background: var(--dcdr-surface); z-index: 1;
+}
+
+.rd-metrics { display: flex; align-items: baseline; gap: 12px; margin-top: 12px; }
+.rd-metric { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
+.rd-metric b { font-size: 12.5px; font-weight: 600; color: var(--dcdr-text-1); margin-right: 2px; }
+.rd-time { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
+
+.rd-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 20px 24px; }
+.rd-sec { padding: 13px 0; border-bottom: 1px solid var(--dcdr-border); }
+.rd-sec:last-of-type { border-bottom: none; }
+.rd-label { font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.6px; color: var(--dcdr-text-3); margin-bottom: 6px; }
+.rd-text {
+  margin: 0; font-size: 12.5px; line-height: 1.7; color: var(--dcdr-text-1);
+  white-space: pre-wrap; word-break: break-word;
+}
+.rd-fields { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.cf { display: inline-flex; align-items: baseline; gap: 5px; }
+.cf i { font-style: normal; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; color: var(--dcdr-text-3); }
+.cf b { font-weight: 500; font-size: 11.5px; color: var(--dcdr-text-1); }
+.cf b.mono { font-family: var(--dcdr-font-mono); }
+.rd-note { margin: 8px 0 0; font-size: 10.5px; color: var(--dcdr-text-3); }
+
+.rd-raw { margin-top: 10px; border-top: 1px dashed var(--dcdr-border); padding-top: 8px; }
+.rd-raw > summary {
+  display: flex; align-items: center; gap: 6px; list-style: none;
+  font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px;
+  color: var(--dcdr-text-3); cursor: pointer; user-select: none;
+  transition: color 0.16s var(--dcdr-ease);
+}
+.rd-raw > summary::-webkit-details-marker { display: none; }
+.rd-raw > summary::before { content: '▸'; font-size: 9px; transition: transform 0.16s var(--dcdr-ease); }
+.rd-raw[open] > summary::before { transform: rotate(90deg); }
+.rd-raw > summary:hover { color: var(--dcdr-text-1); }
+.rd-pre {
+  margin: 6px 0 0; padding: 8px 10px;
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: 6px;
+  font-family: var(--dcdr-font-mono); font-size: 11px; line-height: 1.65;
+  color: var(--dcdr-text-2); white-space: pre-wrap; word-break: break-word;
+  max-height: 240px; overflow-y: auto;
+}
+
 </style>

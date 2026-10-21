@@ -130,6 +130,10 @@
   --el-button-hover-text-color: var(--dcdr-danger);
   --el-button-hover-border-color: var(--dcdr-danger);
   --el-button-active-text-color: var(--dcdr-danger);
+  /* 禁用态: EP 默认会给一层浅色底, 在"描边按钮"体系里看起来像另一个组件 —— 统一回透明 */
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-border-color: color-mix(in srgb, var(--dcdr-danger) 22%, transparent);
+  --el-button-disabled-text-color: color-mix(in srgb, var(--dcdr-danger) 55%, transparent);
 }
 
 .el-button--warning:not(.is-plain) {
@@ -138,6 +142,9 @@
   --el-button-hover-text-color: var(--dcdr-warning);
   --el-button-hover-border-color: var(--dcdr-warning);
   --el-button-active-text-color: var(--dcdr-warning);
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-border-color: color-mix(in srgb, var(--dcdr-warning) 22%, transparent);
+  --el-button-disabled-text-color: color-mix(in srgb, var(--dcdr-warning) 55%, transparent);
 }
 
 /* success 保留实心（"审批通过 / 启用"这类正向终态需要重量），但换渐变 */
@@ -310,10 +317,11 @@
   margin-bottom: 16px;
 }
 
-/* 内容自带粘性头部的抽屉（如调用链详情）：body 只当 flex 容器，
+/* 内容自带粘性头部的抽屉（调用链 / 路由详情）：body 只当 flex 容器，
    内边距交给内容自己控制。写在全局是因为 el-drawer teleport 到 body 后，
    组件内的 scoped :deep() 无法命中它自己的 body。 */
-.chain-drawer .el-drawer__body {
+.chain-drawer .el-drawer__body,
+.route-drawer .el-drawer__body {
   padding: 0;
   overflow: hidden;
   display: flex;
