@@ -66,7 +66,7 @@
         <div class="s-label">成功率</div>
       </div>
       <div class="stat-card">
-        <div class="s-value">{{ overview ? (overview.avgDurationMs / 1000).toFixed(1) + 's' : '-' }}</div>
+        <div class="s-value">{{ overview && overview.avgDurationMs != null ? (overview.avgDurationMs / 1000).toFixed(1) + 's' : '-' }}</div>
         <div class="s-label">平均耗时</div>
       </div>
       <div class="stat-card">
@@ -127,7 +127,7 @@
           <template #default="{ row }">{{ row.successRate == null ? '-' : (row.successRate * 100).toFixed(0) + '%' }}</template>
         </el-table-column>
         <el-table-column label="平均耗时" width="100">
-          <template #default="{ row }">{{ (row.avgDurationMs / 1000).toFixed(1) }}s</template>
+          <template #default="{ row }">{{ row.avgDurationMs == null ? '-' : (row.avgDurationMs / 1000).toFixed(1) + 's' }}</template>
         </el-table-column>
         <el-table-column label="Token" width="100">
           <template #default="{ row }">{{ fmt(row.totalTokens) }}</template>
@@ -736,6 +736,21 @@ onMounted(() => { reloadAll() })
 
 /* ===== V3.1 F-44.2 成本分析页签 ===== */
 .monitor-tabs { margin-top: 4px; }
+/* 内层页签与管理后台统一: 胶囊, 不用 Element Plus 默认下划线 */
+.monitor-tabs :deep(.el-tabs__header) { margin: 0; }
+.monitor-tabs :deep(.el-tabs__nav-wrap::after) { display: none; }
+.monitor-tabs :deep(.el-tabs__active-bar) { display: none; }
+.monitor-tabs :deep(.el-tabs__item) {
+  height: 26px; line-height: 26px; margin: 6px 3px; padding: 0 12px !important;
+  font-size: 12px; color: var(--dcdr-text-3); border-radius: 999px;
+  transition: background 0.15s, color 0.15s;
+}
+.monitor-tabs :deep(.el-tabs__item:hover) { color: var(--dcdr-text-1); }
+.monitor-tabs :deep(.el-tabs__item.is-active) {
+  color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash);
+  box-shadow: inset 0 0 0 1px var(--dcdr-accent-line);
+}
+.monitor-tabs :deep(.el-tabs__content) { padding-top: 14px; }
 .cost-hint { font-size: 12px; color: var(--dcdr-text-3); }
 .cost-alert { margin-top: 4px; }
 .bar-money { width: 92px; font-size: 12px; color: var(--dcdr-text-3); text-align: right; flex-shrink: 0; }
