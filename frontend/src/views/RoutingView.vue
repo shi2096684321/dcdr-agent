@@ -102,7 +102,7 @@
     </div>
 
     <!-- 路由详情抽屉: 单次路由判断的完整信息(置信度/目标/token 消耗/判断依据) -->
-    <el-drawer v-model="detailVisible" size="560px" title="路由详情">
+    <el-drawer v-model="detailVisible" size="560px" title="路由详情" append-to-body>
       <template v-if="detailLog">
         <div class="d-grid">
           <span class="d-k">路由类型</span><span class="d-v">{{ routeTypeLabel(detailLog.routeType) }}</span>

@@ -309,3 +309,13 @@
   padding: 16px 20px;
   margin-bottom: 16px;
 }
+
+/* 内容自带粘性头部的抽屉（如调用链详情）：body 只当 flex 容器，
+   内边距交给内容自己控制。写在全局是因为 el-drawer teleport 到 body 后，
+   组件内的 scoped :deep() 无法命中它自己的 body。 */
+.chain-drawer .el-drawer__body {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}

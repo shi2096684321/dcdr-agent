@@ -116,80 +116,101 @@
                      v-model:current-page="page" @current-change="loadLogs" @size-change="onSizeChange" />
     </div>
 
-    <!-- 调用链详情抽屉: 展示每次 LLM 调用的请求参数(温度/上下文规模/工具数)与工具调用参数/结果摘要 -->
-    <el-drawer v-model="detailVisible" size="620px" :title="detailTitle">
-      <div v-loading="detailLoading" class="d-wrap">
-      <template v-if="detailLog">
-        <div class="d-section">
-          <div class="d-title">基本信息</div>
-          <div class="d-grid">
-            <span class="d-k">追踪 ID</span><span class="d-v mono">{{ detailLog.turnId }}</span>
-            <span class="d-k">结束信号</span><span class="d-v">{{ endLabel(detailLog.endSignal) }}</span>
-            <span class="d-k">会话 ID</span><span class="d-v mono">{{ detailLog.sessionId || '-' }}</span>
-            <template v-if="detailLog.userId && authStore.isAdmin">
-              <span class="d-k">用户</span><span class="d-v mono">{{ detailLog.userId }}</span>
-            </template>
-            <span class="d-k">时间</span><span class="d-v">{{ formatTime(detailLog.createdAt) }}</span>
-            <span class="d-k">汇总</span><span class="d-v">{{ detailLog.llmCalls || 0 }} 轮 · {{ detailLog.toolSteps || 0 }} 工具步 · {{ fmtTokens(detailLog.totalInTokens) }}↑/{{ fmtTokens(detailLog.totalOutTokens) }}↓ · {{ fmtDur(detailLog.totalDurationMs) }}</span>
-          </div>
-          <div class="d-block">
-            <div class="d-k">用户消息</div>
-            <pre class="d-pre">{{ detailLog.userMessage || '(空)' }}</pre>
-          </div>
-          <div class="d-block" v-if="detailLog.chain">
-            <div class="d-k">链路</div>
-            <pre class="d-pre">{{ detailLog.chain }}</pre>
-          </div>
-        </div>
+    <!-- 调用链详情抽屉: 一次请求的完整时间轴 —— 头部粘住关键指标, 主体按步骤顺序排列 -->
+    <el-drawer v-model="detailVisible" size="680px" :with-header="false" append-to-body class="chain-drawer">
+      <div v-loading="detailLoading" class="cd-wrap">
+        <template v-if="detailLog">
+          <!-- 粘性头部: 往下滚看细节时, 始终知道这是哪一次请求、结果如何 -->
+          <header class="cd-head">
+            <div class="cd-head-top">
+              <span class="cd-title">调用链详情</span>
+              <span class="cd-turn">#{{ detailLog.turnId }}</span>
+              <span class="cd-state" :class="endClass(detailLog.endSignal)">{{ endLabel(detailLog.endSignal) }}</span>
+              <button class="cd-close" @click="detailVisible = false" title="关闭">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              </button>
+            </div>
+            <div class="cd-metrics">
+              <span class="cd-metric"><b>{{ detailLog.llmCalls || 0 }}</b> 轮 LLM</span>
+              <span class="cd-metric"><b>{{ detailLog.toolSteps || 0 }}</b> 工具步</span>
+              <span class="cd-metric"><b>{{ fmtTokens(detailLog.totalInTokens) }}</b>↑ / <b>{{ fmtTokens(detailLog.totalOutTokens) }}</b>↓</span>
+              <span class="cd-metric"><b>{{ fmtDur(detailLog.totalDurationMs) || '—' }}</b></span>
+              <span class="cd-time">{{ formatTime(detailLog.createdAt) }}</span>
+            </div>
+            <div class="cd-msg">{{ detailLog.userMessage || '(空)' }}</div>
+            <div class="cd-sub">
+              <span v-if="detailLog.sessionId">会话 <code>{{ detailLog.sessionId }}</code></span>
+              <span v-if="detailLog.userId && authStore.isAdmin">用户 <code>{{ detailLog.userId }}</code></span>
+              <span v-if="detailLog.chain">链路 <code>{{ detailLog.chain }}</code></span>
+            </div>
+          </header>
 
-        <div class="d-section" v-for="(s, i) in detailLog.steps || []" :key="i">
-          <div class="d-title">{{ stepBadgeLabel(s, i) }}</div>
-          <div class="d-grid">
-            <template v-for="(e, ei) in stepEntries(s)" :key="ei">
-              <span class="d-k">{{ e.label }}</span>
-              <span class="d-v" :class="{ mono: e.mono }">{{ e.value }}</span>
-            </template>
-          </div>
-          <div class="d-block" v-for="(c, ci) in s.calls || []" :key="'c' + ci">
-            <div class="d-k">工具调用 {{ ci + 1 }}: {{ c.name }}</div>
-            <pre class="d-pre" v-if="c.args">参数: {{ c.args }}</pre>
-            <pre class="d-pre" v-if="c.resultPreview">结果摘要: {{ c.resultPreview }}</pre>
-          </div>
-          <!-- 本轮模型输出: 中断/出错时记录的是"已产出的部分", 是判断模型吐到哪一步的唯一现场 -->
-          <div class="d-block" v-if="s.outputPreview">
-            <div class="d-k">
-              本轮模型输出
-              <span v-if="s.outputChars" class="d-hint">· {{ fmtTokens(s.outputChars) }} 字</span>
-              <span v-if="s.outputChars > 500" class="d-hint">· 仅显示前 500 字, 完整正文见该会话消息</span>
-            </div>
-            <pre class="d-pre">{{ s.outputPreview }}</pre>
-          </div>
-          <details class="d-raw" v-if="s.systemPrompt">
-            <summary>本次提交的 System Prompt</summary>
-            <pre class="d-pre">{{ s.systemPrompt }}</pre>
-          </details>
-          <details class="d-raw" v-if="s.wireRequest">
-            <summary>实际发给上游的请求体（由 Provider 组装，权威口径）</summary>
-            <pre class="d-pre">{{ prettyJson(s.wireRequest) }}</pre>
-          </details>
-          <details class="d-raw" v-if="s.messages && s.messages.length">
-            <summary>本次提交的完整消息列表 ({{ s.messages.length }} 条)</summary>
-            <div v-for="(mm, mi) in s.messages" :key="mi" class="d-msg">
-              <div class="d-msg-head">
-                <span class="d-msg-role" :class="'role-' + mm.role">{{ mm.role }}</span>
-                <span class="d-msg-name" v-if="mm.name">{{ mm.name }}</span>
-                <span class="d-msg-name" v-if="mm.toolCallId">tool_call_id: {{ mm.toolCallId }}</span>
+          <!-- 时间轴: 每一步一个节点, 左侧竖线串起执行顺序 -->
+          <div class="cd-steps">
+            <div v-for="(s, i) in detailLog.steps || []" :key="i" class="cd-step">
+              <div class="cd-rail">
+                <span class="cd-dot" :class="stepClass(s.kind)"></span>
               </div>
-              <pre class="d-pre">{{ mm.content || '(空)' }}</pre>
-              <pre class="d-pre" v-if="mm.toolCalls">tool_calls: {{ mm.toolCalls }}</pre>
+              <div class="cd-card">
+                <div class="cd-card-head">
+                  <span class="step-badge" :class="stepClass(s.kind)">{{ stepLabel(s) }}</span>
+                  <span class="cd-seq">#{{ s.seq ?? i }}</span>
+                  <span class="cd-name">{{ s.purpose || s.tools || (s.kind === 'rag' ? '检索' : '') }}</span>
+                  <span class="cd-cost">{{ fmtDur(s.costMs) }}</span>
+                </div>
+
+                <div class="cd-fields">
+                  <template v-for="(e, ei) in stepEntries(s)" :key="ei">
+                    <span class="cf"><i>{{ e.label }}</i><b :class="{ mono: e.mono }">{{ e.value }}</b></span>
+                  </template>
+                </div>
+
+                <div v-for="(c, ci) in s.calls || []" :key="'c' + ci" class="cd-tool">
+                  <div class="cd-tool-head">工具调用 · {{ c.name }}</div>
+                  <pre v-if="c.args" class="cd-pre">{{ c.args }}</pre>
+                  <pre v-if="c.resultPreview" class="cd-pre">{{ c.resultPreview }}</pre>
+                </div>
+
+                <div v-if="s.outputPreview" class="cd-out">
+                  <div class="cd-out-head">
+                    本轮模型输出
+                    <span v-if="s.outputChars" class="cd-hint">{{ fmtTokens(s.outputChars) }} 字</span>
+                    <span v-if="s.outputChars > 500" class="cd-hint">仅前 500 字，完整正文见该会话消息</span>
+                  </div>
+                  <pre class="cd-pre">{{ s.outputPreview }}</pre>
+                </div>
+
+                <div class="cd-raws">
+                  <details v-if="s.systemPrompt" class="cd-raw">
+                    <summary>System Prompt</summary>
+                    <pre class="cd-pre">{{ s.systemPrompt }}</pre>
+                  </details>
+                  <details v-if="s.wireRequest" class="cd-raw">
+                    <summary>实际发给上游的请求体</summary>
+                    <pre class="cd-pre">{{ prettyJson(s.wireRequest) }}</pre>
+                  </details>
+                  <details v-if="s.messages && s.messages.length" class="cd-raw">
+                    <summary>完整消息列表 · {{ s.messages.length }} 条</summary>
+                    <div v-for="(mm, mi) in s.messages" :key="mi" class="cd-msg-item">
+                      <div class="cd-msg-head">
+                        <span class="cd-role" :class="'role-' + mm.role">{{ mm.role }}</span>
+                        <span v-if="mm.name" class="cd-msg-name">{{ mm.name }}</span>
+                        <span v-if="mm.toolCallId" class="cd-msg-name">tool_call_id: {{ mm.toolCallId }}</span>
+                      </div>
+                      <pre class="cd-pre">{{ mm.content || '(空)' }}</pre>
+                      <pre v-if="mm.toolCalls" class="cd-pre">{{ mm.toolCalls }}</pre>
+                    </div>
+                  </details>
+                  <details class="cd-raw">
+                    <summary>原始 JSON</summary>
+                    <pre class="cd-pre">{{ JSON.stringify(s, null, 2) }}</pre>
+                  </details>
+                </div>
+              </div>
             </div>
-          </details>
-          <details class="d-raw">
-            <summary>原始 JSON</summary>
-            <pre class="d-pre">{{ JSON.stringify(s, null, 2) }}</pre>
-          </details>
-        </div>
-      </template>
+            <div v-if="!(detailLog.steps || []).length" class="cd-empty">这次请求没有记录步骤明细</div>
+          </div>
+        </template>
       </div>
     </el-drawer>
   </div>
@@ -222,7 +243,6 @@ const expanded = ref(new Set())
 const detailVisible = ref(false)
 const detailLog = ref(null)
 const detailLoading = ref(false)
-const detailTitle = computed(() => detailLog.value ? `调用链详情 · #${detailLog.value.turnId}` : '调用链详情')
 
 async function openDetail(log) {
   detailLog.value = log
@@ -495,30 +515,132 @@ onMounted(() => {
 .empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 12.5px; line-height: 1.9; }
 .pager { margin-top: 16px; display: flex; justify-content: center; }
 
-/* ===== 详情抽屉 ===== */
-/* 详情内容容器: 给 v-loading 遮罩提供最小高度, 避免加载中抽屉塌陷 */
-.d-wrap { min-height: 240px; }
-.d-section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--dcdr-border); }
-.d-section:last-child { border-bottom: none; }
-.d-title { font-weight: 600; font-size: 13px; color: var(--dcdr-text-1); margin-bottom: 8px; }
-.d-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 12px; align-items: baseline; }
-.d-k { color: var(--dcdr-text-3); }
-.d-hint { color: var(--dcdr-text-3); font-weight: 400; margin-left: 2px; }
-.d-v { color: var(--dcdr-text-1); word-break: break-all; }
-.d-v.mono { font-family: var(--dcdr-font-mono); }
-.d-block { margin-top: 10px; }
-.d-pre { margin: 4px 0 0; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; font-family: var(--dcdr-font-mono); }
-.d-raw { margin-top: 10px; }
-.d-raw summary { font-size: 12px; color: var(--dcdr-accent-soft); cursor: pointer; user-select: none; }
+/* ===== 详情抽屉: 一次请求的时间轴 ===== */
+/* 抽屉 body 的 padding/overflow 在 styles/element.css 里处理:
+   el-drawer 会 teleport 到 body, 组件内的 :deep() 拿不到它自己的 body 元素 */
 
-/* 完整消息列表 */
-.d-msg { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 6px 10px; background: var(--dcdr-surface-faint); }
-.d-msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.d-msg-role { font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; border-radius: 4px; padding: 1px 6px; }
-.d-msg-role.role-system { color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 14%, transparent); }
-.d-msg-role.role-user { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
-.d-msg-role.role-assistant { color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash); }
-.d-msg-role.role-tool { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 14%, transparent); }
-.d-msg-name { font-size: 10.5px; color: var(--dcdr-text-3); font-family: var(--dcdr-font-mono); }
-.d-msg .d-pre { background: var(--dcdr-surface); max-height: 260px; }
+.cd-wrap { flex: 1; min-height: 0; height: 100%; display: flex; flex-direction: column; }
+
+/* 粘性头部: 一行身份 + 一行指标 + 用户消息 */
+.cd-head {
+  flex: none;
+  padding: 16px 20px 14px;
+  background: var(--dcdr-surface);
+  border-bottom: 1px solid var(--dcdr-border);
+}
+.cd-head-top { display: flex; align-items: center; gap: 10px; }
+.cd-title { font-size: 14.5px; font-weight: 600; color: var(--dcdr-text-1); }
+.cd-turn { font-family: var(--dcdr-font-mono); font-size: 11px; color: var(--dcdr-accent-soft); }
+.cd-state { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; }
+.cd-state.is-ok { color: var(--dcdr-success); }
+.cd-state.is-warn { color: var(--dcdr-warning); }
+.cd-state.is-err { color: var(--dcdr-danger); }
+.cd-close {
+  margin-left: auto; width: 26px; height: 26px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center; padding: 0;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--dcdr-text-3); cursor: pointer; transition: all 0.16s var(--dcdr-ease);
+}
+.cd-close svg { width: 13px; height: 13px; }
+.cd-close:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border); background: var(--dcdr-hover); }
+
+.cd-metrics { display: flex; align-items: baseline; gap: 14px; margin-top: 10px; flex-wrap: wrap; }
+.cd-metric { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
+.cd-metric b { font-size: 13px; font-weight: 600; color: var(--dcdr-text-1); margin-right: 2px; }
+.cd-time { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
+
+.cd-msg {
+  margin-top: 10px; font-size: 12.5px; line-height: 1.65; color: var(--dcdr-text-1);
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: 7px; padding: 8px 11px;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.cd-sub { display: flex; align-items: center; gap: 16px; margin-top: 9px; flex-wrap: wrap; font-size: 10.5px; color: var(--dcdr-text-3); }
+.cd-sub code { font-family: var(--dcdr-font-mono); color: var(--dcdr-text-2); margin-left: 4px; }
+
+/* 时间轴主体 */
+.cd-steps { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px 24px; }
+.cd-step { display: flex; gap: 12px; }
+.cd-rail { position: relative; flex: none; width: 10px; display: flex; justify-content: center; }
+/* 竖线连到下一个节点, 最后一个节点不画 */
+.cd-rail::before {
+  content: ''; position: absolute; top: 16px; bottom: -12px; left: 50%;
+  width: 1px; background: var(--dcdr-border); transform: translateX(-50%);
+}
+.cd-step:last-child .cd-rail::before { display: none; }
+.cd-dot {
+  position: relative; z-index: 1; width: 8px; height: 8px; margin-top: 12px;
+  border-radius: 50%; background: var(--dcdr-text-3);
+  box-shadow: 0 0 0 3px var(--dcdr-surface);
+}
+.cd-dot.step-llm { background: var(--dcdr-accent-soft); }
+.cd-dot.step-tool { background: var(--dcdr-success); }
+.cd-dot.step-rag { background: var(--dcdr-warning); }
+.cd-dot.step-memory { background: var(--dcdr-accent-2); }
+.cd-dot.step-route { background: var(--dcdr-text-3); }
+
+.cd-card {
+  flex: 1; min-width: 0; margin-bottom: 12px;
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: 9px; padding: 11px 13px;
+  transition: border-color 0.16s var(--dcdr-ease);
+}
+.cd-card:hover { border-color: var(--dcdr-border-strong); }
+.cd-card-head { display: flex; align-items: center; gap: 8px; }
+.cd-seq { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
+.cd-name { font-size: 12.5px; color: var(--dcdr-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-cost { margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-2); flex: none; }
+
+/* 字段: 行内紧凑排布, 一个字段一处, 不铺两列大网格 */
+.cd-fields { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 9px; }
+.cf { display: inline-flex; align-items: baseline; gap: 5px; }
+.cf i { font-style: normal; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; color: var(--dcdr-text-3); }
+.cf b { font-weight: 500; font-size: 11.5px; color: var(--dcdr-text-1); }
+.cf b.mono { font-family: var(--dcdr-font-mono); }
+
+.cd-tool { margin-top: 10px; }
+.cd-tool-head { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }
+
+.cd-out { margin-top: 10px; }
+.cd-out-head { display: flex; align-items: baseline; gap: 8px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }
+.cd-hint { font-family: var(--dcdr-font-sans); font-size: 10px; letter-spacing: 0; }
+
+.cd-pre {
+  margin: 0 0 4px; padding: 8px 10px;
+  background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 6px;
+  font-family: var(--dcdr-font-mono); font-size: 11px; line-height: 1.65;
+  color: var(--dcdr-text-2); white-space: pre-wrap; word-break: break-word;
+  max-height: 220px; overflow-y: auto;
+}
+
+/* 折叠区: 统一去掉浏览器默认三角, 用等宽标签 + 前后箭头 */
+.cd-raws { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.cd-raw { border-top: 1px dashed var(--dcdr-border); padding-top: 6px; }
+.cd-raw > summary {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px;
+  color: var(--dcdr-text-3); cursor: pointer; user-select: none; list-style: none;
+  padding: 3px 0; transition: color 0.16s var(--dcdr-ease);
+}
+.cd-raw > summary::-webkit-details-marker { display: none; }
+.cd-raw > summary::before {
+  content: '▸'; font-size: 9px; color: var(--dcdr-text-3);
+  transition: transform 0.16s var(--dcdr-ease);
+}
+.cd-raw[open] > summary::before { transform: rotate(90deg); }
+.cd-raw > summary:hover { color: var(--dcdr-text-1); }
+.cd-raw > summary:hover::before { color: var(--dcdr-accent-soft); }
+.cd-raw .cd-pre { margin-top: 4px; }
+
+.cd-msg-item { margin-top: 6px; }
+.cd-msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.cd-role { font-family: var(--dcdr-font-mono); font-size: 9px; letter-spacing: 0.4px; border-radius: 3px; padding: 1px 5px; }
+.cd-role.role-system { color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 14%, transparent); }
+.cd-role.role-user { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
+.cd-role.role-assistant { color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash); }
+.cd-role.role-tool { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 14%, transparent); }
+.cd-msg-name { font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-text-3); }
+
+.cd-empty { padding: 40px 0; text-align: center; font-size: 12.5px; color: var(--dcdr-text-3); }
+
 </style>
