@@ -92,22 +92,12 @@
               <span class="stat-label">Token 用量<em v-if="stats.sampleSize">（近 {{ stats.sampleSize }} 次）</em></span>
               <span class="stat-value">{{ stats.tokens || '—' }}</span>
             </div>
+            <div class="stat-row">
+              <span class="stat-label">最近一次调用</span>
+              <span class="stat-value">{{ stats.lastCallAt ? relTime(stats.lastCallAt) : '—' }}</span>
+            </div>
           </div>
         </aside>
-      </div>
-
-      <!-- 最近调用 -->
-      <div class="recent">
-        <div class="recent-head">最近调用 <span class="recent-sub">LLM 调用链日志 · 仅元数据，不含对话正文</span></div>
-        <div v-if="recentLogs.length" class="recent-list">
-          <div v-for="l in recentLogs" :key="l.id" class="recent-row">
-            <span class="recent-time">{{ fmtTime(l.createdAt) }}</span>
-            <span class="recent-msg" :title="l.userMessage">{{ l.userMessage || '—' }}</span>
-            <span class="recent-signal" :class="signalClass(l.endSignal)">{{ l.endSignal || '—' }}</span>
-            <span class="recent-dur">{{ fmtMs(l.totalDurationMs) }}</span>
-          </div>
-        </div>
-        <div v-else class="rail-empty">暂无调用记录</div>
       </div>
     </template>
 
@@ -345,8 +335,7 @@ const detailTitle = computed(() => currentAgent.value ? `专家详情 · ${curre
 
 // 右栏: 技能与运行概览(全部取真实接口, 没有数据就显示 —)
 const skills = ref([])
-const recentLogs = ref([])
-const stats = reactive({ totalTurns: null, llmCalls: null, tokens: '', sampleSize: 0 })
+const stats = reactive({ totalTurns: null, llmCalls: null, tokens: '', sampleSize: 0, lastCallAt: null })
 
 // 对话框表单
 const dialogVisible = ref(false)
@@ -420,20 +409,6 @@ function relTime(t) {
   return new Date(t).toLocaleDateString('zh-CN')
 }
 
-/** 结束信号配色: SUCCESS 正常 / RETRY 重试 / 其余按失败处理 */
-function signalClass(sig) {
-  const s = (sig || '').toUpperCase()
-  if (s.includes('SUCCESS')) return ''
-  if (s.includes('RETRY')) return 'retry'
-  return 'fail'
-}
-
-function fmtMs(ms) {
-  if (ms == null) return '—'
-  if (ms < 1000) return ms + 'ms'
-  return (ms / 1000).toFixed(1) + 's'
-}
-
 function fmtTokens(n) {
   if (n >= 1000) return (n / 1000).toFixed(1) + 'k'
   return String(n)
@@ -499,17 +474,18 @@ async function loadSkills() {
 }
 
 /**
- * 运行概览 + 最近调用: 一次拉 20 条调用链日志同时喂两处。
+ * 运行概览: 拉 20 条调用链日志做样本统计。
  * 累计对话取 totalElements(全量); LLM 调用数与 Token 只能按这 20 条样本统计,
  * 所以标签里写清"近 N 次" —— 不拿样本量冒充全量。
+ * 明细不在这里展开: 完整调用链在运维台的「调用链」页, 专家页只留聚合指标。
  */
 async function loadUsage() {
   try {
     const page = await getLlmCallLogs({ page: 0, size: 20 })
     const list = page?.content || []
-    recentLogs.value = list
     stats.totalTurns = page?.totalElements ?? null
     stats.sampleSize = list.length
+    stats.lastCallAt = list.length ? list[0].createdAt : null
     let calls = 0
     let tokens = 0
     for (const l of list) {
@@ -857,20 +833,6 @@ onMounted(() => {
 .stat-label { font-size: 12.5px; color: var(--dcdr-text-3); }
 .stat-label em { font-style: normal; font-size: 10.5px; opacity: 0.85; }
 .stat-value { font-family: var(--dcdr-font-mono); font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
-
-/* ===== 最近调用 ===== */
-.recent { flex: none; margin: 12px 20px 16px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner); padding: 13px 16px; }
-.recent-head { display: flex; align-items: baseline; gap: 10px; font-size: 12.5px; font-weight: 600; color: var(--dcdr-text-2); margin-bottom: 6px; }
-.recent-sub { font-weight: 400; font-size: 11px; color: var(--dcdr-text-3); }
-.recent-list { display: flex; flex-direction: column; }
-.recent-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) 96px 64px; gap: 12px; align-items: center; padding: 7px 0; border-bottom: 1px dashed var(--dcdr-border); font-size: 12px; }
-.recent-row:last-child { border-bottom: none; }
-.recent-time { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
-.recent-msg { color: var(--dcdr-text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent-signal { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.5px; color: var(--dcdr-success); }
-.recent-signal.retry { color: var(--dcdr-warning); }
-.recent-signal.fail { color: var(--dcdr-danger); }
-.recent-dur { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); text-align: right; }
 
 /* ===== 模板库 ===== */
 .template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; padding: 4px 0 16px; align-content: start; }
