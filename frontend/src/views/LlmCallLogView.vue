@@ -1,82 +1,109 @@
 <template>
   <div class="llm-log-mode">
-    <div class="llm-log-header">
-      <h2>调用链日志</h2>
-      <p class="subtitle">每次对话请求的完整 LLM 调用链(路由判断 / 各生成轮 / 工具步骤 / token / 耗时), 独立于对话内容归档</p>
-    </div>
-
-    <div class="toolbar">
-      <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
-      <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:160px" @change="loadLogs">
-        <!-- 取值必须非空: 空串会被 el-select 当作"未选择", 于是默认态下输入框什么都不显示,
-             用户看不出当前查的是谁(而"全部用户"取值是 all, 标签能正常渲染 —— 两个选项表现不一致)。
-             默认态本身就是"仅自己", 所以它该是一个真实取值而不是"没有值" -->
-        <el-option label="仅自己" value="self" />
-        <el-option label="全部用户" value="all" />
-      </el-select>
-      <div class="stat-block" v-if="logs.length">
-        <span class="stat-item">共 {{ total }} 条</span>
-        <span class="stat-item">LLM 平均 {{ avgLlmCalls }} 次/条</span>
+    <!-- 页头: 与外层 hub 页签呼应, 不重复"运维台"字样, 只说明这一页看什么 -->
+    <div class="log-toolbar">
+      <div class="tb-title">
+        调用链
+        <span class="tb-sub">每次请求的完整链路 · 路由判断 / 生成轮 / 工具步骤 / token / 耗时</span>
+      </div>
+      <div class="tb-actions">
+        <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:132px" @change="loadLogs">
+          <!-- 取值必须非空: 空串会被 el-select 当作"未选择", 于是默认态下输入框什么都不显示,
+               用户看不出当前查的是谁(而"全部用户"取值是 all, 标签能正常渲染 —— 两个选项表现不一致)。
+               默认态本身就是"仅自己", 所以它该是一个真实取值而不是"没有值" -->
+          <el-option label="仅自己" value="self" />
+          <el-option label="全部用户" value="all" />
+        </el-select>
+        <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
       </div>
     </div>
 
-    <div class="log-list" v-loading="loading">
-      <div v-for="log in logs" :key="log.id" class="log-card">
-        <div class="log-head">
-          <el-tag size="small" :type="endTag(log.endSignal)">{{ endLabel(log.endSignal) }}</el-tag>
-          <span class="log-turn" title="本轮追踪短 ID">#{{ log.turnId }}</span>
-          <span v-if="log.userId && authStore.isAdmin" class="log-user">{{ shortId(log.userId) }}</span>
-          <span class="log-llm">🤖 {{ log.llmCalls || 0 }} 次</span>
-          <span v-if="log.toolSteps" class="log-tool">🔧 {{ log.toolSteps }} 步</span>
-          <span class="log-tokens">🪙 {{ fmtTokens(log.totalInTokens) }}↑ / {{ fmtTokens(log.totalOutTokens) }}↓</span>
-          <span class="log-time">{{ formatTime(log.createdAt) }}</span>
+    <!-- 指标条: 全部由当前页样本算出, 标签上写清"本页", 不冒充全量 -->
+    <div class="metric-row" v-if="logs.length">
+      <div class="metric">
+        <span class="m-label">总记录</span>
+        <span class="m-value">{{ total }}</span>
+      </div>
+      <div class="metric">
+        <span class="m-label">本页平均轮次</span>
+        <span class="m-value">{{ avgLlmCalls }}</span>
+      </div>
+      <div class="metric">
+        <span class="m-label">本页平均耗时</span>
+        <span class="m-value">{{ avgDuration }}</span>
+      </div>
+      <div class="metric">
+        <span class="m-label">本页工具步</span>
+        <span class="m-value">{{ totalToolSteps }}</span>
+      </div>
+      <div class="metric">
+        <span class="m-label">本页异常</span>
+        <span class="m-value" :class="{ bad: abnormalCount > 0 }">{{ abnormalCount }}</span>
+      </div>
+    </div>
+
+    <!-- 行式列表: 一行一条调用链, 点行在原地展开步骤明细(不跳页、不弹窗) -->
+    <div class="log-table" v-loading="loading">
+      <div class="lt-head">
+        <span>时间</span>
+        <span>追踪</span>
+        <span>用户消息</span>
+        <span class="ta-r">轮次</span>
+        <span class="ta-r">工具</span>
+        <span class="ta-r">Token ↑ / ↓</span>
+        <span class="ta-r">耗时</span>
+        <span class="ta-r">状态</span>
+      </div>
+
+      <template v-for="log in logs" :key="log.id">
+        <div class="lt-row" :class="{ open: expanded.has(log.id) }" @click="toggle(log.id)">
+          <span class="lt-time">{{ formatTime(log.createdAt) }}</span>
+          <span class="lt-turn">
+            <svg class="lt-caret" :class="{ open: expanded.has(log.id) }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
+            #{{ log.turnId }}
+          </span>
+          <span class="lt-msg" :title="log.userMessage">{{ log.userMessage || '—' }}</span>
+          <span class="lt-num">{{ log.llmCalls || 0 }}</span>
+          <span class="lt-num">{{ log.toolSteps || 0 }}</span>
+          <span class="lt-num">
+            {{ fmtTokens(log.totalInTokens) }}<i class="lt-sep">/</i>{{ fmtTokens(log.totalOutTokens) }}
+          </span>
+          <span class="lt-num">{{ fmtDur(log.totalDurationMs) || '—' }}</span>
+          <span class="lt-state" :class="endClass(log.endSignal)">{{ endLabel(log.endSignal) }}</span>
         </div>
-        <div class="log-message">
-          <span class="rl">用户消息:</span> {{ log.userMessage }}
-        </div>
-        <div class="log-chain" v-if="log.chain">
-          <span class="rl">链路:</span> {{ log.chain }}
-          <span class="log-dur">⏱ {{ fmtDur(log.totalDurationMs) }}</span>
-        </div>
-        <!-- 模型输出: 取最后一轮 LLM 的本轮输出(即该次请求的最终回答), 默认可见, 无需展开步骤 -->
-        <div class="log-output" v-if="finalOutput(log)">
-          <span class="rl">模型输出:</span> {{ finalOutput(log) }}
-        </div>
-        <div v-if="log.steps && log.steps.length" class="log-steps-wrap">
-          <button class="steps-toggle" @click="toggle(log.id)">
-            <span>步骤明细 ({{ log.steps.length }})</span>
-            <span class="caret">{{ expanded.has(log.id) ? '▲' : '▼' }}</span>
-          </button>
-          <div v-if="expanded.has(log.id)" class="steps-list">
-            <div v-for="(s, i) in log.steps" :key="i" class="step-item">
-              <div class="step-head">
-                <span class="step-badge" :class="stepClass(s.kind)">
-                  {{ stepLabel(s) }}
-                </span>
-                <!-- 检索来源: 补这个字段之前, "这次检索是谁发起的"只能靠步骤位置反推 ——
-                     看到 rag 步骤却在工具调用里找不到 knowledge_base_search 时尤其难判断 -->
-                <span v-if="s.ragSource" class="step-src">
-                  {{ RAG_SOURCE_LABELS[s.ragSource] || s.ragSource }}
-                </span>
-                <span v-if="s.model" class="step-model">{{ s.model }}</span>
-                <span v-if="s.purpose" class="step-purpose">{{ s.purpose }}</span>
-                <span v-if="s.query" class="step-purpose" :title="s.query">{{ s.query }}</span>
-                <span v-if="stepTokens(s)" class="step-tokens">🪙 {{ stepTokens(s) }}</span>
-                <span v-if="s.hits !== undefined && s.hits !== null" class="step-tokens">命中 {{ s.hits }} 条</span>
-                <span v-if="s.kbCount !== undefined && s.kbCount !== null" class="step-tokens">· {{ s.kbCount }} 库</span>
-                <span v-if="s.costMs !== undefined && s.costMs !== null" class="step-cost">{{ fmtDur(s.costMs) }}</span>
-                <span v-if="s.outputChars" class="step-tokens" title="本轮模型输出字符数">📝 {{ fmtTokens(s.outputChars) }} 字</span>
-                <span v-if="s.interrupted" class="step-interrupted">已中断</span>
-              </div>
-              <!-- 本轮输出预览(列表接口已返回, 截断 500 字符): 多轮时可逐轮对照 -->
-              <div v-if="s.outputPreview" class="step-output">{{ s.outputPreview }}</div>
+
+        <div v-if="expanded.has(log.id)" class="lt-detail">
+          <div class="ld-row" v-if="log.chain">
+            <span class="ld-k">链路</span>
+            <code class="ld-chain">{{ log.chain }}</code>
+          </div>
+          <div class="ld-row" v-if="finalOutput(log)">
+            <span class="ld-k">模型输出</span>
+            <p class="ld-out">{{ finalOutput(log) }}</p>
+          </div>
+
+          <div class="ld-steps" v-if="log.steps && log.steps.length">
+            <div v-for="(s, i) in log.steps" :key="i" class="ld-step">
+              <span class="step-badge" :class="stepClass(s.kind)">{{ stepLabel(s) }}</span>
+              <span class="step-model" v-if="s.model">{{ s.model }}</span>
+              <span class="step-purpose" v-if="s.purpose">{{ s.purpose }}</span>
+              <span class="step-src" v-if="s.ragSource">{{ s.ragSourceLabel || s.ragSource }}</span>
+              <span class="step-meta" v-if="s.query" :title="s.query">{{ s.query }}</span>
+              <span class="step-meta" v-if="s.hits != null">命中 {{ s.hits }}</span>
+              <span class="step-meta" v-if="s.kbCount != null">{{ s.kbCount }} 库</span>
+              <span class="step-meta" v-if="s.outputChars">输出 {{ fmtTokens(s.outputChars) }} 字</span>
+              <span class="step-cost" v-if="s.costMs != null">{{ fmtDur(s.costMs) }}</span>
+              <span class="step-interrupted" v-if="s.interrupted">已中断</span>
             </div>
           </div>
+
+          <div class="ld-foot">
+            <span class="ld-user" v-if="log.userId && authStore.isAdmin">用户 {{ shortId(log.userId) }}</span>
+            <button v-if="authStore.isAdmin" class="ld-detail-btn" @click.stop="openDetail(log)">查看完整详情</button>
+          </div>
         </div>
-        <div class="card-foot" v-if="authStore.isAdmin">
-          <button class="detail-toggle" @click="openDetail(log)">🔍 查看详情</button>
-        </div>
-      </div>
+      </template>
+
       <div v-if="!loading && !logs.length" class="empty-tip">
         暂无调用链日志<br />
         在对话页面任意提问一次即可生成一条完整调用链记录
@@ -97,13 +124,13 @@
           <div class="d-title">基本信息</div>
           <div class="d-grid">
             <span class="d-k">追踪 ID</span><span class="d-v mono">{{ detailLog.turnId }}</span>
-            <span class="d-k">结束信号</span><span class="d-v"><el-tag size="small" :type="endTag(detailLog.endSignal)">{{ endLabel(detailLog.endSignal) }}</el-tag></span>
+            <span class="d-k">结束信号</span><span class="d-v">{{ endLabel(detailLog.endSignal) }}</span>
             <span class="d-k">会话 ID</span><span class="d-v mono">{{ detailLog.sessionId || '-' }}</span>
             <template v-if="detailLog.userId && authStore.isAdmin">
               <span class="d-k">用户</span><span class="d-v mono">{{ detailLog.userId }}</span>
             </template>
             <span class="d-k">时间</span><span class="d-v">{{ formatTime(detailLog.createdAt) }}</span>
-            <span class="d-k">汇总</span><span class="d-v">🤖 {{ detailLog.llmCalls || 0 }} 次 · 🔧 {{ detailLog.toolSteps || 0 }} 步 · 🪙 {{ fmtTokens(detailLog.totalInTokens) }}↑/{{ fmtTokens(detailLog.totalOutTokens) }}↓ · ⏱ {{ fmtDur(detailLog.totalDurationMs) }}</span>
+            <span class="d-k">汇总</span><span class="d-v">{{ detailLog.llmCalls || 0 }} 轮 · {{ detailLog.toolSteps || 0 }} 工具步 · {{ fmtTokens(detailLog.totalInTokens) }}↑/{{ fmtTokens(detailLog.totalOutTokens) }}↓ · {{ fmtDur(detailLog.totalDurationMs) }}</span>
           </div>
           <div class="d-block">
             <div class="d-k">用户消息</div>
@@ -281,6 +308,23 @@ const avgLlmCalls = computed(() => {
   return (sum / logs.value.length).toFixed(1)
 })
 
+/** 当前页平均总耗时(样本口径, 与指标条标签一致) */
+const avgDuration = computed(() => {
+  const withDur = logs.value.filter((l) => l.totalDurationMs != null)
+  if (!withDur.length) return '—'
+  const sum = withDur.reduce((a, l) => a + Number(l.totalDurationMs || 0), 0)
+  return fmtDur(Math.round(sum / withDur.length))
+})
+
+const totalToolSteps = computed(() =>
+  logs.value.reduce((a, l) => a + Number(l.toolSteps || 0), 0)
+)
+
+/** 非正常结束(错误/取消)的条数 */
+const abnormalCount = computed(() =>
+  logs.value.filter((l) => l.endSignal && l.endSignal !== 'ON_COMPLETE').length
+)
+
 function toggle(id) {
   const next = new Set(expanded.value)
   next.has(id) ? next.delete(id) : next.add(id)
@@ -290,29 +334,26 @@ function toggle(id) {
 function endLabel(s) {
   return ({ ON_COMPLETE: '完成', ON_ERROR: '错误', ON_CANCEL: '取消' })[s] || s || '-'
 }
-function endTag(s) {
-  if (s === 'ON_ERROR') return 'danger'
-  if (s === 'ON_CANCEL') return 'warning'
-  return 'success'
+function endClass(s) {
+  if (s === 'ON_ERROR') return 'is-err'
+  if (s === 'ON_CANCEL') return 'is-warn'
+  return 'is-ok'
 }
+/** 步骤类型短标签(纯文字, 不用 emoji: 等宽字体下 emoji 宽度不稳, 表格会抖) */
 function stepLabel(s) {
-  if (s.kind === 'rag') return '📚 RAG'
-  // 记忆召回此前完全没有留痕, 现在与 RAG 并列可见 —— 两者是同一层"背景信息"的两个来源
-  if (s.kind === 'memory') return '🧠 记忆'
-  return s.kind === 'tool' ? '🔧' : '🤖'
+  if (s.kind === 'rag') return 'RAG'
+  if (s.kind === 'memory') return '记忆'
+  if (s.kind === 'route') return '路由'
+  return s.kind === 'tool' ? '工具' : 'LLM'
 }
 function stepClass(kind) {
   if (kind === 'rag') return 'step-rag'
   if (kind === 'memory') return 'step-memory'
+  if (kind === 'route') return 'step-route'
   return kind === 'tool' ? 'step-tool' : 'step-llm'
 }
-function stepTokens(s) {
-  const i = s.inTokens, o = s.outTokens
-  if (i == null && o == null) return ''
-  return `${fmtTokens(i)}↑ / ${fmtTokens(o)}↓`
-}
 function fmtTokens(n) {
-  if (n == null) return '0'
+  if (n == null) return '-'
   return Number(n).toLocaleString()
 }
 function fmtDur(ms) {
@@ -323,7 +364,11 @@ function fmtDur(ms) {
 }
 function formatTime(t) {
   if (!t) return ''
-  try { return new Date(t).toLocaleString('zh-CN') } catch { return t }
+  try {
+    const d = new Date(t)
+    const p = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  } catch { return t }
 }
 function shortId(id) {
   if (!id) return ''
@@ -353,60 +398,106 @@ onMounted(() => {
 
 <style scoped>
 /* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
-.llm-log-mode { flex: 1; overflow-y: auto; padding: 20px 24px; max-width: 960px; margin: 0 auto; }
-.llm-log-header { margin-bottom: 16px; }
-.llm-log-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
-.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); }
+.llm-log-mode { flex: 1; overflow-y: auto; padding: 18px 24px 24px; }
 
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
-.stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--dcdr-text-3); }
+/* ===== 页头 ===== */
+.log-toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.tb-title { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.tb-sub { font-size: 11.5px; font-weight: 400; color: var(--dcdr-text-3); }
+.tb-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
-.log-list { display: flex; flex-direction: column; gap: 10px; min-height: 200px; }
-.log-card { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; transition: box-shadow .2s; }
-.log-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
-.log-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-.log-turn { font-size: 12px; font-weight: 600; color: var(--dcdr-accent); font-family: monospace; }
-.log-user { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
-.log-llm, .log-tool { font-size: 12px; color: var(--dcdr-text-2); }
-.log-tokens { font-size: 11px; color: var(--dcdr-text-3); }
-.log-time { font-size: 11px; color: var(--dcdr-text-3); margin-left: auto; }
-.log-message { font-size: 13px; color: var(--dcdr-text-1); line-height: 1.6; word-break: break-word; }
-.log-message .rl, .log-chain .rl { color: var(--dcdr-text-3); font-size: 12px; }
-.log-chain { font-size: 12px; color: var(--dcdr-text-2); margin-top: 6px; line-height: 1.6; word-break: break-word; }
-.log-chain .log-dur { color: var(--dcdr-text-3); margin-left: 6px; }
-/* 模型输出预览: 默认最多 4 行, 超出省略(正文见详情抽屉), 避免长回答撑爆卡片 */
-.log-output { font-size: 13px; color: var(--dcdr-text-1); margin-top: 6px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-.log-output .rl { color: var(--dcdr-text-3); font-size: 12px; }
+/* ===== 指标条 ===== */
+.metric-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.metric {
+  display: flex; flex-direction: column-reverse; gap: 6px;
+  padding: 11px 13px; background: var(--dcdr-surface-faint);
+  border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner);
+}
+.m-label { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 1px; color: var(--dcdr-text-3); }
+.m-value { font-family: var(--dcdr-font-mono); font-size: 21px; font-weight: 600; color: var(--dcdr-text-1); line-height: 1.1; }
+.m-value.bad { color: var(--dcdr-danger); }
 
-.log-steps-wrap { margin-top: 8px; }
-.steps-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dcdr-accent); background: var(--dcdr-bg-subtle); border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.steps-toggle .caret { font-size: 10px; }
-.steps-list { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
-.step-item { border: 1px solid var(--dcdr-border); border-radius: 6px; background: var(--dcdr-bg-subtle); padding: 6px 10px; }
-.step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.step-badge { font-size: 12px; font-weight: 600; border-radius: 6px; padding: 2px 8px; }
-.step-llm { color: var(--dcdr-accent); background: var(--dcdr-bg-subtle); }
-.step-tool { color: #059669; background: var(--dcdr-bg-subtle); }
-.step-rag { color: #b45309; background: var(--dcdr-bg-subtle); }
-/* 检索来源标签: 与 step-memory 同色系(都属"背景信息"这一类), 但要能一眼分出来 */
-.step-src { font-size: 11px; color: #7c3aed; background: var(--dcdr-accent-wash); border-radius: 4px; padding: 0 5px; }
-.step-memory { color: #7c3aed; background: var(--dcdr-accent-wash); }
-.step-model, .step-purpose { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
-.step-purpose { color: var(--dcdr-text-2); }
-.step-tokens, .step-cost { font-size: 11px; color: var(--dcdr-text-3); }
-.step-interrupted { font-size: 11px; color: var(--dcdr-warning); }
-/* 步骤内本轮输出预览: 最多 3 行, 多轮时可逐轮对照 */
-.step-output { font-size: 12px; color: var(--dcdr-text-2); margin-top: 4px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+/* ===== 行式列表 ===== */
+.log-table {
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-inner); overflow: hidden; min-height: 180px;
+}
+.lt-head,
+.lt-row {
+  display: grid;
+  grid-template-columns: 116px 104px minmax(0, 1fr) 48px 48px 116px 62px 62px;
+  gap: 12px; align-items: center; padding: 0 14px;
+}
+.lt-head {
+  height: 34px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.6px;
+  color: var(--dcdr-text-3);
+  border-bottom: 1px solid var(--dcdr-border); background: var(--dcdr-bg-subtle);
+}
+.lt-row {
+  height: 40px; font-size: 12.5px; cursor: pointer;
+  border-bottom: 1px solid var(--dcdr-border);
+  transition: background-color 0.14s var(--dcdr-ease);
+}
+.lt-row:hover { background: var(--dcdr-hover); }
+/* 展开态只用中性提亮 + 左侧强调线: 整行涂强调色会把下面紧邻的展开区压暗, 层级反而乱 */
+.lt-row.open {
+  background: var(--dcdr-hover);
+  border-bottom-color: transparent;
+  box-shadow: inset 2px 0 0 var(--dcdr-accent-line);
+}
+.lt-time { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-3); }
+.lt-turn { display: flex; align-items: center; gap: 4px; font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-accent-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lt-caret { width: 10px; height: 10px; flex: none; color: var(--dcdr-text-3); transition: transform 0.16s var(--dcdr-ease); }
+.lt-caret.open { transform: rotate(90deg); color: var(--dcdr-accent-soft); }
+.lt-msg { color: var(--dcdr-text-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lt-num { font-family: var(--dcdr-font-mono); font-size: 11px; color: var(--dcdr-text-2); text-align: right; white-space: nowrap; }
+.lt-sep { font-style: normal; color: var(--dcdr-text-3); margin: 0 2px; }
+.lt-state { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; text-align: right; }
+.lt-state.is-ok { color: var(--dcdr-success); }
+.lt-state.is-warn { color: var(--dcdr-warning); }
+.lt-state.is-err { color: var(--dcdr-danger); }
 
-.empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 13px; line-height: 1.8; }
-.pager { margin-top: 20px; display: flex; justify-content: center; }
+/* ===== 展开区 ===== */
+.lt-detail {
+  padding: 12px 14px 14px 14px; border-bottom: 1px solid var(--dcdr-border);
+  background: var(--dcdr-surface); display: flex; flex-direction: column; gap: 9px;
+}
+.ld-row { display: flex; gap: 10px; align-items: baseline; }
+.ld-k { flex: none; width: 56px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.5px; color: var(--dcdr-text-3); }
+.ld-chain { font-family: var(--dcdr-font-mono); font-size: 11px; color: var(--dcdr-text-2); }
+.ld-out {
+  flex: 1; min-width: 0; font-size: 12.5px; color: var(--dcdr-text-1); line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ld-steps { display: flex; flex-direction: column; gap: 5px; margin-top: 2px; }
+.ld-step { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 9px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: 6px; }
+.step-badge { font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; border-radius: 4px; padding: 1px 6px; }
+.step-llm { color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash); }
+.step-route { color: var(--dcdr-text-2); background: var(--dcdr-hover); }
+.step-tool { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
+.step-rag { color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 14%, transparent); }
+.step-memory { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 14%, transparent); }
+.step-src { font-size: 10.5px; color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 12%, transparent); border-radius: 4px; padding: 0 5px; }
+.step-model { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-2); }
+.step-purpose { font-size: 11.5px; color: var(--dcdr-text-2); }
+.step-meta, .step-cost { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
+.step-interrupted { font-size: 10.5px; color: var(--dcdr-warning); }
+.ld-foot { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+.ld-user { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
+.ld-detail-btn {
+  margin-left: auto; height: 26px; padding: 0 12px; border-radius: 6px; cursor: pointer;
+  font-size: 11.5px; color: var(--dcdr-accent-soft);
+  background: var(--dcdr-accent-wash); border: 1px solid var(--dcdr-accent-line);
+  transition: border-color 0.15s var(--dcdr-ease);
+}
+.ld-detail-btn:hover { border-color: var(--dcdr-accent); }
+
+.empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 12.5px; line-height: 1.9; }
+.pager { margin-top: 16px; display: flex; justify-content: center; }
 
 /* ===== 详情抽屉 ===== */
 /* 详情内容容器: 给 v-loading 遮罩提供最小高度, 避免加载中抽屉塌陷 */
 .d-wrap { min-height: 240px; }
-.card-foot { margin-top: 8px; }
-.detail-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dcdr-accent); background: var(--dcdr-bg-subtle); border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.detail-toggle:hover { background: var(--dcdr-bg-subtle); }
 .d-section { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--dcdr-border); }
 .d-section:last-child { border-bottom: none; }
 .d-title { font-weight: 600; font-size: 13px; color: var(--dcdr-text-1); margin-bottom: 8px; }
@@ -414,20 +505,20 @@ onMounted(() => {
 .d-k { color: var(--dcdr-text-3); }
 .d-hint { color: var(--dcdr-text-3); font-weight: 400; margin-left: 2px; }
 .d-v { color: var(--dcdr-text-1); word-break: break-all; }
-.d-v.mono { font-family: monospace; }
+.d-v.mono { font-family: var(--dcdr-font-mono); }
 .d-block { margin-top: 10px; }
-.d-pre { margin: 4px 0 0; background: var(--dcdr-bg-subtle); border-radius: 6px; padding: 8px 10px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; }
+.d-pre { margin: 4px 0 0; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 8px 10px; font-size: 11.5px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow-y: auto; font-family: var(--dcdr-font-mono); }
 .d-raw { margin-top: 10px; }
-.d-raw summary { font-size: 12px; color: var(--dcdr-accent); cursor: pointer; user-select: none; }
+.d-raw summary { font-size: 12px; color: var(--dcdr-accent-soft); cursor: pointer; user-select: none; }
 
 /* 完整消息列表 */
-.d-msg { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 6px 10px; background: var(--dcdr-bg-subtle); }
+.d-msg { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 6px 10px; background: var(--dcdr-surface-faint); }
 .d-msg-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.d-msg-role { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 1px 6px; }
-.d-msg-role.role-system { color: #b45309; background: var(--dcdr-bg-subtle); }
-.d-msg-role.role-user { color: #059669; background: var(--dcdr-bg-subtle); }
-.d-msg-role.role-assistant { color: var(--dcdr-accent); background: var(--dcdr-bg-subtle); }
-.d-msg-role.role-tool { color: #9333ea; background: var(--dcdr-accent-wash); }
-.d-msg-name { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
-.d-msg .d-pre { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); max-height: 260px; }
+.d-msg-role { font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; border-radius: 4px; padding: 1px 6px; }
+.d-msg-role.role-system { color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 14%, transparent); }
+.d-msg-role.role-user { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
+.d-msg-role.role-assistant { color: var(--dcdr-accent-soft); background: var(--dcdr-accent-wash); }
+.d-msg-role.role-tool { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 14%, transparent); }
+.d-msg-name { font-size: 10.5px; color: var(--dcdr-text-3); font-family: var(--dcdr-font-mono); }
+.d-msg .d-pre { background: var(--dcdr-surface); max-height: 260px; }
 </style>
