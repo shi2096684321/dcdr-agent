@@ -31,9 +31,10 @@
         <el-option label="从未命中" value="never" />
         <el-option label="命中过" value="hit" />
       </el-select>
-      <el-button size="small" @click="load" :loading="loading">刷新</el-button>
-      <el-button size="small" type="danger" plain :disabled="!memories.length" @click="clearAll">清空全部</el-button>
-
+      <div class="tb-right">
+        <el-button size="small" @click="load" :loading="loading">刷新</el-button>
+        <el-button size="small" type="danger" :disabled="!memories.length" @click="clearAll">清空全部</el-button>
+      </div>
     </div>
 
     <!-- 策略说明由后端按实际参数生成(常驻类型 / 条数上限 / 重要度阈值 / 预算裁剪),
@@ -51,7 +52,7 @@
             {{ m.scope === 'AGENT' ? '专家级记忆' : (m.scopeLabel || m.scope) }}
           </el-tag>
           <span v-if="m.agentName || m.agentId" class="mc-agent">@{{ m.agentName || m.agentId }}</span>
-          <el-tag v-if="m.pinned" size="small" type="danger" effect="dark">常驻</el-tag>
+          <span v-if="m.pinned" class="mc-flag pinned" title="常驻记忆: 不参与重要度裁剪, 始终注入">常驻</span>
           <el-tag v-if="m.status !== 'ACTIVE'" size="small" type="info">{{ m.statusLabel || m.status }}</el-tag>
           <!-- 写入来源: "我要求记的" 与 "AI 自己提炼的" 必须能分辨 —— 否则用户既看不出
                自己那句"记住 X"到底记下没有, 也会对着一条陌生记忆发懵。
@@ -473,14 +474,15 @@ onMounted(() => {
 <style scoped>
 /* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
 .memory-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 18px 24px 20px; }
-.memory-header { margin-bottom: 16px; }
-.memory-header h2 { margin: 0 0 4px; font-size: 20px; color: var(--dcdr-text-1); }
-.subtitle { margin: 0; font-size: 13px; color: var(--dcdr-text-3); line-height: 1.7; }
-/* 与知识库的选用指引: 视觉权重低于正文说明, 但常驻可见 —— "这条该放哪"的疑问随时会产生 */
-.scope-tip { margin: 8px 0 0; padding: 8px 12px; font-size: 12.5px; color: var(--dcdr-accent);
-  background: var(--dcdr-bg-subtle); border-radius: 8px; line-height: 1.7; }
+.memory-header { margin-bottom: 14px; }
+.memory-header h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
+.subtitle { margin: 0; font-size: 11.5px; color: var(--dcdr-text-3); line-height: 1.6; }
+/* 与知识库的选用指引: 常驻可见, 但只做一行小字, 不再用色块强调 —— 它解释的是边界, 不是告警 */
+.scope-tip { margin: 5px 0 0; padding: 0; font-size: 11.5px; color: var(--dcdr-text-3); background: none; line-height: 1.6; }
+.scope-tip b { color: var(--dcdr-text-2); font-weight: 500; }
 
-.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.tb-right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .stat-block { margin-left: auto; display: flex; gap: 14px; font-size: 12px; color: var(--dcdr-text-3); }
 .stat-item { white-space: nowrap; }
 /* 有"从未命中"的记忆时给个视觉提示 —— 它们是纯成本, 值得被注意到 */
@@ -529,7 +531,25 @@ onMounted(() => {
 .mc-content { font-size: 12.5px; color: var(--dcdr-text-1); line-height: 1.65; word-break: break-word; white-space: pre-wrap; }
 .mc-meta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 7px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.2px; color: var(--dcdr-text-3); }
 .mc-meta b { color: var(--dcdr-text-2); font-weight: 500; }
-.mc-ops { display: flex; gap: 4px; margin-top: 8px; }
+.mc-ops {
+  display: flex; align-items: center; gap: 2px; margin-top: 9px; padding-top: 8px;
+  border-top: 1px dashed var(--dcdr-border);
+}
+/* 全局把文字按钮压成了 0 内边距的纯文本, 卡片里需要一点点击热区, 但仍不抢正文注意力。
+   颜色必须显式声明: is-text 按钮继承的是 EP 的 regular 文字色, 深色主题下会偏暗。 */
+.mc-ops :deep(.el-button.is-text) {
+  height: 24px; padding: 0 8px; border-radius: 6px; font-size: 11.5px; font-weight: 400;
+  color: var(--dcdr-text-2);
+}
+.mc-ops :deep(.el-button.is-text:hover) { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
+.mc-ops :deep(.el-button.is-text.el-button--primary) { color: var(--dcdr-accent-soft); }
+.mc-ops :deep(.el-button.is-text.el-button--success) { color: var(--dcdr-success); }
+.mc-ops :deep(.el-button.is-text.el-button--danger) { color: var(--dcdr-danger); }
+
+/* 常驻标记: 等宽小字 + 左侧圆点, 替代原来的实心红块 */
+.mc-flag { display: inline-flex; align-items: center; gap: 4px; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.4px; }
+.mc-flag::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.mc-flag.pinned { color: var(--dcdr-accent-soft); }
 
 .empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 13px; line-height: 1.8; }
 .opt-note { float: right; color: var(--dcdr-text-3); font-size: 12px; margin-left: 16px; }
