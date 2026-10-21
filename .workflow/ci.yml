@@ -12,7 +12,7 @@
 #    `RagVectorStoreIT` 依赖 Testcontainers(需构建机可用 Docker)。
 #    本插件的基础镜像是 CentOS 8.3, 是否支持容器内 Docker 尚未验证,
 #    因此 CI 只做"离线单元测试"这道最稳的防线; 完整验证(含真实 PG 容器)用
-#    本地脚本 `scripts/run-tests.ps1 -Full` 执行, 避免 CI 因环境能力不确定而长期红灯。
+#    本地 `mvn verify` 执行, 避免 CI 因环境能力不确定而长期红灯。
 #
 #  ⚠️ 字段说明(踩坑点):
 #    branches 下四个键语义**不同**, 极易混淆:

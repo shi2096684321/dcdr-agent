@@ -1,0 +1,89 @@
+# dcdr-agent 应用编排（只有应用本体，不含中间件）
+#
+# 前置：先起依赖 —— `docker compose up -d`（见 docker-compose.yml）
+#       依赖所在网络 dcdr-net 必须已存在，否则本文件启动会报 network not found。
+#
+# 启动：
+#   docker compose up -d                                              # 1) 起 PG/Redis/Zipkin/SearXNG
+#   docker compose -f docker-compose.app.yml up -d --build            # 2) 构建并起应用
+#
+# 只重建应用（改了代码）：
+#   docker compose -f docker-compose.app.yml up -d --build
+# 看日志：
+#   docker compose -f docker-compose.app.yml logs -f agent
+#
+# 为什么把应用拆出来：
+#   1. 中间件生命周期远长于应用 —— 改代码重建应用时不该连带重启 PG/Redis；
+#   2. 生产上应用通常由 CI 构建推到镜像仓库，中间件由运维单独管理，两套节奏；
+#   3. 本机开发多数时候只跑 `docker compose up -d` 起依赖，应用在 IDEA 里跑，
+#      避免每次调试都要 build 镜像（一次 build 数分钟）。
+#
+# ⚠️ 跨文件不能写 depends_on：compose 只校验**当前合并后的模型**里的服务，
+#    postgres/redis 定义在另一个文件里，`depends_on: postgres` 会直接报
+#    "depends on undefined service postgres"。故此处不声明依赖，
+#    由 docs/18 的启动顺序保证（先 infra 后 app）。
+
+name: dcdr-agent
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # 本地构建产物名：刻意不带版本号 —— 带版本号的话每次发版都要改这里，
+    # 忘了改也不会报错，只会在 docker images 里留个旧标签
+    image: dcdr-agent:local
+    container_name: dcdr-agent-app
+    ports:
+      - "8080:8080"
+    environment:
+      # 激活 pg profile（PostgreSQL + PgVector），与 application.yml 默认 profile 一致
+      SPRING_PROFILES_ACTIVE: pg
+      # 覆盖 application-pg.yml 里写死的 localhost，指向 dcdr-net 上的 postgres 服务
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public
+      SPRING_DATASOURCE_USERNAME: dcdr_agent
+      SPRING_DATASOURCE_PASSWORD: dcdr_agent
+      # ===== 启动期密钥校验(SecretGuard)要求的两项密钥 =====
+      # 用 :? 声明为**必填**：未在 .env / 环境变量中提供时 compose 启动前就报错，
+      # 而不是让服务用公开可知的默认密钥跑起来（那种状态不会自己暴露）。
+      # 生成：openssl rand -hex 32
+      # ⚠️ 必须整体加单引号：`:?` 的报错文案含 ": "（冒号+空格），未加引号的 plain scalar
+      # 会被 YAML 当成映射键分隔符，解析期直接报 mapping values are not allowed。
+      # 单引号不影响 compose 的 ${} 插值（插值发生在 YAML 解析之后）。
+      JWT_SECRET: '${JWT_SECRET:?JWT_SECRET 未设置: 请在 .env 中注入一个随机值}'
+      MODEL_API_KEY_SECRET: '${MODEL_API_KEY_SECRET:?MODEL_API_KEY_SECRET 未设置: 请在 .env 中注入一个随机值(勿与 JWT_SECRET 复用)}'
+      # 模型 API Key（用户按需在 .env 提供，缺省 demo-key 仅用于启动不报错）
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-demo-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-demo-key}
+      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-demo-key}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-key}
+      KLING_API_KEY: ${KLING_API_KEY:-demo-key}
+      # 分布式追踪：指向 dcdr-net 内的 zipkin 服务
+      ZIPKIN_ENDPOINT: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
+      # 代码执行沙箱：业务应用只连 Sandbox Server 的 HTTP，不挂 docker.sock。
+      # 该组件在默认 bridge 网络上（见 docker-compose.yml 说明），
+      # 故应用经宿主端口访问（容器内用 host.docker.internal 指向宿主）
+      OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
+      OPEN_SANDBOX_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
+      # ⚠️ 口径：代码默认 false，但 application.yml 随仓覆盖为 true，即默认**开着**。
+      #    对外交付请显式设 AGENT_TOOLS_SANDBOX_ENABLED=false。
+      # 自建联网搜索：容器内访问 dcdr-net 上的 searxng 服务
+      # （本机跑 jar 时无需设置，application.yml 默认 http://localhost:8888）
+      AGENT_TOOLS_WEB_SEARXNG_URL: ${AGENT_TOOLS_WEB_SEARXNG_URL:-http://searxng:8080}
+    volumes:
+      # 上传文件 / 生成图片视频 / 知识库文档落盘持久化，容器重建不丢
+      - ./data:/app/data
+    networks:
+      - dcdr-net
+    restart: unless-stopped
+    # 内存上限：本机 Docker VM 仅 4GB，不设上限时 MaxRAMPercentage 按 VM 总内存算
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+networks:
+  # 由 docker-compose.yml 创建；本文件只接入，不创建（避免两处定义冲突）
+  dcdr-net:
+    external: true
+    name: dcdr-net

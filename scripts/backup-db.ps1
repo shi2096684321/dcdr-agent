@@ -20,6 +20,13 @@
              -Argument '-ExecutionPolicy Bypass -File "D:\Projects\java-agent\scripts\backup-db.ps1"'
     $trg = New-ScheduledTaskTrigger -Daily -At 02:00
     Register-ScheduledTask -TaskName 'dcdr-agent-db-backup' -Action $act -Trigger $trg -RunLevel Highest
+
+  Linux 宿主部署的等效命令(无 PowerShell 时直接在 crontab 里用):
+    0 2 * * * docker exec dcdr-agent-pg pg_dump -U dcdr_agent -d dcdr_agent \
+                -Fc -f /backup/db/dcdr_agent_$(date +\%Y\%m\%d_\%H\%M\%S).dump
+    保留 14 天: find /opt/dcdr-agent/data/backup/db -name '*.dump' -mtime +14 -delete
+    ⚠️ 同样必须落到宿主机可见目录(compose 的 ./data/backup:/backup),
+       不要写容器内其他路径 —— 那会随 vhdx 一起消失。
 #>
 [CmdletBinding()]
 param(

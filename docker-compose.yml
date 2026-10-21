@@ -1,124 +1,47 @@
-# dcdr-agent V2.1 一键部署编排 (应用 + PostgreSQL 16 + PgVector + Redis)
-# 用法: 在项目根目录执行 `docker compose up -d`
-#   - 应用镜像由本仓库 Dockerfile 现场构建 (无需提前 docker pull)
-#   - 使用 pgvector/pgvector:pg16 镜像(已预装 pgvector 扩展), 通过 CREATE EXTENSION vector 激活
-#   - 数据安全策略 (V3.1, 2026-09-28 事故后确立): PG 数据仍用命名卷 pgdata, 但**每日由 pg_dump
-#     落到宿主机可见目录**。原因: 命名卷数据物理上藏在 Docker VM 的 vhdx 里, Docker Desktop
-#     重置/重装会随 vhdx 一起消失(2026-09-28 已实际发生, 全部业务数据丢失)。
-#     备份与恢复: scripts/backup-db.ps1 (Windows 计划任务) / scripts/backup-db.sh
-#     ⚠️ PG 数据**不能**直接 bind mount 到 Windows 宿主目录 —— 已实测: initdb 报
-#     `data directory has invalid permissions (Permissions should be u=rwx (0700))`,
-#     Docker Desktop 的宿主目录共享层不保留 Unix 权限位(容器内实测 chmod 700 后仍为 0777)。
-#   - 环境约束: Docker Desktop 的 dataFolder 与 Hyper-V 的 VM 配置路径都必须落在 E 盘 ——
-#     C 盘仅剩 3.8GB, 放不下 VM 的 4096MB 内存内容文件(.VMRS), VM 会启动失败(0x80070070)。
-#     Hyper-V 侧命令: Set-VMHost -VirtualMachinePath E:\appdata\docker\HyperV\VM -VirtualHardDiskPath E:\appdata\docker\HyperV\VHD
-# 仅起数据库(开发期本机跑 jar): `docker compose up -d postgres redis`
-# 无 Docker 环境请参考 docs/sql/README.md 末尾的"无 Docker 备选方案"。
+# dcdr-agent 运行依赖编排（仅中间件，不含应用本身）
+#
+# 定位：本文件只负责"应用跑起来所依赖的东西"，方便单独启停、单独升级。
+#       应用本体（agent）在 docker-compose.app.yml 中，两者通过同一个外部网络 dcdr-net 互通。
+#
+#   只想起依赖（本机 IDEA / mvn spring-boot:run 跑应用）：
+#       docker compose up -d
+#   连同应用一起用容器跑：
+#       docker compose up -d && docker compose -f docker-compose.app.yml up -d --build
+#   全部停止（保留数据）：
+#       docker compose -f docker-compose.app.yml down && docker compose down
+#
+# 组件清单：
+#   postgres  (pgvector/pgvector:pg16)  业务库 + 向量库，首次建库自动执行 docs/sql/*.sql
+#   redis     (redis:7-alpine)          分布式限流计数 / 定时任务租约锁 / 缓存
+#   zipkin    (openzipkin/zipkin)       链路追踪，应用上报 span
+#   searxng   (searxng/searxng)         自建联网搜索（替代第三方 Tavily，无 API Key）
+#   opensandbox-server                  代码执行沙箱服务端（可选能力，应用不依赖它启动）
+#
+# ===== 数据安全（V3.1，2026-09-28 事故后确立）=====
+# PG 数据用命名卷 pgdata，但**必须每日 pg_dump 落到宿主机可见目录**（./data/backup）。
+# 原因：命名卷物理上在 Docker VM 的 vhdx 里，Docker Desktop 重置/重装会连数据一起消失
+# （2026-09-28 已实际发生，业务数据全丢）。备份脚本见 scripts/backup-db.ps1。
+# ⚠️ PG 数据**不能**直接 bind mount 到 Windows 宿主目录 —— 实测 initdb 报
+#    `data directory has invalid permissions (should be u=rwx (0700))`，
+#    Docker Desktop 的宿主目录共享层不保留 Unix 权限位。
+#
+# ===== 环境约束（本机）=====
+# Docker Desktop 的 dataFolder 与 Hyper-V VM 配置路径都必须在 E 盘：
+# C 盘空间不足时 VM 的 .VMRS 内存文件写不下，VM 启动失败(0x80070070)。
+# 本机 Docker 为 20.10.8 时存在旧 seccomp 拦截 glibc clone3 的问题，
+# 故 postgres / searxng / opensandbox-server 必须 seccomp=unconfined（见各服务注释）。
+
+name: dcdr-agent
 
 services:
-  agent:
-    # 现场构建镜像, 不依赖外部 registry; tag 标 V2.1
-    build:
-      context: .
-      dockerfile: Dockerfile
-    # 本地构建产物名: 刻意不带版本号 —— 带版本号的话每次发版都要改这里, 忘了改也不会报错,
-    # 只会在 docker images 里留下一个旧标签(与 Dockerfile 里写死 jar 名是同一类坑)
-    image: dcdr-agent:local
-    container_name: dcdr-agent-app
-    ports:
-      - "8080:8080"
-    environment:
-      # 激活 pg profile (PostgreSQL + PgVector); 与 application.yml 的默认 profile 一致,
-      # 显式声明以保证容器环境不受基础镜像变量影响
-      SPRING_PROFILES_ACTIVE: pg
-      # 覆盖 application-pg.yml 里写死的 localhost, 指向 compose 内的 postgres 服务
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/dcdr_agent?currentSchema=public
-      SPRING_DATASOURCE_USERNAME: dcdr_agent
-      SPRING_DATASOURCE_PASSWORD: dcdr_agent
-      # ===== 启动期密钥校验(SecretGuard)要求的两项密钥 =====
-      # 用 :? 声明为**必填**: 未在 .env / 环境变量中提供时 compose 在启动前就报错,
-      # 而不是让服务用公开可知的默认密钥跑起来(那种状态不会自己暴露)。
-      # 生成: openssl rand -hex 32
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET 未设置: 请在 .env 中注入一个随机值}
-      MODEL_API_KEY_SECRET: ${MODEL_API_KEY_SECRET:?MODEL_API_KEY_SECRET 未设置: 请在 .env 中注入一个随机值(勿与 JWT_SECRET 复用)}
-      # 模型 API Key (用户按需在 .env 或环境变量提供, 缺省 demo-key 仅用于启动不报错)
-      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-demo-key}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-demo-key}
-      ZHIPU_API_KEY: ${ZHIPU_API_KEY:-demo-key}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-demo-key}
-      KLING_API_KEY: ${KLING_API_KEY:-demo-key}
-      # (原 TAVILY_API_KEY 已移除: 联网搜索改为自建 SearXNG, 见下方 searxng 服务与 agent-tools.web)
-      # 分布式追踪: 上报地址指向 compose 内的 zipkin 服务, 替换默认的 localhost
-      ZIPKIN_ENDPOINT: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
-      # V3.1 F-43 代码执行沙箱: 业务应用只连 Sandbox Server 的 HTTP, 不挂 docker.sock
-      # ⚠️ 口径: 代码默认 false, 但 application.yml 随仓覆盖为 true
-      #    (agent-tools.sandbox.enabled=${AGENT_TOOLS_SANDBOX_ENABLED:true}) —— 即默认**开着**。
-      #    对外交付请显式设 AGENT_TOOLS_SANDBOX_ENABLED=false。
-      # 本组件用 Docker 默认 bridge 网络(见下方 network_mode 说明), 不在 compose 网络内,
-      # 故经宿主映射端口访问(容器内可用 host.docker.internal 指向宿主)
-      OPEN_SANDBOX_DOMAIN: ${OPEN_SANDBOX_DOMAIN:-host.docker.internal:18080}
-      OPEN_SANDBOX_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
-      # V3.2 自建联网搜索: 容器内应用访问 compose 内的 searxng 服务
-      # (本机跑 jar 时无需设置, application.yml 默认 http://localhost:8888)
-      AGENT_TOOLS_WEB_SEARXNG_URL: ${AGENT_TOOLS_WEB_SEARXNG_URL:-http://searxng:8080}
-    volumes:
-      # 上传文件/生成图片视频/知识库文档落盘持久化, 容器重建不丢
-      - ./data:/app/data
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # V3.1 F-43 代码执行沙箱中间件(自托管, 非第三方 SaaS)
-  # 架构: agent(业务) --HTTP--> 本组件 --docker--> 沙箱容器
-  # 关键: docker.sock 只挂给本组件, 业务应用零特权(见 TODO.md 的选型理由)
-  opensandbox-server:
-    build:
-      context: ./sandbox
-      dockerfile: Dockerfile
-    image: dcdr-opensandbox-server:1.1.0
-    container_name: dcdr-opensandbox-server
-    ports:
-      # 宿主 18080 -> 容器 8080 (避开 agent 已占用的 8080)
-      - "18080:8080"
-    environment:
-      # API Key: 优先于配置文件中的 [server] api_key; 生产环境务必通过 .env 覆盖
-      OPENSANDBOX_SERVER_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
-      # 显式声明 docker 守护进程地址(unix socket)
-      DOCKER_HOST: unix:///var/run/docker.sock
-    volumes:
-      # 本组件需要指挥宿主 docker 拉起沙箱容器; 沙箱逃逸的最坏影响限于本组件与宿主 docker
-      - /var/run/docker.sock:/var/run/docker.sock
-      # 服务端元数据(snapshot / 模板目录, SQLite)持久化
-      - opensandbox-data:/var/lib/opensandbox
-      # 配置以挂载方式提供: 改配置只需重启容器, 无需重建镜像
-      - ./sandbox/sandbox.toml:/etc/opensandbox/config.toml:ro
-    # 必须用 Docker 默认 bridge, 两个硬约束(都实测过):
-    #   ① networkPolicy(禁网) 仅在 network_mode='bridge' 下被支持, 自定义网络会直接
-    #      400 SANDBOX::INVALID_PARAMETER;
-    #   ② server 与沙箱必须同处 docker0 才能直连 execd 端口, 否则健康检查 502
-    #      BACKEND_CONNECTION_FAILED。
-    # 代价: 脱离 compose 自定义网络 → agent 改为经宿主端口访问本服务。
-    network_mode: "bridge"
-    # 同 postgres 的原因: Docker 20.10.8 旧 seccomp profile 拦截 glibc 的 clone3,
-    # 导致容器内 pthread_create 失败("can't start new thread") —— Python 服务端必需线程,
-    # 故必须 seccomp=unconfined; 升级 Docker 到 20.10.10+ 后可去掉。
-    security_opt:
-      - seccomp=unconfined
-    restart: unless-stopped
-    # 注意: 沙箱是可选能力(默认值口径见上方说明), 故 agent 不依赖本服务启动 ——
-    # 即使沙箱组件起不来, 主应用仍应正常提供服务。
-
   postgres:
     image: pgvector/pgvector:pg16
     container_name: dcdr-agent-pg
-    # Docker 20.10.8 旧 seccomp profile 不兼容 Bookworm glibc 的 clone3 系统调用,
-    # 导致 initdb popen fork 时 ENOMEM. seccomp=unconfined 绕过此限制.
+    # Docker 20.10.8 旧 seccomp profile 不兼容 Bookworm glibc 的 clone3 系统调用，
+    # 导致 initdb popen fork 时 ENOMEM。seccomp=unconfined 绕过此限制。
     security_opt:
       - seccomp=unconfined
-    # Hyper-V 后端 Docker VM 仅 4GB 内存, 本地 pgvector 开发用 256m shm + 1g 内存足够
+    # Hyper-V 后端 Docker VM 仅 4GB 内存，本地 pgvector 开发用 256m shm + 1g 内存足够
     shm_size: 256m
     deploy:
       resources:
@@ -131,23 +54,23 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      # 全量初始化: initdb 目录里的脚本会在**首次建库**(数据卷为空)时按文件名字母序自动执行,
-      # 故全新部署无需手工执行任何 SQL。文件名的 01/02/03 前缀就是排序用。
-      # 已有数据卷不会重跑(升级见 docs/RELEASE-v3.1.0.md 的升级路径; 应用侧另有 ddl-auto=update 兜底补表)。
+      # 全量初始化：initdb 目录里的脚本在**首次建库**（数据卷为空）时按文件名字母序执行，
+      # 故全新部署无需手工执行任何 SQL。01/02/03 前缀就是排序用。
+      # 已有数据卷不会重跑；应用侧另有 ddl-auto=update 兜底补表。
       - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_v2.0_schema.sql:ro
       - ./docs/sql/v3.0_schema.sql:/docker-entrypoint-initdb.d/02_v3.0_schema.sql:ro
       - ./docs/sql/v3.1_schema.sql:/docker-entrypoint-initdb.d/03_v3.1_schema.sql:ro
-      # PG 数据仍用命名卷 (V3.1 实测: 无法 bind mount 到 Windows 宿主目录, initdb 权限检查会失败,
-      # 详见文件头说明)。数据安全的兜底是下面这个**落宿主机**的备份挂载 + 定时 pg_dump。
       - pgdata:/var/lib/postgresql/data
-      # 备份落点: 容器内 /backup <-> 宿主机 <项目>/data/backup
-      # (备份绝不能留在容器文件系统内 —— 那同样活在 vhdx 里, 与数据一损俱损)
+      # 备份落点：容器内 /backup <-> 宿主机 <项目>/data/backup
       - ./data/backup:/backup
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U dcdr_agent -d dcdr_agent"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - dcdr-net
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
@@ -155,59 +78,103 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - E:/appdata/docker/redisdata:/data
+      # 落项目 data 目录（宿主可见），不写死盘符 —— 写死 E:/ 会让 compose 在
+      # Linux/WSL 宿主下解析成非法路径，换机器直接失效
+      - ./data/redis:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - dcdr-net
+    restart: unless-stopped
 
-  # 分布式追踪服务, 接收 agent 上报的链路数据 (openzipkin/zipkin)
+  # 分布式追踪，接收应用上报的链路数据
   zipkin:
     image: openzipkin/zipkin:latest
     container_name: dcdr-agent-zipkin
     ports:
       - "9411:9411"
-    # 内存存储即可满足本地/开发排障, 重启即清空; 如需持久化可挂卷
+    # 内存存储够本地/开发排障，重启即清空；需持久化可挂卷
     volumes:
       - zipkindata:/data
+    networks:
+      - dcdr-net
     restart: unless-stopped
 
-  # V3.1 自建联网搜索(替代第三方 Tavily)
-  # SearXNG 元搜索引擎: AGPL-3.0 开源、无 API Key、无调用费用, 结果聚合多引擎。
-  # 与 agent 的对接: 由应用内两个原生 Tool 调用(见 agent-tools.web 配置):
-  #   GET http://<host>:8888/search?q=...&format=json  (需 settings.yml 开启 json 格式)
-  # 内存占用很小(纯 Python 服务, 无浏览器), 对 Docker VM 4GB 的上限无压力。
+  # 自建联网搜索（替代第三方 Tavily）
+  # SearXNG 元搜索引擎：AGPL-3.0、无 API Key、无调用费用，结果聚合多引擎。
+  # 应用侧两个原生 Tool 调用：GET http://<host>:8888/search?q=...&format=json
+  # （需 settings.yml 开启 json 格式，见 docker/searxng/settings.yml）
   searxng:
     image: searxng/searxng:latest
     container_name: dcdr-agent-searxng
     ports:
-      # 宿主 8888 -> 容器 8080 (避开 agent 已占用的 8080)
+      # 宿主 8888 -> 容器 8080，避开应用的 8080
       - "8888:8080"
     volumes:
-      # 配置以挂载方式提供: 改配置只需重启容器, 无需重建镜像
+      # 配置以挂载方式提供：改配置只需重启容器，无需重建镜像
       - ./docker/searxng:/etc/searxng:rw
     environment:
-      # 使用挂载进来的自定义配置(含 search.formats: [html, json])
       - SEARXNG_SETTINGS_PATH=/etc/searxng/settings.yml
       - SEARXNG_BASE_URL=http://localhost:8888/
-    # 与 postgres / opensandbox-server 同因: Docker 20.10.8 的旧 seccomp profile 拦截
-    # glibc 的 clone3, 导致容器内 pthread_create 失败("can't start new thread")。
-    # SearXNG 是 Python 服务, 启动期必需创建线程, 故必须 seccomp=unconfined;
-    # 升级 Docker 到 20.10.10+ 后可去掉。
+    # 与 postgres 同因：旧 seccomp 拦 clone3 导致 Python 线程创建失败
+    security_opt:
+      - seccomp=unconfined
+    networks:
+      - dcdr-net
+    restart: unless-stopped
+
+  # 代码执行沙箱服务端（V3.1 F-43，自托管，非第三方 SaaS）
+  # 架构：agent(业务) --HTTP--> 本组件 --docker--> 沙箱容器
+  # 关键：docker.sock 只挂给本组件，业务应用零特权
+  opensandbox-server:
+    build:
+      context: ./sandbox
+      dockerfile: Dockerfile
+    image: dcdr-opensandbox-server:1.1.0
+    container_name: dcdr-opensandbox-server
+    ports:
+      # 宿主 18080 -> 容器 8080
+      - "18080:8080"
+    environment:
+      # API Key：优先于配置文件里的 [server] api_key，生产环境务必用 .env 覆盖
+      OPENSANDBOX_SERVER_API_KEY: ${SANDBOX_API_KEY:-change-me-in-env}
+      DOCKER_HOST: unix:///var/run/docker.sock
+    volumes:
+      # 本组件需要指挥宿主 docker 拉起沙箱容器；沙箱逃逸的最坏影响限于本组件与宿主 docker
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 服务端元数据（snapshot / 模板目录，SQLite）持久化
+      - opensandbox-data:/var/lib/opensandbox
+      # 配置挂载提供：改配置只需重启容器
+      - ./sandbox/sandbox.toml:/etc/opensandbox/config.toml:ro
+    # 必须用 Docker 默认 bridge，两个硬约束（都实测过）：
+    #   ① networkPolicy(禁网) 仅在 network_mode='bridge' 下被支持，自定义网络会 400
+    #      SANDBOX::INVALID_PARAMETER；
+    #   ② server 与沙箱必须同处 docker0 才能直连 execd 端口，否则健康检查 502
+    #      BACKEND_CONNECTION_FAILED。
+    # 代价：脱离 compose 自定义网络 → 应用改为经宿主端口访问本服务
+    # （见 docker-compose.app.yml 的 OPEN_SANDBOX_DOMAIN）。
+    network_mode: "bridge"
+    # 同 postgres 原因：旧 seccomp 拦 clone3，Python 服务端启动期必需线程
     security_opt:
       - seccomp=unconfined
     restart: unless-stopped
+    # 沙箱是可选能力，故应用不 depends_on 本服务 —— 它起不来，主应用照常提供服务
 
 volumes:
-  zipkindata:
-    driver: local
-  # PG 数据卷。⚠️ 卷数据藏在 Docker VM 的 vhdx 内, Docker Desktop 重置会随 vhdx 一起消失
-  # (2026-09-28 事故)。因此数据安全必须依赖 scripts/backup-db.* 把 pg_dump 落到宿主机目录。
   pgdata:
     driver: local
-  # V3.1 F-43: Sandbox Server 元数据(snapshot / 模板目录)
+  zipkindata:
+    driver: local
+  # F-43: Sandbox Server 元数据（snapshot / 模板目录）
   opensandbox-data:
     driver: local
 
-
+# 固定网络名（不随目录名变化），供 docker-compose.app.yml 以 external 方式接入。
+# 应用容器通过服务名访问：postgres:5432 / redis:6379 / zipkin:9411 / searxng:8080
+networks:
+  dcdr-net:
+    name: dcdr-net
+    driver: bridge

@@ -13,10 +13,10 @@ set -euo pipefail
 
 DB_HOST="${DB_HOST:-127.0.0.1}"
 DB_PORT="${DB_PORT:-5432}"
-DB_USER="${DB_USER:-agent}"
+DB_USER="${DB_USER:-dcdr_agent}"
 
 DUMP_FILE="${1:?用法: restore-db.sh <备份文件.dump> [目标库名]}"
-TARGET_DB="${2:-agent}"
+TARGET_DB="${2:-dcdr_agent_restore}"
 
 if [ ! -f "${DUMP_FILE}" ]; then
     echo "错误: 备份文件不存在: ${DUMP_FILE}" >&2
@@ -39,7 +39,9 @@ pg_restore -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${TARGET_DB}" \
            --exit-on-error --single-transaction "${DUMP_FILE}"
 
 # 3. 校验核心表行数 (表不存在或为空会显式提示, 便于演练 checklist)
-for t in users sessions knowledge_bases documents workflows; do
+#    表名以 docs/sql/*.sql 的实际定义为准(v2.0: users/sessions/knowledge_bases/documents,
+#    v3.0: workflow_definitions, v3.1: long_term_memories)
+for t in users sessions knowledge_bases documents agent_definitions workflow_definitions long_term_memories; do
     COUNT=$(psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USER}" -d "${TARGET_DB}" -tc \
             "SELECT count(*) FROM ${t}" 2>/dev/null | tr -d ' ' || echo "N/A")
     echo "  表 ${t}: ${COUNT} 行"
