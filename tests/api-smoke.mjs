@@ -242,10 +242,17 @@ async function main() {
     skip('KB-02', 'knowledge', '上传文档并入库', '缺少固定素材文件 tests/fixtures/knowledge-sample.md');
   }
 
-  r = await call('GET', `/api/knowledge-bases/${kbId}/documents`);
-  const docs = Array.isArray(r.json?.data) ? r.json.data : [];
-  record('KB-03', 'knowledge', '文档列表可读并回报入库状态', (x) => okBiz(x) && docs.length > 0, r,
-    { note: `documents=${docs.length} status=${docs[0]?.status ?? 'n/a'} chunks=${docs[0]?.chunkCount ?? docs[0]?.chunk_count ?? 'n/a'}` });
+  // 入库是异步的：轮询到终态（completed/failed）再断言，避免把 pending 当成结果
+  let docs = [];
+  for (let i = 0; i < 10; i++) {
+    r = await call('GET', `/api/knowledge-bases/${kbId}/documents`);
+    docs = Array.isArray(r.json?.data) ? r.json.data : [];
+    const st = docs[0]?.status;
+    if (st && st !== 'pending') break;
+    await new Promise((res) => setTimeout(res, 1500));
+  }
+  record('KB-03', 'knowledge', '文档列表可读并回报入库终态', (x) => okBiz(x) && docs.length > 0, r,
+    { note: `documents=${docs.length} status=${docs[0]?.status ?? 'n/a'} chunks=${docs[0]?.chunkCount ?? 'n/a'}` });
 
 
   r = await call('POST', `/api/knowledge-bases/${kbId}/search`, { body: { query: '这个产品支持哪些模型接入方式', topK: 3 } });

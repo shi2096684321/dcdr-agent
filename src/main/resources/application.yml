@@ -269,12 +269,15 @@ agent:
         # provider = 厂商(qwen/zhipu/openai); engine 约定同 models(langchain4j 默认 / manual 回退)
         # 通义 DashScope text-embedding-v4 (Qwen3-Embedding, 支持 1536 维, 与 schema VECTOR(1536) 对齐)
         # 注: v3 仅支持 1024/768/512 维, 传 1536 会 400; v4 是推荐模型, 支持 1536 且多语种更强
+        # ⚠️ 2026-10-21 实测: qwen3.7-text-embedding-flash 即使传 dimensions=1536 也只返回 1024 维,
+        #    写库时报 `expected 1536 dimensions, not 1024` → 知识库入库必然失败。
+        #    text-embedding-v4 实测返回 1536 维且遵守 dimensions 参数, 故固定用 v4。
         - name: qwen-embedding
           enabled: true
           provider: qwen
           api-key: ${DASHSCOPE_API_KEY:demo-key}
           base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-          model: qwen3.7-text-embedding-flash
+          model: text-embedding-v4
           dimensions: 1536
           # v4 单次请求最大 10 条(官方限制), v3 为 25; 此处按 v4 限制
           batch-size: 10

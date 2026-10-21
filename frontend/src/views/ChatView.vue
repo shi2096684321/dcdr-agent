@@ -1122,10 +1122,14 @@ onMounted(() => { loadSessions() })
 /* 标题最多两行：侧边栏只有 ~150px，操作按钮若在正常流里会固定吃掉 ~120px，
    长标题（如"生产级回归-会话A（改名）"）就会退化成"生产级回..."。 */
 .session-title { font-size: 13px; flex: 1; min-width: 0; line-height: 1.4; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
-/* 操作按钮：悬停才浮出，绝对定位不参与布局（见模板注释） */
-.session-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 2px; padding-left: 10px; border-radius: 8px; background: var(--dcdr-bg-subtle); opacity: 0; pointer-events: none; transition: opacity 0.16s ease; }
+/* 操作按钮：悬停才浮出，绝对定位不参与布局（见模板注释）。
+   注意 pointer-events 的用法：容器**始终**不吃事件，只有悬停时按钮本身吃事件，
+   否则浮层会盖住标题右半边，点标题切会话就会点不动（实测 Playwright 报 intercepts pointer events）。 */
+.session-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 2px; padding-left: 8px; border-radius: 8px; background: var(--dcdr-bg-subtle); opacity: 0; pointer-events: none; transition: opacity 0.16s ease; }
 .session-item.active .session-actions { background: var(--dcdr-accent-wash); }
-.session-item:hover .session-actions { opacity: 1; pointer-events: auto; }
+.session-item:hover .session-actions { opacity: 1; }
+.session-item:hover .session-actions button,
+.session-item:hover .session-actions .export-dropdown { pointer-events: auto; }
 .rename-btn, .delete-btn, .export-btn, .settings-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
 .rename-btn svg, .delete-btn svg, .export-btn svg, .settings-btn svg { width: 13px; height: 13px; }
 .rename-btn:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
