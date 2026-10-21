@@ -1,6 +1,6 @@
 <template>
   <HubShell :tabs="TABS" v-model:tab="tab">
-    <ExpertView v-if="tab === 'experts'" />
+    <ExpertView v-if="tab === 'experts'" @go-skills="tab = 'skills'" />
     <!-- 技能 / 技能市场之间原有互相跳转的按钮, 在容器内改为切换二级页 -->
     <SkillManageView v-else-if="tab === 'skills'" @go-market="tab = 'skill-market'" />
     <SkillMarketView v-else-if="tab === 'skill-market'" @go-manage="tab = 'skills'" />
