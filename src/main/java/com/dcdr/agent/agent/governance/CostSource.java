@@ -25,7 +25,10 @@ public enum CostSource {
     SUMMARY("tool_summary", "工具结果摘要"),
 
     /** 长期记忆自动抽取(每 N 轮一次) */
-    MEMORY_EXTRACT("memory_extract", "记忆自动抽取");
+    MEMORY_EXTRACT("memory_extract", "记忆自动抽取"),
+
+    /** 专家 AI 生成(用户一句话需求 → 专家配置草稿) */
+    AGENT_GENERATE("agent_generate", "AI 生成专家");
 
     /** 落库取值; 与 enum 名分开写死: 改名即等于改报表口径与历史数据 */
     private final String value;

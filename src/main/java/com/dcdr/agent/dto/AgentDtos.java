@@ -53,6 +53,53 @@ public class AgentDtos {
         private List<String> quickPrompts;
     }
 
+    /**
+     * 一句话生成专家请求 (V3.2)。
+     * <p>
+     * 用户只需要说清"要一个做什么的专家", 其余配置(名称/角色设定/元数据/工具/温度)由模型补齐。
+     */
+    @Data
+    @Schema(description = "AI 生成专家请求")
+    public static class GenerateAgentRequest {
+        @Schema(description = "需求说明 (一句话即可, 如: 帮我做一个审查劳动合同的专家)",
+                requiredMode = Schema.RequiredMode.REQUIRED)
+        private String brief;
+        @Schema(description = "生成所用的模型名称 (留空则用系统默认)")
+        private String model;
+    }
+
+    /**
+     * AI 生成的专家草稿。
+     * <p>
+     * <b>刻意不落库</b>: 生成结果是模型推断, 用户看一眼、改两笔再保存, 比"直接建出一个
+     * 名字奇怪、工具配错的专家"要好收拾得多。前端拿它回填创建表单, 保存仍走
+     * {@code POST /api/agents} —— 于是配额、工具白名单、版本快照这些既有约束一个都不用重写。
+     */
+    @Data
+    @Schema(description = "AI 生成的专家草稿 (未落库, 供前端回填表单)")
+    public static class AgentDraft {
+        @Schema(description = "专家名称")
+        private String name;
+        @Schema(description = "一句话简介")
+        private String description;
+        @Schema(description = "专家卡片标题 (职业头衔)")
+        private String profession;
+        @Schema(description = "行业分类")
+        private String categoryId;
+        @Schema(description = "擅长领域标签")
+        private List<String> tags;
+        @Schema(description = "推荐问法 (首条兼作开场引导)")
+        private List<String> quickPrompts;
+        @Schema(description = "角色设定正文")
+        private String persona;
+        @Schema(description = "建议启用的工具 (已按当前用户权限与该模型可编造范围过滤)")
+        private List<String> tools;
+        @Schema(description = "建议温度 0~2")
+        private BigDecimal temperature;
+        @Schema(description = "实际执行生成的模型 (用于界面标注与排查)")
+        private String generatedBy;
+    }
+
     /** Agent 列表项 / 详情视图 */
     @Data
     @Schema(description = "Agent 视图")

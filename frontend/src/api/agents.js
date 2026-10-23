@@ -14,6 +14,10 @@ export const getAgent = (id) => unwrap(api.get(`/api/agents/${id}`))
 // 创建 Agent
 export const createAgent = (data) => unwrap(api.post('/api/agents', data))
 
+// V3.2 AI 生成专家草稿: 一句话需求 → 未落库的配置, 前端回填表单后仍走 createAgent
+export const generateAgent = (brief, model) =>
+  unwrap(api.post('/api/agents/generate', { brief, model: model || null }))
+
 // 更新 Agent
 export const updateAgent = (id, data) => unwrap(api.put(`/api/agents/${id}`, data))
 

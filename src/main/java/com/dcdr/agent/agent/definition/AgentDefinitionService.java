@@ -397,10 +397,14 @@ public class AgentDefinitionService {
     }
 
     /**
-     * 过滤受限工具(克隆场景用): 普通用户克隆含受限工具的 Agent(如管理员创建的模板)时
-     * <b>静默剔除</b>而非整体失败 —— 克隆是只读语义, 不应因源配置而报错。
+     * 过滤受限工具(克隆 / AI 生成场景共用): 普通用户接触含受限工具的配置
+     * (克隆管理员模板、或模型生成时"自作主张"选了沙箱)时<b>静默剔除</b>而非整体失败 ——
+     * 这两种场景对用户都是"我并没有主动要求这个工具", 直接报错只会让人莫名其妙。
+     * <p>
+     * 对外可见是为了让 {@code AgentDraftGenerator} 复用同一份受限清单: 该清单是安全边界,
+     * 两处各抄一份的话, 将来新增受限工具必然漏掉一边。
      */
-    private List<String> filterAdminOnlyTools(List<String> tools, boolean isAdmin) {
+    public List<String> filterAdminOnlyTools(List<String> tools, boolean isAdmin) {
         if (isAdmin || tools == null || tools.isEmpty()) {
             return tools;
         }

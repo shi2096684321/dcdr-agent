@@ -201,6 +201,21 @@
 
     <!-- 创建/编辑 Agent 对话框 -->
     <el-dialog v-model="dialogVisible" :title="dialogTitle" width="640px" @closed="resetForm">
+      <!-- V3.2 AI 生成: 只出现在"新建"场景, 生成结果回填下面整张表单(用户仍可逐项修改再保存) -->
+      <div v-if="!editing" class="ai-gen">
+        <div class="ai-gen-head">
+          <span class="ai-gen-title">AI 一句话生成</span>
+          <span class="ai-gen-sub">简单说说要一个做什么的专家, 角色设定/标签/推荐问法/工具由模型补齐</span>
+        </div>
+        <div class="ai-gen-row">
+          <el-input v-model="aiBrief" :disabled="generating" maxlength="500"
+                    placeholder="如: 帮我做一个审查劳动合同的专家, 重点关注试用期与违约责任"
+                    @keyup.enter="doGenerate" />
+          <el-button type="primary" :loading="generating" @click="doGenerate">
+            {{ generating ? '生成中…' : '生成' }}
+          </el-button>
+        </div>
+      </div>
       <el-alert v-if="editing && isOthersAgent(editingTarget)" type="warning" :closable="false" show-icon
                 class="owner-alert"
                 title="正在编辑他人专家"
@@ -212,12 +227,29 @@
         <el-form-item label="描述">
           <el-input v-model="form.description" type="textarea" :rows="2" placeholder="专家用途简介" />
         </el-form-item>
+        <el-form-item label="头衔">
+          <el-input v-model="form.profession" maxlength="32" placeholder="专家卡片标题, 如: 资深劳动法律师" />
+        </el-form-item>
+        <el-form-item label="分类">
+          <el-select v-model="form.categoryId" filterable allow-create default-first-option clearable
+                     placeholder="用于市场分类筛选, 如: 法律财务" style="width:100%">
+            <el-option v-for="c in categoryOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="领域标签">
+          <el-select v-model="form.tags" multiple filterable allow-create default-first-option
+                     placeholder="输入后回车添加, 如: 合同审查" style="width:100%" />
+        </el-form-item>
         <el-form-item label="头像 URL">
           <el-input v-model="form.avatar" placeholder="可选, 留空则用首字母占位" />
         </el-form-item>
         <el-form-item label="角色设定">
           <el-input v-model="form.persona" type="textarea" :rows="5"
                     placeholder="设定该专家的角色与行为, 如: 你是一个专业翻译, 支持中英互译... (由平台转述给模型, 不覆盖平台安全约束)" />
+        </el-form-item>
+        <el-form-item label="推荐问法">
+          <el-select v-model="form.quickPrompts" multiple filterable allow-create default-first-option
+                     placeholder="首条兼作开场引导, 输入后回车添加" style="width:100%" />
         </el-form-item>
         <el-form-item label="模型">
           <el-select v-model="form.model" placeholder="留空使用系统默认" clearable filterable style="width:100%">
@@ -313,6 +345,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
 import {
   getAgents, getAgentTemplates, createAgent, updateAgent, deleteAgent, cloneAgent as cloneAgentApi,
+  generateAgent,
   getAgentVersions, rollbackAgentVersion, diffAgentVersions,
   getKnowledgeBases, extractMessage, adminListUsers,
   getSkills, getLlmCallLogs
@@ -347,9 +380,17 @@ const editing = ref(false)
 const saving = ref(false)
 const form = reactive({
   id: '', name: '', description: '', avatar: '', persona: '',
+  profession: '', categoryId: '', tags: [], quickPrompts: [],
   model: '', temperature: 0.7, tools: [], kbIds: [], isPublic: false,
   changeNote: ''
 })
+
+// V3.2 AI 生成: 一句话需求 → 草稿回填表单(不直接落库, 用户可改后再存)
+const aiBrief = ref('')
+const generating = ref(false)
+// 分类候选与后端生成提示词里给模型的清单保持一致, 否则 AI 生成的分类在手填下拉里找不到
+const categoryOptions = ['编程开发', '写作创作', '翻译', '数据分析', '办公效率',
+  '学习教育', '市场营销', '法律财务', '生活健康', '客服销售']
 
 // 模型列表 (全局共享, 从 modelStore 读取; 留空代表使用系统默认模型)
 const chatModels = computed(() => modelStore.chatModels)
@@ -554,6 +595,10 @@ function openEditDialog() {
   form.description = a.description || ''
   form.avatar = a.avatar || ''
   form.persona = a.persona || ''
+  form.profession = a.profession || ''
+  form.categoryId = a.categoryId || ''
+  form.tags = [...(a.tags || [])]
+  form.quickPrompts = [...(a.quickPrompts || [])]
   form.model = a.model || ''
   form.temperature = a.temperature != null ? Number(a.temperature) : 0.7
   form.tools = [...(a.tools || [])]
@@ -569,12 +614,49 @@ function resetForm() {
   form.description = ''
   form.avatar = ''
   form.persona = ''
+  form.profession = ''
+  form.categoryId = ''
+  form.tags = []
+  form.quickPrompts = []
   form.model = ''
   form.temperature = 0.7
   form.tools = []
   form.kbIds = []
   form.isPublic = false
   form.changeNote = ''
+  aiBrief.value = ''
+}
+
+/**
+ * V3.2 AI 生成专家。
+ * 只回填表单, 不自动保存 —— 生成结果是模型推断(名字、分类、工具都可能不合本意),
+ * 让用户在表单里看一眼再点确定, 比直接建出一个需要删掉重建的专家要省事。
+ * 知识库/公开/头像刻意不覆盖: 前者是用户自己的资源, 模型无从知晓。
+ */
+async function doGenerate() {
+  const brief = aiBrief.value.trim()
+  if (!brief) {
+    ElMessage.warning('先用一句话说说你要一个做什么的专家')
+    return
+  }
+  generating.value = true
+  try {
+    const draft = await generateAgent(brief)
+    form.name = draft.name || form.name
+    form.description = draft.description || ''
+    form.profession = draft.profession || ''
+    form.categoryId = draft.categoryId || ''
+    form.tags = [...(draft.tags || [])]
+    form.quickPrompts = [...(draft.quickPrompts || [])]
+    form.persona = draft.persona || ''
+    form.tools = [...(draft.tools || [])]
+    if (draft.temperature != null) form.temperature = Number(draft.temperature)
+    ElMessage.success(`已生成「${form.name}」, 确认或微调后点确定保存`)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '生成失败, 请重试')
+  } finally {
+    generating.value = false
+  }
 }
 
 async function submitForm() {
@@ -589,6 +671,11 @@ async function submitForm() {
       description: form.description || null,
       avatar: form.avatar || null,
       persona: form.persona || null,
+      // V3.1 专家元数据: 必须随保存一起提交, 否则编辑一次就把 AI 生成/历史填好的头衔与标签抹掉
+      profession: form.profession || null,
+      categoryId: form.categoryId || null,
+      tags: form.tags || [],
+      quickPrompts: form.quickPrompts || [],
       model: form.model || null,
       temperature: form.temperature != null ? Number(form.temperature) : null,
       tools: form.tools || [],
@@ -855,6 +942,17 @@ onMounted(() => {
 .detail-title h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .owner-alert { margin-bottom: 14px; }
+
+/* ===== V3.2 AI 生成 ===== */
+.ai-gen {
+  border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash);
+  border-radius: var(--dcdr-radius-inner); padding: 12px 14px; margin-bottom: 16px;
+}
+.ai-gen-head { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.ai-gen-title { font-size: 13px; font-weight: 600; color: var(--dcdr-accent-soft); }
+.ai-gen-sub { font-size: 12px; color: var(--dcdr-text-3); line-height: 1.5; }
+.ai-gen-row { display: flex; gap: 8px; align-items: center; }
+.ai-gen-row .el-input { flex: 1; }
 
 .detail-body { padding-bottom: 4px; }
 .detail-row { display: flex; padding: 10px 0; border-bottom: 1px dashed var(--dcdr-border); }

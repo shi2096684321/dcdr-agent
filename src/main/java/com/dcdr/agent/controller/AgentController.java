@@ -1,6 +1,7 @@
 package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
+import com.dcdr.agent.agent.definition.AgentDraftGenerator;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.AgentDtos;
@@ -16,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 
@@ -28,6 +30,7 @@ import java.util.List;
  *   <li>GET    /api/agents/templates      预设模板库</li>
  *   <li>GET    /api/agents/{id}           Agent 详情</li>
  *   <li>POST   /api/agents                创建 Agent</li>
+ *   <li>POST   /api/agents/generate       AI 生成 Agent 草稿(一句话需求, 不落库)</li>
  *   <li>PUT    /api/agents/{id}           更新 Agent</li>
  *   <li>DELETE /api/agents/{id}           删除 Agent</li>
  *   <li>POST   /api/agents/{id}/clone     克隆模板/公开 Agent 为自己的副本</li>
@@ -49,6 +52,8 @@ import java.util.List;
 public class AgentController {
 
     private final AgentDefinitionService agentService;
+    /** V3.2: 一句话需求 → 专家配置草稿(LLM 生成, 不落库) */
+    private final AgentDraftGenerator draftGenerator;
     /** V3.1 F-41: 响应式读取当前登录用户 + 归属校验 */
     private final OwnershipGuard ownershipGuard;
 
@@ -83,6 +88,20 @@ public class AgentController {
     public Mono<Result<AgentDtos.AgentView>> create(@RequestBody AgentDtos.SaveAgentRequest req) {
         return ownershipGuard.currentContext()
                 .map(ctx -> Result.success(agentService.create(req, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "AI 生成专家草稿",
+            description = "V3.2: 用户只给一句话需求, 由模型补齐名称/头衔/分类/标签/推荐问法/角色设定/工具/温度, "
+                    + "返回<b>未落库</b>的草稿。前端回填创建表单, 用户确认后再走 POST /api/agents —— "
+                    + "配额、工具白名单、版本快照等既有约束因此无需重写。")
+    @ApiResponse(responseCode = "502", description = "模型不可用, 或输出里没有可用的角色设定")
+    @PostMapping("/generate")
+    public Mono<Result<AgentDtos.AgentDraft>> generate(@RequestBody AgentDtos.GenerateAgentRequest req) {
+        return ownershipGuard.currentContext().flatMap(ctx -> Mono
+                .fromCallable(() -> Result.success(draftGenerator.generate(
+                        req.getBrief(), req.getModel(), ctx.userId(), ctx.admin())))
+                // 同步阻塞调用 LLM, 不能跑在 reactor 事件循环线程上(与技能市场同口径)
+                .subscribeOn(Schedulers.boundedElastic()));
     }
 
     @Operation(summary = "更新 Agent",
