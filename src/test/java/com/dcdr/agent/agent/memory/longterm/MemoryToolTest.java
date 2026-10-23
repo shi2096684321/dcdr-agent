@@ -1,5 +1,6 @@
 package com.dcdr.agent.agent.memory.longterm;
 
+import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.dto.MemoryDtos.MemoryView;
 import com.dcdr.agent.dto.MemoryDtos.SaveRequest;
 import com.dcdr.agent.tool.ToolInfo;
@@ -207,7 +208,7 @@ class MemoryToolTest {
     @Test
     @DisplayName("注册后确实暴露给模型, 且能按名字被调到 —— 这两条断一条, 工具就等于不存在")
     void registeredAndDispatchableByName() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         registry.register(tool);
 
         // ① 暴露: schema 构建失败时 ToolRegistry 会"注册执行但不暴露给 LLM"(见其 register 的 catch),

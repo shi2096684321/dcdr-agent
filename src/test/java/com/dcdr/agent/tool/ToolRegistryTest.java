@@ -1,5 +1,6 @@
 package com.dcdr.agent.tool;
 
+import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
@@ -86,7 +87,7 @@ class ToolRegistryTest {
 
     @Test
     void staticToolProducesBothFormats() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         registry.register(new StaticSchemaTool());
 
         // 框架规范格式
@@ -116,7 +117,7 @@ class ToolRegistryTest {
 
     @Test
     void dynamicToolKeepsOriginalJsonInLegacyDef() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         registry.register(new DynamicSchemaTool());
 
         // 规范格式: JSON 解析转换
@@ -143,7 +144,7 @@ class ToolRegistryTest {
 
     @Test
     void whitelistFilterAppliesToBothOutputs() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         registry.register(new StaticSchemaTool());
         registry.register(new DynamicSchemaTool());
 
@@ -158,7 +159,7 @@ class ToolRegistryTest {
 
     @Test
     void brokenSchemaToolStillExecutable() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         Tool broken = new AbstractTool() {
             @Override
             public String getName() {
@@ -215,7 +216,7 @@ class ToolRegistryTest {
 
     @Test
     void noSchemaToolIsParameterless() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         Tool bare = new AbstractTool() {
             @Override
             public String getName() {
@@ -276,7 +277,7 @@ class ToolRegistryTest {
     @Test
     @DisplayName("平台基础工具不受 Agent 白名单限制")
     void platformToolsBypassAgentWhitelist() {
-        ToolRegistry registry = new ToolRegistry();
+        ToolRegistry registry = new ToolRegistry(new ToolsProperties());
         registry.register(new StaticSchemaTool());
         registry.register(new NamedStreamingTool("skill_load"));
         registry.register(new NamedStreamingTool("tool_result_read"));

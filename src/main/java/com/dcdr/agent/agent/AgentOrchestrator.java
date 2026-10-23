@@ -33,6 +33,7 @@ import com.dcdr.agent.skill.SkillContextHolder;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
+import com.dcdr.agent.tool.ToolInventory;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
 import com.dcdr.agent.tool.websearch.WebExtractTool;
@@ -87,6 +88,8 @@ public class AgentOrchestrator {
     private final ImageResolver imageResolver;
     private final ChatImageService chatImageService;
     private final ToolRegistry toolRegistry;
+    /** V3.2: 工具清单自检(单轮注入条数超阈值的早期告警) */
+    private final ToolInventory toolInventory;
     private final SystemPromptResolver systemPromptResolver;
     private final RuntimePromptProvider runtimePromptProvider;
     /** 背景信息(长期记忆 + 检索片段)的统一预算: 两者此前各有限制却互不感知 */
@@ -149,7 +152,8 @@ public class AgentOrchestrator {
     public AgentOrchestrator(ModelRouter router, ChatMemory memory, SessionManager sessionManager,
                              ActiveChatRegistry activeChatRegistry, TokenEstimator tokenEstimator,
                              ModelRegistry registry, ImageResolver imageResolver, ChatImageService chatImageService,
-                             ToolRegistry toolRegistry, SystemPromptResolver systemPromptResolver,
+                             ToolRegistry toolRegistry, ToolInventory toolInventory,
+                             SystemPromptResolver systemPromptResolver,
                              RuntimePromptProvider runtimePromptProvider,
                              BackgroundContextBudget backgroundContextBudget,
                              RagProperties ragProperties, AuditService auditService,
@@ -169,6 +173,7 @@ public class AgentOrchestrator {
         this.imageResolver = imageResolver;
         this.chatImageService = chatImageService;
         this.toolRegistry = toolRegistry;
+        this.toolInventory = toolInventory;
         this.systemPromptResolver = systemPromptResolver;
         this.runtimePromptProvider = runtimePromptProvider;
         this.backgroundContextBudget = backgroundContextBudget;
@@ -302,6 +307,8 @@ public class AgentOrchestrator {
                         // + OpenAI Map(legacy 手写 Provider 回退), 各 Provider 按需取用
                         List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitionsFiltered(
                                 ctx.agentAllowedTools());
+                        // V3.2: 工具定义是每轮重发的上下文成本, 超阈值说明该做合并/裁剪了
+                        toolInventory.warnIfContextTooLarge(toolDefs.size());
                         if (provider.supportsFunctionCalling() && !toolDefs.isEmpty()) {
                             request.setTools(toolDefs);
                             request.setToolSpecifications(

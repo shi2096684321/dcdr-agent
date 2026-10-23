@@ -1,5 +1,6 @@
 package com.dcdr.agent.tool;
 
+import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
 import com.dcdr.agent.tool.result.ToolResultReadTool;
 import com.dcdr.agent.tool.skill.SkillLoadTool;
@@ -55,6 +56,32 @@ public class ToolRegistry {
      */
     private static final Set<String> PLATFORM_TOOLS =
             Set.of(SkillLoadTool.NAME, ToolResultReadTool.NAME);
+
+    /** 平台机制工具的只读视图(供启动期自检复用, 避免第二份真值源) */
+    public static Set<String> platformToolNames() {
+        return PLATFORM_TOOLS;
+    }
+
+    private final ToolsProperties toolsProperties;
+
+    public ToolRegistry(ToolsProperties toolsProperties) {
+        this.toolsProperties = toolsProperties;
+    }
+
+    /**
+     * 部署期开关(V3.2): 该工具是否被允许暴露给模型。
+     * <p>
+     * 只影响"注入给 LLM"这条路径 —— {@link #getTool(String)} / {@link #execute} 不受影响,
+     * 因此 workflow 节点、内部调用等按名执行的场景不会因为部署方裁剪而失效。
+     * 平台机制工具永远放行(理由见 {@link #PLATFORM_TOOLS})。
+     */
+    private boolean deploymentAllowed(String name) {
+        if (PLATFORM_TOOLS.contains(name)) {
+            return true;
+        }
+        List<String> allowed = toolsProperties.getEnabled();
+        return allowed == null || allowed.isEmpty() || allowed.contains(name);
+    }
 
     public void register(Tool tool) {
         tools.put(tool.getName(), tool);
@@ -181,11 +208,24 @@ public class ToolRegistry {
     }
 
     /**
-     * 返回全部已注册工具的框架原生 ToolSpecification(V3.0 主路径,
+     * 返回部署允许暴露的、全部已注册工具的框架原生 ToolSpecification(V3.0 主路径,
      * LangChain4j Provider 直接消费, 无 Map 往返转换)。
+     * <p>
+     * V3.2 起含 {@code agent-tools.enabled} 的部署过滤 —— 与 {@link #getStreamingToolSpecifications()}
+     * 的差别只剩"是否要求 supportsStreaming"。
      */
     public List<ToolSpecification> getToolSpecifications() {
         return getStreamingToolSpecificationsFiltered(null, false);
+    }
+
+    /**
+     * 构建成功的工具名(不受部署白名单影响)。
+     * <p>
+     * 启动期自检必须用这个而不是 {@link #getToolSpecifications()}: 后者已按部署白名单过滤,
+     * 拿它去判断"schema 是否构建成功", 会把"故意不暴露"误报成"schema 坏了"。
+     */
+    public Set<String> getSpecifiedToolNames() {
+        return Set.copyOf(specifications.keySet());
     }
 
     /**
@@ -199,7 +239,9 @@ public class ToolRegistry {
      * V2.3 自定义 Agent 工具白名单过滤版本的流式工具规范。
      * <p>
      * 当 {@code allowedToolNames} 为 null/空时, 返回全部 streaming 工具规范;
-     * 否则仅返回名称在白名单中的工具。
+     * 否则仅返回名称在白名单中的工具。无论哪种情况, 都还要先过部署期白名单
+     * ({@code agent-tools.enabled}, 见 {@link #deploymentAllowed}),
+     * 且平台机制工具始终放行。
      */
     public List<ToolSpecification> getStreamingToolSpecificationsFiltered(List<String> allowedToolNames) {
         return getStreamingToolSpecificationsFiltered(allowedToolNames, true);
@@ -211,6 +253,7 @@ public class ToolRegistry {
         List<ToolSpecification> result = new ArrayList<>();
         for (Map.Entry<String, ToolSpecification> e : specifications.entrySet()) {
             if (streamingOnly && !tools.get(e.getKey()).supportsStreaming()) continue;
+            if (!deploymentAllowed(e.getKey())) continue;
             if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
                 continue;
             }
@@ -247,6 +290,7 @@ public class ToolRegistry {
         List<Map<String, Object>> defs = new ArrayList<>();
         for (Map.Entry<String, Tool> e : tools.entrySet()) {
             if (!e.getValue().supportsStreaming()) continue;
+            if (!deploymentAllowed(e.getKey())) continue;
             if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
                 continue;
             }

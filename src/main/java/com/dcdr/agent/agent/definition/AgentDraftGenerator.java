@@ -10,8 +10,6 @@ import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.model.provider.ChatModelProvider;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.dcdr.agent.tool.ToolRegistry;
-import com.dcdr.agent.tool.result.ToolResultReadTool;
-import com.dcdr.agent.tool.skill.SkillLoadTool;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,7 +24,6 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 专家 AI 生成 (V3.2): 一句话需求 → 一份可直接使用的专家配置。
@@ -75,12 +72,10 @@ public class AgentDraftGenerator {
     /** 温度缺省值: 与前端新建表单的默认值保持一致, 用户看不出"AI 给的和手填的不一样" */
     private static final BigDecimal DEFAULT_TEMPERATURE = new BigDecimal("0.7");
 
-    /**
-     * 平台基础工具: 与 Agent 白名单无关, 由平台自动注入(见 {@code ToolRegistry#PLATFORM_TOOLS})。
-     * 不该出现在"要不要给这个专家启用"的建议里 —— 列出来只会让用户困惑。
+    /*
+     * 平台基础工具(skill_load / tool_result_read)由 ToolRegistry.PLATFORM_TOOLS 单一维护,
+     * 此处不再抄一份: 新增平台工具时漏改一边, 会让它出现在"要给专家启用什么"的建议里。
      */
-    private static final Set<String> PLATFORM_TOOLS =
-            Set.of(SkillLoadTool.NAME, ToolResultReadTool.NAME);
 
     /**
      * 生成提示词。
@@ -194,7 +189,7 @@ public class AgentDraftGenerator {
     private Map<String, String> availableTools(boolean isAdmin) {
         Map<String, String> all = new LinkedHashMap<>();
         for (ToolSpecification spec : toolRegistry.getToolSpecifications()) {
-            if (PLATFORM_TOOLS.contains(spec.name())) continue;
+            if (ToolRegistry.platformToolNames().contains(spec.name())) continue;
             all.put(spec.name(), clip(spec.description(), MAX_TOOL_DESC_LEN));
         }
         // 受限工具在这里就滤掉(而不是等到落库被 403): 让模型从一开始就看不到它,

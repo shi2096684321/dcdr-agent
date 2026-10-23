@@ -103,10 +103,10 @@ agent:
 
   # 记忆配置
   memory:
-    max-messages: 6
+    max-messages: 20
     storage: memory
     # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
-    context-token-limit: 8000
+    context-token-limit: 300000
     context-warn-ratio: 0.8
     # ===== LLM 自动抽取记忆 (V3.1 P1) =====
     # 开启后每隔若干轮对话, 异步调用一次模型, 从对话里提炼"关于用户的结论性信息"
@@ -132,7 +132,7 @@ agent:
       # 一个显式开关被另一个开关的默认值悄悄抵消, 排查起来很费解。
       user-default: true
       # 抽取用模型, 留空 = 系统默认对话模型。建议配低成本模型
-      model: "qwen3.7-flash-2026-07-15"
+      model: "qwen3.8-flash"
       # 每多少轮抽取一次(按会话累计消息数估算); 4 轮约等于一次完整任务的规模
       every-n-turns: 4
       # 单次最多写入几条(ADD/UPDATE/DELETE 合计) —— 注入是每轮的常驻成本, 一次灌太多会吃光背景预算
@@ -219,6 +219,17 @@ agent:
     login-lock:
       max-failures: 5
       lock-ttl: 30m
+    # ===== 跨域白名单(全站唯一来源, 见 SecurityConfig.corsConfigurationSource) =====
+    # 语义同 Spring 的 allowedOriginPatterns: 支持 * 通配, 可与携带凭证共存。
+    # ⚠️ 只放行本机时, 通过 域名 / 隧道(Tailscale、ngrok、frp) / 内网 IP 访问前端会这样:
+    #    页面能打开(GET 不带 Origin), 但登录、发消息等 POST 一律 403 "Invalid CORS request"
+    #    —— 因为浏览器给 POST 带上了 Origin: https://<域名>, 而它不在名单里。
+    #    处理: 把该来源加进下面一行(可整体用环境变量覆盖, 逗号分隔, 无需改代码):
+    #      AGENT_AUTH_CORS_ALLOWED_ORIGIN_PATTERNS=http://localhost:*,http://127.0.0.1:*,https://*.ts.net
+    # 不要图省事写成单个 * : 与 allowCredentials 同用时 Spring 会拒绝该请求(等于任意站点可带凭证调 API)。
+    cors:
+      allowed-origin-patterns: '${AGENT_AUTH_CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*,https://desktop-53p6qfs.tail9db4db.ts.net}'
+
     permit-paths:
       - /api/auth/login
       - /api/auth/register
@@ -418,7 +429,7 @@ agent:
         provider: "qwen"
         api-key: ${DASHSCOPE_API_KEY:demo-key}
         base-url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        model: "qwen3.7-flash-2026-07-15"
+        model: "qwen3.8-flash"
         capabilities:
 #          - vision
           - function_calling
@@ -628,6 +639,23 @@ agent:
 
 # 工具配置
 agent-tools:
+  # ===== 工具暴露白名单 (V3.2) =====
+  # 语义: 留空/null = 全部已注册工具都暴露给模型; 一旦填写, 未列出的工具不再注入模型
+  #       (含 MCP / 插件等动态注册的工具), 但仍可被 workflow 等显式路径按名调用。
+  # 为什么放在部署配置而不是产品界面: "能调哪些工具"是部署方对风险与成本的决策
+  #       (联网出网 / 代码沙箱 / 第三方服务), 与数据库连接串同级; 让用户勾选工具既无可理解性,
+  #       也把"每轮该用哪个工具"这个属于模型的判断固化成了永久配置。
+  # 平台机制工具(skill_load / tool_result_read)不受此开关影响。
+  # 示例(取消注释即生效, 也可用环境变量 AGENT_TOOLS_ENABLED 覆盖):
+  # enabled:
+  #   - web_search
+  #   - web_extract
+  #   - knowledge_base_search
+  #   - calculator
+  #   - time
+  # 单轮注入工具定义条数的告警阈值: 超过即 WARN(60 秒内最多一次)。
+  # 工具定义是每轮重发的上下文成本, 且工具越多模型越容易选错 —— 超阈值说明该合并或裁剪了。
+  context-warn-count: 15
   weather:
     enabled: true
     api-key: ${WEATHER_API_KEY:demo-key}

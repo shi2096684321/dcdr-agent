@@ -1,6 +1,7 @@
 package com.dcdr.agent;
 
 import com.dcdr.agent.agent.AgentOrchestrator;
+import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.model.registry.ModelRegistry;
 import com.dcdr.agent.rag.embedding.EmbeddingRegistry;
 import com.dcdr.agent.tool.Tool;
@@ -14,6 +15,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -59,6 +61,10 @@ class ApplicationContextTest {
     @Autowired
     private ToolRegistry toolRegistry;
 
+    /** V3.2 部署期工具白名单: 用于区分"故意不暴露"与"schema 构建失败" */
+    @Autowired
+    private ToolsProperties toolsProperties;
+
     @Test
     @DisplayName("Spring 上下文可成功启动")
     void contextLoads() {
@@ -99,6 +105,13 @@ class ApplicationContextTest {
         Set<String> expected = context.getBeansOfType(Tool.class).values().stream()
                 .filter(Tool::supportsStreaming)
                 .map(Tool::getName)
+                // V3.2: 部署白名单(agent-tools.enabled)是"故意不暴露", 不算 schema 构建失败。
+                // 平台机制工具(skill_load / tool_result_read)不受白名单约束。
+                .filter(name -> {
+                    List<String> allowed = toolsProperties.getEnabled();
+                    return (allowed == null || allowed.isEmpty() || allowed.contains(name))
+                            || ToolRegistry.platformToolNames().contains(name);
+                })
                 .collect(Collectors.toSet());
         Set<String> exposed = toolRegistry.getStreamingToolSpecifications().stream()
                 .map(ToolSpecification::name)

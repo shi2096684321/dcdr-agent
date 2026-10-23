@@ -57,7 +57,7 @@
                 <span v-for="t in agentTags(a).slice(0, 3)" :key="t" class="chip">{{ t }}</span>
               </div>
               <div class="card-meta">
-                {{ a.profession || a.model || '默认模型' }} · {{ (a.tools && a.tools.length) ? a.tools.length + ' 工具' : '无工具' }} · {{ (a.kbIds && a.kbIds.length) ? a.kbIds.length + ' 知识库' : '无知识库' }}
+                {{ a.profession || a.model || '默认模型' }} · {{ (a.kbIds && a.kbIds.length) ? a.kbIds.length + ' 知识库' : '无知识库' }}
               </div>
               <div class="card-meta dim">更新于 {{ relTime(a.updatedAt) }}</div>
             </div>
@@ -178,13 +178,6 @@
             <div class="detail-value">{{ currentAgent.temperature != null ? currentAgent.temperature : '默认' }}</div>
           </div>
           <div class="detail-row">
-            <div class="detail-label">工具</div>
-            <div class="detail-value">
-              <el-tag v-for="t in (currentAgent.tools || [])" :key="t" size="small" class="tool-tag">{{ t }}</el-tag>
-              <span v-if="!currentAgent.tools || !currentAgent.tools.length">无</span>
-            </div>
-          </div>
-          <div class="detail-row">
             <div class="detail-label">知识库</div>
             <div class="detail-value">
               <el-tag v-for="k in (currentAgent.kbIds || [])" :key="k" size="small" type="warning" class="tool-tag">{{ k }}</el-tag>
@@ -205,7 +198,7 @@
       <div v-if="!editing" class="ai-gen">
         <div class="ai-gen-head">
           <span class="ai-gen-title">AI 一句话生成</span>
-          <span class="ai-gen-sub">简单说说要一个做什么的专家, 角色设定/标签/推荐问法/工具由模型补齐</span>
+          <span class="ai-gen-sub">简单说说要一个做什么的专家, 角色设定/标签/推荐问法/能力由模型补齐</span>
         </div>
         <div class="ai-gen-row">
           <el-input v-model="aiBrief" :disabled="generating" maxlength="500"
@@ -259,12 +252,8 @@
         <el-form-item label="温度">
           <el-slider v-model="form.temperature" :min="0" :max="2" :step="0.1" show-input :show-input-controls="false" />
         </el-form-item>
-        <el-form-item label="启用工具">
-          <el-select v-model="form.tools" multiple filterable allow-create default-first-option
-                     placeholder="输入工具名 (如: calculator, time, web_search, knowledge_base_search)" style="width:100%">
-            <el-option v-for="t in suggestedTools" :key="t" :label="t" :value="t" />
-          </el-select>
-        </el-form-item>
+        <!-- 能力(工具)不在此配置: 工具属于部署期开关(agent-tools.enabled),
+             而"这一轮该用哪个工具"是模型每轮的判断, 不该被固化成一份人工白名单 -->
         <el-form-item v-if="authStore.isAdmin" label="关联知识库">
           <el-select v-model="form.kbIds" multiple filterable placeholder="选择知识库 (可选)" style="width:100%">
             <el-option v-for="kb in knowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
@@ -395,8 +384,9 @@ const categoryOptions = ['编程开发', '写作创作', '翻译', '数据分析
 // 模型列表 (全局共享, 从 modelStore 读取; 留空代表使用系统默认模型)
 const chatModels = computed(() => modelStore.chatModels)
 const knowledgeBases = ref([])
-// 常见工具名建议 (实际可用工具以后端 ToolRegistry 注册为准)
-const suggestedTools = ['calculator', 'time', 'web_search', 'knowledge_base_search', 'code_interpreter', 'tool_result_read']
+
+// 能力(工具)清单不在此维护: 它是部署期配置(agent-tools.enabled),
+// 而每轮该用哪个工具由模型判断。form.tools 仅作为存量字段原样回传, 界面不再展示、不再编辑。
 
 // userId → username 映射 (仅管理员加载, 用于展示 Agent 归属用户)
 const userNames = ref({})
@@ -649,7 +639,7 @@ async function doGenerate() {
     form.tags = [...(draft.tags || [])]
     form.quickPrompts = [...(draft.quickPrompts || [])]
     form.persona = draft.persona || ''
-    form.tools = [...(draft.tools || [])]
+    // 不采纳 draft.tools: 工具不再由人工配置, 生成结果里的工具建议不落库
     if (draft.temperature != null) form.temperature = Number(draft.temperature)
     ElMessage.success(`已生成「${form.name}」, 确认或微调后点确定保存`)
   } catch (e) {
@@ -958,7 +948,6 @@ onMounted(() => {
 .detail-row { display: flex; padding: 10px 0; border-bottom: 1px dashed var(--dcdr-border); }
 .detail-label { width: 90px; color: var(--dcdr-text-3); font-size: 13px; flex-shrink: 0; }
 .detail-value { flex: 1; color: var(--dcdr-text-1); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-.tool-tag { margin: 0; }
 .detail-prompt { flex-direction: column; gap: 8px; }
 .prompt-box { background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 12px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; margin: 0; max-height: 320px; overflow-y: auto; font-family: inherit; }
 

@@ -3,6 +3,8 @@ package com.dcdr.agent.config;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import java.util.List;
+
 /**
  * 工具配置属性
  */
@@ -15,6 +17,29 @@ public class ToolsProperties {
     private ToolConfig time = new ToolConfig();
     private SandboxConfig sandbox = new SandboxConfig();
     private WebToolsConfig web = new WebToolsConfig();
+
+    /**
+     * 允许暴露给模型的工具名白名单(V3.2, 部署期开关)。
+     * <p>
+     * <b>为什么放在部署配置里而不是产品界面</b>: "能调哪些工具"是部署方对风险与成本的决策
+     * (联网出网、代码沙箱、第三方 MCP), 与数据库连接串同级; 而用户要表达的是"这个专家干什么活",
+     * 不是"它能调哪个 API"。工具选择属于模型每轮的任务判断, 不该固化成一份人工配置。
+     * <p>
+     * 语义: {@code null} 或空集合 = 全部已注册工具都暴露; 一旦填写, 未列出的工具
+     * (含 MCP / 插件等动态注册的工具)不再注入模型 —— 但仍可被 workflow 等显式路径按名执行。
+     * 平台机制工具({@code skill_load} / {@code tool_result_read})不受此开关影响,
+     * 否则会出现"模型看得见技能清单却没法读取"的自相矛盾状态。
+     */
+    private List<String> enabled;
+
+    /**
+     * 单轮注入给模型的工具定义条数告警阈值(V3.2)。
+     * <p>
+     * 工具定义是每轮都要重发的上下文成本, 且工具越多、模型选错的概率越高
+     * (业界实测: 全量工具集下选择准确率可下降 20 个百分点以上)。
+     * 超过该阈值说明到了该"合并/裁剪工具"而不是继续加工具的时候。
+     */
+    private int contextWarnCount = 15;
 
     @Data
     public static class WeatherConfig {
