@@ -14,4 +14,16 @@ public interface RoutingLogRepository extends JpaRepository<RoutingLogEntity, St
 
     /** 按用户分页查询 */
     Page<RoutingLogEntity> findByUserIdOrderByCreatedAtDesc(String userId, Pageable pageable);
+
+    /**
+     * 按路由类型分页查询 (全部用户)。
+     * <p>
+     * 类型过滤必须下推到数据库: 前端只在"当前页 20 条"里过滤的话, 下一页会把上一页过滤掉的行
+     * 又补回来, 且 total 仍是全量 —— 分页与筛选互相打架, 用户看到的是"每页条数忽多忽少"。
+     */
+    Page<RoutingLogEntity> findByRouteTypeOrderByCreatedAtDesc(String routeType, Pageable pageable);
+
+    /** 按用户 + 路由类型分页查询 */
+    Page<RoutingLogEntity> findByUserIdAndRouteTypeOrderByCreatedAtDesc(
+            String userId, String routeType, Pageable pageable);
 }

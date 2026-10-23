@@ -52,22 +52,31 @@ public class RoutingController {
     @Operation(summary = "路由记录列表 (分页)",
             description = "V3.0 F-30: 分页查询当前用户的智能路由记录, 用于分析路由准确率与调优置信度阈值。"
                     + "管理员可查全部 (传 userId=all); 普通用户仅查自己。"
+                    + "可按路由类型过滤 (routeType=workflow|agent|chat, 留空=全部); "
                     + "返回分页对象 {content, page, size, totalElements, totalPages}。")
     @GetMapping("/logs")
     public Result<RoutingDtos.RoutingLogPageView> logs(
             @Parameter(description = "页码 (从 0 开始)") @RequestParam(defaultValue = "0") int page,
             @Parameter(description = "每页条数 (1~100)") @RequestParam(defaultValue = "20") int size,
             @Parameter(description = "查询全部用户 (仅管理员)") @RequestParam(required = false) String userId,
+            @Parameter(description = "路由类型过滤: workflow / agent / chat; 留空=全部")
+            @RequestParam(required = false) String routeType,
             ServerWebExchange exchange) {
         String currentUserId = SecurityContext.getUserId(exchange);
         boolean isAdmin = SecurityContext.isAdmin(exchange);
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        // 空串按"不过滤"处理: el-select 的"全部类型"取值就是空串
+        String type = (routeType == null || routeType.isBlank()) ? null : routeType.trim().toLowerCase();
         // 普通用户强制只查自己; 管理员可传 userId=all 查全部
         Page<RoutingLogEntity> p;
         if (isAdmin && "all".equalsIgnoreCase(userId)) {
-            p = routingLogRepository.findAllByOrderByCreatedAtDesc(pageable);
+            p = type == null
+                    ? routingLogRepository.findAllByOrderByCreatedAtDesc(pageable)
+                    : routingLogRepository.findByRouteTypeOrderByCreatedAtDesc(type, pageable);
         } else {
-            p = routingLogRepository.findByUserIdOrderByCreatedAtDesc(currentUserId, pageable);
+            p = type == null
+                    ? routingLogRepository.findByUserIdOrderByCreatedAtDesc(currentUserId, pageable)
+                    : routingLogRepository.findByUserIdAndRouteTypeOrderByCreatedAtDesc(currentUserId, type, pageable);
         }
         // 批量回填 targetName (工作流名 / Agent 名), 避免逐条查库
         Map<String, String> nameCache = new HashMap<>();

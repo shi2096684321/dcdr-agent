@@ -7,13 +7,13 @@
         <span class="tb-sub">每条消息的路由判断结果 · 用于分析准确率与调优置信度阈值</span>
       </div>
       <div class="tb-actions">
-        <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:120px" @change="loadLogs">
+        <el-select v-if="authStore.isAdmin" v-model="filterUserId" size="small" style="width:120px" @change="onFilterChange">
           <!-- 取值必须非空: 空串会被 el-select 当作"未选择", 输入框什么都不显示
                (与调用链页同一处修正 —— 两页原本是同一份代码, 不一起改会出现"一页显示、一页空白") -->
           <el-option label="仅自己" value="self" />
           <el-option label="全部用户" value="all" />
         </el-select>
-        <el-select v-model="filterType" size="small" style="width:120px" @change="loadLogs" placeholder="路由类型">
+        <el-select v-model="filterType" size="small" style="width:120px" @change="onFilterChange" placeholder="路由类型">
           <el-option label="全部类型" value="" />
           <el-option label="工作流" value="workflow" />
           <el-option label="专家" value="agent" />
@@ -59,7 +59,7 @@
         <span class="ta-r">判定</span>
       </div>
 
-      <template v-for="log in filteredLogs" :key="log.id">
+      <template v-for="log in logs" :key="log.id">
         <div class="rt-row" :class="{ open: expanded.has(log.id), low: !log.highConfidence }" @click="toggle(log.id)">
           <span class="rt-time">{{ formatTime(log.createdAt) }}</span>
           <span class="rt-type" :class="'rt-' + log.routeType">{{ routeTypeLabel(log.routeType) }}</span>
@@ -89,14 +89,16 @@
         </div>
       </template>
 
-      <div v-if="!loading && !filteredLogs.length" class="empty-tip">
+      <div v-if="!loading && !logs.length" class="empty-tip">
         暂无路由记录<br />
         在对话页面直接输入需求（不手动选专家 / 工作流），系统会自动判断路由并记录在此
       </div>
     </div>
 
-    <div class="pager" v-if="total > pageSize">
-      <el-pagination background layout="total, sizes, prev, pager, next" :total="total"
+    <!-- 分页: 只要有一条数据就常显(不按"是否超过一页"隐藏) —— 否则数据不足 20 条时
+         用户完全看不到分页入口, 会以为这一页不支持翻页/没法改每页条数 -->
+    <div class="pager" v-if="total > 0">
+      <el-pagination background layout="total, sizes, prev, pager, next, jumper" :total="total"
                      :page-sizes="[10, 20, 50, 100]" v-model:page-size="pageSize"
                      v-model:current-page="page" @current-change="loadLogs" @size-change="onSizeChange" />
     </div>
@@ -211,6 +213,15 @@ const filterUserId = ref('self')
 const filterType = ref('')
 const expanded = ref(new Set())
 
+/**
+ * 筛选条件变化: 必须先回到第 1 页再查。
+ * 否则在第 3 页把范围缩小(切"仅自己"/选某个类型)后, 第 3 页很可能已经越界, 表现为"一选就空白"。
+ */
+function onFilterChange() {
+  page.value = 1
+  loadLogs()
+}
+
 // ===== 详情抽屉 =====
 const detailVisible = ref(false)
 const detailLog = ref(null)
@@ -218,11 +229,6 @@ function openDetail(log) {
   detailLog.value = log
   detailVisible.value = true
 }
-
-const filteredLogs = computed(() => {
-  if (!filterType.value) return logs.value
-  return logs.value.filter(l => l.routeType === filterType.value)
-})
 
 const highConfCount = computed(() => logs.value.filter(l => l.highConfidence).length)
 const lowConfCount = computed(() => logs.value.filter(l => !l.highConfidence).length)
@@ -295,6 +301,8 @@ async function loadLogs() {
     }
     // 只有"全部用户"需要带参数: 后端仅在 userId=all 时查全部, 其余取值(含不传)一律查自己
     if (authStore.isAdmin && filterUserId.value === 'all') params.userId = filterUserId.value
+    // 类型过滤下推到后端: 本地过滤只能筛"当前页 20 条", 翻页后结果会自相矛盾
+    if (filterType.value) params.routeType = filterType.value
     const data = await getRoutingLogs(params)
     logs.value = Array.isArray(data) ? data : (data.content || [])
     total.value = Array.isArray(data) ? data.length : (data.totalElements || data.length)
@@ -311,17 +319,18 @@ onMounted(() => {
 </script>
 
 <style scoped>
-/* flex:1 + overflow-y:auto: 根容器自行滚动(父级 .app-main 为 overflow:hidden, 不加则内容超高被裁剪无法下滑) */
-.routing-mode { flex: 1; overflow-y: auto; padding: 18px 24px 24px; }
+/* 根容器改为"页头 + 指标条 + 列表 + 分页"四段竖排, 只有列表滚: 分页器因此始终贴在底部可见,
+   不会因为列表有 20 行(或展开了几条)就要一直滚到最下面才找得到 */
+.routing-mode { flex: 1; display: flex; flex-direction: column; overflow: hidden; padding: 18px 24px 16px; }
 
 /* ===== 页头 ===== */
-.rt-toolbar { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
+.rt-toolbar { flex: none; display: flex; align-items: center; gap: 16px; margin-bottom: 14px; }
 .tb-title { display: flex; align-items: baseline; gap: 10px; font-size: 15px; font-weight: 600; color: var(--dcdr-text-1); }
 .tb-sub { font-size: 11.5px; font-weight: 400; color: var(--dcdr-text-3); }
 .tb-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 
 /* ===== 指标条 ===== */
-.metric-row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.metric-row { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .metric {
   display: flex; flex-direction: column-reverse; gap: 6px;
   padding: 11px 13px; background: var(--dcdr-surface-faint);
@@ -334,8 +343,11 @@ onMounted(() => {
 
 /* ===== 行式列表 ===== */
 .rt-table {
+  /* flex:1 + min-height:0: 列表吃掉剩余高度并自己滚(父级是竖排 flex, 少了 min-height:0 会被内容撑开、
+     把分页器顶出可视区); overflow-y 交给列表, 表头才能 sticky 在本区域内而不是整页顶部 */
+  flex: 1; min-height: 0; overflow-y: auto;
   background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
-  border-radius: var(--dcdr-radius-inner); overflow: hidden; min-height: 180px;
+  border-radius: var(--dcdr-radius-inner);
 }
 .rt-head,
 .rt-row {
@@ -344,6 +356,7 @@ onMounted(() => {
   gap: 12px; align-items: center; padding: 0 14px;
 }
 .rt-head {
+  position: sticky; top: 0; z-index: 1;
   height: 34px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.6px;
   color: var(--dcdr-text-3);
   border-bottom: 1px solid var(--dcdr-border); background: var(--dcdr-bg-subtle);
@@ -398,7 +411,7 @@ onMounted(() => {
 .rd-btn:hover { border-color: var(--dcdr-accent); }
 
 .empty-tip { text-align: center; color: var(--dcdr-text-3); padding: 60px 20px; font-size: 12.5px; line-height: 1.9; }
-.pager { margin-top: 16px; display: flex; justify-content: center; }
+.pager { flex: none; margin-top: 12px; display: flex; justify-content: center; }
 
 /* ===== 详情抽屉: 一次路由判断的凭据 ===== */
 /* body 的 padding/overflow 在 styles/element.css 里处理(drawer 会 teleport, scoped :deep 够不到) */
