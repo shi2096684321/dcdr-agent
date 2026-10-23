@@ -39,6 +39,9 @@ public class AuthProperties {
     /** 登录失败锁定策略 */
     private LoginLock loginLock = new LoginLock();
 
+    /** 跨域(CORS)配置 —— 全站唯一一处来源, 不再另建 CorsWebFilter Bean */
+    private Cors cors = new Cors();
+
     @Data
     public static class Jwt {
 
@@ -74,5 +77,25 @@ public class AuthProperties {
         private int maxFailures = 5;
         /** 锁定时长 */
         private Duration lockTtl = Duration.ofMinutes(30);
+    }
+
+    /**
+     * CORS 白名单。
+     * <p>
+     * <b>为什么必须可配</b>: 前端经隧道 / 自建域名 / 内网 IP 访问时, 浏览器发出的 POST
+     * (登录、改会话、发消息都是 POST) 会带上 {@code Origin: https://<域名>}; 若该来源不在白名单里,
+     * Spring 的 CORS 过滤器会在进入 Controller 之前直接判为非法跨域并回 <b>403 Invalid CORS request</b>,
+     * 而同一页面的 GET 请求不带 Origin、一切正常 —— 极易被误判成"账号或 Token 有问题"。
+     * <p>
+     * 语义同 Spring 的 {@code allowedOriginPatterns}: 支持 {@code *} 通配(如 {@code https://*.ts.net}),
+     * 且可与 {@code allowCredentials=true} 共存; 若写成单个 {@code *} 并携带凭证, Spring 会直接拒绝请求。
+     */
+    @Data
+    public static class Cors {
+
+        /** 允许的 Origin 模式列表; 逗号分隔即可从环境变量整体覆盖 */
+        private List<String> allowedOriginPatterns = new ArrayList<>(List.of(
+                "http://localhost:*",
+                "http://127.0.0.1:*"));
     }
 }

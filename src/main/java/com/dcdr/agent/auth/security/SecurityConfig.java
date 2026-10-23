@@ -70,6 +70,8 @@ public class    SecurityConfig {
             return http.csrf(spec -> spec.disable())
                     .httpBasic(spec -> spec.disable())
                     .formLogin(spec -> spec.disable())
+                    // 关闭认证也要保留 CORS: 否则 dev server / 域名访问同样会被判非法跨域(403)
+                    .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                     .authorizeExchange(ex -> ex.anyExchange().permitAll())
                     .build();
         }
@@ -143,11 +145,20 @@ public class    SecurityConfig {
         return http.build();
     }
 
-    /** CORS 配置: 允许前端 dev server (5173/5174) 跨域访问 */
+    /**
+     * CORS 配置: 全站唯一来源(原 {@code config/CorsConfig} 里的 CorsWebFilter Bean 已删除)。
+     * <p>
+     * 白名单来自 {@code agent.auth.cors.allowed-origin-patterns}, 默认只放行本机 dev server;
+     * 经隧道 / 域名访问前端时必须显式加进来 —— 否则 POST(含登录)会因 Origin 不在名单内
+     * 被 CORS 过滤器拦成 403 "Invalid CORS request", 而 GET 页面看起来完全正常。
+     * <p>
+     * 注意: 该过滤器由 SecurityWebFilterChain 承载, 排在业务之前; 另起一个宽松的
+     * CorsWebFilter Bean 并不能"兜底" —— 它的 order 在安全链之后, 永远轮不到执行。
+     */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-        config.setAllowedOriginPatterns(List.of("http://localhost:*", "http://127.0.0.1:*"));
+        config.setAllowedOriginPatterns(authProperties.getCors().getAllowedOriginPatterns());
         config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         config.setAllowedHeaders(List.of("*"));
         config.setAllowCredentials(true);
