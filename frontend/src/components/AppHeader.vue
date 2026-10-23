@@ -198,14 +198,21 @@ const videoModels = computed(() => props.models.filter((m) => m.type === 'VIDEO'
 
 const avatarLetter = computed(() => (authStore.username || '?').charAt(0).toUpperCase())
 
+/**
+ * 切换模型只改选择, <b>不再跳转页面</b>。
+ * <p>
+ * 早先按 uiMode 自动切对话/创作: 在写文档时顺手选个图片模型就会被踢到创作页, 回来还得重新找回原页面;
+ * 反过来在创作页改回对话模型又会被弹走 —— 一次"想看看有哪些模型"的浏览变成了两次页面跳转。
+ * <p>
+ * 不匹配(在对话页选了图片/视频模型)改由<b>使用的那一刻</b>提示: 见 ChatView 的发送前校验与
+ * CreativeView 的生成前校验。切换瞬间不打扰, 因为此时用户可能只是在浏览模型列表。
+ */
 function onModelChange(val) {
   if (val === MANAGE_MODELS) {
     openUmDialog()
     return
   }
   emit('update:currentModel', val)
-  const m = props.models.find((x) => x.name === val)
-  emit('update:mode', m && m.uiMode === 'creative' ? 'creative' : 'chat')
 }
 
 // ===== 自定义模型管理 (V3.1) =====

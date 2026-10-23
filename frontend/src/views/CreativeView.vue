@@ -260,10 +260,21 @@ const genType = ref('image')
 // 默认取各自类型列表的第一项, 避免共用单一 currentModel 导致的互相串号
 const selectedImageModel = ref('')
 const selectedVideoModel = ref('')
-// 模型列表就绪后, 若尚未选择则默认选中第一项
+/**
+ * 模型列表就绪后初始化各自类型的选中项。
+ * <p>
+ * 顶栏已选过的模型优先继承: 切换模型不再自动跳页之后, 用户的典型路径变成"先在顶栏选好模型, 再自己进创作页" ——
+ * 这时若仍无条件取列表第一项, 他刚才的选择会被无声覆盖。只有顶栏那个模型类型对不上(比如还是对话模型)时才回落默认。
+ */
 function syncDefaultModels() {
-  if (!selectedImageModel.value && props.imageModels?.length) selectedImageModel.value = props.imageModels[0].name
-  if (!selectedVideoModel.value && props.videoModels?.length) selectedVideoModel.value = props.videoModels[0].name
+  const header = props.currentModel
+  const inList = (list) => (list || []).some(m => m.name === header)
+  if (!selectedImageModel.value) {
+    selectedImageModel.value = inList(props.imageModels) ? header : (props.imageModels?.[0]?.name || '')
+  }
+  if (!selectedVideoModel.value) {
+    selectedVideoModel.value = inList(props.videoModels) ? header : (props.videoModels?.[0]?.name || '')
+  }
 }
 // 选中图片模型: 仅更新本地图片状态, 并回传顶栏(创作模式下展示用)
 function onSelectImageModel(val) { selectedImageModel.value = val; emit('update:currentModel', val) }
@@ -280,6 +291,51 @@ function onSelectVideoModel(val) {
 watch([selectedImageModel, selectedVideoModel, genType], () => {
   emit('update:currentModel', genType.value === 'video' ? selectedVideoModel.value : selectedImageModel.value)
 })
+
+// ===== 顶栏模型与本页的匹配 =====
+// 顶栏切换模型已不再自动跳页(F-09-004 调整), 于是可能"停在创作页、顶栏却选着对话模型"。
+// 本页的生成始终用下面自己选的图片/视频模型, 顶栏那个对话模型并不参与 —— 所以不拦生成, 只在使用时说清楚。
+function isHeaderModelMismatch(kind) {
+  if (!props.currentModel) return false
+  const list = kind === 'video' ? (props.videoModels || []) : (props.imageModels || [])
+  return !list.some(m => m.name === props.currentModel)
+}
+
+// 已提示过的顶栏模型名: 只在"换了一个不匹配的模型"之后提示一次, 而不是每次点生成都弹一遍
+let mismatchHinted = ''
+
+/**
+ * 生成前的模型校验与提示。
+ * <p>
+ * 提示分两类, 都只在<b>真正点生成时</b>出现(切换模型时不打扰):
+ * <ul>
+ *   <li>硬拦截: 本页没有可用的图片/视频模型、或尚未选中 —— 这时确实无法生成;</li>
+ *   <li>软提示: 顶栏选的是对话模型, 但本页会用自己选的模型生成 —— 说清楚用哪个, 避免"以为用的是顶栏那个"。</li>
+ * </ul>
+ *
+ * @param {'image'|'video'} kind 生成类型
+ * @returns true 表示可以继续生成
+ */
+function ensureCreativeModel(kind) {
+  const isVideo = kind === 'video'
+  const list = isVideo ? (props.videoModels || []) : (props.imageModels || [])
+  const selected = isVideo ? selectedVideoModel.value : selectedImageModel.value
+  const label = isVideo ? '视频' : '图片'
+  if (!list.length) {
+    ElMessage.warning(`当前没有可用的${label}生成模型, 请联系管理员在模型配置中启用`)
+    return false
+  }
+  if (!selected) {
+    ElMessage.warning(`请先选择${label}生成模型`)
+    return false
+  }
+  if (isHeaderModelMismatch(kind) && mismatchHinted !== props.currentModel) {
+    mismatchHinted = props.currentModel
+    const hit = list.find(m => m.name === selected)
+    ElMessage.info(`顶栏选中的是对话模型, 本次${label}生成使用「${hit?.label || selected}」`)
+  }
+  return true
+}
 const projects = ref([])
 const currentProjectId = ref(null)
 const prompt = ref('')
@@ -756,6 +812,7 @@ async function regenerate() {
 
 async function generate() {
   if (!prompt.value.trim() || generating.value) return
+  if (!ensureCreativeModel('image')) return
   if (!currentProjectId.value) await ensureProject()
   generating.value = true
   doneCount.value = 0
@@ -810,6 +867,7 @@ async function generate() {
 }
 async function generateVideo() {
   if (!videoPrompt.value.trim() || videoGenerating.value) return
+  if (!ensureCreativeModel('video')) return
   if (!currentProjectId.value) await ensureProject()
   videoGenerating.value = true
   resultVideo.value = ''

@@ -45,7 +45,7 @@
       </div>
       <template v-else>
         <!-- 引用来源汇总行(正文上方): 联网搜索显示网页 favicon, 知识库片段显示📚 -->
-        <div v-if="hasSources && msg.content" class="search-summary">
+        <div v-if="hasSources" class="search-summary">
           <svg v-if="allKbSources" class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5C5 4.4 5.9 3.6 7 3.6h11v14.6H7c-1.1 0-2 .8-2 1.9V5.5z"/><path d="M18 18.2v3.2H7"/></svg>
           <svg v-else class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="6.6"/><path d="M20 20l-3.6-3.6"/></svg>
           <span class="search-text">{{ allKbSources ? `已参考 ${msg.sources.length} 个知识库片段` : `已阅读 ${msg.sources.length } 个网页` }}</span>
@@ -56,10 +56,10 @@
           </div>
         </div>
 
-        <div v-if="msg.content" class="msg-bubble" v-html="renderBubble(msg.content)" @click="onBubbleClick"></div>
+        <div v-if="displayContent" class="msg-bubble" v-html="renderBubble(displayContent)" @click="onBubbleClick"></div>
 
         <!-- 正文下方精简 favicon 汇总(二次强化"有来源"的感知) -->
-        <div v-if="hasSources && msg.content" class="search-summary-bottom">
+        <div v-if="hasSources" class="search-summary-bottom">
           <div v-if="!allKbSources" class="favicon-stack">
             <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
                  :style="{ zIndex: topFavicons.length - i }" loading="lazy"
@@ -192,6 +192,27 @@ const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
 const { handleCodeClick } = useCodeBlock((payload) => emit('preview-code', payload))
 
 const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
+
+/**
+ * 历史消息兼容: 旧版本后端会把非图片工具的执行结果原样拼到回答末尾 ——
+ * 知识库/联网检索的整段转储, 连"...(工具结果过长已截断: 原始 6057 字符…)…"这类平台标记都在。
+ * 这类消息本身已经带 sources 卡片, 正文里的转储纯属重复, 展示时按平台固定开头截掉。
+ *
+ * 只认后端自己写的那两句开头(不做泛化的"来源"关键词匹配): 用户主动要求"列出参考资料"时,
+ * 模型写的正文不该被吞。后端已改为只并入 calculator/time 这类即时工具, 这里是老数据兜底。
+ */
+const TOOL_DUMP_HEAD = /(^|\n)[ \t]*(从知识库检索到\s*\d+\s*条相关内容|以下是联网检索到的\s*\d+\s*条资料)/
+function stripToolDump(text) {
+  const m = TOOL_DUMP_HEAD.exec(text)
+  return m ? text.slice(0, m.index).trimEnd() : text
+}
+
+/** 实际用于渲染的正文(可能已裁掉历史遗留的工具结果转储) */
+const displayContent = computed(() => {
+  const content = props.msg?.content || ''
+  if (!content || !hasSources.value) return content
+  return stripToolDump(content)
+})
 // 是否全部为知识库片段来源(RAG): 决定汇总行文案与是否显示网页 favicon
 const allKbSources = computed(() => hasSources.value
   && props.msg.sources.every(s => s.source === 'knowledge_base'))

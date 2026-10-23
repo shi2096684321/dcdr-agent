@@ -383,7 +383,8 @@ public class McpTool implements Tool {
         if (sources.isEmpty()) return "（联网搜索未返回可用结果）";
         StringBuilder sb = new StringBuilder();
         sb.append("以下是联网检索到的 ").append(sources.size())
-                .append(" 条资料，请在回答中通过 [[n]] 标注引用来源（n 为下方序号），并在结尾列出引用：\n\n");
+                .append(" 条资料，请在回答中通过 [[n]] 标注引用来源（n 为下方序号）即可，"
+                        + "不要在结尾另列来源清单（界面已在回答下方统一展示来源卡片）：\n\n");
         int i = 1;
         for (Map<String, Object> s : sources) {
             sb.append("[[").append(i).append("]] ").append(s.get("title"));

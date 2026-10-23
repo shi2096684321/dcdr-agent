@@ -200,9 +200,9 @@
         </div>
 
         <div class="input-box">
-          <textarea v-model="input" placeholder="输入消息，Enter 发送，Shift + Enter 换行"
+          <textarea ref="inputEl" v-model="input" placeholder="输入消息，Enter 发送，Shift + Enter 换行"
                     @keydown.enter.exact.prevent="send" rows="1"
-                    :style="{ maxHeight: selectedFiles.length ? '80px' : '160px' }"></textarea>
+                    :class="{ 'has-files': selectedFiles.length > 0 }"></textarea>
           <div class="input-foot">
             <div class="input-actions">
             <!-- 文生图按钮 -->
@@ -380,7 +380,13 @@ function openCodePreview({ code, lang }) {
 }
 const { handleCodeClick: onCodeClick } = useCodeBlock(openCodePreview)
 const vFocus = { mounted: (el) => el.focus() }
-const props = defineProps({ currentModel: String, webSearch: { type: Boolean, default: false }, thinkingEnabled: { type: Boolean, default: true } })
+const props = defineProps({
+  currentModel: String,
+  webSearch: { type: Boolean, default: false },
+  thinkingEnabled: { type: Boolean, default: true },
+  // 顶栏模型分组数据: 用于发送前判断"当前选中的是不是对话模型"(切换模型已不再自动跳页)
+  models: { type: Array, default: () => [] }
+})
 const authStore = useAuthStore()
 
 const sessions = ref([])
@@ -436,6 +442,42 @@ const editBuffer = ref('')
 const selectedFiles = ref([])
 const previewImageUrl = ref(null)
 const sidebarCollapsed = ref(false)
+
+// ===== 输入框自适应高度 =====
+const inputEl = ref(null)
+
+/**
+ * 输入框随内容长高(上限由 CSS 的 max-height 决定)。
+ * <p>
+ * 原生 textarea 不会自己长高: 多行内容或粘贴长文时, 超出 one-row 高度的部分被内部滚动条吃掉,
+ * 用户只能看到一行, 写完还得上下翻。这里每次内容变化都把高度重置为 auto 再按 scrollHeight 收起,
+ * 上限 240px(带附件预览时 120px, 因为预览区本身要占高度), 超过才出现内部滚动。
+ * <p>
+ * 「先归零再量」是必须的: 直接读 scrollHeight 时它只会取"当前高度与内容高度的较大者",
+ * 于是删除文本时永远缩不回去, 输入框会一路只增不减。
+ */
+function autoGrowInput() {
+  const el = inputEl.value
+  if (!el) return
+  el.style.height = 'auto'
+  const cssMax = parseFloat(window.getComputedStyle(el).maxHeight)
+  const cap = Number.isFinite(cssMax) && cssMax > 0 ? cssMax : 240
+  el.style.height = Math.min(el.scrollHeight, cap) + 'px'
+  el.style.overflowY = el.scrollHeight > cap ? 'auto' : 'hidden'
+  // 超过上限进入内部滚动时贴底, 保证最新一行/光标可见
+  if (el.scrollHeight > cap) el.scrollTop = el.scrollHeight
+}
+
+watch(input, () => nextTick(autoGrowInput))
+// 附件预览会顶掉一部分可用高度, 上限随 CSS 类切换后重新量一次
+watch(() => selectedFiles.value.length > 0, () => nextTick(autoGrowInput))
+
+onMounted(() => {
+  autoGrowInput()
+  // 窗口变窄时同样的文字要占更多行, 变宽时应收回去 —— 否则拖一下窗口高度就和内容对不上了
+  window.addEventListener('resize', autoGrowInput)
+})
+onUnmounted(() => window.removeEventListener('resize', autoGrowInput))
 
 // 会话设置(会话级 System Prompt 定制)
 const settingsVisible = ref(false)
@@ -651,12 +693,39 @@ function quickSend(text) {
 
 function scrollBottom() { nextTick(() => { if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight }) }
 
+/** 模型类型 → 中文名(仅用于提示文案) */
+const MODEL_TYPE_LABEL = { CHAT: '对话', IMAGE: '图片生成', VIDEO: '视频生成', AUDIO: '语音' }
+
+/**
+ * 发送前的模型校验。
+ * <p>
+ * 切换模型已不再自动跳页(F-09-004 调整), 于是可能出现"停在对话页、顶栏却选着图片/视频模型"的状态。
+ * 这种不匹配只在<b>真正要发消息时</b>提示 —— 浏览模型列表本身是无害的, 不该被打断。
+ * 提示里带上"去哪儿用它", 免得用户只知道"用不了"却不知道该怎么继续。
+ *
+ * @returns true 表示可以发送; false 表示已给出提示并拦下本次发送
+ */
+function ensureChatModel() {
+  if (!props.currentModel) {
+    ElMessage.warning('请先在顶部选择一个对话模型')
+    return false
+  }
+  const m = (props.models || []).find(x => x.name === props.currentModel)
+  // 列表未加载完、或是后端新增的模型时查不到 → 不做前端拦截, 让后端给出准确错误(避免误伤正常对话)
+  if (!m || m.type === 'CHAT') return true
+  const typeLabel = MODEL_TYPE_LABEL[m.type] || m.type
+  ElMessage.warning(`当前选中的「${m.label || m.name}」是${typeLabel}模型, 不能用于对话。`
+    + '请在顶部切换到对话模型; 若要使用它, 请到左侧「创作」页。')
+  return false
+}
+
 async function send(opts = {}) {
   const overrideImages = opts.images || null
   const text = input.value.trim()
   const hasFiles = selectedFiles.value.length > 0
 
   if ((!text && !hasFiles && !overrideImages) || streaming.value) return
+  if (!ensureChatModel()) return
   contextWarning.value = null
   lastTokenUsage.value = null
   lastDurationMs.value = null
@@ -1142,7 +1211,9 @@ onMounted(() => { loadSessions() })
 
 /* 聊天区域 */
 .chat-area { flex: 1; display: flex; flex-direction: column; background: transparent; position: relative; overflow: hidden; }
-.messages { flex: 1; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; }
+/* min-height: 0 让消息区能在 flex 布局里真正收缩: 输入框长高时该被压缩的是消息区(它自己会滚动),
+   而不是输入区 —— 否则长输入会被父容器的 overflow:hidden 直接裁掉 */
+.messages { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; }
 .messages::-webkit-scrollbar { width: 6px; }
 .messages::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 6px; }
 
@@ -1207,7 +1278,9 @@ onMounted(() => { loadSessions() })
 .tool-invoke { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 10px; background: var(--dcdr-surface); overflow: hidden; }
 .tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--dcdr-text-2); text-align: left; }
 .tool-invoke-toggle:hover { background: var(--dcdr-bg-subtle); }
-.tool-invoke .tool-icon { font-size: 13px; }
+/* 图标必须显式给宽高: SVG 只有 viewBox 时默认按 300×150 渲染, 写 font-size 完全不起作用,
+   流式工具调用面板里的扳手图标就会撑成一整块(与 MessageBubble 的历史面板不一致) */
+.tool-invoke .tool-icon { width: 13px; height: 13px; flex: none; }
 .tool-invoke .tool-caret { margin-left: auto; color: var(--dcdr-text-3); font-size: 11px; }
 .tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
 .tool-invoke .tool-item { border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-surface); padding: 8px 10px; }
@@ -1248,7 +1321,8 @@ onMounted(() => { loadSessions() })
 }
 
 /* 输入区域 */
-.input-area { padding: 16px 28px 20px; background: linear-gradient(180deg, transparent 0%, var(--dcdr-bg) 70%); }
+/* flex: none: 输入区高度由内容(含自适应高度的 textarea)决定, 不参与压缩 */
+.input-area { flex: none; padding: 16px 28px 20px; background: linear-gradient(180deg, transparent 0%, var(--dcdr-bg) 70%); }
 
 /* 已选文件预览 */
 .selected-files { display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; max-width: 844px; margin-left: auto; margin-right: auto; }
@@ -1294,7 +1368,9 @@ onMounted(() => { loadSessions() })
 .agent-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
 .agent-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
 .agent-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
-.input-box textarea { width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.65; max-height: 160px; font-family: inherit; padding: 2px 2px 0; background: transparent; color: var(--dcdr-text-1); }
+.input-box textarea { flex: none; width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.65; max-height: 240px; font-family: inherit; padding: 2px 2px 0; background: transparent; color: var(--dcdr-text-1); }
+/* 有附件预览时收窄上限: 预览区 + 超长输入框会把消息区挤没 */
+.input-box textarea.has-files { max-height: 120px; }
 .send-btn { flex: none; width: 34px; height: 34px; border: none; border-radius: var(--dcdr-radius-pill); color: #fff; cursor: pointer; font-size: 16px; display: flex; align-items: center; justify-content: center; transition: all 0.25s ease; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); box-shadow: var(--dcdr-glow-accent); }
 .send-btn:hover:not(:disabled) { filter: brightness(1.08); }
 .send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
