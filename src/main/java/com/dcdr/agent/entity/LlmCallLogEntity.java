@@ -75,6 +75,14 @@ public class LlmCallLogEntity {
     @Column(columnDefinition = "TEXT")
     private String stepsJson;
 
+    @Schema(description = "失败所在的步骤(如「第 2 轮生成」「工具 web_search」); 正常结束为 null")
+    @Column(length = 64)
+    private String failedStep;
+
+    @Schema(description = "首个错误信息; 正常结束为 null")
+    @Column(columnDefinition = "TEXT")
+    private String errorMessage;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

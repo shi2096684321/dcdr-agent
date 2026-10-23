@@ -60,6 +60,7 @@ services:
       - ./docs/sql/v2.0_schema.sql:/docker-entrypoint-initdb.d/01_v2.0_schema.sql:ro
       - ./docs/sql/v3.0_schema.sql:/docker-entrypoint-initdb.d/02_v3.0_schema.sql:ro
       - ./docs/sql/v3.1_schema.sql:/docker-entrypoint-initdb.d/03_v3.1_schema.sql:ro
+      - ./docs/sql/v3.2_schema.sql:/docker-entrypoint-initdb.d/04_v3.2_schema.sql:ro
       - pgdata:/var/lib/postgresql/data
       # 备份落点：容器内 /backup <-> 宿主机 <项目>/data/backup
       - ./data/backup:/backup

@@ -338,6 +338,9 @@ public class ChatController {
                 entity.setTotalDurationMs(summary.totalMs());
                 entity.setChain(summary.chain());
                 entity.setStepsJson(objectMapper.writeValueAsString(summary.steps()));
+                // 失败信息单独成列(而不是只躺在 steps_json 里): 列表页要按"是否失败"排序/筛选时不必解析 JSON
+                entity.setFailedStep(summary.failedStep());
+                entity.setErrorMessage(summary.errorMessage());
                 entity.setCreatedAt(java.time.LocalDateTime.now());
                 llmCallLogRepository.save(entity);
             } catch (Exception e) {

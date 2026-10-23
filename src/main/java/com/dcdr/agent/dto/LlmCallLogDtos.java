@@ -39,6 +39,10 @@ public final class LlmCallLogDtos {
         private String chain;
         @Schema(description = "步骤明细(kind=llm/tool 及元数据)")
         private List<Map<String, Object>> steps;
+        @Schema(description = "失败所在的步骤(如「第 2 轮生成」「工具 web_search」); 正常结束为 null")
+        private String failedStep;
+        @Schema(description = "首个错误信息; 正常结束为 null")
+        private String errorMessage;
         @Schema(description = "创建时间")
         private LocalDateTime createdAt;
     }

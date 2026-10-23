@@ -55,6 +55,10 @@ public final class LlmCallTrace {
     private int citationCount = 0;
     /** 本次请求所用 system prompt 的指纹(短哈希); null 表示尚未记录 */
     private String promptFingerprint;
+    /** 失败所在的步骤(如「第 2 轮生成」「工具 web_search」); 正常结束为 null */
+    private volatile String failedStep;
+    /** 首个错误信息(用户可读文案); 正常结束为 null */
+    private volatile String errorMessage;
     /** token 累计(入/出), 缺 usage 的调用不计 */
     private long totalIn;
     private long totalOut;
@@ -67,9 +71,15 @@ public final class LlmCallTrace {
         this.turnId = String.format("%06x", ThreadLocalRandom.current().nextInt(0x1000000));
     }
 
-    /** 汇总数据(供持久化到 llm_call_logs 独立日志表) */
+    /**
+     * 汇总数据(供持久化到 llm_call_logs 独立日志表)。
+     *
+     * @param failedStep   失败步骤名; 正常结束为 null
+     * @param errorMessage 首个错误信息; 正常结束为 null
+     */
     public record CallSummary(String turnId, long totalMs, int llmCalls, int toolSteps,
                               long totalIn, long totalOut, String endSignal, String chain,
+                              String failedStep, String errorMessage,
                               List<java.util.Map<String, Object>> steps) {}
 
     /** 汇总完成回调 */
@@ -361,6 +371,39 @@ public final class LlmCallTrace {
         }
     }
 
+    /**
+     * 记录本次请求的失败信息(<b>首个失败为准</b>, 后续调用忽略)。
+     *
+     * <p><b>为什么要把失败也写成一个步骤</b>: 调用链原本只有"成功步骤 + 一个 endSignal=ON_ERROR",
+     * 于是详情页只能告诉用户"这次失败了" —— 失败发生在哪一步、错误是什么, 全靠翻服务端日志。
+     * 补一个 {@code kind=error} 的收尾节点后, 时间轴上能直接看到红色终点, 头部也能给出原因,
+     * 与"每一步都可见"的初衷一致。
+     *
+     * <p>用 volatile 字段 + 幂等判断而不是抛异常: 失败路径本身在 reactor 的 error 回调里,
+     * 那里再抛异常只会把错误吞掉、连日志都留不下。
+     *
+     * @param step    失败步骤名(如「第 2 轮生成」「工具 web_search」); 无法定位时传 null
+     * @param message 错误信息(用户可读, 由调用方拼好; null 视为未知错误)
+     */
+    public synchronized void fail(String step, String message) {
+        if (errorMessage != null) {
+            return;   // 首个失败为准: 后续往往会引发级联错误, 记住最初的才有排查价值
+        }
+        this.failedStep = step;
+        this.errorMessage = (message == null || message.isBlank()) ? "未知错误" : message;
+        java.util.Map<String, Object> s = new java.util.LinkedHashMap<>();
+        s.put("kind", "error");
+        s.put("seq", steps.size() + 1);
+        if (step != null) {
+            s.put("failedStep", step);
+        }
+        s.put("message", this.errorMessage);
+        steps.add(s);
+        emit(s);
+        log.warn("[llm-trace] turn={} 失败于 {}: {}", turnId,
+                step == null ? "-" : step, this.errorMessage);
+    }
+
     /** 注册 SSE 实时下发回调: 先回放已缓存事件(路由等前置步骤), 后续事件实时推送 */
     public synchronized void emitTo(java.util.function.Consumer<java.util.Map<String, Object>> consumer) {
         this.emitter = consumer;
@@ -390,15 +433,16 @@ public final class LlmCallTrace {
         if (!summaryLogged.compareAndSet(false, true)) return;
         synchronized (this) {
             long totalMs = (System.nanoTime() - startNanos) / 1_000_000;
-            log.info("[llm-trace] turn={} SUMMARY 结束={} LLM={}次 工具={}步 tokens(入/出)={}/{} 总耗时={} 链路={}",
+            log.info("[llm-trace] turn={} SUMMARY 结束={} LLM={}次 工具={}步 tokens(入/出)={}/{} 总耗时={} 链路={}{}",
                     turnId, signal, llmCalls, toolSteps, totalIn, totalOut,
-                    fmtMs(totalMs), String.join(" → ", chain));
+                    fmtMs(totalMs), String.join(" → ", chain),
+                    errorMessage == null ? "" : " 失败于=" + failedStep + " 错误=" + errorMessage);
             // 回调持久化: 独立日志表存完整快照供前端查询
             CallSummaryListener listener = summaryListener;
             if (listener != null) {
                 listener.onSummary(new CallSummary(turnId, totalMs, llmCalls, toolSteps,
                         totalIn, totalOut, signal, String.join(" → ", chain),
-                        new ArrayList<>(steps)));
+                        failedStep, errorMessage, new ArrayList<>(steps)));
             }
         }
     }

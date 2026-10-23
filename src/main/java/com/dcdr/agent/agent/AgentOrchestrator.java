@@ -114,6 +114,18 @@ public class AgentOrchestrator {
     /** V3.1 长期记忆注入的 system 消息名(兼作去重键, 与 runtime:* 口径一致) */
     private static final String MEMORY_SYSTEM_NAME = "memory:long-term";
 
+    /**
+     * 允许把工具结果原样并入 assistant 正文的白名单。
+     * <p>
+     * 只收"结果本身就是答案"的即时工具(计算、当前时间): 输出短, 且模型偶尔只在正文里提一句"见下方结果"。
+     * <p>
+     * <b>检索类工具绝不能进这个名单</b> —— knowledge_base_search / web_search / web_extract 的结果是
+     * 供模型组织答案的素材, 前端已有来源卡片与工具调用面板; 早先无条件并入正文, 用户看到的便是
+     * 一大段夹着"…(工具结果过长已截断: 原始 6057 字符…)…"标记的原始转储, 与自己写的回答并排。
+     * 用白名单而不是黑名单: 将来新增检索/治理类工具时, 默认"不入侵正文"才是安全的那一侧。
+     */
+    private static final Set<String> INLINE_RESULT_TOOLS = Set.of("calculator", "time");
+
     // 预编译所有正则表达式为静态常量
     private static final java.util.regex.Pattern P_ARTICLE_KEYWORD =
             java.util.regex.Pattern.compile(".*/(news|article|articles|story|stories|blog|post|posts|p|read|detail|item)/.*");
@@ -323,7 +335,8 @@ public class AgentOrchestrator {
                         roundToolCalls[0] = new ArrayList<>();
                         final List<String> generatedUrls = new ArrayList<>();
                         final String[] toolError = new String[1];
-                        // 非图片工具(如 calculator/weather)的执行结果, 供落库时并入助手消息, 保证可见且可持久化
+                        // 允许原样并入正文的工具结果(仅 INLINE_RESULT_TOOLS 白名单: calculator/time)。
+                        // 检索类工具的结果不进这里 —— 正文是模型说的话, 不是工具输出的转储
                         final List<String> toolResults = new ArrayList<>();
                         // 本轮联网搜索/知识库检索等工具产生的来源(引用), 供 done 块下发与落库
                         final List<Map<String, Object>> collectedSources = new ArrayList<>();
@@ -480,6 +493,10 @@ public class AgentOrchestrator {
                                         sink::next,
                                         e -> {
                                             log.error("会话 {} 对话失败", sessId, e);
+                                            // 把失败落到调用链上: 详情页据此显示"失败于第 N 轮 + 原因",
+                                            // 而不是只有一个红色的 ON_ERROR
+                                            t.fail("第 " + (toolRound[0] + 1) + " 轮生成",
+                                                    "模型调用失败: " + e.getMessage());
                                             sink.next(ChatChunk.error("模型调用失败: " + e.getMessage(), "MODEL_ERROR"));
                                             sink.complete();
                                             // 落库失败消息改为异步尽力而为, 不阻塞 SSE 关闭,
@@ -590,7 +607,11 @@ public class AgentOrchestrator {
         if (ownTrace) {
             result = result.doFinally(sig -> t.summary(sig.name()));
         }
-        return result.onErrorResume(e -> Flux.just(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR")));
+        return result.onErrorResume(e -> {
+            // 兜底错误同样留痕: 上面 subscribe 的 error 回调只在订阅侧生效, 这里才是最终吞掉异常的地方
+            t.fail(null, "系统错误: " + e.getMessage());
+            return Flux.just(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR"));
+        });
     }
 
     /** 调用链打点: 包装一轮模型流, 订阅时计时, doFinally 记录该轮 token/耗时/是否中断(含请求参数与 system prompt 明细) */
@@ -881,6 +902,8 @@ public class AgentOrchestrator {
                 } catch (Exception e) {
                     outError[0] = e.getMessage();
                     log.error("工具 {} 执行失败", name, e);
+                    // 工具是"为什么这次没答出来"的常见原因, 记下工具名, 详情页可直接定位
+                    t.fail("工具 " + name, "工具执行失败: " + e.getMessage());
                     return Flux.just(ChatChunk.error("工具执行失败: " + e.getMessage(), "TOOL_ERROR"));
                 }
                 String result = toolInfo.getContent();
@@ -939,13 +962,14 @@ public class AgentOrchestrator {
                         // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)
                         result = rebuildCompact(srcs);
                     }
-                    // V3.1 F-47 单一收口点: 工具结果在此压缩一次, 后续三处消费共用同一份文本 ——
-                    //   ① history 的 tool 消息(回灌模型) ② ChatChunk.result(下发前端) ③ assistant 正文(落库)
+                    // V3.1 F-47 单一收口点: 工具结果在此压缩一次, 后续各消费点共用同一份文本 ——
+                    //   ① history 的 tool 消息(回灌模型) ② ChatChunk.result(下发前端工具面板)
+                    //   ③ assistant 正文(仅 INLINE_RESULT_TOOLS 白名单内的即时工具)
                     // 策略见 ToolResultCompressor: 落盘 → LLM 摘要 → 头尾保留硬截断。
-                    // 在产出处收口(而非三个消费点各截一次)是"口径一致"的结构性保证:
-                    // V3.0 的缺陷正是只有 2 处截断, 前端下发与 assistant 正文都被漏掉。
                     result = toolResultCompressor.compress(name, result, resultMaxChars).text();
-                    outToolResults.add(result);
+                    if (INLINE_RESULT_TOOLS.contains(name)) {
+                        outToolResults.add(result);
+                    }
                     // 按 tool_call_id 记录回灌结果(与 tool 消息配对)
                     outResultsById.put(tc.getId(), result);
                     chunks.add(ChatChunk.toolResult(name, result, srcs));
@@ -1396,7 +1420,8 @@ public class AgentOrchestrator {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("以下是联网检索到的 ").append(usable.size())
-          .append(" 条资料（部分已抓取完整正文），请在回答中通过 [[n]] 标注引用来源（n 为下方序号），并在结尾列出引用：\n\n");
+          .append(" 条资料（部分已抓取完整正文），请在回答中通过 [[n]] 标注引用来源（n 为下方序号）即可，"
+                  + "不要在结尾另列来源清单（界面已在回答下方统一展示来源卡片）：\n\n");
         int i = 1;
         for (Map<String, Object> s : usable) {
             sb.append("[[").append(i).append("]] ").append(s.get("title"));
@@ -1513,7 +1538,9 @@ public class AgentOrchestrator {
                     // 关键: 生图轮也要携带推理内容, 否则刷新后会丢失(assistantImage 工厂不设置 reasoningContent)
                     assistantMessage.setReasoningContent(reasoning.toString());
                 } else {
-                    // 工具被调用但未产出图片(非图片工具, 如 calculator/weather): 将执行结果并入助手消息
+                    // 工具被调用但未产出图片: 只并入"结果本身就是答案"的即时工具(见 INLINE_RESULT_TOOLS)。
+                    // 检索类工具的结果由来源卡片/工具面板承载, 这里确实为空就保持为空 —— 正文是模型说的话,
+                    // 不是工具输出的转储。
                     String content = accumulated.toString();
                     if (!toolResults.isEmpty()) {
                         StringBuilder sb = new StringBuilder();
@@ -1536,6 +1563,9 @@ public class AgentOrchestrator {
             }
             if ("insufficient_system_resource".equals(fr) || "content_filter".equals(fr)) {
                 assistantMessage.setError(true);
+                // 这两类不是异常, 是上游"正常返回但拒绝/资源不足": 没有异常栈可抓, 只能在收尾处补记
+                trace.fail("模型生成",
+                        "content_filter".equals(fr) ? "上游内容过滤拦截" : "上游资源不足 (insufficient_system_resource)");
             }
         }
 

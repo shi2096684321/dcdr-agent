@@ -108,6 +108,8 @@ public class LlmCallLogController {
         v.setTotalDurationMs(e.getTotalDurationMs());
         v.setChain(e.getChain());
         v.setSteps(parseSteps(e.getStepsJson(), full));
+        v.setFailedStep(e.getFailedStep());
+        v.setErrorMessage(e.getErrorMessage());
         v.setCreatedAt(e.getCreatedAt());
         return v;
     }

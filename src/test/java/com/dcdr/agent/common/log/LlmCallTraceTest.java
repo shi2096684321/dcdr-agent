@@ -79,6 +79,25 @@ class LlmCallTraceTest {
     }
 
     @Test
+    @DisplayName("失败留痕: 首个失败为准, 并补一个 kind=error 的收尾节点")
+    void failureIsRecordedOnceAtFirstCause() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordTool("web_search", 120, false);
+        trace.fail("工具 web_search", "工具执行失败: 连接超时");
+        trace.fail("第 2 轮生成", "模型调用失败: 后续级联错误");
+
+        List<Map<String, Object>> steps = trace.snapshot();
+        List<Map<String, Object>> errors = steps.stream()
+                .filter(s -> "error".equals(s.get("kind")))
+                .toList();
+        // 级联错误会盖掉最初的错误 —— 那样详情页给出的永远是"最后一环", 排查价值最低的那条
+        assertEquals(1, errors.size(), "首个失败为准, 后续 fail 调用应被忽略");
+        assertEquals("工具 web_search", errors.get(0).get("failedStep"));
+        assertEquals("工具执行失败: 连接超时", errors.get(0).get("message"));
+        assertEquals(steps.size(), errors.get(0).get("seq"), "错误节点是时间轴的最后一步");
+    }
+
+    @Test
     @DisplayName("记忆召回步骤: 未命中时不写 memoryIds(与 rag 的 docIds 同口径, 省存储)")
     void memoryStepOmitsEmptyIds() {
         LlmCallTrace trace = LlmCallTrace.begin();

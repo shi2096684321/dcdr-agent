@@ -15,6 +15,7 @@
 | `v2.0_schema.sql` | 基础表（users / knowledge_bases / documents / document_chunks / agent_definitions / workflow_definitions / sessions / projects / messages / generations / audit_logs 等）+ pgvector 扩展 | initdb 的 `01_`，也是升级的起点 |
 | `v3.0_schema.sql` | routing_logs / webhook_endpoints / workflow_executions → workflow_versions / llm_usage_logs / template_shares → tenants → llm_call_logs | `02_`；由原 beta / rc / llm_trace 三个分脚本合并，段落保留来源标注 |
 | `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback → 混合检索索引（pg_trgm + trigram GIN） | `03_`；由原 5 个功能分脚本合并（2026-10-15 又并入原 v3.2 的混合检索索引 —— 该能力已随 v3.1 交付且随仓默认开启），**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
+| `v3.2_schema.sql` | llm_call_logs.failed_step / error_message（调用链失败定位） | `04_`；纯增量，全部 `IF NOT EXISTS`，仅补列与 COMMENT |
 
 > **升级路径**：从旧库升级 = 按版本逐个执行（或一条 psql 带多个 `-f`，见第九节）；
 > 全新部署 = `docker compose up -d` 自动完成。应用侧 `ddl-auto=update` 始终兜底补齐表与列。
@@ -45,7 +46,7 @@ docker compose up -d
 启动后自动完成：
 1. 拉取 `pgvector/pgvector:pg16` 与 `redis:7-alpine` 镜像
 2. 创建数据库 `dcdr_agent`、用户/密码 `dcdr_agent` / `dcdr_agent`
-3. 挂载 `docs/sql/` 下 v2.0 / v3.0 / v3.1 三个脚本到初始化目录（`01_/02_/03_` 前缀排序），
+3. 挂载 `docs/sql/` 下 v2.0 / v3.0 / v3.1 / v3.2 四个脚本到初始化目录（`01_~04_` 前缀排序），
    **首次建库时自动全量执行（含 pgvector 扩展）** —— 全新部署无需手工执行任何 SQL
 4. 数据持久化到名为 `pgdata` 的 Docker 卷
 
@@ -181,6 +182,7 @@ netstat -ano | findstr :5432
 4. 执行 schema（一条命令、三个文件按序；全部幂等可重复执行）：
    ```bash
    psql -U dcdr_agent -d dcdr_agent \
-     -f docs/sql/v2.0_schema.sql -f docs/sql/v3.0_schema.sql -f docs/sql/v3.1_schema.sql
+     -f docs/sql/v2.0_schema.sql -f docs/sql/v3.0_schema.sql \
+     -f docs/sql/v3.1_schema.sql -f docs/sql/v3.2_schema.sql
    ```
 5. Redis 可用 Windows 版或 WSL 内 `apt install redis-server` 启动。
