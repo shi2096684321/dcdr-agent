@@ -20,6 +20,16 @@ public interface MessageRepository extends JpaRepository<MessageEntity, Long> {
 
     void deleteBySessionId(String sessionId);
 
+    /**
+     * 撤回(V3.3 F-49): 删除会话内 seq >= 指定值的所有消息。
+     * <p>
+     * 用 seq 而不是时间戳: 同一次对话里用户消息与助手消息可能落在同一毫秒,
+     * 按时间删会把边界消息一起带走。
+     */
+    void deleteBySessionIdAndSeqGreaterThanEqual(String sessionId, int seq);
+
+    long countBySessionIdAndSeqGreaterThanEqual(String sessionId, int seq);
+
     long countBySessionId(String sessionId);
 
     /**

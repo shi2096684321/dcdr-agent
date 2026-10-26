@@ -43,6 +43,11 @@ public class SessionEntity implements OwnedEntity {
     @Column(columnDefinition = "TEXT")
     private String systemPrompt;
 
+    @Schema(description = "绑定的工作区 ID (V3.3 F-49; 为空表示本会话未授权任何目录)。"
+            + "绑定在会话而非用户上: 同一用户不同会话可以操作不同目录, 避免权限隐式扩散")
+    @Column(length = 64)
+    private String workspaceId;
+
     @Schema(description = "所属用户 ID (V2.0 新增, V2.2 用户认证隔离使用; 暂为可空以兼容存量数据)")
     @Column(length = 64)
     private String userId;

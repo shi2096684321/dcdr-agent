@@ -33,6 +33,7 @@ import com.dcdr.agent.skill.SkillContextHolder;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
+import com.dcdr.agent.workspace.WorkspaceContextHolder;
 import com.dcdr.agent.tool.ToolInventory;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
@@ -848,6 +849,9 @@ public class AgentOrchestrator {
             KnowledgeSearchContextHolder.set(knowledgeBaseIds);
             // F-43: 沙箱工具的审计需要 userId/sessionId, 同线程注入, finally 清除防串号
             SandboxContextHolder.set(userId, sessId);
+            // F-49: 工作区工具需要知道"谁、哪个会话", 工作区由会话绑定关系懒解析。
+            // 注意这里只注入身份, 绝不注入 workspaceId —— 授权只能来自用户, 不能来自模型或上游参数
+            WorkspaceContextHolder.set(userId, sessId);
             // F-47: 工具结果落盘按会话分目录, 分页读取工具据此做会话隔离
             ToolResultContextHolder.set(userId, sessId);
             // V3.1 技能: skill_load 只拿到模型给的 name, "当前是谁在问"必须在此注入,
@@ -1015,6 +1019,7 @@ public class AgentOrchestrator {
                 // 清除 ThreadLocal, 防止线程池线程复用导致知识库 ID 泄漏到下一轮无关对话
                 KnowledgeSearchContextHolder.clear();
                 SandboxContextHolder.clear();
+                WorkspaceContextHolder.clear();
                 ToolResultContextHolder.clear();
                 SkillContextHolder.clear();
                 MemoryContextHolder.clear();

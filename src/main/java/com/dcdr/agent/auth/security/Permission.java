@@ -52,6 +52,12 @@ public final class Permission {
     public static final String WORKFLOW_EXECUTE = "workflow:execute";
     /** 定时任务管理: CRUD/触发 (V2.3, F-26) */
     public static final String SCHEDULE_MANAGE = "schedule:manage";
+    /** V3.3 F-49 工作区读取: 列表/详情/目录树 */
+    public static final String WORKSPACE_READ = "workspace:read";
+    /** V3.3 F-49 工作区写入: 创建/改档位/删除/绑定会话 */
+    public static final String WORKSPACE_WRITE = "workspace:write";
+    /** V3.3 F-49 目录枚举: 能列出服务器任意目录名, 仅管理员 */
+    public static final String WORKSPACE_BROWSE = "workspace:browse";
     /** 模型管理 */
     public static final String MODEL_MANAGE = "model:manage";
     /** 用户管理 (管理后台) */
@@ -66,7 +72,8 @@ public final class Permission {
     private static final List<String> ALL_PERMISSIONS = List.of(
             CHAT_CHAT, SESSION_READ, SESSION_WRITE,
             KB_READ, KB_WRITE, AGENT_CREATE, AGENT_READ, AGENT_WRITE,
-            WORKFLOW_EXECUTE, SCHEDULE_MANAGE, MODEL_MANAGE, USER_MANAGE
+            WORKFLOW_EXECUTE, SCHEDULE_MANAGE, MODEL_MANAGE, USER_MANAGE,
+            WORKSPACE_READ, WORKSPACE_WRITE, WORKSPACE_BROWSE
     );
 
     /** 角色 → 权限集合映射 */
@@ -75,7 +82,8 @@ public final class Permission {
             ROLE_USER, Set.of(CHAT_CHAT, SESSION_READ, SESSION_WRITE,
                     KB_READ, KB_WRITE,   // V3.0: 知识库开放给普通用户(可创建/管理自己的 USER 级; PLATFORM 级只读)
                     AGENT_CREATE, AGENT_READ, AGENT_WRITE,
-                    WORKFLOW_EXECUTE, SCHEDULE_MANAGE),
+                    WORKFLOW_EXECUTE, SCHEDULE_MANAGE,
+                    WORKSPACE_READ, WORKSPACE_WRITE),  // V3.3 F-49: 工作区不含 browse(目录枚举仅 admin)
             ROLE_GUEST, Set.of(CHAT_CHAT)
     );
 

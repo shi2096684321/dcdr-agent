@@ -145,6 +145,15 @@ public class WorkspaceTrashService {
         return sha.toLowerCase(Locale.ROOT);
     }
 
+    /** 计算字节内容的 sha256(写入前算 afterSha 用, 与文件版结果一致) */
+    public static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (NoSuchAlgorithmException e) {
+            throw new BusinessException(500, "运行环境不支持 SHA-256");
+        }
+    }
+
     /** 计算文件 sha256(流式, 不整读进内存) */
     static String sha256(Path file) {
         try (InputStream in = Files.newInputStream(file);

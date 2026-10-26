@@ -48,6 +48,9 @@ public class WorkspaceProperties {
     /** 单次目录遍历条目上限, 超出早停 */
     private int maxEntries = 5000;
 
+    /** 搜索时向下遍历的最大层数(再深的仓库属于知识库场景, 不该走实时扫描) */
+    private int maxDepth = 12;
+
     /** 单次删除文件数上限 */
     private int maxDeleteFiles = 100;
 

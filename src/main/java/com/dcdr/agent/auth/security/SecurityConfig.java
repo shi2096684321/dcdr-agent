@@ -125,6 +125,12 @@ public class    SecurityConfig {
                         .pathMatchers("/api/webhooks/**").hasAuthority(Permission.WORKFLOW_EXECUTE)
                         // V2.3 定时任务管理 (CRUD + 触发): schedule:manage
                         .pathMatchers("/api/scheduled-tasks/**").hasAuthority(Permission.SCHEDULE_MANAGE)
+                        // V3.3 F-49 工作区: 读 / 写 分权; 目录枚举(browse)默认关闭, 由服务层再判 admin
+                        .pathMatchers(HttpMethod.GET, "/api/workspaces/**").hasAuthority(Permission.WORKSPACE_READ)
+                        .pathMatchers(HttpMethod.POST, "/api/workspaces/**").hasAuthority(Permission.WORKSPACE_WRITE)
+                        .pathMatchers(HttpMethod.PUT, "/api/workspaces/**").hasAuthority(Permission.WORKSPACE_WRITE)
+                        .pathMatchers(HttpMethod.PATCH, "/api/workspaces/**").hasAuthority(Permission.WORKSPACE_WRITE)
+                        .pathMatchers(HttpMethod.DELETE, "/api/workspaces/**").hasAuthority(Permission.WORKSPACE_WRITE)
                         // V3.0-rc F-36 租户管理: user:manage (仅管理员)
                         .pathMatchers("/api/tenants/**").hasAuthority(Permission.USER_MANAGE)
                         // V3.0-rc F-37 插件管理: user:manage (仅管理员)
