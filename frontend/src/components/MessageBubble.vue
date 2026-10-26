@@ -125,6 +125,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
             编辑
           </button>
+          <!-- V3.3 F-49 撤回: 连同该轮的本地文件改动一起回滚 -->
+          <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('rewind', msg)" title="撤回此轮（含该轮的文件改动，可恢复）">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14L4 9l5-5"/><path d="M4 9h9.5a5.5 5.5 0 0 1 0 11H8"/></svg>
+            撤回
+          </button>
           <button v-if="msg.role === 'assistant'" class="btn btn-small" @click="$emit('retry', msg)" title="重新生成此回答">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.8 4v4.2h-4.2"/></svg>
             重新生成
@@ -183,7 +188,7 @@ const props = defineProps({
   editing: { type: Boolean, default: false },
   editBuffer: { type: String, default: '' }
 })
-const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
+const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 推理过程同样允许复制代码块(与正文共用同一套按钮与处理逻辑)

@@ -303,6 +303,7 @@ public class SessionManager {
         dto.setModel(e.getModel());
         dto.setPersona(e.getSystemPrompt());
         dto.setAgentId(e.getAgentId());
+        dto.setWorkspaceId(e.getWorkspaceId());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setUpdatedAt(e.getUpdatedAt());
         return dto;

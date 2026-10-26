@@ -110,6 +110,7 @@
           @save-edit="saveEdit"
           @cancel-edit="cancelEdit"
           @retry="retry"
+          @rewind="onRewind"
           @preview-image="previewImage"
           @preview-code="openCodePreview"
           @feedback="onFeedbackChange"
@@ -185,6 +186,8 @@
 
       <!-- 输入区域 -->
       <div class="input-area">
+        <!-- V3.3 F-49 工作区: 绑定在会话上, 徽标常驻显示当前授权目录与档位 -->
+        <WorkspaceSelector :session-id="currentSessionId || ''" />
         <!-- 已选图片预览 -->
         <div v-if="selectedFiles.length" class="selected-files">
           <div v-for="(file, idx) in selectedFiles" :key="idx" class="selected-file">
@@ -357,11 +360,12 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
-  buildExportUrl, getKnowledgeBases, getAgents, getSkills
+  buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
+import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import CodePreviewModal from '@/components/CodePreviewModal.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
@@ -582,6 +586,36 @@ async function switchSession(id) {
   currentSessionId.value = id
   messages.value = await getMessages(id)
   scrollBottom()
+}
+
+/**
+ * 撤回(V3.3 F-49): 撤回该用户消息及其之后的一切。
+ * 文件会按变更日志回滚到该轮之前, 消息一并截断;
+ * 撤回前被外部改过的文件会被后端跳过并在提示里说明, 不会覆盖用户手改。
+ */
+async function onRewind(msg) {
+  const sessionId = currentSessionId.value
+  if (!sessionId || !msg?.id) return
+  try {
+    await ElMessageBox.confirm(
+      '将撤回这条消息之后的所有对话, 并把这一轮产生的文件改动一起回滚（改动会先进回收区，可再恢复）。继续吗？',
+      '撤回此轮', { type: 'warning', confirmButtonText: '撤回', cancelButtonText: '取消' }
+    )
+  } catch (e) {
+    return
+  }
+  try {
+    const rep = await rewindSession(sessionId, msg.id, 'ALL')
+    const parts = [
+      `回滚 ${rep?.reverted?.length || 0} 个文件`,
+      `删除 ${rep?.messagesDeleted || 0} 条消息`
+    ]
+    if (rep?.skipped?.length) parts.push(`跳过 ${rep.skipped.length} 个（撤回前被外部修改）`)
+    ElMessage.success(parts.join('，'))
+    messages.value = await getMessages(sessionId)
+  } catch (e) {
+    ElMessage.error(e?.message || '撤回失败')
+  }
 }
 
 function startRename(s) {
