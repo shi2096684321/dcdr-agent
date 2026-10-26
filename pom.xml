@@ -19,6 +19,12 @@
 
     <properties>
         <java.version>17</java.version>
+        <!-- 源码/资源编码显式声明 UTF-8。
+             不写这一项时 javac 用平台默认编码: 中文 Windows 上是 GBK, 而源文件是 UTF-8,
+             含 ①②、—、" 等字符的类会直接编译失败(报"非法字符"), 表现为"只有个别文件编不过"。
+             Linux/容器里默认就是 UTF-8 所以一直没暴露, 本机 Windows 构建必踩。 -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     </properties>
 
     <!-- ===== V3.0 LangChain4j 对照版 (feat/v3.0-langchain4j 分支) =====

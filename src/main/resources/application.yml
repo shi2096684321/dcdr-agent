@@ -60,6 +60,30 @@ spring:
 agent:
   name: "一人公司多模态 AI 助手工作台"
 
+  # ── 工作区（V3.3 F-49）：让模型在用户指定目录内读 / 写 / 删 ──────────────
+  # enabled 默认 false：该能力能读到整台机器的文件，属于高危能力，必须由部署方显式开启，
+  #   不能因为"代码里加了这段"就自动生效。
+  # local-mode=false（服务器/容器部署）时功能整体禁用 —— 用户选中的其实是服务器的目录，
+  #   语义错位；只读时最多读错文件，加了写删之后一句"清理一下"删的就是服务器的文件。
+  # browse-enabled 控制目录枚举接口（能列服务器任意目录名，仅管理员、默认关闭）。
+  workspace:
+    enabled: ${AGENT_WORKSPACE_ENABLED:false}
+    local-mode: ${AGENT_WORKSPACE_LOCAL_MODE:true}
+    browse-enabled: ${AGENT_WORKSPACE_BROWSE_ENABLED:false}
+    # 读：单文件上限 2MB；写：单次 1MB；单次回灌字符上限 8000
+    max-file-size: 2097152
+    max-write-bytes: 1048576
+    max-read-chars: 8000
+    # 目录遍历条目上限 / 单次删除文件数上限
+    max-entries: 5000
+    max-delete-files: 100
+    read-timeout-seconds: 5
+    # 回收区：app-data（默认，不污染用户仓库）| workspace（同卷 move 为 O(1)）
+    trash-location: ${AGENT_WORKSPACE_TRASH_LOCATION:app-data}
+    trash-dir: ".workspace-trash"
+    data-dir: "./data"
+    trash-retention-days: 30
+
   # ── System Prompt 架构（两个正交维度）──────────────────────────────
   # 维度一 · Base System Prompt（静态基线）：L1 全局 < L2 场景级 < L3 会话级
   #   - L1 全局 default-prompt：所有场景兜底
