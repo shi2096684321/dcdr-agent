@@ -963,6 +963,14 @@ async function send(opts = {}) {
                 // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
                 if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
                   messages.value[i].toolInvocations = m.toolInvocations
+                } else if (messages.value[i].toolInvocations && m.toolInvocations?.length) {
+                  // 补齐 opId: 流式事件里没有它, 只有后端从工具结果里提取后才带回来。
+                  // 不补的话刚跑完的这一轮看不到「撤销这次改动」, 得刷新页面才出现。
+                  const byId = new Map(m.toolInvocations.filter(t => t.id).map(t => [t.id, t]))
+                  messages.value[i].toolInvocations.forEach(t => {
+                    const remote = t.id ? byId.get(t.id) : null
+                    if (remote?.opId) t.opId = remote.opId
+                  })
                 }
               })
             }
@@ -1093,6 +1101,14 @@ async function sendImage() {
                 // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
                 if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
                   messages.value[i].toolInvocations = m.toolInvocations
+                } else if (messages.value[i].toolInvocations && m.toolInvocations?.length) {
+                  // 补齐 opId: 流式事件里没有它, 只有后端从工具结果里提取后才带回来。
+                  // 不补的话刚跑完的这一轮看不到「撤销这次改动」, 得刷新页面才出现。
+                  const byId = new Map(m.toolInvocations.filter(t => t.id).map(t => [t.id, t]))
+                  messages.value[i].toolInvocations.forEach(t => {
+                    const remote = t.id ? byId.get(t.id) : null
+                    if (remote?.opId) t.opId = remote.opId
+                  })
                 }
               })
             }
