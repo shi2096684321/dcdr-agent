@@ -43,7 +43,12 @@ public class WorkspaceService {
     /** 列表: 管理员看全部, 普通用户只看自己的 */
     public List<WorkspaceDTO> list(String userId, boolean isAdmin) {
         ensureEnabled();
-        List<WorkspaceEntity> entities = (isAdmin || userId == null)
+        if (!isAdmin && userId == null) {
+            // fail-closed: 拿不到用户身份时返回空, 而不是"全都能看"。
+            // 这条路径理论上走不到(接口需要认证), 但默认放全部是错的默认值。
+            return List.of();
+        }
+        List<WorkspaceEntity> entities = isAdmin
                 ? workspaceRepository.findAllByOrderByUpdatedAtDesc()
                 : workspaceRepository.findByUserIdOrderByUpdatedAtDesc(userId);
         return entities.stream().map(WorkspaceService::toDTO).toList();
@@ -163,12 +168,6 @@ public class WorkspaceService {
 
     // ===== 目录浏览(仅 admin + 显式开启) =====
 
-    /**
-     * 列出指定目录下的子目录, 供前端做目录选择器。
-     * <p>
-     * 这是全功能里<b>最危险</b>的一个接口: 它能把服务器任意目录名枚举出来。
-     * 因此三重限制: 功能开关 + 仅管理员 + 不可列文件内容(只返回目录名)。
-     */
     /**
      * 列出某个目录下的子目录, 供前端「打开磁盘选择」的面板逐级下钻。
      * <p>

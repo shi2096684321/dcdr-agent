@@ -10,8 +10,10 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
@@ -62,6 +64,59 @@ public class WorkspaceCleanupTask {
                 log.warn("回收区清理失败: workspace={}, err={}", ws.getId(), e.getMessage());
             }
         }
+
+        purgeOrphanWorkspaces(workspaces, deadline);
+    }
+
+    /**
+     * 清理"工作区记录已被删除、但磁盘数据还在"的残留目录。
+     * <p>
+     * 不这么做的话, 每删一个工作区就会在 {@code data/workspace-trash/} 下留一个永不回收的目录 ——
+     * 用户以为删干净了, 实际上回收区和日志一直躺在硬盘上。删除工作区本身只删数据库记录
+     * (设计如此: 磁盘上的东西不归它管), 由这里按保留期兜底。
+     * <p>
+     * 仅 {@code trashLocation=app-data} 时有统一的根目录; {@code workspace} 模式下回收区散落在
+     * 各自的仓库里, 记录一删就再也找不到它们了 —— 这也是默认值选 app-data 的另一个理由。
+     */
+    private void purgeOrphanWorkspaces(List<WorkspaceEntity> workspaces, Instant deadline) {
+        if ("workspace".equalsIgnoreCase(properties.getTrashLocation())) return;
+
+        Path root = Path.of(properties.getDataDir(), "workspace-trash");
+        if (!Files.isDirectory(root)) return;
+
+        Set<String> alive = new HashSet<>();
+        for (WorkspaceEntity ws : workspaces) alive.add(ws.getId());
+
+        try (Stream<Path> entries = Files.list(root)) {
+            for (Path dir : entries.filter(Files::isDirectory).toList()) {
+                if (alive.contains(dir.getFileName().toString())) continue;
+                if (Files.getLastModifiedTime(dir).toInstant().isAfter(deadline)) continue;
+                int removed = deleteRecursively(dir);
+                log.info("清理已删除工作区的残留数据: dir={}, 文件 {} 个", dir.getFileName(), removed);
+            }
+        } catch (IOException e) {
+            log.warn("清理残留工作区数据失败: {}", e.getMessage());
+        }
+    }
+
+    private int deleteRecursively(Path dir) throws IOException {
+        int[] count = {0};
+        Files.walkFileTree(dir, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult visitFile(Path file, java.nio.file.attribute.BasicFileAttributes attrs)
+                    throws IOException {
+                Files.deleteIfExists(file);
+                count[0]++;
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path d, IOException exc) throws IOException {
+                Files.deleteIfExists(d);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+        return count[0];
     }
 
     private void cleanWorkspace(WorkspaceEntity workspace, Instant deadline) throws IOException {

@@ -381,14 +381,18 @@ public class SessionManager {
         String opId = WorkspaceJournal.extractOpId(result);
         if (opId == null) return;
         for (Map<String, Object> inv : invocations) {
-            if (toolCallId.equals(String.valueOf(inv.get("id")))) {
-                inv.put("opId", opId);
-                return;
-            }
+            if (!toolCallId.equals(String.valueOf(inv.get("id")))) continue;
+            // 只认工作区写/删工具。否则"读到的文件内容里恰好写着 [workspace-op:xxx]"
+            // 也会在界面上长出一个点不动的撤销按钮 —— 标记是文本协议, 必须配合工具名收敛。
+            Object name = inv.get("name");
+            if (name == null || !String.valueOf(name).startsWith("workspace_")) return;
+            inv.put("opId", opId);
+            return;
         }
     }
 
-    private static List<Map<String, Object>> parseSources(String json) {        if (json == null || json.isBlank()) return null;
+    private static List<Map<String, Object>> parseSources(String json) {
+        if (json == null || json.isBlank()) return null;
         try {
             return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
         } catch (Exception e) {

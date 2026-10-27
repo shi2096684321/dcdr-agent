@@ -9,6 +9,7 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CodingErrorAction;
@@ -75,6 +76,16 @@ public class WorkspaceFileService {
                             if (!d.equals(dir) && ignored.contains(d.getFileName().toString())) {
                                 return FileVisitResult.SKIP_SUBTREE;
                             }
+                            // 目录行在这里输出而不是 postVisit: 后置会让子内容排在父目录之前,
+                            // 打印出来不像一棵树, 模型也难判断层级
+                            if (!d.equals(dir)) {
+                                if (counter[0] >= maxEntries) {
+                                    truncated[0] = true;
+                                    return FileVisitResult.TERMINATE;
+                                }
+                                lines.add("d  " + dir.relativize(d).toString().replace('\\', '/') + "/");
+                                counter[0]++;
+                            }
                             return FileVisitResult.CONTINUE;
                         }
 
@@ -85,18 +96,8 @@ public class WorkspaceFileService {
                                 return FileVisitResult.TERMINATE;
                             }
                             String rel = dir.relativize(f).toString().replace('\\', '/');
-                            lines.add("f  " + rel + (Files.isDirectory(f) ? "/" : "")
-                                    + "  (" + humanSize(attrs.size()) + ")");
+                            lines.add("f  " + rel + "  (" + humanSize(attrs.size()) + ")");
                             counter[0]++;
-                            return FileVisitResult.CONTINUE;
-                        }
-
-                        @Override
-                        public FileVisitResult postVisitDirectory(Path d, IOException exc) {
-                            if (!d.equals(dir) && !Objects.equals(d.getFileName().toString(), "..")) {
-                                String rel = dir.relativize(d).toString().replace('\\', '/');
-                                lines.add("d  " + rel + "/");
-                            }
                             return FileVisitResult.CONTINUE;
                         }
                     });
@@ -137,6 +138,11 @@ public class WorkspaceFileService {
         int total = all.length;
         int start = offset == null ? 1 : Math.max(1, offset);
         int count = limit == null ? 200 : Math.max(1, Math.min(limit, 1000));
+        // offset 越界要明确拒绝: 静默返回空内容会让模型以为文件读完了, 也可能让它一路翻下去
+        if (start > total) {
+            throw new BusinessException(400, "offset=" + start + " 超过文件总行数(" + total
+                    + "), 请从 1 到 " + Math.max(1, total) + " 之间取值");
+        }
         int end = Math.min(total, start - 1 + count);
 
         StringBuilder sb = new StringBuilder();
@@ -327,16 +333,21 @@ public class WorkspaceFileService {
             throw new BusinessException(400, "修改后内容过大, 超过单次写入上限");
         }
 
-        String beforeSha = trash.stash(workspace, target);
+        // 与 commitWrite 同一套顺序: 先算哈希 → 先落 begin → 再移走原文件(理由见 commitWrite 注释)
+        String beforeSha = WorkspaceTrashService.sha256(target);
         String opId = journal.begin(workspace, sessionId, "EDIT", relPath, true, beforeSha,
                 WorkspaceTrashService.sha256(bytes), bytes.length);
         try {
+            trash.stashWithKnownSha(workspace, target, beforeSha);
             atomicWrite(target, bytes);
             journal.commit(workspace, sessionId, opId, "done");
         } catch (IOException e) {
             restoreOrWarn(workspace, target, beforeSha, relPath);
             journal.commit(workspace, sessionId, opId, "failed");
             throw new BusinessException(500, "写入失败, 已尝试回滚: " + e.getMessage());
+        } catch (RuntimeException e) {
+            journal.commit(workspace, sessionId, opId, "failed");
+            throw e;
         }
         stamp(target);
 
@@ -362,9 +373,16 @@ public class WorkspaceFileService {
         int maxFiles = properties.getMaxDeleteFiles();
 
         if (!isDir) {
-            String sha = trash.stash(workspace, target);
-            String opId = journal.begin(workspace, sessionId, "DELETE", relPath, true, sha, null, 0);
-            journal.commit(workspace, sessionId, opId, "done");
+            // 顺序同写入: 算哈希 → begin → 移入回收区。DELETE 的 afterSha 为空(删完没有内容)
+            String beforeSha = WorkspaceTrashService.sha256(target);
+            String opId = journal.begin(workspace, sessionId, "DELETE", relPath, true, beforeSha, null, 0);
+            try {
+                trash.stashWithKnownSha(workspace, target, beforeSha);
+                journal.commit(workspace, sessionId, opId, "done");
+            } catch (RuntimeException e) {
+                journal.commit(workspace, sessionId, opId, "failed");
+                throw e;
+            }
             return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已移入回收区(未真删)\n"
                     + "提示: 可在界面上点「撤销」恢复。", opId);
         }
@@ -379,26 +397,40 @@ public class WorkspaceFileService {
                 @Override
                 public FileVisitResult visitFile(Path f, BasicFileAttributes attrs) {
                     files.add(f);
-                    return FileVisitResult.CONTINUE;
+                    return files.size() > properties.getMaxDeleteFiles()
+                            ? FileVisitResult.TERMINATE : FileVisitResult.CONTINUE;
                 }
             });
         } catch (IOException e) {
             throw new BusinessException(500, "统计目录文件失败: " + e.getMessage());
         }
         if (files.size() > maxFiles) {
+            // 遍历在上限处早停, 这里拿到的只是下界, 不要写成精确值误导用户
             throw new BusinessException(400,
-                    "该目录包含 " + files.size() + " 个文件, 超过单次删除上限 " + maxFiles
+                    "该目录文件数已超过单次删除上限 " + maxFiles
                             + "。请分批删除, 或让用户手动处理。");
+        }
+
+        // 逐个子项过 deny 规则: 只在父目录上判定是漏的 —— 删 project/ 会把 project/.git 一起搬走,
+        // 而 .git 单独是禁止删除的。宁可整体拒绝, 也不要"表面成功、仓库已坏"。
+        Path rootPath = Path.of(workspace.getRootPath());
+        List<String> rels = new ArrayList<>(files.size());
+        for (Path f : files) {
+            String rel = resolver.relative(f, rootPath);
+            resolver.assertNotDeniedFor(rel, WorkspaceIntent.DELETE);
+            rels.add(rel);
         }
 
         int deleted = 0;
         // 整目录删除共用同一个 opId: 否则界面上会出现 N 个「撤销」按钮, 得一个一个点回来
         String groupOpId = null;
-        for (Path f : files) {
-            String rel = resolver.relative(f, Path.of(workspace.getRootPath()));
-            String sha = trash.stash(workspace, f);
+        for (int i = 0; i < files.size(); i++) {
+            Path f = files.get(i);
+            String rel = rels.get(i);
+            String sha = WorkspaceTrashService.sha256(f);
             String opId = journal.begin(workspace, sessionId, "DELETE", rel, true, sha, null, 0, groupOpId);
             if (groupOpId == null) groupOpId = opId;
+            trash.stashWithKnownSha(workspace, f, sha);
             journal.commit(workspace, sessionId, opId, "done");
             deleted++;
         }
@@ -447,18 +479,34 @@ public class WorkspaceFileService {
 
     // ===== 内部: 写入 =====
 
+    /**
+     * 写入提交。顺序不可换, 每一步都有代价:
+     * <ol>
+     *   <li>算 beforeSha —— 只读, 不动文件</li>
+     *   <li>写 begin 日志 —— 失败就中止, 此时磁盘还没动过</li>
+     *   <li>把原文件移进回收区</li>
+     *   <li>原子写新内容</li>
+     *   <li>写 done 日志</li>
+     * </ol>
+     * 原实现把 1+3 合成一步(先 stash 再写日志), 于是"文件已移走、日志还没落"之间存在一个
+     * 无据可查的崩溃窗口 —— 文件不在工作区, 也没有任何记录指向回收区里那份内容。
+     */
     private String commitWrite(WorkspaceEntity workspace, String sessionId, Path target, String relPath,
                                boolean existed, byte[] bytes, Decoded old) {
-        String beforeSha = existed ? trash.stash(workspace, target) : null;
+        String beforeSha = existed ? WorkspaceTrashService.sha256(target) : null;
         String opId = journal.begin(workspace, sessionId, existed ? "MODIFY" : "CREATE", relPath,
                 existed, beforeSha, WorkspaceTrashService.sha256(bytes), bytes.length);
         try {
+            if (existed) trash.stashWithKnownSha(workspace, target, beforeSha);
             atomicWrite(target, bytes);
             journal.commit(workspace, sessionId, opId, "done");
         } catch (IOException e) {
             if (existed) restoreOrWarn(workspace, target, beforeSha, relPath);
             journal.commit(workspace, sessionId, opId, "failed");
             throw new BusinessException(500, "写入失败, 已尝试回滚: " + e.getMessage());
+        } catch (RuntimeException e) {
+            journal.commit(workspace, sessionId, opId, "failed");
+            throw e;
         }
         return opId;
     }
@@ -602,9 +650,28 @@ public class WorkspaceFileService {
         return "\r\n".equals(target) ? normalized.replace("\n", "\r\n") : normalized;
     }
 
+    /**
+     * 按原编码写回。
+     * <p>
+     * <b>必须用 REPORT 模式的 encoder</b>: {@code String#getBytes(charset)} 遇到编码表里没有的字符
+     * (emoji、生僻字, 而原文件是 GBK)会<b>静默替换成 {@code ?}</b> —— 文件写成功、内容永久损坏,
+     * 这是最难排查的一类故障。宁可报错让模型换一种写法。
+     */
     private static byte[] encodeWith(String content, Decoded template) {
         String text = normalizeLineEndings(content, template.lineEnding());
-        byte[] body = text.getBytes(template.charset());
+        ByteBuffer encoded;
+        try {
+            encoded = template.charset().newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .encode(CharBuffer.wrap(text));
+        } catch (CharacterCodingException e) {
+            throw new BusinessException(400, "文件原编码为 " + template.charset().name()
+                    + ", 无法表示要写入的字符(常见于 emoji 或生僻字, 也可能是复制进来的特殊符号)。"
+                    + "请去掉这些字符, 或先让用户把该文件另存为 UTF-8 再改");
+        }
+        byte[] body = new byte[encoded.remaining()];
+        encoded.get(body);
         if (!template.bom()) return body;
         byte[] withBom = new byte[body.length + 3];
         withBom[0] = (byte) 0xEF;

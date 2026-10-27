@@ -67,7 +67,9 @@ public class WorkspaceProperties {
 
     /** 目录遍历时默认忽略的子目录名 */
     private List<String> defaultIgnore = List.of(
-            "node_modules", ".git", "target", "dist", "build", ".idea", "__pycache__", ".venv");
+            "node_modules", ".git", "target", "dist", "build", ".idea", "__pycache__", ".venv",
+            // trashLocation=workspace 时的回收区: 不能让模型看见自己的垃圾桶
+            ".workspace-trash");
 
     // ===== 回收区 =====
 
@@ -97,7 +99,10 @@ public class WorkspaceProperties {
      */
     private List<String> denyRead = List.of(
             ".ssh", ".aws", ".gnupg", ".env", "id_rsa", ".pem", ".p12", ".p8",
-            ".keystore", ".npmrc", ".pypirc", ".kdbx", "credentials");
+            ".keystore", ".npmrc", ".pypirc", ".kdbx", "credentials",
+            // 回收区本身: trashLocation=workspace 时它就在工作区里, 读它等于把"已删除"的内容再暴露一遍,
+            // 删它则直接破坏可撤回性。默认 app-data 位置时这条规则不会命中, 留着无害。
+            ".workspace-trash");
 
     /** 在 {@link #denyRead} 基础上追加禁止写入的路径(.git 内部结构写坏会导致仓库损坏) */
     private List<String> denyWrite = List.of(".git/objects", ".git/refs", ".git/HEAD", ".git/config");

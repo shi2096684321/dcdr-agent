@@ -185,4 +185,18 @@ class WorkspacePathResolverTest {
                 () -> resolver.resolve(null, "a.txt", WorkspaceIntent.READ));
         assertTrue(e.getMessage().contains("未绑定工作区"));
     }
+
+    @Test
+    void 回收区目录对模型不可见也不可删() throws IOException {
+        // trashLocation=workspace 时回收区就在工作区里: 读它等于把"已删除"的内容再暴露一遍,
+        // 删它则直接破坏可撤回性
+        Path trash = root.resolve(".workspace-trash/blobs/ab");
+        Files.createDirectories(trash);
+        Files.writeString(trash.resolve("x"), "old content");
+
+        assertThrows(BusinessException.class,
+                () -> resolver.resolve(workspace, ".workspace-trash/blobs/ab/x", WorkspaceIntent.READ));
+        assertThrows(BusinessException.class,
+                () -> resolver.resolve(workspace, ".workspace-trash", WorkspaceIntent.DELETE));
+    }
 }

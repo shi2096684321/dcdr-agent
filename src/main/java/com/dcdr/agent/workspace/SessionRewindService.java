@@ -169,6 +169,7 @@ public class SessionRewindService {
 
         List<String> reverted = new ArrayList<>();
         List<Skipped> skipped = new ArrayList<>();
+        int applicable = 0;
         for (WorkspaceJournal.Entry e : targets) {
             if ("reverted".equals(e.status())) {
                 skipped.add(new Skipped(e.path(), "该操作已撤销过"));
@@ -179,12 +180,14 @@ public class SessionRewindService {
                 skipped.add(new Skipped(e.path(), "该操作当时就失败了, 文件未被改动"));
                 continue;
             }
+            applicable++;
             applyEntry(workspace, e, reverted, skipped);
         }
 
-        List<String> opIds = reverted.isEmpty() ? List.of() : List.of(opId);
-        if (!opIds.isEmpty()) {
-            journal.markReverted(workspace, sessionId, opIds);
+        // 只有在"该 op 涉及的全部路径都回滚成功"时才标记 reverted。
+        // 递归删除是 N 条记录共用一个 opId: 若只成功 1 条就整片标记, 剩下 N-1 个文件就永久失去撤销入口。
+        if (applicable > 0 && reverted.size() == applicable) {
+            journal.markReverted(workspace, sessionId, List.of(opId));
         }
         log.info("单操作撤销: session={}, op={}, reverted={}, skipped={}",
                 sessionId, opId, reverted.size(), skipped.size());
@@ -216,15 +219,22 @@ public class SessionRewindService {
         }
         if (earliest.isEmpty()) return;
 
-        List<String> doneOps = new ArrayList<>();
+        // 按 opId 统计"应该成功几条 / 实际成功几条": 递归删除是一个 opId 对应 N 条记录,
+        // 只要有一条被冲突跳过, 整片标记 reverted 就会让剩下那些再也撤不回来
+        Map<String, int[]> stat = new LinkedHashMap<>();
         for (Map.Entry<String, WorkspaceJournal.Entry> item : earliest.entrySet()) {
             WorkspaceJournal.Entry e = item.getValue();
+            int[] counter = stat.computeIfAbsent(e.opId(), k -> new int[2]);
+            counter[0]++;
             int before = reverted.size();
             applyEntry(workspace, e, reverted, skipped);
-            // 只把真正回滚成功的 op 标为 reverted: 被冲突跳过的保留可撤回状态,
-            // 用户把手改处理掉之后还能再点一次。一刀切标记等于让这些文件永久失去救援入口。
-            if (reverted.size() > before) doneOps.add(e.opId());
+            if (reverted.size() > before) counter[1]++;
         }
+
+        List<String> doneOps = new ArrayList<>();
+        stat.forEach((opId, counter) -> {
+            if (counter[1] > 0 && counter[1] == counter[0]) doneOps.add(opId);
+        });
 
         if (!doneOps.isEmpty()) {
             journal.markReverted(workspace, sessionId, doneOps);

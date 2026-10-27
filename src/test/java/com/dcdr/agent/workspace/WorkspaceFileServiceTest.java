@@ -201,4 +201,41 @@ class WorkspaceFileServiceTest {
         assertTrue(out.contains("还有"));
         assertTrue(out.contains("offset=4"));
     }
+
+    @Test
+    void offset超出总行数时明确报错而不是返回空() {
+        files.write(workspace, SESSION, "three.txt", "1\n2\n3\n", false);
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> files.read(workspace, "three.txt", 99, 10));
+        assertTrue(e.getMessage().contains("超过文件总行数"));
+    }
+
+    @Test
+    void GBK文件写入无法表示的字符时报错而不是静默写成问号() throws IOException {
+        Path gbk = root.resolve("cn.txt");
+        Files.write(gbk, "中文".getBytes(Charset.forName("GBK")));
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> files.write(workspace, SESSION, "cn.txt", "中文😀", true));
+        assertTrue(e.getMessage().contains("GBK"));
+        // 关键: 报错发生在动文件之前, 原内容必须完好
+        assertEquals("中文", new String(Files.readAllBytes(gbk), Charset.forName("GBK")));
+    }
+
+    @Test
+    void 递归删除不越过子项的deny规则() throws IOException {
+        Path project = root.resolve("project");
+        Files.createDirectories(project.resolve(".git/objects"));
+        Files.writeString(project.resolve(".git/config"), "[core]");
+        Files.writeString(project.resolve("a.txt"), "keep me");
+
+        // 只在父目录上判 deny 是漏的: project 本身合法, 但里面有禁止删除的 .git
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> files.delete(workspace, SESSION, "project", true));
+        assertTrue(e.getMessage().contains(".git"));
+        // 整体拒绝, 一个文件都不该被搬走
+        assertTrue(Files.exists(project.resolve("a.txt")));
+        assertTrue(Files.exists(project.resolve(".git/config")));
+    }
 }

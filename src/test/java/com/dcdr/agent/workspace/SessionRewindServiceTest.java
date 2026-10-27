@@ -176,6 +176,26 @@ class SessionRewindServiceTest {
         verify(memoryService, never()).archiveBySession(any(), anyString(), anyInt());
     }
 
+    @Test
+    @DisplayName("递归删除共用一个 opId: 部分路径回滚成功时不能整片标记已撤回")
+    void groupOpPartiallyRevertedStaysRewindable() throws Exception {
+        Path other = tempDir.resolve("b.txt");
+        Files.writeString(other, "用户后来改过", StandardCharsets.UTF_8);
+        when(pathResolver.resolve(any(), eq("b.txt"), any())).thenReturn(other);
+
+        when(journal.read(any(), anyString())).thenReturn(List.of(
+                entry("op_g", "a.txt", true, "sha_before_a", sha(target), "done"),
+                // afterSha 与磁盘现状不符 → 冲突跳过; 但同一个 opId 的另一条已经回滚成功
+                entry("op_g", "b.txt", true, "sha_before_b", "sha_of_agent_version", "done")));
+
+        SessionRewindService.Report rep = service.undoOperation("s1", "op_g", "u1", false);
+
+        assertEquals(List.of("a.txt"), rep.reverted());
+        assertEquals(1, rep.skipped().size());
+        // 整片标记 reverted 会让 b.txt 永久失去撤销入口
+        verify(journal, never()).markReverted(any(), anyString(), anyList());
+    }
+
     private static WorkspaceJournal.Entry entry(String opId, String path, boolean existed,
                                                 String beforeSha, String afterSha, String status) {
         return new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", opId, "s1",

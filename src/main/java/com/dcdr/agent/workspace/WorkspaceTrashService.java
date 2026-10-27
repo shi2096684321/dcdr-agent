@@ -54,6 +54,20 @@ public class WorkspaceTrashService {
      * @return 内容 sha256(64 位小写十六进制)
      */
     public String stash(WorkspaceEntity workspace, Path file) {
+        return stashWithKnownSha(workspace, file, sha256(file));
+    }
+
+    /**
+     * 用<b>已算好</b>的哈希建立快照并移走原文件。
+     * <p>
+     * 为什么要把"算哈希"和"移文件"拆开: 写入流程必须先落 {@code begin} 日志再动文件,
+     * 而日志里要写的 {@code beforeSha} 依赖内容哈希。原实现是"先 stash(顺带移走文件) → 再写日志",
+     * 崩溃窗口里文件既不在工作区、也没有任何日志指向它 —— 用户丢了文件还查不到原因。
+     * 拆开后顺序变成: 算哈希(只读) → 写 begin → 移文件, 任一步崩溃都有据可查。
+     *
+     * @param sha 调用方用 {@link #sha256(Path)} 提前算好的内容哈希
+     */
+    public String stashWithKnownSha(WorkspaceEntity workspace, Path file, String sha) {
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
             throw new BusinessException(400, "只能快照普通文件: " + file.getFileName());
         }
@@ -62,7 +76,6 @@ public class WorkspaceTrashService {
             throw new BusinessException(400, "文件过大, 无法建立可撤回快照(" + size + " 字节)");
         }
 
-        String sha = sha256(file);
         Path blob = blobPath(workspace, sha);
         try {
             if (Files.exists(blob, LinkOption.NOFOLLOW_LINKS)) {

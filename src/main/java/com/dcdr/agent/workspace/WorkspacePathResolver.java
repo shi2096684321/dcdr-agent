@@ -115,6 +115,19 @@ public class WorkspacePathResolver {
     }
 
     /**
+     * 只做 deny 规则匹配, 不做存在性/软链接校验。
+     * <p>
+     * 供批量操作预检子项使用: 递归删除只在父目录上判 deny 是漏的 ——
+     * {@code delete("project", recursive=true)} 会把 {@code project/.git} 一起搬走,
+     * 而 {@code .git} 单独是禁止删除的。这类批量场景要先把每个子项都过一遍。
+     *
+     * @param relPath 相对工作区根的路径(统一用 {@code /})
+     */
+    public void assertNotDeniedFor(String relPath, WorkspaceIntent intent) {
+        assertNotDenied(relPath == null ? "" : relPath.replace('\\', '/'), intent);
+    }
+
+    /**
      * 相对路径归一化(统一用 {@code /}, 去掉前导分隔符), 供 deny 匹配与日志使用。
      */
     public String relative(Path target, Path root) {
