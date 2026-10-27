@@ -25,6 +25,7 @@ class WorkspaceFileServiceTest {
     Path tempDir;
 
     private WorkspaceFileService files;
+    private WorkspaceJournal journal;
     private WorkspaceEntity workspace;
     private Path root;
     private static final String SESSION = "sess_test";
@@ -35,7 +36,7 @@ class WorkspaceFileServiceTest {
         props.setDataDir(tempDir.resolve("data").toString());
         WorkspacePathResolver resolver = new WorkspacePathResolver(props);
         WorkspaceTrashService trash = new WorkspaceTrashService(props);
-        WorkspaceJournal journal = new WorkspaceJournal(props);
+        journal = new WorkspaceJournal(props);
         files = new WorkspaceFileService(props, resolver, trash, journal);
 
         root = tempDir.resolve("ws");
@@ -221,6 +222,24 @@ class WorkspaceFileServiceTest {
         assertTrue(e.getMessage().contains("GBK"));
         // 关键: 报错发生在动文件之前, 原内容必须完好
         assertEquals("中文", new String(Files.readAllBytes(gbk), Charset.forName("GBK")));
+    }
+
+    @Test
+    void 递归删除会为空目录留下可恢复记录() throws IOException {
+        Path tree = root.resolve("tree");
+        Files.createDirectories(tree.resolve("logs/empty"));
+        Files.writeString(tree.resolve("a.txt"), "x");
+
+        files.delete(workspace, SESSION, "tree", true);
+
+        java.util.List<WorkspaceJournal.Entry> entries = journal.read(workspace, SESSION);
+        // 没有文件可依托的目录必须单独留痕, 否则撤回只还原文件, 目录结构永久缺失
+        assertTrue(entries.stream().anyMatch(e ->
+                "DELETE_DIR".equals(e.type()) && "tree/logs/empty".equals(e.path())));
+        // 有文件的目录不重复记录: 文件的父链会自动重建它
+        assertFalse(entries.stream().anyMatch(e ->
+                "DELETE_DIR".equals(e.type()) && "tree".equals(e.path())));
+        assertFalse(Files.exists(tree));
     }
 
     @Test

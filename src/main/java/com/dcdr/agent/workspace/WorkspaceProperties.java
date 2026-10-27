@@ -90,6 +90,19 @@ public class WorkspaceProperties {
     /** 回收区保留天数, 到期后由清理任务真删 */
     private int trashRetentionDays = 30;
 
+    /**
+     * 是否释放"已撤回 / 已失败"操作占用的快照。
+     * <p>
+     * <b>默认 false</b>, 因为默认行为是"日志里出现过的 sha 一律保留" —— 保守, 但代价是
+     * 保留天数形同虚设(每条改动都带 beforeSha, 于是没有任何 blob 会过期)。
+     * <p>
+     * 打开后: {@code reverted}(已回滚过, 再撤会被跳过) 与 {@code failed}(当时没改文件)
+     * 这两类记录不再保护其快照, 回收区才会真正按 {@link #trashRetentionDays} 收缩。
+     * <b>风险</b>: 若将来引入"撤回的撤回"或按轮次重算, 需要它时快照可能已被清掉。
+     * 建议先在测试库观察一段时间再开启。
+     */
+    private boolean releaseRevertedSnapshots = false;
+
     // ===== 敏感路径 =====
 
     /**

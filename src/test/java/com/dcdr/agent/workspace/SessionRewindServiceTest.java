@@ -196,6 +196,24 @@ class SessionRewindServiceTest {
         verify(journal, never()).markReverted(any(), anyString(), anyList());
     }
 
+    @Test
+    @DisplayName("空目录记录(DELETE_DIR): 撤回时把目录建回来, 不走文件恢复")
+    void undoRecreatesEmptyDirectory() throws Exception {
+        Path dir = tempDir.resolve("logs/empty");
+        when(pathResolver.resolve(any(), eq("logs/empty"), any())).thenReturn(dir);
+
+        when(journal.read(any(), anyString())).thenReturn(List.of(
+                new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", "op_dir", "s1",
+                        "DELETE_DIR", "logs/empty", true, null, null, 0, "done")));
+
+        SessionRewindService.Report rep = service.undoOperation("s1", "op_dir", "u1", false);
+
+        assertEquals(List.of("logs/empty"), rep.reverted());
+        assertTrue(Files.isDirectory(dir));
+        // 目录没有内容可回滚, 不该去碰回收区
+        verify(fileService, never()).restore(any(), anyString(), anyBoolean(), any());
+    }
+
     private static WorkspaceJournal.Entry entry(String opId, String path, boolean existed,
                                                 String beforeSha, String afterSha, String status) {
         return new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", opId, "s1",

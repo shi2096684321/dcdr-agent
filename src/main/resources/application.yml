@@ -84,6 +84,9 @@ agent:
     trash-dir: ".workspace-trash"
     data-dir: "./data"
     trash-retention-days: 30
+    # 释放"已撤回/已失败"操作占用的快照。默认 false = 日志引用过的快照一律保留（保守，
+    # 但回收区不会真正收缩）；置 true 后保留天数才生效
+    release-reverted-snapshots: ${AGENT_WORKSPACE_RELEASE_REVERTED:false}
 
   # ── System Prompt 架构（两个正交维度）──────────────────────────────
   # 维度一 · Base System Prompt（静态基线）：L1 全局 < L2 场景级 < L3 会话级

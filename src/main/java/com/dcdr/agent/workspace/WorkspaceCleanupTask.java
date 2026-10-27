@@ -2,6 +2,8 @@ package com.dcdr.agent.workspace;
 
 import com.dcdr.agent.entity.WorkspaceEntity;
 import com.dcdr.agent.repository.WorkspaceRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -15,8 +17,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -37,6 +43,8 @@ import java.util.stream.Stream;
 public class WorkspaceCleanupTask {
 
     private static final Pattern SHA = Pattern.compile("\"([0-9a-f]{64})\"");
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final WorkspaceProperties properties;
     private final WorkspaceRepository workspaceRepository;
@@ -141,21 +149,72 @@ public class WorkspaceCleanupTask {
         }
     }
 
-    /** 扫该工作区所有会话日志, 收集仍被引用的 sha */
+    /**
+     * 扫该工作区所有会话日志, 收集"仍可能被撤回用到"的 sha。
+     * <p>
+     * <b>为什么不能简单地"日志里出现过就算引用"</b>: 每条改动记录都带 beforeSha,
+     * 于是所有 blob 恒被引用 → 保留天数形同虚设, 回收区只增不减。
+     * 真正还需要保留的只有"这个操作还可能被撤回"的那些:
+     * <ul>
+     *   <li>{@code reverted} —— 已回滚过, 再撤也会被跳过, 这份 before 不再需要;</li>
+     *   <li>{@code failed} —— 当时就没改动文件, 快照是回滚用的, 同样不再需要。</li>
+     * </ul>
+     * 二者可以通过 {@code agent.workspace.release-reverted-snapshots=true} 释放(默认关)。
+     * 关着时行为与"永不删"完全一致 —— 这是保守默认, 确认无副作用后再打开。
+     * <p>
+     * 解析失败的行无法判断归属, 一律把里面的 sha 当引用: 宁可多留, 也不能删掉还在用的快照。
+     */
     private Set<String> collectReferencedShas(WorkspaceEntity workspace) throws IOException {
         Set<String> refs = new HashSet<>();
         Path journalDir = journal.journalDir(workspace);
         if (!Files.isDirectory(journalDir)) return refs;
+
+        boolean releaseReverted = properties.isReleaseRevertedSnapshots();
         try (Stream<Path> files = Files.list(journalDir)) {
             for (Path f : files.filter(p -> p.toString().endsWith(".jsonl")).toList()) {
-                String text = Files.readString(f, StandardCharsets.UTF_8);
-                Matcher m = SHA.matcher(text);
-                while (m.find()) {
-                    refs.add(m.group(1));
-                }
+                collectFromJournal(f, releaseReverted, refs);
             }
         }
         return refs;
+    }
+
+    /** 单份日志: 先按 op 归并状态, 再决定哪些 sha 还要留着 */
+    private void collectFromJournal(Path file, boolean releaseReverted, Set<String> refs) throws IOException {
+        Map<String, String> statusByOp = new HashMap<>();
+        Map<String, Set<String>> shasByOp = new LinkedHashMap<>();
+        List<String> broken = new ArrayList<>();
+
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            if (line.isBlank()) continue;
+            JsonNode n;
+            try {
+                n = MAPPER.readTree(line);
+            } catch (Exception e) {
+                broken.add(line);
+                continue;
+            }
+            String op = n.path("op").asText(null);
+            if (op == null) continue;
+            if (!n.hasNonNull("path")) {
+                // commit / markReverted 短记录: 只贡献状态
+                if (n.hasNonNull("status")) statusByOp.put(op, n.get("status").asText());
+                continue;
+            }
+            Set<String> shas = shasByOp.computeIfAbsent(op, k -> new HashSet<>());
+            if (n.hasNonNull("beforeSha")) shas.add(n.get("beforeSha").asText());
+            if (n.hasNonNull("afterSha")) shas.add(n.get("afterSha").asText());
+        }
+
+        for (String line : broken) {
+            Matcher m = SHA.matcher(line);
+            while (m.find()) refs.add(m.group(1));
+        }
+
+        shasByOp.forEach((op, shas) -> {
+            String status = statusByOp.getOrDefault(op, "begin");
+            if (releaseReverted && ("reverted".equals(status) || "failed".equals(status))) return;
+            refs.addAll(shas);
+        });
     }
 
     private Path baseDir(WorkspaceEntity workspace) {

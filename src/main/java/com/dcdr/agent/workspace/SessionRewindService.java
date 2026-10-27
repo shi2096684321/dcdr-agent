@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -260,6 +261,19 @@ public class SessionRewindService {
         }
 
         boolean exists = Files.exists(target);
+
+        // 空目录记录(DELETE_DIR): 没有内容可回滚, 恢复就是把它建回来。
+        // 必须先于文件分支判断 —— 这类记录 beforeSha 为空, 落到下面的 DELETE 分支会被当成
+        // "位置已出现同名文件"而跳过, 目录就永远回不来了。
+        if ("DELETE_DIR".equals(e.type())) {
+            try {
+                Files.createDirectories(target);   // 幂等: 目录还在(并发重建过)也算恢复成功
+                reverted.add(relPath);
+            } catch (IOException ex) {
+                skipped.add(new Skipped(relPath, "重建目录失败: " + ex.getMessage()));
+            }
+            return;
+        }
 
         if (e.existed()) {
             // 改动前文件是存在的(MODIFY / EDIT / DELETE): 从回收区取回原内容

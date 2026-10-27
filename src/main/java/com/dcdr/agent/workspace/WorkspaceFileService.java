@@ -392,8 +392,15 @@ public class WorkspaceFileService {
                     "目标是目录, 需要显式传 recursive=true 才会递归删除: " + relPath);
         }
         List<Path> files = new ArrayList<>();
+        List<Path> dirs = new ArrayList<>();
         try {
             Files.walkFileTree(target, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path d, BasicFileAttributes attrs) {
+                    dirs.add(d);
+                    return FileVisitResult.CONTINUE;
+                }
+
                 @Override
                 public FileVisitResult visitFile(Path f, BasicFileAttributes attrs) {
                     files.add(f);
@@ -434,31 +441,41 @@ public class WorkspaceFileService {
             journal.commit(workspace, sessionId, opId, "done");
             deleted++;
         }
-        // 文件移走后删除空目录(由深到浅)
-        try {
-            Files.walkFileTree(target, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path f, BasicFileAttributes attrs) {
-                    try {
-                        Files.deleteIfExists(f);
-                    } catch (IOException ignored) {
-                        // 已被 stash 移走
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
 
-                @Override
-                public FileVisitResult postVisitDirectory(Path d, IOException exc) throws IOException {
-                    Files.deleteIfExists(d);
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-        } catch (IOException e) {
-            log.warn("清理空目录失败(文件已进回收区): {}", e.getMessage());
+        // 哪些目录下面原本有文件: 这些目录撤回时会被文件的父链自动重建, 不需要单独记录
+        Set<Path> dirsWithFiles = new HashSet<>();
+        for (Path f : files) {
+            for (Path p = f.getParent(); p != null && p.startsWith(target); p = p.getParent()) {
+                dirsWithFiles.add(p);
+            }
+        }
+
+        // 由深到浅处理目录: 先删子再删父, 否则父目录永远非空
+        List<Path> sortedDirs = new ArrayList<>(dirs);
+        sortedDirs.sort(Comparator.comparingInt((Path p) -> p.getNameCount()).reversed());
+
+        int dirsRecorded = 0;
+        for (Path d : sortedDirs) {
+            String rel = resolver.relative(d, rootPath);
+            if (!dirsWithFiles.contains(d)) {
+                // 纯空目录必须单独留痕: 撤回时没有文件可依托, 不记录就等于永久丢失目录结构
+                resolver.assertNotDeniedFor(rel, WorkspaceIntent.DELETE);
+                String opId = journal.begin(workspace, sessionId, "DELETE_DIR", rel, true, null, null, 0, groupOpId);
+                if (groupOpId == null) groupOpId = opId;
+                journal.commit(workspace, sessionId, opId, "done");
+                dirsRecorded++;
+            }
+            try {
+                Files.deleteIfExists(d);
+            } catch (IOException e) {
+                // 并发新建了文件或目录被占用。日志已记, 撤回时 createDirectories 是幂等的, 不影响可恢复性
+                log.warn("删除目录失败: {} ({})", rel, e.getMessage());
+            }
         }
 
         return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已递归删除 " + deleted
-                + " 个文件(全部进回收区, 未真删)\n"
+                + " 个文件" + (dirsRecorded > 0 ? "、" + dirsRecorded + " 个空目录" : "")
+                + "(全部进回收区, 未真删)\n"
                 + "提示: 可在界面上点「撤销」整体恢复。", groupOpId);
     }
 
