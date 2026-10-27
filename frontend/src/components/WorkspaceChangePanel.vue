@@ -53,6 +53,11 @@
               <span class="wc-chev">{{ expanded.has(f.path) ? '▾' : '▸' }}</span>
               <span class="wc-type" :class="'t-' + f.changeType">{{ typeLabel(f.changeType) }}</span>
               <span class="wc-path mono" :title="f.path">{{ f.path }}</span>
+              <span
+                v-if="f.externallyModified"
+                class="wc-ext"
+                title="模型改完之后这个文件又被手动改过，下面显示的是模型当时改成的版本"
+              >后来改过</span>
               <span class="wc-stat">
                 <span v-if="f.added" class="plus">+{{ f.added }}</span>
                 <span v-if="f.removed" class="minus">−{{ f.removed }}</span>
@@ -63,6 +68,11 @@
 
             <template v-if="expanded.has(f.path)">
               <p v-if="f.note" class="wc-note">{{ f.note }}</p>
+
+              <!-- 撤销之后 diff 展示的是"当初那次改动"，必须点明，否则会被当成文件现状 -->
+              <p v-if="!f.active && f.diff.length" class="wc-history">
+                下面是你当初那次改动（已撤销 · 文件已恢复成改动前）
+              </p>
 
               <div v-if="f.diff.length" class="wc-diff-wrap">
                 <!-- 内联：单列，改动与上下文上下相邻 -->
@@ -120,7 +130,7 @@
                    不给说明用户只会以为"坏了"。用独立 v-if 而不是 v-else,
                    避免和上面的 v-if 之间夹注释导致相邻性判断出问题 -->
               <p v-if="!f.diff.length && !f.note" class="wc-note">
-                {{ f.active ? '内容没有差异' : '已撤销 —— 磁盘上的当前内容与改动前一致，所以没有差异可显示' }}
+                {{ f.active ? '内容没有差异' : '已撤销 · 改动快照已过期，看不到当初改了什么' }}
               </p>
             </template>
           </div>
@@ -131,8 +141,9 @@
         </div>
 
         <footer class="wc-foot">
-          左边是改前（回收区快照），右边是磁盘当前内容，你在编辑器里又改过的地方也能看出来。
-          撤销只回滚文件、不动对话；被外部改过的文件会跳过并单独提示，不会覆盖你的改动。
+          左边是改前（回收区快照），右边是模型改完时存下的版本 —— 所以撤销之后仍能回看当初改了什么。
+          文件在那之后又被手动改过时会标「后来改过」。撤销只回滚文件、不动对话；
+          被外部改过的文件会跳过并单独提示，不会覆盖你的改动。
         </footer>
       </aside>
     </div>
@@ -549,8 +560,21 @@ defineExpose({ refresh: load })
 .wc-undo:disabled { opacity: .45; cursor: default; }
 .wc-badge { flex: none; font-size: 11px; color: var(--dcdr-text-3); }
 .wc-file.done .wc-badge { color: var(--dcdr-text-2); }
+/* 「后来改过」：这个标记很重要 —— 它提醒用户下面看到的是历史版本，不是文件此刻的内容 */
+.wc-ext {
+  flex: none; padding: 0 6px; border-radius: var(--dcdr-radius-pill);
+  font-size: 10.5px; line-height: 16px;
+  color: var(--dcdr-warning); background: var(--dcdr-hover);
+  border: 1px solid var(--dcdr-border);
+}
 
 .wc-note { margin: 0; padding: 0 18px 10px 44px; font-size: 11.5px; color: var(--dcdr-text-3); }
+/* 历史版本说明：撤销后 diff 仍有内容，不写这一句用户会把历史当成现状 */
+.wc-history {
+  margin: 0; padding: 6px 18px; font-size: 11.5px;
+  color: var(--dcdr-warning); background: var(--dcdr-hover);
+  border-top: 1px solid var(--dcdr-border);
+}
 .wc-empty { padding: 24px 18px; font-size: 12px; color: var(--dcdr-text-3); text-align: center; }
 
 /* ===== diff 表 ===== */

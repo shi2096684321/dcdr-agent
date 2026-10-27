@@ -119,4 +119,30 @@ class WorkspaceTrashServiceTest {
         Files.createDirectories(dir);
         assertThrows(BusinessException.class, () -> trash.stash(workspace, dir));
     }
+
+    @Test
+    void putBlob只写副本不动原文件() throws IOException {
+        Path file = root.resolve("a.txt");
+        Files.writeString(file, "content");
+        byte[] bytes = "content".getBytes();
+        String sha = WorkspaceTrashService.sha256(bytes);
+
+        trash.putBlob(workspace, bytes, sha);
+
+        // 与 stash 的本质区别: 存的是"改完之后"的副本, 原文件必须原地不动
+        assertTrue(Files.exists(file), "putBlob 不能移走原文件");
+        assertTrue(trash.has(workspace, sha));
+        assertEquals("content", Files.readString(trash.blobPath(workspace, sha)));
+    }
+
+    @Test
+    void putBlob重复写入同一内容幂等() throws IOException {
+        byte[] bytes = "same".getBytes();
+        String sha = WorkspaceTrashService.sha256(bytes);
+
+        trash.putBlob(workspace, bytes, sha);
+        trash.putBlob(workspace, bytes, sha);
+
+        assertTrue(trash.has(workspace, sha), "内容寻址: 同一内容写两次只应存在一份");
+    }
 }

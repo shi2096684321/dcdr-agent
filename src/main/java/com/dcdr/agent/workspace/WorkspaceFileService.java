@@ -366,6 +366,8 @@ public class WorkspaceFileService {
             journal.commit(workspace, sessionId, opId, "failed");
             throw e;
         }
+        // 主链路已成功, 再留一份"改完之后"的版本供回看。失败不影响这次写入(putBlob 内部吞异常)
+        trash.putBlob(workspace, bytes, afterSha);
         stamp(target);
 
         int replaced = replaceAll ? occurrences : 1;
@@ -592,6 +594,8 @@ public class WorkspaceFileService {
             journal.commit(workspace, sessionId, opId, "failed");
             throw e;
         }
+        // 同 edit: 存一份改后快照, 撤销之后仍能回看"当初改成了什么样"
+        trash.putBlob(workspace, bytes, afterSha);
         return opId;
     }
 

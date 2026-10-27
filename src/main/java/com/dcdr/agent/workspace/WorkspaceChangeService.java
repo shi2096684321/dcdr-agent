@@ -73,6 +73,8 @@ public class WorkspaceChangeService {
             boolean active,
             boolean snapshotMissing,
             boolean binary,
+            /** 模型改完之后, 磁盘内容又被改过(通常是用户自己在编辑器里动了) */
+            boolean externallyModified,
             int added,
             int removed,
             boolean diffTruncated,
@@ -145,7 +147,7 @@ public class WorkspaceChangeService {
         boolean active = entries.stream().anyMatch(e -> isActive(e.status()));
 
         if ("DELETE_LINK".equals(last.type()) || "DELETE_DIR".equals(last.type())) {
-            return new FileChange(relPath, "deleted", active, false, false, 0, 0, false, List.of(),
+            return new FileChange(relPath, "deleted", active, false, false, false, 0, 0, false, List.of(),
                     "DELETE_LINK".equals(last.type()) ? "符号链接, 不生成 diff" : "空目录, 不生成 diff",
                     last.seq());
         }
@@ -173,21 +175,45 @@ public class WorkspaceChangeService {
         }
         boolean snapshotMissing = first.existed() && beforeBytes == null;
 
-        // 改后内容: 只能从磁盘读
-        byte[] afterBytes = new byte[0];
+        // 改后内容: 优先用"写完之后存下的快照"。
+        // 它才是智能体当时真正写进去的东西 —— 撤销之后磁盘已回到改前状态,
+        // 只有从这里还能看到"当初改成了什么样"(Cursor 的 checkpoint、Claude Code 的 /rewind 同理)。
+        // 快照缺失(老数据、或按保留期清理过)才退回磁盘当前内容。
+        byte[] afterBytes = last.afterSha() != null
+                ? trash.readBlobOrNull(workspace, last.afterSha())
+                : null;
         String note = null;
-        if (target != null && nowExists && Files.isRegularFile(target)) {
-            try {
-                long size = Files.size(target);
-                if (size > MAX_TEXT_BYTES) {
-                    note = "文件过大, 未生成 diff";
-                    afterBytes = null;
-                } else {
-                    afterBytes = Files.readAllBytes(target);
+        if (afterBytes == null) {
+            if (target != null && nowExists && Files.isRegularFile(target)) {
+                try {
+                    long size = Files.size(target);
+                    if (size > MAX_TEXT_BYTES) {
+                        note = "文件过大, 未生成 diff";
+                    } else {
+                        afterBytes = Files.readAllBytes(target);
+                    }
+                } catch (IOException e) {
+                    note = "读取当前内容失败: " + e.getMessage();
                 }
-            } catch (IOException e) {
-                note = "读取当前内容失败: " + e.getMessage();
-                afterBytes = null;
+            } else {
+                // 文件已不存在(DELETE): 改后就是"没有内容", 用空数组让 diff 呈现为整段删除
+                afterBytes = new byte[0];
+            }
+        }
+
+        // 快照与磁盘对不上 = 用户在模型改完之后又手动动过。
+        // 必须标出来: 否则他看到的是"当时改成的样子", 会误以为那就是文件此刻的内容。
+        // 只在 active 时判定 —— 已撤销的文件磁盘本来就回到了改前状态, 与 afterSha 必然不同,
+        // 那不是"外部修改"而是撤销的结果。
+        boolean externallyModified = false;
+        if (active && last.afterSha() != null && target != null && nowExists && Files.isRegularFile(target)) {
+            try {
+                if (Files.size(target) <= MAX_TEXT_BYTES
+                        && !WorkspaceTrashService.sha256(target).equalsIgnoreCase(last.afterSha())) {
+                    externallyModified = true;
+                }
+            } catch (IOException | RuntimeException e) {
+                log.debug("比对磁盘内容失败, 跳过外部修改判定: {} ({})", relPath, e.getMessage());
             }
         }
 
@@ -199,15 +225,16 @@ public class WorkspaceChangeService {
         }
 
         if (binary || snapshotMissing || beforeBytes == null || afterBytes == null) {
-            return new FileChange(relPath, changeType, active, snapshotMissing, binary, 0, 0, false,
-                    List.of(), note, last.seq());
+            return new FileChange(relPath, changeType, active, snapshotMissing, binary, externallyModified,
+                    0, 0, false, List.of(), note, last.seq());
         }
 
         String beforeText = beforeBytes.length == 0 ? "" : fileService.decode(beforeBytes).text();
         String afterText = afterBytes.length == 0 ? "" : fileService.decode(afterBytes).text();
         TextDiff.Result diff = TextDiff.unified(beforeText, afterText, contextLines, maxLines);
-        return new FileChange(relPath, changeType, active, false, false, diff.added(), diff.removed(),
-                diff.truncated(), diff.lines(), diff.coarse() ? "改动过大, 已简化为整体替换" : null, last.seq());
+        return new FileChange(relPath, changeType, active, false, false, externallyModified,
+                diff.added(), diff.removed(), diff.truncated(), diff.lines(),
+                diff.coarse() ? "改动过大, 已简化为整体替换" : null, last.seq());
     }
 
     private static boolean isActive(String status) {

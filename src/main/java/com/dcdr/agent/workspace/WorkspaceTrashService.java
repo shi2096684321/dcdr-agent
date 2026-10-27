@@ -92,6 +92,45 @@ public class WorkspaceTrashService {
     }
 
     /**
+     * 把一份内容写进回收区, <b>只写不删</b>。
+     * <p>
+     * 用途与 {@link #stashWithKnownSha} 完全不同, 不要混用:
+     * <ul>
+     *   <li>{@code stash} —— 存"被覆盖掉的旧内容", 然后把原文件移走, 服务于<b>回滚</b>;</li>
+     *   <li><b>本方法</b> —— 存"写完之后的新内容", 原文件不动, 服务于<b>回看</b>。</li>
+     * </ul>
+     * <b>为什么必须存这一份</b>: diff 比的是"改前 vs 改后"。改后内容如果只留在磁盘上,
+     * 那么一旦撤销, 磁盘回到改前状态, diff 就变成空的 —— 用户再也看不到"当初改成了什么样"。
+     * 主流做法(Cursor 的 checkpoint、Claude Code 的 /rewind)都是存整份文件快照, 正是为了这个。
+     * <p>
+     * 存不下不抛错: 主链路是"把文件改对", 留个副本是附加能力, 不能因为它失败就回滚用户的写入。
+     * 内容寻址天然去重, 同一内容重复写只会判定为已存在。
+     */
+    public void putBlob(WorkspaceEntity workspace, byte[] content, String sha) {
+        if (content == null || sha == null || content.length == 0) return;
+        if (content.length > MAX_BLOB_BYTES) {
+            log.debug("内容过大, 不存改后快照: sha={}, {} 字节", sha, content.length);
+            return;
+        }
+        try {
+            Path blob = blobPath(workspace, sha);
+            if (Files.exists(blob, LinkOption.NOFOLLOW_LINKS)) return;
+            Files.createDirectories(blob.getParent());
+            // 先写 tmp 再原子改名: 直接写目标路径的话, 进程中断会留下半个文件,
+            // 而内容寻址的前提是"文件名与内容严格对应", 半个文件等于永久污染
+            Path tmp = blob.resolveSibling(blob.getFileName() + "." + System.nanoTime() + ".tmp");
+            try {
+                Files.write(tmp, content);
+                Files.move(tmp, blob, StandardCopyOption.ATOMIC_MOVE);
+            } finally {
+                Files.deleteIfExists(tmp);
+            }
+        } catch (IOException e) {
+            log.warn("保存改后快照失败(不影响本次写入): sha={}, err={}", sha, e.getMessage());
+        }
+    }
+
+    /**
      * 按 sha 把内容恢复到目标路径(覆盖写, 原子替换)。
      *
      * @param sha    快照内容哈希

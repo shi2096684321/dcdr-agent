@@ -225,6 +225,64 @@ class WorkspaceChangeServiceTest {
         return opId;
     }
 
+    @Test
+    void 撤销之后仍能回看当初改成了什么() throws IOException {
+        preset("a.txt", "v0\n");
+        String opId = extractOp(files.write(workspace, SESSION, "a.txt", "v1\n", true));
+
+        // 模拟撤销: 磁盘回到改前状态, 日志标 reverted
+        Files.writeString(root.resolve("a.txt"), "v0\n");
+        journal.markReverted(workspace, SESSION, java.util.List.of(opId));
+
+        WorkspaceChangeService.FileChange c = changes.list(workspace, SESSION).files().get(0);
+
+        assertFalse(c.active());
+        assertTrue(hasLine(c, "del", "v0"), "应显示改前内容");
+        // 这一条是本设计的核心: 撤销后磁盘已经回到 v0, 只有 after 快照还留着 v1
+        assertTrue(hasLine(c, "add", "v1"), "撤销后仍要能回看当初改成的 v1");
+        assertFalse(c.externallyModified(), "撤销导致的磁盘差异不算外部修改");
+    }
+
+    @Test
+    void 模型改完之后又被手动改过要标出来() throws IOException {
+        preset("a.txt", "v0\n");
+        files.write(workspace, SESSION, "a.txt", "v1\n", true);
+        // 用户在编辑器里又改了一遍
+        Files.writeString(root.resolve("a.txt"), "v2 by hand\n");
+
+        WorkspaceChangeService.FileChange c = changes.list(workspace, SESSION).files().get(0);
+
+        assertTrue(c.externallyModified(), "快照与磁盘不一致必须标出来");
+        assertTrue(hasLine(c, "add", "v1"), "diff 应展示模型当时写的 v1");
+        assertFalse(hasLine(c, "add", "v2 by hand"), "不能用磁盘内容顶替历史版本");
+    }
+
+    @Test
+    void 没有改后快照时退回磁盘内容() throws IOException {
+        // 手工写日志模拟"旧数据": 只有 beforeSha, 没有对应的 after blob
+        preset("a.txt", "old\n");
+        String beforeSha = WorkspaceTrashService.sha256(root.resolve("a.txt"));
+        WorkspaceProperties props = new WorkspaceProperties();
+        props.setDataDir(tempDir.resolve("data").toString());
+        WorkspaceTrashService trash = new WorkspaceTrashService(props);
+        Path blob = trash.blobPath(workspace, beforeSha);
+        blob.getParent().toFile().mkdirs();
+        blob.toFile().createNewFile();
+        Files.writeString(blob, "old\n");
+
+        String opId = journal.begin(workspace, SESSION, "MODIFY", "a.txt", true,
+                beforeSha, "f".repeat(64), 10);
+        journal.commit(workspace, SESSION, opId, "done");
+        Files.writeString(root.resolve("a.txt"), "new on disk\n");
+
+        WorkspaceChangeService.FileChange c = changes.list(workspace, SESSION).files().get(0);
+
+        // after 快照读不到 -> 退回磁盘, 保证旧数据也能看到 diff
+        assertTrue(hasLine(c, "del", "old"));
+        assertTrue(hasLine(c, "add", "new on disk"));
+        assertTrue(c.externallyModified(), "拿不到快照时, 磁盘与 afterSha 不一致也算被改过");
+    }
+
     /** 结构化 diff 里是否存在某条指定类型与内容的行为 */
     private static boolean hasLine(WorkspaceChangeService.FileChange c, String type, String text) {
         return c.diff().stream().anyMatch(l -> type.equals(l.type()) && text.equals(l.text()));
