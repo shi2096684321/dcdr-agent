@@ -56,4 +56,24 @@ public class WorkspaceContextResolver {
         }
         return sessionId;
     }
+
+    /**
+     * 按会话 ID 解析工作区, 不依赖 {@link WorkspaceContextHolder}。
+     * <p>
+     * 供 system prompt 摘要注入使用: 那个位置在工具循环之前、也可能跑在非工具线程上,
+     * ThreadLocal 里未必有值。"没有工作区"是正常状态(绝大多数会话都没有), 返回 {@code null} 即可 ——
+     * 不应该让调用方用 try/catch 来表达, 更不该把它变成一次业务异常。
+     */
+    public WorkspaceEntity resolveForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return null;
+        try {
+            SessionEntity session = sessionRepository.findById(sessionId).orElse(null);
+            if (session == null) return null;
+            String workspaceId = session.getWorkspaceId();
+            if (workspaceId == null || workspaceId.isBlank()) return null;
+            return workspaceService.requireOwned(workspaceId, session.getUserId(), true);
+        } catch (BusinessException e) {
+            return null;
+        }
+    }
 }

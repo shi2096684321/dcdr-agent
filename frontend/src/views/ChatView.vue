@@ -111,6 +111,7 @@
           @cancel-edit="cancelEdit"
           @retry="retry"
           @rewind="onRewind"
+          @undo-op="onUndoOp"
           @preview-image="previewImage"
           @preview-code="openCodePreview"
           @feedback="onFeedbackChange"
@@ -360,7 +361,7 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
-  buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession
+  buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
@@ -610,11 +611,37 @@ async function onRewind(msg) {
       `回滚 ${rep?.reverted?.length || 0} 个文件`,
       `删除 ${rep?.messagesDeleted || 0} 条消息`
     ]
+    // 记忆必须一起退, 否则撤完之后模型下一轮还能"记得"这段对话 —— 用户会直接感到没撤干净
+    if (rep?.memoriesArchived) parts.push(`归档 ${rep.memoriesArchived} 条记忆`)
     if (rep?.skipped?.length) parts.push(`跳过 ${rep.skipped.length} 个（撤回前被外部修改）`)
     ElMessage.success(parts.join('，'))
     messages.value = await getMessages(sessionId)
   } catch (e) {
     ElMessage.error(e?.message || '撤回失败')
+  }
+}
+
+/**
+ * L1 单操作撤销: 只回滚某一次工具调用造成的文件改动。
+ * 与整轮撤回的区别是不动对话 —— 用户想收回的只是那一次写/删。
+ */
+async function onUndoOp(opId) {
+  const sessionId = currentSessionId.value
+  if (!sessionId || !opId) return
+  try {
+    const rep = await undoOperation(sessionId, opId)
+    const reverted = rep?.reverted?.length || 0
+    if (!reverted) {
+      const reason = rep?.skipped?.[0]?.reason || '没有可回滚的改动'
+      ElMessage.warning(reason)
+      return
+    }
+    const parts = [`已回滚 ${reverted} 个文件`]
+    if (rep?.skipped?.length) parts.push(`跳过 ${rep.skipped.length} 个（${rep.skipped[0].reason}）`)
+    ElMessage.success(parts.join('，'))
+    messages.value = await getMessages(sessionId)
+  } catch (e) {
+    ElMessage.error(e?.message || '撤销失败')
   }
 }
 

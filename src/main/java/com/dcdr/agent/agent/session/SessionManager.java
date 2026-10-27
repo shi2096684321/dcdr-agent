@@ -10,6 +10,7 @@ import com.dcdr.agent.entity.MessageEntity;
 import com.dcdr.agent.entity.SessionEntity;
 import com.dcdr.agent.repository.MessageRepository;
 import com.dcdr.agent.repository.SessionRepository;
+import com.dcdr.agent.workspace.WorkspaceJournal;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -147,7 +148,15 @@ public class SessionManager {
                 if ("system".equals(msg.getRole())) continue;
                 // 抓取被隐藏工具消息里的工具调用明细(assistant(tool_calls) 携带 name+arguments)
                 if (isHiddenToolMessage(msg) && msg.getToolCalls() != null) {
-                    pendingInvocations.addAll(msg.getToolCalls());
+                    // 复制一份可变 Map: 下面要往里回填 opId, 直接引用原列表元素可能落到不可变集合上
+                    for (Map<String, Object> tc : msg.getToolCalls()) {
+                        pendingInvocations.add(new java.util.LinkedHashMap<>(tc));
+                    }
+                }
+                // 工具结果里携带的单操作撤销 ID(仅 workspace 写/删工具会有), 回填到对应的调用项,
+                // 前端据此在该工具旁渲染「撤销」。工具结果本身对用户隐藏, 不这样做前端就无从拿到 opId。
+                if ("tool".equals(msg.getRole()) && msg.getToolCallId() != null) {
+                    fillOpId(pendingInvocations, msg.getToolCallId(), msg.getContent());
                 }
                 // 过滤对用户无意义的工具往返中间消息(模型内部决策, 非给用户看的回答)
                 if (isHiddenToolMessage(msg)) continue;
@@ -187,7 +196,14 @@ public class SessionManager {
             if ("system".equals(m.getRole())) continue;
             if (isHiddenToolMessage(m) && m.getToolCallsJson() != null && !m.getToolCallsJson().isBlank()) {
                 List<Map<String, Object>> tcs = parseToolCalls(m.getToolCallsJson());
-                if (tcs != null) pend.addAll(tcs);
+                if (tcs != null) {
+                    for (Map<String, Object> tc : tcs) {
+                        pend.add(new java.util.LinkedHashMap<>(tc));
+                    }
+                }
+            }
+            if ("tool".equals(m.getRole()) && m.getToolCallId() != null) {
+                fillOpId(pend, m.getToolCallId(), m.getContent());
             }
             if (isHiddenToolMessage(m)) continue;
             MessageDTO dto = toMessageDTO(m, feedbacks.get(m.getSeq()));
@@ -350,8 +366,29 @@ public class SessionManager {
         return false;
     }
 
-    private static List<Map<String, Object>> parseSources(String json) {
-        if (json == null || json.isBlank()) return null;
+    /**
+     * 把工具结果里携带的 opId 回填到对应的工具调用项上, 供前端渲染「撤销」按钮。
+     * <p>
+     * 工具结果消息对用户隐藏, 所以 opId 只能靠这种"旁路回填"到达界面 ——
+     * 它的用处是让用户可以只撤销某一次写/删, 而不是整轮退回。
+     *
+     * @param invocations 已累积的工具调用项(可变 Map)
+     * @param toolCallId  当前工具结果对应的调用 ID
+     * @param result      工具结果原文
+     */
+    private static void fillOpId(List<Map<String, Object>> invocations, String toolCallId, String result) {
+        if (invocations == null || invocations.isEmpty()) return;
+        String opId = WorkspaceJournal.extractOpId(result);
+        if (opId == null) return;
+        for (Map<String, Object> inv : invocations) {
+            if (toolCallId.equals(String.valueOf(inv.get("id")))) {
+                inv.put("opId", opId);
+                return;
+            }
+        }
+    }
+
+    private static List<Map<String, Object>> parseSources(String json) {        if (json == null || json.isBlank()) return null;
         try {
             return MAPPER.readValue(json, new TypeReference<List<Map<String, Object>>>() {});
         } catch (Exception e) {

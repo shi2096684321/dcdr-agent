@@ -102,6 +102,10 @@
               <div class="tool-item-head">
                 <span class="tool-badge">{{ t.name || 'tool' }}</span>
                 <span v-if="t.id" class="tool-id">{{ t.id }}</span>
+                <!-- 单次写/删操作的回滚入口: 只退这一步, 不影响同轮其它操作与对话 -->
+                <button v-if="t.opId" class="tool-undo" @click="$emit('undo-op', t.opId)">
+                  撤销这次改动
+                </button>
               </div>
               <pre v-if="t.args" class="tool-args">{{ t.args }}</pre>
             </div>
@@ -188,7 +192,7 @@ const props = defineProps({
   editing: { type: Boolean, default: false },
   editBuffer: { type: String, default: '' }
 })
-const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
+const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'undo-op', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 推理过程同样允许复制代码块(与正文共用同一套按钮与处理逻辑)
@@ -242,7 +246,7 @@ const toolList = computed(() => {
   return inv.map(t => {
     const raw = t.arguments != null ? String(t.arguments) : ''
     const args = raw.length > 800 ? raw.slice(0, 800) + '\n…(参数过长已截断)' : raw
-    return { name: t.name, id: t.id, args }
+    return { name: t.name, id: t.id, args, opId: t.opId || '' }
   })
 })
 // 默认收起来源卡片(正文上下两处汇总已足够展示来源存在; 用户点"查看来源"或角标时展开)
@@ -575,6 +579,8 @@ async function withdraw() {
 .tool-item-head { display: flex; align-items: center; gap: 8px; }
 .tool-badge { font-size: 12px; font-weight: 600; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); border-radius: 6px; padding: 2px 8px; }
 .tool-id { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
+.tool-undo { margin-left: auto; font-size: 11px; line-height: 1.6; color: var(--dcdr-text-2); background: transparent; border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 1px 9px; cursor: pointer; transition: all .15s; }
+.tool-undo:hover { color: var(--dcdr-accent); border-color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 .tool-args { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--dcdr-text-2); background: var(--dcdr-surface); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 
 /* 光标动画 */

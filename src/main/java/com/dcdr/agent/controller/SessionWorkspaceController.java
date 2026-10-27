@@ -103,6 +103,20 @@ public class SessionWorkspaceController {
         });
     }
 
+    @Operation(summary = "撤销单次文件操作",
+            description = "把某一次工具调用造成的文件改动单独回滚, 不动对话与其它操作。"
+                    + "opId 由工具结果携带, 前端从该次工具调用项上发起。文件在撤销前被外部改过则跳过并报告")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionRewindService.Report.class)))
+    @PostMapping("/journal/{opId}/undo")
+    public Mono<Result<SessionRewindService.Report>> undoOperation(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @Parameter(description = "操作 ID, 形如 op_20261026_174912_331", required = true) @PathVariable String opId) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            requireSession(id, ctx.userId(), ctx.admin());
+            return Result.success(rewindService.undoOperation(id, opId, ctx.userId(), ctx.admin()));
+        });
+    }
+
     private SessionEntity requireSession(String id, String userId, boolean isAdmin) {
         SessionEntity session = sessionRepository.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "会话不存在: " + id));

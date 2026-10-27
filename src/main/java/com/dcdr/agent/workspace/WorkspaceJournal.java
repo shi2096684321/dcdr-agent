@@ -17,7 +17,9 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -70,7 +72,20 @@ public class WorkspaceJournal {
      */
     public String begin(WorkspaceEntity workspace, String sessionId, String type, String relPath,
                         boolean existed, String beforeSha, String afterSha, long bytes) {
-        String opId = "op_" + System.nanoTime();
+        return begin(workspace, sessionId, type, relPath, existed, beforeSha, afterSha, bytes, null);
+    }
+
+    /**
+     * 同上, 但允许复用已有 opId。
+     * <p>
+     * <b>为什么需要</b>: 递归删除一个目录会写 N 条记录, 若各用各的 opId, 界面上就会出现 N 个
+     * 「撤销」按钮、且只能一个一个点回来。共享一个 opId 才能让"删了整目录 / 撤销整目录"成为一次操作。
+     *
+     * @param presetOpId 为 null 时自动生成
+     */
+    public String begin(WorkspaceEntity workspace, String sessionId, String type, String relPath,
+                        boolean existed, String beforeSha, String afterSha, long bytes, String presetOpId) {
+        String opId = presetOpId != null ? presetOpId : "op_" + System.nanoTime();
         ObjectNode node = MAPPER.createObjectNode();
         node.put("seq", nextSeq(workspace, sessionId));
         node.put("ts", Instant.now().toString());
@@ -85,6 +100,33 @@ public class WorkspaceJournal {
         node.put("status", "begin");
         append(workspace, sessionId, node);
         return opId;
+    }
+
+    /**
+     * 工具结果里携带操作 ID 的标记, 形如 {@code [workspace-op:op_xxx]}。
+     * <p>
+     * 为什么用文本标记而不是结构化字段: 工具返回的是纯文本(见 {@link com.dcdr.agent.tool.Tool#execute}),
+     * 而这条 opId 要同时到达两个消费者 —— 模型(无所谓, 看到也不会有害)和前端(靠它渲染「撤销」按钮)。
+     * 走文本是唯一不需要改动整条工具结果链路的做法; 提取逻辑集中在这里, 增删标记只有一处。
+     */
+    public static final String OP_MARKER_PREFIX = "[workspace-op:";
+
+    /** 在工具结果末尾追加操作 ID 标记 */
+    public static String markOp(String text, String opId) {
+        if (text == null || opId == null || opId.isBlank()) return text;
+        return text + "\n" + OP_MARKER_PREFIX + opId + "]";
+    }
+
+    /** 从工具结果里取出操作 ID; 没有标记返回 null */
+    public static String extractOpId(String content) {
+        if (content == null) return null;
+        int i = content.lastIndexOf(OP_MARKER_PREFIX);
+        if (i < 0) return null;
+        int start = i + OP_MARKER_PREFIX.length();
+        int end = content.indexOf(']', start);
+        if (end < 0) return null;
+        String opId = content.substring(start, end).trim();
+        return opId.isEmpty() ? null : opId;
     }
 
     /**
@@ -118,18 +160,33 @@ public class WorkspaceJournal {
         }
     }
 
-    /** 读取全部变更记录(按 seq 升序); 文件不存在返回空 */
+    /**
+     * 读取全部变更记录(按 seq 升序); 文件不存在返回空。
+     * <p>
+     * <b>状态要回填</b>: {@code commit} / {@code markReverted} 写的是不带 path 的短记录,
+     * 真正的 path 记录里 status 永远是 {@code begin}。不合并的话, 调用方拿到的每一条都是
+     * "进行中" —— 既判断不出"这个操作已撤销过"(重复撤销会被当成正常请求再执行一遍),
+     * 也判断不出"当初就失败了"。所以这里按 opId 做一次归并, 后出现的状态覆盖先出现的。
+     */
     public List<Entry> read(WorkspaceEntity workspace, String sessionId) {
         Path file = journalFile(workspace, sessionId);
         if (!Files.exists(file)) return List.of();
 
         List<Entry> entries = new ArrayList<>();
+        Map<String, String> statusByOp = new HashMap<>();
         try {
             for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
                 if (line.isBlank()) continue;
                 try {
                     JsonNode n = MAPPER.readTree(line);
-                    if (!n.hasNonNull("path")) continue; // commit / markReverted 记录, 不参与回滚
+                    String op = n.path("op").asText(null);
+                    if (!n.hasNonNull("path")) {
+                        // commit / markReverted 记录: 只贡献状态, 不参与回滚
+                        if (op != null && n.hasNonNull("status")) {
+                            statusByOp.put(op, n.get("status").asText());
+                        }
+                        continue;
+                    }
                     entries.add(new Entry(
                             n.path("seq").asLong(),
                             n.path("ts").asText(),
@@ -149,6 +206,16 @@ public class WorkspaceJournal {
             }
         } catch (IOException e) {
             throw new BusinessException(500, "读取变更日志失败: " + e.getMessage());
+        }
+        if (!statusByOp.isEmpty()) {
+            List<Entry> merged = new ArrayList<>(entries.size());
+            for (Entry e : entries) {
+                String status = statusByOp.get(e.opId());
+                merged.add(status == null || status.equals(e.status()) ? e
+                        : new Entry(e.seq(), e.ts(), e.opId(), e.sessionId(), e.type(), e.path(),
+                        e.existed(), e.beforeSha(), e.afterSha(), e.bytes(), status));
+            }
+            entries = merged;
         }
         entries.sort(Comparator.comparingLong(Entry::seq));
         return entries;

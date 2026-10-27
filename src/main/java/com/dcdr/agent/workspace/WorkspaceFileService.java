@@ -269,11 +269,11 @@ public class WorkspaceFileService {
                     + humanSize(properties.getMaxWriteBytes()));
         }
 
-        commitWrite(workspace, sessionId, target, relPath, existed, bytes, old);
+        String opId = commitWrite(workspace, sessionId, target, relPath, existed, bytes, old);
         stamp(target);
-        return "[workspace_write] " + relPath + (existed ? " 已覆盖" : " 已创建")
+        return WorkspaceJournal.markOp("[workspace_write] " + relPath + (existed ? " 已覆盖" : " 已创建")
                 + "  (" + countLines(content) + " 行, " + humanSize(bytes.length) + ")"
-                + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。";
+                + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。", opId);
     }
 
     /**
@@ -341,9 +341,9 @@ public class WorkspaceFileService {
         stamp(target);
 
         int replaced = replaceAll ? occurrences : 1;
-        return "[workspace_edit] " + relPath + " 已修改 (替换 " + replaced + " 处)\n"
+        return WorkspaceJournal.markOp("[workspace_edit] " + relPath + " 已修改 (替换 " + replaced + " 处)\n"
                 + diffSnippet(needle, replacement)
-                + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。";
+                + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。", opId);
     }
 
     // ===== 删 =====
@@ -365,8 +365,8 @@ public class WorkspaceFileService {
             String sha = trash.stash(workspace, target);
             String opId = journal.begin(workspace, sessionId, "DELETE", relPath, true, sha, null, 0);
             journal.commit(workspace, sessionId, opId, "done");
-            return "[workspace_delete] " + relPath + " 已移入回收区(未真删)\n"
-                    + "提示: 可在界面上点「撤销」恢复。";
+            return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已移入回收区(未真删)\n"
+                    + "提示: 可在界面上点「撤销」恢复。", opId);
         }
 
         if (!recursive) {
@@ -392,10 +392,13 @@ public class WorkspaceFileService {
         }
 
         int deleted = 0;
+        // 整目录删除共用同一个 opId: 否则界面上会出现 N 个「撤销」按钮, 得一个一个点回来
+        String groupOpId = null;
         for (Path f : files) {
             String rel = resolver.relative(f, Path.of(workspace.getRootPath()));
             String sha = trash.stash(workspace, f);
-            String opId = journal.begin(workspace, sessionId, "DELETE", rel, true, sha, null, 0);
+            String opId = journal.begin(workspace, sessionId, "DELETE", rel, true, sha, null, 0, groupOpId);
+            if (groupOpId == null) groupOpId = opId;
             journal.commit(workspace, sessionId, opId, "done");
             deleted++;
         }
@@ -422,8 +425,9 @@ public class WorkspaceFileService {
             log.warn("清理空目录失败(文件已进回收区): {}", e.getMessage());
         }
 
-        return "[workspace_delete] " + relPath + " 已递归删除 " + deleted + " 个文件(全部进回收区, 未真删)\n"
-                + "提示: 可在界面上点「撤销」整体恢复。";
+        return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已递归删除 " + deleted
+                + " 个文件(全部进回收区, 未真删)\n"
+                + "提示: 可在界面上点「撤销」整体恢复。", groupOpId);
     }
 
     // ===== 恢复(供撤回使用) =====
@@ -443,8 +447,8 @@ public class WorkspaceFileService {
 
     // ===== 内部: 写入 =====
 
-    private void commitWrite(WorkspaceEntity workspace, String sessionId, Path target, String relPath,
-                             boolean existed, byte[] bytes, Decoded old) {
+    private String commitWrite(WorkspaceEntity workspace, String sessionId, Path target, String relPath,
+                               boolean existed, byte[] bytes, Decoded old) {
         String beforeSha = existed ? trash.stash(workspace, target) : null;
         String opId = journal.begin(workspace, sessionId, existed ? "MODIFY" : "CREATE", relPath,
                 existed, beforeSha, WorkspaceTrashService.sha256(bytes), bytes.length);
@@ -456,6 +460,7 @@ public class WorkspaceFileService {
             journal.commit(workspace, sessionId, opId, "failed");
             throw new BusinessException(500, "写入失败, 已尝试回滚: " + e.getMessage());
         }
+        return opId;
     }
 
     private void restoreOrWarn(WorkspaceEntity workspace, Path target, String sha, String relPath) {

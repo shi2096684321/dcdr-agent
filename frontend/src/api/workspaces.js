@@ -29,3 +29,8 @@ export const getCheckpoints = (sessionId) => unwrap(api.get(`/api/sessions/${ses
 // 撤回: scope=FILES 只回滚文件; ALL 同时删除该消息及其之后的消息
 export const rewindSession = (sessionId, messageId, scope = 'ALL') =>
   unwrap(api.post(`/api/sessions/${sessionId}/rewind`, { messageId: String(messageId), scope }))
+
+// L1 单操作撤销: 只回滚某一次工具调用造成的文件改动, 不动对话与其它操作。
+// opId 由工具结果携带, 后端在消息接口里回填到 toolInvocations[i].opId
+export const undoOperation = (sessionId, opId) =>
+  unwrap(api.post(`/api/sessions/${sessionId}/journal/${opId}/undo`))

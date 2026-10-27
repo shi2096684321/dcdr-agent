@@ -202,4 +202,56 @@ class LongTermMemoryServiceTest {
         assertEquals(0, service.archiveExpired());
         verify(repository, times(1)).saveAll(any());
     }
+
+    // ===== 会话撤回连带归档 (V3.3 F-49) =====
+
+    @Test
+    @DisplayName("撤回对话: 只归档锚点及其之后产生的记忆, 更早轮次沉淀的保留")
+    void archiveBySessionKeepsEarlierTurns() {
+        MemoryEntity early = memoryWithSeq("m1", "u1", 2);
+        MemoryEntity inRange = memoryWithSeq("m2", "u1", 7);
+        MemoryEntity exactly = memoryWithSeq("m3", "u1", 5);
+        when(repository.findBySourceSessionIdAndStatus("s1", MemoryStatus.ACTIVE.name()))
+                .thenReturn(List.of(early, inRange, exactly));
+
+        // 锚点是第 5 条消息: 5 及之后的都要退, 2 保留
+        assertEquals(2, service.archiveBySession("u1", "s1", 5));
+        assertEquals("ACTIVE", early.getStatus(), "撤回范围之外的记忆不能被动");
+        assertEquals("ARCHIVED", inRange.getStatus());
+        assertEquals("ARCHIVED", exactly.getStatus(), "锚点自身的产物也要退(含边界)");
+    }
+
+    @Test
+    @DisplayName("撤回对话: 没有来源序号时保守归档(无法证明它在撤回范围外)")
+    void archiveBySessionArchivesUnknownSeq() {
+        MemoryEntity unknown = memoryWithSeq("m1", "u1", null);
+        when(repository.findBySourceSessionIdAndStatus("s1", MemoryStatus.ACTIVE.name()))
+                .thenReturn(List.of(unknown));
+
+        assertEquals(1, service.archiveBySession("u1", "s1", 5));
+        assertEquals("ARCHIVED", unknown.getStatus());
+    }
+
+    @Test
+    @DisplayName("撤回对话: 他人的记忆与已归档条目不动, 空会话直接返回 0")
+    void archiveBySessionSkipsOthersAndInactive() {
+        MemoryEntity others = memoryWithSeq("m1", "u2", 9);
+        when(repository.findBySourceSessionIdAndStatus("s1", MemoryStatus.ACTIVE.name()))
+                .thenReturn(List.of(others));
+
+        assertEquals(0, service.archiveBySession("u1", "s1", 1));
+        assertEquals("ACTIVE", others.getStatus(), "不能因为同一个会话 ID 就归档别人的记忆");
+
+        assertEquals(0, service.archiveBySession("u1", null, 1));
+        assertEquals(0, service.archiveBySession("u1", "  ", 1));
+        verify(repository, times(1)).findBySourceSessionIdAndStatus(any(), any());
+    }
+
+    private static MemoryEntity memoryWithSeq(String id, String userId, Integer seq) {
+        MemoryEntity e = memory(id, userId, MemoryStatus.ACTIVE.name());
+        e.setSourceSessionId("s1");
+        e.setSourceMsgSeq(seq);
+        e.setSourceKind(MemoryOrigin.AUTO.name());
+        return e;
+    }
 }

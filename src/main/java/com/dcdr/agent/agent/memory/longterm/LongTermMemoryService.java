@@ -343,6 +343,48 @@ public class LongTermMemoryService {
         return expired.size();
     }
 
+    /**
+     * 撤回对话时, 归档该会话从某个消息序号起沉淀的记忆(V3.3 F-49)。
+     * <p><b>不回滚这一步, 撤回就是半成品</b>: 消息删了、文件回滚了, 但模型下一轮仍能把
+     * "用户喜欢 X""项目用 Y 方案"这类结论从记忆池里捞出来 —— 用户会看到模型记得一段
+     * 已经不存在于对话历史里的内容, 这是最直接的"撤回了个寂寞"。
+     * <p><b>边界怎么定</b>: 按 {@code sourceMsgSeq} 与撤回锚点比较, 只归档锚点及其之后产生的条目;
+     * 序号为空(存量数据 / 未记录的)保守归档 —— 它来自本会话却无法定位轮次, 留着就可能泄露被撤回的内容。
+     * <p><b>为什么只归档 ACTIVE</b>: 已归档/已删除的本来就不参与召回, 再动一次只会污染 {@code updatedAt}。
+     * <p><b>用户手写的记忆不动</b>: 界面新增的条目没有 {@code sourceSessionId}, 天然不在候选集里。
+     *
+     * @param userId    归属用户(为 null 时按会话 ID 全量处理, 供内部调用)
+     * @param sessionId 会话 ID
+     * @param fromSeq   撤回锚点的消息序号(含); <=0 表示该会话全部轮次
+     * @return 被归档的条数
+     */
+    @Transactional
+    public int archiveBySession(String userId, String sessionId, int fromSeq) {
+        if (sessionId == null || sessionId.isBlank()) return 0;
+        List<MemoryEntity> candidates = memoryRepository
+                .findBySourceSessionIdAndStatus(sessionId, MemoryStatus.ACTIVE.name());
+        if (candidates.isEmpty()) return 0;
+
+        List<MemoryEntity> affected = new ArrayList<>();
+        for (MemoryEntity m : candidates) {
+            if (userId != null && !userId.equals(m.getUserId())) continue;
+            Integer seq = m.getSourceMsgSeq();
+            // 序号缺失 → 无法证明它来自撤回范围之外, 保守归档; 有序号 → 早于锚点的保留
+            if (fromSeq > 0 && seq != null && seq < fromSeq) continue;
+            affected.add(m);
+        }
+        if (affected.isEmpty()) return 0;
+
+        LocalDateTime now = LocalDateTime.now();
+        for (MemoryEntity m : affected) {
+            m.setStatus(MemoryStatus.ARCHIVED.name());
+            m.setUpdatedAt(now);
+        }
+        memoryRepository.saveAll(affected);
+        log.info("会话撤回, 记忆已归档: session={}, fromSeq={}, 共 {} 条", sessionId, fromSeq, affected.size());
+        return affected.size();
+    }
+
     /** 幂等地改状态: 已是目标状态就不动 —— 避免无意义写入与 updatedAt 无谓抖动 */
     private void applyStatus(MemoryEntity e, MemoryStatus status) {
         if (status.name().equals(e.getStatus())) return;

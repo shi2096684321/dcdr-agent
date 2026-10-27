@@ -89,4 +89,60 @@ class WorkspaceJournalTest {
         assertTrue(journal.read(workspace, "sess_empty").isEmpty());
         assertFalse(journal.hasHistory(workspace, "sess_empty"));
     }
+
+    @Test
+    void commit后的状态回填到条目上() {
+        String opId = journal.begin(workspace, "sess_s1", "MODIFY", "a.txt", true, "sha1", "sha2", 10);
+        journal.commit(workspace, "sess_s1", opId, "done");
+
+        // commit 写的是不带 path 的短记录, 若不回填, 调用方看到的永远是 begin
+        assertEquals("done", journal.read(workspace, "sess_s1").get(0).status(),
+                "状态必须按 opId 归并, 否则判断不出这条操作是否已成功/已撤销");
+    }
+
+    @Test
+    void 撤回标记可被读回() {
+        String opId = journal.begin(workspace, "sess_s2", "DELETE", "b.txt", true, "sha1", null, 0);
+        journal.commit(workspace, "sess_s2", opId, "done");
+        journal.markReverted(workspace, "sess_s2", List.of(opId));
+
+        assertEquals("reverted", journal.read(workspace, "sess_s2").get(0).status());
+    }
+
+    @Test
+    void 共享opId的多条记录状态一致() {
+        // 递归删除整目录: 多个文件共用同一个 opId, 撤销时才是一次操作
+        String op1 = journal.begin(workspace, "sess_s3", "DELETE", "dir/a.txt", true, "s1", null, 0);
+        journal.begin(workspace, "sess_s3", "DELETE", "dir/b.txt", true, "s2", null, 0, op1);
+        journal.commit(workspace, "sess_s3", op1, "done");
+
+        List<WorkspaceJournal.Entry> entries = journal.read(workspace, "sess_s3");
+        assertEquals(2, entries.size());
+        assertEquals(op1, entries.get(0).opId());
+        assertEquals(op1, entries.get(1).opId(), "第二条记录必须复用同一个 opId");
+        assertTrue(entries.stream().allMatch(e -> "done".equals(e.status())));
+    }
+
+    @Test
+    void 失败的操作状态可区分() {
+        String opId = journal.begin(workspace, "sess_s4", "MODIFY", "c.txt", true, "s1", "s2", 3);
+        journal.commit(workspace, "sess_s4", opId, "failed");
+
+        // 失败的操作没改过文件, 撤销时应当被识别并跳过, 而不是白跑一遍回滚
+        assertEquals("failed", journal.read(workspace, "sess_s4").get(0).status());
+    }
+
+    @Test
+    void op标记可往返提取() {
+        String text = WorkspaceJournal.markOp("已修改 a.txt", "op_123");
+        assertTrue(text.contains("已修改 a.txt"));
+        assertEquals("op_123", WorkspaceJournal.extractOpId(text));
+    }
+
+    @Test
+    void 无标记或空内容时提取为null() {
+        assertNull(WorkspaceJournal.extractOpId(null));
+        assertNull(WorkspaceJournal.extractOpId("普通工具结果, 没有标记"));
+        assertNull(WorkspaceJournal.extractOpId("[workspace-op:]"));
+    }
 }

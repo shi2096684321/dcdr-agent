@@ -1,5 +1,6 @@
 package com.dcdr.agent.workspace;
 
+import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.MessageEntity;
 import com.dcdr.agent.entity.SessionEntity;
@@ -43,6 +44,7 @@ public class SessionRewindService {
     private final WorkspacePathResolver pathResolver;
     private final WorkspaceJournal journal;
     private final WorkspaceFileService fileService;
+    private final LongTermMemoryService memoryService;
 
     /** 撤回范围 */
     public enum Scope {
@@ -55,7 +57,15 @@ public class SessionRewindService {
     public record Skipped(String path, String reason) {
     }
 
-    public record Report(List<String> reverted, List<Skipped> skipped, int messagesDeleted) {
+    /**
+     * 撤回结果。
+     *
+     * @param reverted          已回滚的路径
+     * @param skipped           因冲突或校验失败而跳过的路径(附原因, 必须在前端展示 —— 静默跳过等于骗人)
+     * @param messagesDeleted   删除的消息条数
+     * @param memoriesArchived  归档的长期记忆条数(撤回对话时同步清理, 否则模型仍"记得"被撤回的内容)
+     */
+    public record Report(List<String> reverted, List<Skipped> skipped, int messagesDeleted, int memoriesArchived) {
     }
 
     /** 可撤回点: 每条用户消息一个, 供前端在消息旁显示"撤回此轮" */
@@ -103,6 +113,7 @@ public class SessionRewindService {
         List<String> reverted = new ArrayList<>();
         List<Skipped> skipped = new ArrayList<>();
         int messagesDeleted = 0;
+        int memoriesArchived = 0;
 
         if (session.getWorkspaceId() != null && !session.getWorkspaceId().isBlank()) {
             WorkspaceEntity workspace = workspaceService.requireOwned(session.getWorkspaceId(), session.getUserId(), true);
@@ -115,11 +126,69 @@ public class SessionRewindService {
             if (messagesDeleted > 0) {
                 messageRepository.deleteBySessionIdAndSeqGreaterThanEqual(sessionId, anchor.getSeq());
             }
+            // 撤回对话 = 宣告"这段对话没发生过", 那么它沉淀出来的记忆也必须一起退掉:
+            // 文件回滚了、消息删了, 但模型下一轮还能从记忆池里捞到结论 —— 用户会直接感到"没撤干净"。
+            // 放在删消息之后执行: 归档本身不依赖消息是否还在, 但失败时要保证消息这条主链路已经完成。
+            memoriesArchived = memoryService.archiveBySession(session.getUserId(), sessionId, anchor.getSeq());
         }
 
-        log.info("会话撤回完成: session={}, anchor={}, files={}, skipped={}, messages={}",
-                sessionId, messageId, reverted.size(), skipped.size(), messagesDeleted);
-        return new Report(reverted, skipped, messagesDeleted);
+        log.info("会话撤回完成: session={}, anchor={}, files={}, skipped={}, messages={}, memories={}",
+                sessionId, messageId, reverted.size(), skipped.size(), messagesDeleted, memoriesArchived);
+        return new Report(reverted, skipped, messagesDeleted, memoriesArchived);
+    }
+
+    /**
+     * L1 单操作撤销: 把某一次工具调用造成的文件改动单独回滚, 不动对话与其它操作。
+     * <p>
+     * 与整轮撤回的区别只在与粒度和边界: 这里日志条目直接按 {@code opId} 定位, 不按消息时间切分,
+     * 因此一轮里改了 5 个文件, 用户也能只退掉其中 1 个。
+     * <p>
+     * <b>回滚本身仍可回滚</b>: 撤销一次写入, 当前内容会先进回收区; 撤销一次删除, 文件从回收区回来。
+     * 唯一不可逆的是"回滚到新建前" —— 那个文件进回收区, 需要时仍能手工捞回。
+     *
+     * @param opId 日志中的操作 ID(由工具结果携带, 前端从工具调用项上发起)
+     */
+    @Transactional
+    public Report undoOperation(String sessionId, String opId, String userId, boolean isAdmin) {
+        if (opId == null || opId.isBlank()) {
+            throw new BusinessException(400, "请提供要撤销的 operationId");
+        }
+        SessionEntity session = requireSession(sessionId, userId, isAdmin);
+        if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
+            throw new BusinessException(400, "本会话未绑定工作区, 没有可撤销的文件操作");
+        }
+        WorkspaceEntity workspace = workspaceService.requireOwned(session.getWorkspaceId(), session.getUserId(), true);
+
+        List<WorkspaceJournal.Entry> targets = new ArrayList<>();
+        for (WorkspaceJournal.Entry e : journal.read(workspace, sessionId)) {
+            if (opId.equals(e.opId())) targets.add(e);
+        }
+        if (targets.isEmpty()) {
+            throw new BusinessException(404, "找不到该操作记录: " + opId + "(可能已过期清理)");
+        }
+
+        List<String> reverted = new ArrayList<>();
+        List<Skipped> skipped = new ArrayList<>();
+        for (WorkspaceJournal.Entry e : targets) {
+            if ("reverted".equals(e.status())) {
+                skipped.add(new Skipped(e.path(), "该操作已撤销过"));
+                continue;
+            }
+            // 失败的操作没改动文件, 标成 reverted 只会让日志与事实不符
+            if ("failed".equals(e.status())) {
+                skipped.add(new Skipped(e.path(), "该操作当时就失败了, 文件未被改动"));
+                continue;
+            }
+            applyEntry(workspace, e, reverted, skipped);
+        }
+
+        List<String> opIds = reverted.isEmpty() ? List.of() : List.of(opId);
+        if (!opIds.isEmpty()) {
+            journal.markReverted(workspace, sessionId, opIds);
+        }
+        log.info("单操作撤销: session={}, op={}, reverted={}, skipped={}",
+                sessionId, opId, reverted.size(), skipped.size());
+        return new Report(reverted, skipped, 0, 0);
     }
 
     // ===== 内部 =====
@@ -133,7 +202,6 @@ public class SessionRewindService {
 
         // 每个 path 只取最早的 before 状态: 一轮里改 5 次, 要回到最初始那份
         Map<String, WorkspaceJournal.Entry> earliest = new LinkedHashMap<>();
-        List<String> opIds = new ArrayList<>();
         for (WorkspaceJournal.Entry e : entries) {
             if ("reverted".equals(e.status())) continue;
             Instant ts;
@@ -144,55 +212,80 @@ public class SessionRewindService {
             }
             // 允许 1 秒误差: 日志写入与消息落库的先后顺序不保证严格有序
             if (ts.isBefore(boundary.minusSeconds(1))) continue;
-            opIds.add(e.opId());
             earliest.merge(e.path(), e, (a, b) -> a.seq() <= b.seq() ? a : b);
         }
         if (earliest.isEmpty()) return;
 
+        List<String> doneOps = new ArrayList<>();
         for (Map.Entry<String, WorkspaceJournal.Entry> item : earliest.entrySet()) {
-            String relPath = item.getKey();
             WorkspaceJournal.Entry e = item.getValue();
-            Path target;
-            try {
-                target = pathResolver.resolve(workspace, relPath, WorkspaceIntent.WRITE);
-            } catch (BusinessException ex) {
-                skipped.add(new Skipped(relPath, "路径校验未通过: " + ex.getMessage()));
-                continue;
-            }
-
-            boolean exists = Files.exists(target);
-            if (e.existed()) {
-                if (exists && e.afterSha() != null && !shaMatches(target, e.afterSha())) {
-                    skipped.add(new Skipped(relPath, "文件在撤回前被外部修改过, 已跳过以免覆盖你的改动"));
-                    continue;
-                }
-                try {
-                    fileService.restore(workspace, relPath, true, e.beforeSha());
-                    reverted.add(relPath);
-                } catch (BusinessException ex) {
-                    skipped.add(new Skipped(relPath, ex.getMessage()));
-                }
-            } else {
-                // 这一轮新建的文件: 撤回 = 移入回收区(仍可再恢复, 撤回本身也留退路)
-                if (!exists) {
-                    reverted.add(relPath);
-                    continue;
-                }
-                if (e.afterSha() != null && !shaMatches(target, e.afterSha())) {
-                    skipped.add(new Skipped(relPath, "新建的文件之后又被改过, 已跳过"));
-                    continue;
-                }
-                try {
-                    fileService.restore(workspace, relPath, false, null);
-                    reverted.add(relPath);
-                } catch (BusinessException ex) {
-                    skipped.add(new Skipped(relPath, ex.getMessage()));
-                }
-            }
+            int before = reverted.size();
+            applyEntry(workspace, e, reverted, skipped);
+            // 只把真正回滚成功的 op 标为 reverted: 被冲突跳过的保留可撤回状态,
+            // 用户把手改处理掉之后还能再点一次。一刀切标记等于让这些文件永久失去救援入口。
+            if (reverted.size() > before) doneOps.add(e.opId());
         }
 
-        if (!opIds.isEmpty()) {
-            journal.markReverted(workspace, sessionId, opIds);
+        if (!doneOps.isEmpty()) {
+            journal.markReverted(workspace, sessionId, doneOps);
+        }
+    }
+
+    /**
+     * 把一条日志记录回滚到它的 before 状态。整轮撤回(L2/L3)与单操作撤销(L1)共用这一段,
+     * 因为两者的判定逻辑完全一致 —— 差别只在"选哪些记录", 不在"怎么回滚"。
+     * <p>
+     * 冲突检测是这里唯一真正危险的地方: 用户在 agent 改完之后、点撤销之前自己在 IDE 里动了同一个文件。
+     * 无脑覆盖 = 抹掉他的手改, 比不撤销更糟, 因此所有冲突一律跳过并报告, 不提供"强制覆盖"。
+     */
+    private void applyEntry(WorkspaceEntity workspace, WorkspaceJournal.Entry e,
+                            List<String> reverted, List<Skipped> skipped) {
+        String relPath = e.path();
+        Path target;
+        try {
+            target = pathResolver.resolve(workspace, relPath, WorkspaceIntent.WRITE);
+        } catch (BusinessException ex) {
+            skipped.add(new Skipped(relPath, "路径校验未通过: " + ex.getMessage()));
+            return;
+        }
+
+        boolean exists = Files.exists(target);
+
+        if (e.existed()) {
+            // 改动前文件是存在的(MODIFY / EDIT / DELETE): 从回收区取回原内容
+            if (e.afterSha() != null && exists && !shaMatches(target, e.afterSha())) {
+                skipped.add(new Skipped(relPath, "文件在撤回前被外部修改过, 已跳过以免覆盖你的改动"));
+                return;
+            }
+            // DELETE 的 afterSha 为空(记录的是"删完之后没有内容"), 此时目标位置若又出现同名文件,
+            // 说明有人在删除之后新建了一个 —— 拿旧快照盖上去就是静默销毁一份新内容
+            if (e.afterSha() == null && exists) {
+                skipped.add(new Skipped(relPath, "该位置已存在新的同名文件, 已跳过以免覆盖"));
+                return;
+            }
+            try {
+                fileService.restore(workspace, relPath, true, e.beforeSha());
+                reverted.add(relPath);
+            } catch (BusinessException ex) {
+                skipped.add(new Skipped(relPath, ex.getMessage()));
+            }
+            return;
+        }
+
+        // 改动前文件不存在(CREATE): 撤回 = 移入回收区, 而不是真删 —— 撤回本身也要留退路
+        if (!exists) {
+            reverted.add(relPath);
+            return;
+        }
+        if (e.afterSha() != null && !shaMatches(target, e.afterSha())) {
+            skipped.add(new Skipped(relPath, "新建的文件之后又被改过, 已跳过"));
+            return;
+        }
+        try {
+            fileService.restore(workspace, relPath, false, null);
+            reverted.add(relPath);
+        } catch (BusinessException ex) {
+            skipped.add(new Skipped(relPath, ex.getMessage()));
         }
     }
 

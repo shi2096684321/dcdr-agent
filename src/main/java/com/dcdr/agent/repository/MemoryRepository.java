@@ -38,4 +38,13 @@ public interface MemoryRepository extends JpaRepository<MemoryEntity, String> {
 
     /** 某专家名下的记忆 (供删除专家时归档其专属记忆, 避免 agentId 悬空) */
     List<MemoryEntity> findByAgentIdAndStatus(String agentId, String status);
+
+    /**
+     * 某会话产生的记忆 (供撤回对话时按来源归档)。
+     * <p>撤回的语义是"这段对话没发生过", 那么它沉淀出来的记忆也不该继续留在召回池里 ——
+     * 否则用户会发现撤回之后模型仍然"记得"被撤回的内容。
+     * <p>按 {@code sourceSessionId} 而不是时间范围筛选: 一个会话的记忆可能来自不同轮次,
+     * 时间边界会被并发或时区细节带偏, 来源会话是确定的事实。
+     */
+    List<MemoryEntity> findBySourceSessionIdAndStatus(String sourceSessionId, String status);
 }

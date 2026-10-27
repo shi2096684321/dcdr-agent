@@ -45,4 +45,21 @@ public enum WorkspaceAccess {
             case FULL -> "可写可删";
         };
     }
+
+    /**
+     * 该档位可用的工具清单, 供 system prompt 摘要点名。
+     * <p>
+     * 为什么要按档位列出而不是笼统写"用 workspace_* 工具": 工具注册本身已按档位过滤,
+     * 模型若在提示里看到未注册的名字, 会反复尝试调用一个不存在的工具(报错、重试、浪费轮次)。
+     * 点名可用的那几个, 它就不会去猜。
+     */
+    public String tools() {
+        return switch (this) {
+            case READ -> "`workspace_list`、`workspace_read`、`workspace_search`";
+            case WRITE -> "`workspace_list`、`workspace_read`、`workspace_search`、"
+                    + "`workspace_write`、`workspace_edit`";
+            case FULL -> "`workspace_list`、`workspace_read`、`workspace_search`、"
+                    + "`workspace_write`、`workspace_edit`、`workspace_delete`";
+        };
+    }
 }

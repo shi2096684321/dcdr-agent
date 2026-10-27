@@ -34,6 +34,7 @@ import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
 import com.dcdr.agent.workspace.WorkspaceContextHolder;
+import com.dcdr.agent.workspace.WorkspacePromptProvider;
 import com.dcdr.agent.tool.ToolInventory;
 import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
@@ -110,6 +111,8 @@ public class AgentOrchestrator {
     private final ToolResultCompressor toolResultCompressor;
     /** V3.1 技能: 只能注入"技能目录"(渐进式披露第一层), 正文由模型按需通过 skill_load 取回 */
     private final SkillCatalogProvider skillCatalogProvider;
+    /** V3.3 F-49: 工作区摘要(根目录 + 档位 + 可用工具)。未绑定工作区时不注入 */
+    private final WorkspacePromptProvider workspacePromptProvider;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
@@ -164,7 +167,8 @@ public class AgentOrchestrator {
                              LongTermMemoryService longTermMemoryService,
                              MemoryAutoExtractor memoryAutoExtractor,
                              ToolResultCompressor toolResultCompressor,
-                             SkillCatalogProvider skillCatalogProvider) {
+                             SkillCatalogProvider skillCatalogProvider,
+                             WorkspacePromptProvider workspacePromptProvider) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -189,6 +193,7 @@ public class AgentOrchestrator {
         this.memoryAutoExtractor = memoryAutoExtractor;
         this.toolResultCompressor = toolResultCompressor;
         this.skillCatalogProvider = skillCatalogProvider;
+        this.workspacePromptProvider = workspacePromptProvider;
     }
 
     /**
@@ -1730,7 +1735,7 @@ public class AgentOrchestrator {
         history = injectLongTermMemory(history, userId, request, trace);
 
         // 3.2 平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录), 与同步 chatSync 路径共用, 保证两条链路注入一致
-        history = injectRuntimeSystemPrompts(history, provider, request, userId);
+        history = injectRuntimeSystemPrompts(history, provider, request, userId, sessId);
 
         // 3.3 RAG 知识库检索增强(意图分层, 对齐主流产品混合式):
         //     - 显式模式(强制检索): 用户在前端显式选择了知识库(explicitKbIds 非空)→ 每轮先检索再回答。
@@ -2130,7 +2135,7 @@ public class AgentOrchestrator {
 
         // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录),
         // 与流式 chat 路径完全一致
-        history = injectRuntimeSystemPrompts(history, provider, request, currentUserId);
+        history = injectRuntimeSystemPrompts(history, provider, request, currentUserId, sessionId);
 
         // RAG 已改为 Agentic 模式(混合式): chatSync 路径同样由 LLM 决定是否调用 knowledge_base_search 工具,
         // 不再在此处强制检索。同步路径暂不支持工具循环(chatSync 为简化路径, 仅 agent 模式才走工具),
@@ -2319,7 +2324,7 @@ public class AgentOrchestrator {
      * @return 注入约束后的新历史列表
      */
     private List<Message> injectRuntimeSystemPrompts(List<Message> history, ChatModelProvider provider,
-                                                     ChatRequest request, String userId) {
+                                                     ChatRequest request, String userId, String sessionId) {
         List<Message> result = new ArrayList<>(history);
 
         // 统一按「name 去重键」判断：history 中已存在同 name 的 system 消息则跳过（幂等）。
@@ -2364,6 +2369,16 @@ public class AgentOrchestrator {
             }
         } catch (Exception e) {
             log.warn("技能注入失败(不影响本轮对话): {}", e.getMessage());
+        }
+
+        // 6) 工作区摘要: 会话绑定了目录时注入 根路径 + 档位 + 可用工具清单。
+        //    不注入的话模型要先调一次 workspace_list 才能知道有没有目录、能写到什么程度,
+        //    白白多一个来回; 而这段信息是确定的三行, 常驻成本远低于一次工具调用。
+        //    未绑定工作区时不产生 system 消息(绝大多数会话属于这种情况)。
+        try {
+            injectIfAbsent(result, workspacePromptProvider.forSession(sessionId));
+        } catch (Exception e) {
+            log.warn("工作区摘要注入失败(不影响本轮对话): {}", e.getMessage());
         }
 
         return result;
