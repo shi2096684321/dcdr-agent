@@ -131,6 +131,24 @@ public class WorkspaceTrashService {
     }
 
     /**
+     * 读取快照内容(变更面板生成 diff 用)。不满足条件时返回 {@code null} 而不是抛错 ——
+     * 快照按保留期被清理、或日志里是脏 sha, 都是"看不到旧内容"的正常情况,
+     * 让整个面板 500 反而是过度反应; 调用方据此标一句"快照已过期"即可。
+     */
+    public byte[] readBlobOrNull(WorkspaceEntity workspace, String sha) {
+        if (sha == null || sha.isBlank()) return null;
+        try {
+            Path blob = blobPath(workspace, sha);
+            if (!Files.exists(blob, LinkOption.NOFOLLOW_LINKS)) return null;
+            if (Files.size(blob) > MAX_BLOB_BYTES) return null;
+            return Files.readAllBytes(blob);
+        } catch (IOException | RuntimeException e) {
+            log.warn("读取快照失败: {} ({})", sha, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * 回收区根目录。
      * <p>
      * 默认放应用数据目录而不是工作区: 放工作区等于往用户的仓库里塞垃圾 —— {@code git status} 出噪音、

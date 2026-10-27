@@ -4,8 +4,10 @@ import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.SessionEntity;
+import com.dcdr.agent.entity.WorkspaceEntity;
 import com.dcdr.agent.repository.SessionRepository;
 import com.dcdr.agent.workspace.SessionRewindService;
+import com.dcdr.agent.workspace.WorkspaceChangeService;
 import com.dcdr.agent.workspace.WorkspaceService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -36,6 +38,7 @@ public class SessionWorkspaceController {
     private final SessionRepository sessionRepository;
     private final WorkspaceService workspaceService;
     private final SessionRewindService rewindService;
+    private final WorkspaceChangeService changeService;
     private final OwnershipGuard ownershipGuard;
 
     @Operation(summary = "绑定工作区", description = "把某个工作区授权给本会话使用; 传空 workspaceId 表示解绑")
@@ -114,6 +117,56 @@ public class SessionWorkspaceController {
         return ownershipGuard.currentContext().map(ctx -> {
             requireSession(id, ctx.userId(), ctx.admin());
             return Result.success(rewindService.undoOperation(id, opId, ctx.userId(), ctx.admin()));
+        });
+    }
+
+    @Operation(summary = "查看本会话的文件变更",
+            description = "按文件聚合变更日志, 返回改前/改后的行级 diff。未绑定工作区时返回空清单。"
+                    + "改前内容取自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkspaceChangeService.Changes.class)))
+    @GetMapping("/changes")
+    public Mono<Result<WorkspaceChangeService.Changes>> changes(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            SessionEntity session = requireSession(id, ctx.userId(), ctx.admin());
+            if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
+                return Result.success(new WorkspaceChangeService.Changes(List.of(), false, 0));
+            }
+            WorkspaceEntity workspace = workspaceService.requireOwned(
+                    session.getWorkspaceId(), session.getUserId(), true);
+            return Result.success(changeService.list(workspace, id));
+        });
+    }
+
+    @Operation(summary = "按文件撤销改动",
+            description = "把某个文件在本会话里的全部未撤销改动一次性退回它最早被改动之前的状态。"
+                    + "文件在撤销前被外部改过则跳过并报告")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionRewindService.Report.class)))
+    @PostMapping("/changes/undo")
+    public Mono<Result<SessionRewindService.Report>> undoPath(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @RequestBody Map<String, String> body) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            requireSession(id, ctx.userId(), ctx.admin());
+            return Result.success(rewindService.undoPath(id, body.get("path"), ctx.userId(), ctx.admin()));
+        });
+    }
+
+    @Operation(summary = "清空本会话的全部改动",
+            description = "L3 会话级撤回: 以最早一条用户消息为锚点执行撤回。"
+                    + "scope=FILES(默认) 只回滚文件、保留对话; scope=ALL 同时清空消息。"
+                    + "撤回前被外部改过的文件会被跳过并单独报告")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionRewindService.Report.class)))
+    @PostMapping("/rewind-all")
+    public Mono<Result<SessionRewindService.Report>> rewindAll(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @RequestBody(required = false) Map<String, String> body) {
+        return ownershipGuard.currentContext().map(ctx -> {
+            requireSession(id, ctx.userId(), ctx.admin());
+            SessionRewindService.Scope scope = body != null && "ALL".equalsIgnoreCase(body.get("scope"))
+                    ? SessionRewindService.Scope.ALL
+                    : SessionRewindService.Scope.FILES;
+            return Result.success(rewindService.rewindAll(id, ctx.userId(), ctx.admin(), scope));
         });
     }
 

@@ -239,6 +239,52 @@ class SessionRewindServiceTest {
         assertEquals(Path.of("a.txt"), Files.readSymbolicLink(link));
     }
 
+    @Test
+    @DisplayName("L3 清空本会话改动: 没有用户消息也能回滚, 不把对话当必要条件")
+    void rewindAllWorksWithoutUserMessages() {
+        // 会话刚建、消息还没落库时, 文件已经可能被改过了 —— 这时不该报错说"没有可撤回的内容"
+        when(messageRepository.findBySessionIdOrderBySeqAsc("s1")).thenReturn(List.of());
+        when(journal.read(any(), anyString())).thenReturn(List.of(
+                entry("op_a", "a.txt", true, "sha_before", sha(target), "done")));
+
+        SessionRewindService.Report rep = service.rewindAll("s1", "u1", false,
+                SessionRewindService.Scope.FILES);
+
+        assertEquals(List.of("a.txt"), rep.reverted());
+        assertEquals(0, rep.messagesDeleted());
+        verify(fileService).restore(workspace, "a.txt", true, "sha_before");
+        // scope=FILES: 一条消息都不许删
+        verify(messageRepository, never()).deleteBySessionIdAndSeqGreaterThanEqual(anyString(), anyInt());
+    }
+
+    @Test
+    @DisplayName("L3 scope=ALL: 删光全部消息并归档全部记忆")
+    void rewindAllWithAllDeletesEveryMessage() {
+        when(journal.read(any(), anyString())).thenReturn(List.of());
+        when(messageRepository.countBySessionIdAndSeqGreaterThanEqual("s1", 0)).thenReturn(4L);
+        when(memoryService.archiveBySession("u1", "s1", 0)).thenReturn(2);
+
+        SessionRewindService.Report rep = service.rewindAll("s1", "u1", false,
+                SessionRewindService.Scope.ALL);
+
+        assertEquals(4, rep.messagesDeleted());
+        assertEquals(2, rep.memoriesArchived());
+        verify(messageRepository).deleteBySessionIdAndSeqGreaterThanEqual("s1", 0);
+    }
+
+    @Test
+    @DisplayName("L3 未绑定工作区: 明确拒绝, 不去猜一个目录回滚")
+    void rewindAllRequiresWorkspace() {
+        SessionEntity bare = new SessionEntity();
+        bare.setId("s2");
+        bare.setUserId("u1");
+        when(sessionRepository.findById("s2")).thenReturn(Optional.of(bare));
+
+        BusinessException e = assertThrows(BusinessException.class,
+                () -> service.rewindAll("s2", "u1", false, SessionRewindService.Scope.FILES));
+        assertEquals(400, e.getCode());
+    }
+
     private static WorkspaceJournal.Entry entry(String opId, String path, boolean existed,
                                                 String beforeSha, String afterSha, String status) {
         return new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", opId, "s1",

@@ -34,3 +34,15 @@ export const rewindSession = (sessionId, messageId, scope = 'ALL') =>
 // opId 由工具结果携带, 后端在消息接口里回填到 toolInvocations[i].opId
 export const undoOperation = (sessionId, opId) =>
   unwrap(api.post(`/api/sessions/${sessionId}/journal/${opId}/undo`))
+
+// ===== 变更面板(后端把 journal 聚合成「文件 + diff」) =====
+// 改前内容来自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到
+export const getSessionChanges = (sessionId) => unwrap(api.get(`/api/sessions/${sessionId}/changes`))
+
+// 按文件撤销: 把这个文件在本会话里的所有未撤销改动退回它最早被改动之前
+export const undoSessionPath = (sessionId, path) =>
+  unwrap(api.post(`/api/sessions/${sessionId}/changes/undo`, { path }))
+
+// L3 清空本会话改动: scope=FILES 只回滚文件保留对话(默认); ALL 连消息一起清空
+export const rewindAll = (sessionId, scope = 'FILES') =>
+  unwrap(api.post(`/api/sessions/${sessionId}/rewind-all`, { scope }))

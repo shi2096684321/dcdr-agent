@@ -188,7 +188,11 @@
       <!-- 输入区域 -->
       <div class="input-area">
         <!-- V3.3 F-49 工作区: 绑定在会话上, 徽标常驻显示当前授权目录与档位 -->
-        <WorkspaceSelector :session-id="currentSessionId || ''" @need-session="ensureSession" />
+        <div class="ws-toolbar">
+          <WorkspaceSelector :session-id="currentSessionId || ''" @need-session="ensureSession" />
+          <!-- 变更面板: 模型改完文件后, 用户必须能看清"改了什么"并一键退回 -->
+          <WorkspaceChangePanel ref="changePanelRef" :session-id="currentSessionId || ''" @changed="onChangesReverted" />
+        </div>
         <!-- 已选图片预览 -->
         <div v-if="selectedFiles.length" class="selected-files">
           <div v-for="(file, idx) in selectedFiles" :key="idx" class="selected-file">
@@ -367,6 +371,7 @@ import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
+import WorkspaceChangePanel from '@/components/WorkspaceChangePanel.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import CodePreviewModal from '@/components/CodePreviewModal.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
@@ -450,6 +455,8 @@ const sidebarCollapsed = ref(false)
 
 // ===== 输入框自适应高度 =====
 const inputEl = ref(null)
+/** 变更面板: 流式结束后要刷新一次计数(模型刚改完文件) */
+const changePanelRef = ref(null)
 
 /**
  * 输入框随内容长高(上限由 CSS 的 max-height 决定)。
@@ -655,6 +662,20 @@ async function onUndoOp(opId) {
     messages.value = await getMessages(sessionId)
   } catch (e) {
     ElMessage.error(e?.message || '撤销失败')
+  }
+}
+
+/**
+ * 变更面板里撤销之后: 消息气泡上「撤销这次改动」的可用状态已经变了, 重新拉一次消息列表。
+ * 面板自己负责提示结果, 这里只做同步, 不再重复弹提示。
+ */
+async function onChangesReverted() {
+  const sessionId = currentSessionId.value
+  if (!sessionId) return
+  try {
+    messages.value = await getMessages(sessionId)
+  } catch (e) {
+    // 同步失败不影响撤销本身已完成的事实, 静默即可
   }
 }
 
@@ -960,6 +981,8 @@ async function send(opts = {}) {
       streaming.value = false
       loadSessions()
       scrollBottom()
+      // 模型这一轮可能刚改过文件, 变更计数要跟着走, 否则用户得手动点开面板才看到
+      changePanelRef.value?.refresh()
       // 将后端 seq 回写到本地消息, 以支持编辑/重试时按 seq 截断历史(同样仅在归属会话当前展示时)
       if (stillOnOwnerSession && currentSessionId.value) {
         getMessages(currentSessionId.value)
@@ -1412,6 +1435,10 @@ onMounted(() => { loadSessions() })
 
 /* 输入区域 */
 /* flex: none: 输入区高度由内容(含自适应高度的 textarea)决定, 不参与压缩 */
+/* 工作区徽标 + 变更入口同一行; 缩进由这层统一给, 徽标自身的内边距去掉避免双倍 */
+.ws-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 28px 8px; }
+.ws-toolbar :deep(.ws-bar) { padding: 0; }
+
 .input-area { flex: none; padding: 16px 28px 20px; background: linear-gradient(180deg, transparent 0%, var(--dcdr-bg) 70%); }
 
 /* 已选文件预览 */

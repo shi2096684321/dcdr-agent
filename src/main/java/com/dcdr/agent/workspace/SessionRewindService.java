@@ -196,6 +196,84 @@ public class SessionRewindService {
         return new Report(reverted, skipped, 0, 0);
     }
 
+    /**
+     * L3 会话级撤回: 把本会话的全部改动退回起点(等价于对第一轮执行 L2)。
+     * <p>
+     * <b>不依赖"必须存在用户消息"</b>: 这个动作的语义是"把这个会话造成的所有文件改动退回去",
+     * 与对话里有没有消息无关。早先的实现复用 {@link #rewind} 并拿最早一条用户消息当锚点,
+     * 结果在"会话刚建、消息还没落库"或"消息被清过"时直接报错 —— 明明有文件改动却撤不了。
+     * 现在按日志全量回滚, 消息只在 {@code scope=ALL} 时才动。
+     */
+    @Transactional
+    public Report rewindAll(String sessionId, String userId, boolean isAdmin, Scope scope) {
+        SessionEntity session = requireSession(sessionId, userId, isAdmin);
+        if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
+            throw new BusinessException(400, "本会话未绑定工作区, 没有可回滚的文件改动");
+        }
+        WorkspaceEntity workspace = workspaceService.requireOwned(session.getWorkspaceId(), session.getUserId(), true);
+
+        List<String> reverted = new ArrayList<>();
+        List<Skipped> skipped = new ArrayList<>();
+        List<WorkspaceJournal.Entry> active = new ArrayList<>();
+        for (WorkspaceJournal.Entry e : journal.read(workspace, sessionId)) {
+            if (!"reverted".equals(e.status()) && !"failed".equals(e.status())) active.add(e);
+        }
+        applyEarliest(workspace, sessionId, active, reverted, skipped);
+
+        int messagesDeleted = 0;
+        int memoriesArchived = 0;
+        if (scope == Scope.ALL) {
+            messagesDeleted = (int) messageRepository.countBySessionIdAndSeqGreaterThanEqual(sessionId, 0);
+            if (messagesDeleted > 0) {
+                messageRepository.deleteBySessionIdAndSeqGreaterThanEqual(sessionId, 0);
+            }
+            memoriesArchived = memoryService.archiveBySession(session.getUserId(), sessionId, 0);
+        }
+
+        log.info("会话级撤回: session={}, files={}, skipped={}, messages={}, memories={}",
+                sessionId, reverted.size(), skipped.size(), messagesDeleted, memoriesArchived);
+        return new Report(reverted, skipped, messagesDeleted, memoriesArchived);
+    }
+
+    /**
+     * 按文件撤销: 把某个路径上所有未撤销的改动一次性退回"这个文件最早被碰之前"。
+     * <p>
+     * <b>为什么要把整条链一起退, 而不是只退最后一次</b>: 一轮里同一个文件被改 3 次, 界面上只有
+     * 一行"这个文件变了"。若只退最后一次, 用户点完发现文件仍是改过的样子 —— 他无法理解为什么。
+     * 语义上"这一行代表这个文件的变化", 撤销就该把它退回到变化之前。
+     * <p>
+     * 回滚仍然复用 {@link #applyEntry}: 取<b>最早</b>那条记录作为目标状态, 与 L2 的算法完全一致。
+     */
+    @Transactional
+    public Report undoPath(String sessionId, String relPath, String userId, boolean isAdmin) {
+        if (relPath == null || relPath.isBlank()) {
+            throw new BusinessException(400, "请提供要撤销的文件路径");
+        }
+        SessionEntity session = requireSession(sessionId, userId, isAdmin);
+        if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
+            throw new BusinessException(400, "本会话未绑定工作区, 没有可撤销的文件操作");
+        }
+        WorkspaceEntity workspace = workspaceService.requireOwned(session.getWorkspaceId(), session.getUserId(), true);
+
+        List<WorkspaceJournal.Entry> active = new ArrayList<>();
+        for (WorkspaceJournal.Entry e : journal.read(workspace, sessionId)) {
+            if (!relPath.equals(e.path())) continue;
+            if ("reverted".equals(e.status()) || "failed".equals(e.status())) continue;
+            active.add(e);
+        }
+        if (active.isEmpty()) {
+            throw new BusinessException(409, "该文件没有待撤销的改动: " + relPath);
+        }
+
+        List<String> reverted = new ArrayList<>();
+        List<Skipped> skipped = new ArrayList<>();
+        // 与 L2/L3 同一套回滚逻辑: 取该路径最早的那条记录作为目标状态
+        applyEarliest(workspace, sessionId, active, reverted, skipped);
+        log.info("按文件撤销: session={}, path={}, reverted={}, skipped={}",
+                sessionId, relPath, reverted.size(), skipped.size());
+        return new Report(reverted, skipped, 0, 0);
+    }
+
     // ===== 内部 =====
 
     private void rewindFiles(WorkspaceEntity workspace, String sessionId, MessageEntity anchor,
@@ -205,8 +283,7 @@ public class SessionRewindService {
 
         Instant boundary = toInstant(anchor.getCreatedAt());
 
-        // 每个 path 只取最早的 before 状态: 一轮里改 5 次, 要回到最初始那份
-        Map<String, WorkspaceJournal.Entry> earliest = new LinkedHashMap<>();
+        List<WorkspaceJournal.Entry> scoped = new ArrayList<>();
         for (WorkspaceJournal.Entry e : entries) {
             if ("reverted".equals(e.status())) continue;
             Instant ts;
@@ -217,9 +294,26 @@ public class SessionRewindService {
             }
             // 允许 1 秒误差: 日志写入与消息落库的先后顺序不保证严格有序
             if (ts.isBefore(boundary.minusSeconds(1))) continue;
+            scoped.add(e);
+        }
+        applyEarliest(workspace, sessionId, scoped, reverted, skipped);
+    }
+
+    /**
+     * 每个 path 只回滚到<b>最早</b>那条记录的状态, 然后按 opId 决定哪些 op 可以标记 reverted。
+     * <p>
+     * L2(单轮) 与 L3(整会话) 共用这一段: 两者的差别只在"选哪些记录"(时间边界 vs 全部),
+     * 不在"怎么回滚"。
+     */
+    private void applyEarliest(WorkspaceEntity workspace, String sessionId, List<WorkspaceJournal.Entry> entries,
+                               List<String> reverted, List<Skipped> skipped) {
+        if (entries.isEmpty()) return;
+
+        // 一轮里改 5 次, 要回到最初始那份
+        Map<String, WorkspaceJournal.Entry> earliest = new LinkedHashMap<>();
+        for (WorkspaceJournal.Entry e : entries) {
             earliest.merge(e.path(), e, (a, b) -> a.seq() <= b.seq() ? a : b);
         }
-        if (earliest.isEmpty()) return;
 
         // 按 opId 统计"应该成功几条 / 实际成功几条": 递归删除是一个 opId 对应 N 条记录,
         // 只要有一条被冲突跳过, 整片标记 reverted 就会让剩下那些再也撤不回来

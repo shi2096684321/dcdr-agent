@@ -665,8 +665,12 @@ public class WorkspaceFileService {
 
     // ===== 内部: 文本编解码 =====
 
-    /** 解码结果: 文本 + 原编码 + 是否带 BOM + 原换行风格 */
-    private record Decoded(String text, Charset charset, boolean bom, String lineEnding) {
+    /**
+     * 解码结果: 文本 + 原编码 + 是否带 BOM + 原换行风格。
+     * <p>包级可见是为了让变更面板(WorkspaceChangeService)复用同一套编码探测 ——
+     * 两边若用不同策略, 会出现"读出来是乱的、diff 里却是对的"这种自相矛盾。
+     */
+    record Decoded(String text, Charset charset, boolean bom, String lineEnding) {
 
         static Decoded freshUtf8() {
             return new Decoded("", StandardCharsets.UTF_8, false, "\n");
@@ -684,7 +688,7 @@ public class WorkspaceFileService {
      * 中文 Windows 上 GBK 文件极常见, 硬用 UTF-8 会得到乱码或抛异常; 而写回时必须沿用原编码,
      * 否则整个文件的中文会变成乱码 —— 这是最容易踩且最难察觉的一处。
      */
-    private Decoded decode(byte[] bytes) {
+    Decoded decode(byte[] bytes) {
         if (bytes.length == 0) return Decoded.freshUtf8();
 
         boolean bom = bytes.length >= 3 && (bytes[0] & 0xFF) == 0xEF
@@ -776,13 +780,18 @@ public class WorkspaceFileService {
         byte[] probe = new byte[BINARY_PROBE_BYTES];
         try (InputStream in = Files.newInputStream(file)) {
             int read = in.read(probe);
-            for (int i = 0; i < read; i++) {
-                if (probe[i] == 0) return true;
-            }
-            return false;
+            return looksBinary(read <= 0 ? new byte[0] : Arrays.copyOf(probe, read));
         } catch (IOException e) {
             return true; // 读不了就当二进制处理, 不冒险
         }
+    }
+
+    /** 字节级二进制探测: 出现 NUL 即判定; 变更面板与读取走同一判据, 避免两处结论不一致 */
+    static boolean looksBinary(byte[] probe) {
+        for (byte b : probe) {
+            if (b == 0) return true;
+        }
+        return false;
     }
 
     private byte[] readAll(Path file) {
