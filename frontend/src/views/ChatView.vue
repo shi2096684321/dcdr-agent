@@ -188,7 +188,7 @@
       <!-- 输入区域 -->
       <div class="input-area">
         <!-- V3.3 F-49 工作区: 绑定在会话上, 徽标常驻显示当前授权目录与档位 -->
-        <WorkspaceSelector :session-id="currentSessionId || ''" />
+        <WorkspaceSelector :session-id="currentSessionId || ''" @need-session="ensureSession" />
         <!-- 已选图片预览 -->
         <div v-if="selectedFiles.length" class="selected-files">
           <div v-for="(file, idx) in selectedFiles" :key="idx" class="selected-file">
@@ -580,6 +580,19 @@ async function newSession() {
   sessions.value.unshift(s)
   currentSessionId.value = s.id
   messages.value = []
+}
+
+/**
+ * 工作区选择器需要一个真实会话才能绑定, 而新会话是懒创建的(首次发消息才落库)。
+ * 用户先在空白页选了工作区时, 这里补建一个会话; WorkspaceSelector 收到新 sessionId 后完成绑定。
+ */
+async function ensureSession() {
+  if (currentSessionId.value) return
+  try {
+    await newSession()
+  } catch (e) {
+    ElMessage.error(e?.message || '创建会话失败，无法绑定工作区')
+  }
 }
 
 async function switchSession(id) {

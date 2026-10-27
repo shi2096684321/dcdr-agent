@@ -51,6 +51,9 @@
         <p class="ws-hint">
           路径是运行本服务的这台机器上的真实目录。删除工作区只解除关联，<b>不会删除磁盘上的任何文件</b>。
         </p>
+        <p v-if="!sessionId" class="ws-hint ws-hint-warn">
+          当前是新会话（尚未保存到会话列表）。选择或添加目录时会自动创建一个会话并绑定，之后也能在这里随时查看。
+        </p>
       </div>
     </div>
 
@@ -120,11 +123,18 @@ const props = defineProps({
   sessionId: { type: String, default: '' }
 })
 
+// 绑定强依赖会话 ID, 而首页的新会话是懒创建的(首次发消息才落库) ——
+// 没有会话时向父组件要一个, 拿到 ID 后由 watch 续上这次绑定
+const emit = defineEmits(['need-session'])
+
 const workspaces = ref([])
 const boundId = ref('')
 const dialog = ref(false)
 const saving = ref(false)
 const form = ref({ rootPath: '', name: '', accessLevel: 'READ' })
+
+/** 等待会话就绪后再绑定的工作区 */
+const pendingWorkspace = ref(null)
 
 const current = computed(() => workspaces.value.find((w) => w.id === boundId.value) || null)
 
@@ -240,7 +250,8 @@ async function create() {
     })
     form.value = { rootPath: '', name: '', accessLevel: 'READ' }
     await load()
-    if (props.sessionId) await bind(w)
+    // 无论当前有没有会话都走 bind(): 没有会话时它会去要一个, 而不是静默跳过
+    await bind(w)
     ElMessage.success('工作区已添加')
   } catch (e) {
     ElMessage.error(e?.message || '添加失败')
@@ -251,7 +262,11 @@ async function create() {
 
 async function bind(w) {
   if (!props.sessionId) {
-    ElMessage.warning('请先创建或选择一个会话')
+    // 关键: 这里以前是 `if (props.sessionId)` 直接跳过 —— 工作区建好了、绑定却没发出去,
+    // 界面上仍显示"未选择工作区"且没有任何提示, 看起来像功能坏了。
+    // 现在记下待绑定目标, 请父组件建一个会话, 会话 ID 回来后自动补上。
+    pendingWorkspace.value = w
+    emit('need-session')
     return
   }
   try {
@@ -319,8 +334,14 @@ onMounted(async () => {
   await Promise.all([load(), loadBinding()])
 })
 
-watch(() => props.sessionId, async () => {
+watch(() => props.sessionId, async (id) => {
   await loadBinding()
+  // 会话刚被创建出来: 把之前选好但没处可绑的工作区补上
+  if (id && pendingWorkspace.value) {
+    const w = pendingWorkspace.value
+    pendingWorkspace.value = null
+    await bind(w)
+  }
 })
 </script>
 
@@ -412,6 +433,7 @@ watch(() => props.sessionId, async () => {
 .ws-primary:disabled { opacity: .6; cursor: default; }
 .ws-hint { margin: 10px 0 0; font-size: 11px; color: var(--dcdr-text-3); line-height: 1.6; }
 .ws-hint b { color: var(--dcdr-text-2); }
+.ws-hint-warn { color: var(--dcdr-warning); }
 
 /* ===== 目录浏览面板 ===== */
 .ws-browse {
