@@ -283,6 +283,34 @@ class WorkspaceChangeServiceTest {
         assertTrue(c.externallyModified(), "拿不到快照时, 磁盘与 afterSha 不一致也算被改过");
     }
 
+    @Test
+    void 本会话新建后又删除的文件要展示删除前的内容() throws IOException {
+        // 这条锁的是一个很容易被"净变化"逻辑带偏的场景: 建了又删, 净变化是 0,
+        // 但用户此刻只想确认"删掉的是什么", 给他"内容没有差异"等于什么都没说
+        files.write(workspace, SESSION, "a.txt", "hello\nworld\n", false);
+        files.delete(workspace, SESSION, "a.txt", false);
+
+        WorkspaceChangeService.FileChange c = changes.list(workspace, SESSION).files().get(0);
+
+        assertEquals("deleted", c.changeType(), "文件没了就该是 deleted, 不能因为净变化为 0 标成 unchanged");
+        assertEquals(0, c.added());
+        assertEquals(2, c.removed());
+        assertTrue(hasLine(c, "del", "hello"), "要能看到删掉的内容: " + c.diff());
+    }
+
+    @Test
+    void 改过之后删除展示的是删除前那一刻的内容() throws IOException {
+        preset("a.txt", "v0\n");
+        files.write(workspace, SESSION, "a.txt", "v1\n", true);
+        files.delete(workspace, SESSION, "a.txt", false);
+
+        WorkspaceChangeService.FileChange c = changes.list(workspace, SESSION).files().get(0);
+
+        assertEquals("deleted", c.changeType());
+        assertTrue(hasLine(c, "del", "v1"), "删除前的内容是 v1, 不是最初的 v0: " + c.diff());
+        assertFalse(hasLine(c, "del", "v0"));
+    }
+
     /** 结构化 diff 里是否存在某条指定类型与内容的行为 */
     private static boolean hasLine(WorkspaceChangeService.FileChange c, String type, String text) {
         return c.diff().stream().anyMatch(l -> type.equals(l.type()) && text.equals(l.text()));

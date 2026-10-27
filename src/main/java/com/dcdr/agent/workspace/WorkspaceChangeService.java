@@ -162,18 +162,27 @@ public class WorkspaceChangeService {
             log.debug("变更面板: 路径解析失败, 跳过 diff: {} ({})", relPath, e.getMessage());
         }
 
-        String changeType = !first.existed()
-                ? (nowExists ? "added" : "unchanged")
+        // 最后一次动作就是删除、且文件现在确实不在了
+        boolean deletedByLastOp = "DELETE".equals(last.type()) && !nowExists;
+
+        String changeType = deletedByLastOp ? "deleted"
+                : !first.existed() ? (nowExists ? "added" : "unchanged")
                 : (nowExists ? "modified" : "deleted");
 
-        // 改前内容: 只认最早那条的 beforeSha
-        byte[] beforeBytes = null;
-        if (first.existed()) {
+        // 改前内容:
+        // - 一般取最早那条的 beforeSha(整轮净变化)
+        // - 但"删除"要用删除那一刻的快照。本会话新建又删掉的文件, 用最早记录会得到"原本不存在",
+        //   diff 就成了空串对空串 —— 界面显示"内容没有差异", 等于什么都没说。
+        //   而用户此刻恰恰只想确认一件事: 删掉的是什么。
+        byte[] beforeBytes;
+        if (deletedByLastOp && last.beforeSha() != null) {
+            beforeBytes = trash.readBlobOrNull(workspace, last.beforeSha());
+        } else if (first.existed()) {
             beforeBytes = trash.readBlobOrNull(workspace, first.beforeSha());
         } else {
             beforeBytes = new byte[0];
         }
-        boolean snapshotMissing = first.existed() && beforeBytes == null;
+        boolean snapshotMissing = (deletedByLastOp || first.existed()) && beforeBytes == null;
 
         // 改后内容: 优先用"写完之后存下的快照"。
         // 它才是智能体当时真正写进去的东西 —— 撤销之后磁盘已回到改前状态,
