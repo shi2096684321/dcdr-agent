@@ -42,6 +42,11 @@
           <button class="wc-danger" :disabled="!activeCount || busy" @click="clearAll">清空本会话改动</button>
         </div>
 
+        <div v-if="legacyFormat" class="wc-legacy">
+          后端返回的是旧版 diff 格式（服务还没重启）。已按文本兼容显示，但没有行号、折叠条与并排视图 ——
+          重启后端服务即可恢复。
+        </div>
+
         <div class="wc-list">
           <div v-for="f in visibleFiles" :key="f.path" class="wc-file" :class="{ done: !f.active }">
             <div class="wc-file-head" @click="toggleExpand(f.path)">
@@ -67,6 +72,7 @@
                       <td v-if="l.type === 'skip'" colspan="3" class="skip-cell" @click="expandAll(f)">
                         ⋯ 第 {{ l.oldNo }}–{{ l.oldNo + l.skipped - 1 }} 行未修改（{{ l.skipped }} 行）· 点此展开
                       </td>
+                      <td v-else-if="l.type === 'hunk'" colspan="3" class="hunk-cell">{{ l.text }}</td>
                       <template v-else>
                         <td class="ln">{{ l.type === 'add' ? '' : l.oldNo }}</td>
                         <td class="ln">{{ l.type === 'del' ? '' : l.newNo }}</td>
@@ -83,6 +89,7 @@
                       <td v-if="r.skip" colspan="4" class="skip-cell" @click="expandAll(f)">
                         ⋯ 第 {{ r.skip.oldNo }}–{{ r.skip.oldNo + r.skip.skipped - 1 }} 行未修改（{{ r.skip.skipped }} 行）· 点此展开
                       </td>
+                      <td v-else-if="r.note" colspan="4" class="hunk-cell">{{ r.note }}</td>
                       <template v-else>
                         <td class="ln">{{ r.left ? r.left.no : '' }}</td>
                         <td class="code" :class="{ 'c-del': r.left && r.left.type === 'del' }">
@@ -169,6 +176,8 @@ const expanded = ref(new Set())
 const expandedFull = ref(new Set())
 const expanding = ref(new Set())
 const viewMode = ref('inline')
+/** 后端仍在跑旧版本（diff 是拼好的文本行）。用于给出明确提示，而不是静默渲染成空白 */
+const legacyFormat = ref(false)
 
 const visibleFiles = computed(() =>
   showReverted.value ? files.value : files.value.filter((f) => f.active)
@@ -185,6 +194,35 @@ const TYPE_LABEL = { added: 'A', modified: 'M', deleted: 'D', unchanged: '=' }
 const typeLabel = (t) => TYPE_LABEL[t] || '?'
 const signOf = (l) => (l.type === 'del' ? '-' : l.type === 'add' ? '+' : ' ')
 
+/**
+ * 兼容旧版后端返回的 diff 格式。
+ *
+ * 后端在「结构化 diff」那次改动之前，返回的是拼好的文本行（`"@@ -1,0 +1,120 @@"`、`"-old"`）。
+ * 前端先更新、后端服务没重启时（开发期很常见），按新结构取 `l.type` / `l.text` 会全是 undefined，
+ * 结果是**每一行都渲染成空白** —— 用户只看到一片空，比报错难排查得多。
+ * 所以这里做一次降级转换，并在面板顶部标明原因。
+ */
+function normalizeDiff(diff) {
+  if (!Array.isArray(diff)) return []
+  return diff.map((l) => {
+    if (l && typeof l === 'object') return l
+    const s = String(l ?? '')
+    const head = s.charAt(0)
+    if (head === '@') return { type: 'hunk', oldNo: 0, newNo: 0, text: s, skipped: 0 }
+    if (head === '+') return { type: 'add', oldNo: 0, newNo: 0, text: s.slice(1), skipped: 0 }
+    if (head === '-') return { type: 'del', oldNo: 0, newNo: 0, text: s.slice(1), skipped: 0 }
+    return { type: 'equal', oldNo: 0, newNo: 0, text: s.slice(1), skipped: 0 }
+  })
+}
+
+function normalizeFiles(list) {
+  return (list || []).map((f) => {
+    const diff = normalizeDiff(f.diff)
+    if (diff.some((l) => l.type === 'hunk')) legacyFormat.value = true
+    return { ...f, diff }
+  })
+}
+
 function buildSideRows(lines) {
   const rows = []
   let i = 0
@@ -192,6 +230,11 @@ function buildSideRows(lines) {
     const l = lines[i]
     if (l.type === 'skip') {
       rows.push({ skip: l })
+      i++
+      continue
+    }
+    if (l.type === 'hunk') {
+      rows.push({ note: l.text })
       i++
       continue
     }
@@ -237,9 +280,10 @@ async function load() {
     return
   }
   loading.value = true
+  legacyFormat.value = false
   try {
     const res = await getSessionChanges(props.sessionId)
-    files.value = res?.files || []
+    files.value = normalizeFiles(res?.files)
     activeCount.value = res?.activeCount || 0
     // 列表刷新后内容已回退成默认上下文，"已展开全文"的标记要一起清掉，
     // 否则按钮文案（收起）和实际内容（已收起）会对不上
@@ -265,7 +309,7 @@ async function toggleFull(f) {
       path: f.path,
       context: wantFull ? 'full' : String(DEFAULT_CONTEXT)
     })
-    const one = res?.files?.[0]
+    const one = normalizeFiles(res?.files)[0]
     if (one) {
       const idx = files.value.findIndex((x) => x.path === f.path)
       if (idx >= 0) files.value[idx] = one
@@ -445,6 +489,14 @@ defineExpose({ refresh: load })
 .wc-danger:hover:not(:disabled) { background: var(--dcdr-hover); }
 .wc-ghost:disabled, .wc-danger:disabled { opacity: .45; cursor: default; }
 
+/* 后端版本较旧时的提示：宁可明说，也不要让用户对着一片空白猜 */
+.wc-legacy {
+  padding: 8px 18px; font-size: 11.5px; line-height: 1.6;
+  color: var(--dcdr-warning);
+  background: var(--dcdr-hover);
+  border-bottom: 1px solid var(--dcdr-border);
+}
+
 .wc-list { flex: 1; overflow: auto; padding: 6px 0; }
 .wc-file { border-bottom: 1px solid var(--dcdr-border); }
 .wc-file.done { opacity: .55; }
@@ -528,6 +580,14 @@ defineExpose({ refresh: load })
   border-bottom: 1px solid var(--dcdr-code-border);
 }
 .skip-cell:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
+
+/* 旧格式的 @@ 头：只作为分隔提示，不参与内容渲染 */
+.hunk-cell {
+  background: var(--dcdr-surface-2);
+  color: var(--dcdr-code-dim);
+  font-size: 11px; text-align: center;
+  padding: 2px 8px !important;
+}
 
 .wc-diff-foot {
   display: flex; align-items: center; gap: 8px;

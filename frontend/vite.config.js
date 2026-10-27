@@ -14,7 +14,9 @@ export default defineConfig({
     allowedHosts: ['.ts.net'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // 默认打 8080; 需要临时连另一份后端(比如验证新代码的 8099 实例)时用
+        // VITE_API_TARGET=http://localhost:8099 npm run dev
+        target: process.env.VITE_API_TARGET || 'http://localhost:8080',
         changeOrigin: true
       }
     }
