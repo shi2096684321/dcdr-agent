@@ -39,7 +39,7 @@
           </div>
           <span class="wc-spacer"></span>
           <button class="wc-ghost" :disabled="loading || busy" @click="load">刷新</button>
-          <button class="wc-danger" :disabled="!activeCount || busy" @click="clearAll">清空本会话改动</button>
+          <button class="wc-danger" :disabled="!activeCount || busy" @click="clearAll">撤销全部改动</button>
         </div>
 
         <div v-if="legacyFormat" class="wc-legacy">
@@ -105,7 +105,7 @@
                 </table>
               </div>
 
-              <div class="wc-diff-foot">
+              <div v-if="f.diff.length" class="wc-diff-foot">
                 <span v-if="f.diffTruncated" class="wc-warn">
                   只显示了前 {{ expandedFull.has(f.path) ? 2000 : 200 }} 行
                 </span>
@@ -116,13 +116,17 @@
                     : '展开全文' }}
                 </button>
               </div>
+              <!-- 没有 diff 时必须给一句话：撤销之后文件已回到改前状态, 展开会是一片空白,
+                   不给说明用户只会以为"坏了"。用独立 v-if 而不是 v-else,
+                   避免和上面的 v-if 之间夹注释导致相邻性判断出问题 -->
+              <p v-if="!f.diff.length && !f.note" class="wc-note">
+                {{ f.active ? '内容没有差异' : '已撤销 —— 磁盘上的当前内容与改动前一致，所以没有差异可显示' }}
+              </p>
             </template>
-
-            <p v-else-if="expanded.has(f.path) && !f.diff.length && !f.note" class="wc-note">内容没有差异</p>
           </div>
 
           <div v-if="!visibleFiles.length" class="wc-empty">
-            {{ files.length ? '没有待撤销的改动，勾选「显示已撤销」可以看历史' : '让模型改几个文件，这里会显示逐行差异' }}
+            {{ files.length ? '改动都已撤销 · 勾选上方的「显示已撤销」可以回看' : '让模型改几个文件，这里会显示逐行差异' }}
           </div>
         </div>
 
@@ -342,15 +346,19 @@ function close() {
 }
 
 function reportResult(rep, okVerb = '恢复') {
-  const ok = rep?.reverted?.length || 0
+  const list = rep?.reverted || []
   const skipped = rep?.skipped || []
+  // 把文件名说出来：只回一句"已完成"，用户还是不知道自己刚动了哪些文件
+  const names = list.slice(0, 3).map((p) => p.split('/').pop()).join('、')
+  const suffix = list.length > 3 ? ` 等 ${list.length} 个` : ''
   if (skipped.length) {
     // 跳过必须说出来：静默跳过等于让用户以为"撤干净了"
     ElMessage.warning(
-      `${ok} 个文件已${okVerb}，${skipped.length} 个被跳过：${skipped[0].path}（${skipped[0].reason}）`
+      `${list.length} 个文件已${okVerb}${names ? `（${names}${suffix}）` : ''}，`
+      + `${skipped.length} 个被跳过：${skipped[0].path}（${skipped[0].reason}）`
     )
-  } else if (ok) {
-    ElMessage.success(`已${okVerb} ${ok} 个文件`)
+  } else if (list.length) {
+    ElMessage.success(`已${okVerb} ${list.length} 个文件：${names}${suffix}`)
   } else {
     ElMessage.info('没有需要处理的内容')
   }
@@ -369,6 +377,9 @@ async function undoOne(f) {
   busy.value = true
   try {
     reportResult(await undoSessionPath(props.sessionId, f.path))
+    // 撤销完这一行会从"待撤销"里消失，视觉上像凭空没了。
+    // 自动把已撤销的也显示出来，用户能看到它变成灰色「已撤销」，并且还能点开看 diff。
+    showReverted.value = true
     emit('changed')
   } catch (e) {
     ElMessage.error(e?.message || '撤销失败')
@@ -379,10 +390,13 @@ async function undoOne(f) {
 }
 
 async function clearAll() {
+  const count = activeCount.value
   try {
     await ElMessageBox.confirm(
-      `把本会话改过的 ${activeCount.value} 个文件全部退回会话开始前的状态？\n\n对话记录会保留，只回滚文件；删除掉的文件会从回收区恢复。`,
-      '清空本会话改动',
+      `把本会话改过的 ${count} 个文件全部退回会话开始时的状态？\n\n`
+      + '只回滚文件，对话记录保留；被删除的文件会从回收区恢复。'
+      + '撤销记录不会丢，之后仍可点开查看。',
+      '撤销全部改动',
       { type: 'warning', confirmButtonText: '全部撤销', cancelButtonText: '取消' }
     )
   } catch (e) {
@@ -391,9 +405,11 @@ async function clearAll() {
   busy.value = true
   try {
     reportResult(await rewindAll(props.sessionId, 'FILES'))
+    // 同 undoOne：不清空视野，让"刚撤销的这批"以灰色状态留在列表里
+    showReverted.value = true
     emit('changed')
   } catch (e) {
-    ElMessage.error(e?.message || '清空失败')
+    ElMessage.error(e?.message || '撤销失败')
   } finally {
     busy.value = false
     await load()
@@ -499,7 +515,10 @@ defineExpose({ refresh: load })
 
 .wc-list { flex: 1; overflow: auto; padding: 6px 0; }
 .wc-file { border-bottom: 1px solid var(--dcdr-border); }
-.wc-file.done { opacity: .55; }
+/* 已撤销的行压到 .72 而不是更低：再淡就看不清"已撤销"这个标记和文件名了，
+   而这两样正是用户确认"刚才撤对了没"的依据 */
+.wc-file.done { opacity: .72; }
+.wc-file.done .wc-path { color: var(--dcdr-text-2); }
 .wc-file-head {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 18px; cursor: pointer;
@@ -529,6 +548,7 @@ defineExpose({ refresh: load })
 .wc-undo:hover:not(:disabled) { color: var(--dcdr-accent); border-color: var(--dcdr-accent-line); background: var(--dcdr-accent-wash); }
 .wc-undo:disabled { opacity: .45; cursor: default; }
 .wc-badge { flex: none; font-size: 11px; color: var(--dcdr-text-3); }
+.wc-file.done .wc-badge { color: var(--dcdr-text-2); }
 
 .wc-note { margin: 0; padding: 0 18px 10px 44px; font-size: 11.5px; color: var(--dcdr-text-3); }
 .wc-empty { padding: 24px 18px; font-size: 12px; color: var(--dcdr-text-3); text-align: center; }
