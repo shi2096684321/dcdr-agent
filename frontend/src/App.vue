@@ -28,15 +28,18 @@
         <IconRail v-model="mode" :items="NAV_ITEMS" />
 
         <main class="app-main">
-          <ChatView
-            v-if="mode === 'chat'"
-            :current-model="currentModel"
-            v-model:web-search="webSearch"
-            v-model:thinking-enabled="thinkingEnabled"
-            :models="models"
-          />
+          <!-- 对话页切走时只停用、不卸载：保留 SSE 读取与流式状态，返回后继续展示。 -->
+          <KeepAlive>
+            <ChatView
+              v-if="mode === 'chat'"
+              :current-model="currentModel"
+              v-model:web-search="webSearch"
+              v-model:thinking-enabled="thinkingEnabled"
+              :models="models"
+            />
+          </KeepAlive>
           <CreativeView
-            v-else-if="mode === 'creative'"
+            v-if="mode === 'creative'"
             :current-model="currentModel"
             :image-models="imageModels"
             :video-models="videoModels"
