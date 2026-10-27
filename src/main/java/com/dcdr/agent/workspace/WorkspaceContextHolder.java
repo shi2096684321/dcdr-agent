@@ -22,6 +22,11 @@ public final class WorkspaceContextHolder {
         private final String userId;
         private final String sessionId;
         private volatile String workspaceId;
+        /**
+         * 工作区归属人(= 会话的主人), 与 {@link #userId} 可能<b>不同</b>:
+         * admin 打开别人的会话时 userId 是 admin、ownerId 是会话主人。工作区授权该按后者判。
+         */
+        private volatile String ownerId;
 
         Context(String userId, String sessionId, String workspaceId) {
             this.userId = userId;
@@ -43,6 +48,14 @@ public final class WorkspaceContextHolder {
 
         void workspaceId(String id) {
             this.workspaceId = id;
+        }
+
+        public String ownerId() {
+            return ownerId;
+        }
+
+        void ownerId(String id) {
+            this.ownerId = id;
         }
     }
 
@@ -76,6 +89,18 @@ public final class WorkspaceContextHolder {
     public static void workspaceId(String id) {
         Context c = CTX.get();
         if (c != null) c.workspaceId(id);
+    }
+
+    /** 工作区归属人(会话主人); 未解析时为 null */
+    public static String ownerId() {
+        Context c = CTX.get();
+        return c != null ? c.ownerId() : null;
+    }
+
+    /** 懒解析时一并回填归属人 */
+    public static void ownerId(String id) {
+        Context c = CTX.get();
+        if (c != null) c.ownerId(id);
     }
 
     /** 在指定上下文内执行(单测与非编排调用点用) */

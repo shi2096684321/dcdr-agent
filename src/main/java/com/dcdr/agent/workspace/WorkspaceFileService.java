@@ -17,7 +17,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -46,11 +45,26 @@ public class WorkspaceFileService {
     private final WorkspacePathResolver resolver;
     private final WorkspaceTrashService trash;
     private final WorkspaceJournal journal;
+    private final WorkspaceAuditor auditor;
 
-    /** 读取登记: 绝对路径 → (大小, 修改时间)。写入前比对, 发现外部改动即拒绝, 防覆盖用户手改 */
-    private final Map<String, FileStamp> readStamps = new ConcurrentHashMap<>();
+    /**
+     * 读取登记: 绝对路径 → (大小, 修改时间, 登记时间)。
+     * <p>
+     * 有界 + 带 TTL: 这是进程级缓存, 长跑之后不淘汰会一直涨; 而超过 TTL 的登记已经没有判定价值
+     * (文件早就在这期间被改过好几轮了), 与其留着一个必然会误报的旧值, 不如当作"没读过"。
+     */
+    private static final int MAX_STAMPS = 2048;
+    private static final long STAMP_TTL_MILLIS = 30 * 60 * 1000L;
+    /** accessOrder=true + removeEldestEntry 实现 LRU; 外面套 synchronizedMap 保证并发安全 */
+    private final Map<String, FileStamp> readStamps = Collections.synchronizedMap(
+            new LinkedHashMap<>(64, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, FileStamp> eldest) {
+                    return size() > MAX_STAMPS;
+                }
+            });
 
-    private record FileStamp(long size, long modified) {
+    private record FileStamp(long size, long modified, long recordedAt) {
     }
 
     // ===== 读 =====
@@ -275,8 +289,10 @@ public class WorkspaceFileService {
                     + humanSize(properties.getMaxWriteBytes()));
         }
 
-        String opId = commitWrite(workspace, sessionId, target, relPath, existed, bytes, old);
+        String afterSha = WorkspaceTrashService.sha256(bytes);
+        String opId = commitWrite(workspace, sessionId, target, relPath, existed, bytes, afterSha);
         stamp(target);
+        auditor.write(workspace, relPath, opId, bytes.length, afterSha);
         return WorkspaceJournal.markOp("[workspace_write] " + relPath + (existed ? " 已覆盖" : " 已创建")
                 + "  (" + countLines(content) + " 行, " + humanSize(bytes.length) + ")"
                 + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。", opId);
@@ -335,8 +351,9 @@ public class WorkspaceFileService {
 
         // 与 commitWrite 同一套顺序: 先算哈希 → 先落 begin → 再移走原文件(理由见 commitWrite 注释)
         String beforeSha = WorkspaceTrashService.sha256(target);
+        String afterSha = WorkspaceTrashService.sha256(bytes);
         String opId = journal.begin(workspace, sessionId, "EDIT", relPath, true, beforeSha,
-                WorkspaceTrashService.sha256(bytes), bytes.length);
+                afterSha, bytes.length);
         try {
             trash.stashWithKnownSha(workspace, target, beforeSha);
             atomicWrite(target, bytes);
@@ -352,6 +369,7 @@ public class WorkspaceFileService {
         stamp(target);
 
         int replaced = replaceAll ? occurrences : 1;
+        auditor.edit(workspace, relPath, opId, replaced, bytes.length, afterSha);
         return WorkspaceJournal.markOp("[workspace_edit] " + relPath + " 已修改 (替换 " + replaced + " 处)\n"
                 + diffSnippet(needle, replacement)
                 + "\n提示: 修改前的内容已进回收区, 可在界面上点「撤销」回滚。", opId);
@@ -365,9 +383,32 @@ public class WorkspaceFileService {
      * 五条硬限制: 禁删根目录 / 目录必须 recursive / 单次文件数上限 / deny 路径 / 回收区自身。
      */
     public String delete(WorkspaceEntity workspace, String sessionId, String relPath, boolean recursive) {
-        Path target = resolver.resolve(workspace, relPath, WorkspaceIntent.DELETE);
-        if (!Files.exists(target)) {
+        // 用删除专用解析: 目标是符号链接时要删链接本身, 而不是它指向的真实文件
+        Path target = resolver.resolveForDelete(workspace, relPath);
+        // NOFOLLOW: 断链的符号链接 Files.exists 返回 false, 会被误判成"路径不存在"
+        if (!Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
             throw new BusinessException(404, "路径不存在: " + relPath);
+        }
+        // 符号链接必须在判类型之前拦下: 它指向文件时 isDirectory 为 false, 会落到单文件分支,
+        // 而回收区只接受普通文件(NOFOLLOW), 结果整个删除报错
+        if (Files.isSymbolicLink(target)) {
+            String linkTarget;
+            try {
+                linkTarget = Files.readSymbolicLink(target).toString();
+            } catch (IOException e) {
+                throw new BusinessException(500, "读取符号链接失败: " + e.getMessage());
+            }
+            String opId = journal.beginLinkDelete(workspace, sessionId, relPath, linkTarget, null);
+            try {
+                Files.deleteIfExists(target);   // 只删链接本身, 不动目标
+                journal.commit(workspace, sessionId, opId, "done");
+            } catch (IOException e) {
+                journal.commit(workspace, sessionId, opId, "failed");
+                throw new BusinessException(500, "删除符号链接失败: " + e.getMessage());
+            }
+            auditor.delete(workspace, relPath, opId, 0, 0, 1);
+            return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 符号链接已删除(可撤销)\n"
+                    + "指向: " + linkTarget, opId);
         }
         boolean isDir = Files.isDirectory(target);
         int maxFiles = properties.getMaxDeleteFiles();
@@ -383,6 +424,7 @@ public class WorkspaceFileService {
                 journal.commit(workspace, sessionId, opId, "failed");
                 throw e;
             }
+            auditor.delete(workspace, relPath, opId, 1, 0, 0);
             return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已移入回收区(未真删)\n"
                     + "提示: 可在界面上点「撤销」恢复。", opId);
         }
@@ -429,11 +471,34 @@ public class WorkspaceFileService {
         }
 
         int deleted = 0;
+        int links = 0;
         // 整目录删除共用同一个 opId: 否则界面上会出现 N 个「撤销」按钮, 得一个一个点回来
         String groupOpId = null;
         for (int i = 0; i < files.size(); i++) {
             Path f = files.get(i);
             String rel = rels.get(i);
+            if (Files.isSymbolicLink(f)) {
+                // 符号链接没有内容可进回收区, 但"删掉之后连指向哪都不记得"就撤不回来了,
+                // 所以单独记一条带 linkTarget 的记录。顺带解决: 以前整个删除会因为它而失败。
+                String linkTarget;
+                try {
+                    linkTarget = Files.readSymbolicLink(f).toString();
+                } catch (IOException e) {
+                    log.warn("读取符号链接失败, 保留不动: {} ({})", rel, e.getMessage());
+                    continue;
+                }
+                String linkOpId = journal.beginLinkDelete(workspace, sessionId, rel, linkTarget, groupOpId);
+                if (groupOpId == null) groupOpId = linkOpId;
+                try {
+                    Files.deleteIfExists(f);
+                    journal.commit(workspace, sessionId, linkOpId, "done");
+                    links++;
+                } catch (IOException e) {
+                    journal.commit(workspace, sessionId, linkOpId, "failed");
+                    log.warn("删除符号链接失败: {} ({})", rel, e.getMessage());
+                }
+                continue;
+            }
             String sha = WorkspaceTrashService.sha256(f);
             String opId = journal.begin(workspace, sessionId, "DELETE", rel, true, sha, null, 0, groupOpId);
             if (groupOpId == null) groupOpId = opId;
@@ -473,8 +538,10 @@ public class WorkspaceFileService {
             }
         }
 
+        auditor.delete(workspace, relPath, groupOpId, deleted, dirsRecorded, links);
         return WorkspaceJournal.markOp("[workspace_delete] " + relPath + " 已递归删除 " + deleted
                 + " 个文件" + (dirsRecorded > 0 ? "、" + dirsRecorded + " 个空目录" : "")
+                + (links > 0 ? "、" + links + " 个符号链接" : "")
                 + "(全部进回收区, 未真删)\n"
                 + "提示: 可在界面上点「撤销」整体恢复。", groupOpId);
     }
@@ -509,10 +576,10 @@ public class WorkspaceFileService {
      * 无据可查的崩溃窗口 —— 文件不在工作区, 也没有任何记录指向回收区里那份内容。
      */
     private String commitWrite(WorkspaceEntity workspace, String sessionId, Path target, String relPath,
-                               boolean existed, byte[] bytes, Decoded old) {
+                               boolean existed, byte[] bytes, String afterSha) {
         String beforeSha = existed ? WorkspaceTrashService.sha256(target) : null;
         String opId = journal.begin(workspace, sessionId, existed ? "MODIFY" : "CREATE", relPath,
-                existed, beforeSha, WorkspaceTrashService.sha256(bytes), bytes.length);
+                existed, beforeSha, afterSha, bytes.length);
         try {
             if (existed) trash.stashWithKnownSha(workspace, target, beforeSha);
             atomicWrite(target, bytes);
@@ -565,9 +632,13 @@ public class WorkspaceFileService {
     private void assertNotExternallyModified(Path target, String relPath) {
         FileStamp known = readStamps.get(key(target));
         if (known == null) return; // 没读过就不判定(例如模型直接写新文件)
+        if (System.currentTimeMillis() - known.recordedAt() > STAMP_TTL_MILLIS) {
+            // 登记过期: 这期间文件几乎必然变过, 拿旧值比对只会误报
+            return;
+        }
         FileStamp now = currentStamp(target);
         if (now == null) return;
-        if (known.size() != now.size || known.modified != now.modified) {
+        if (known.size() != now.size || known.modified() != now.modified) {
             throw new BusinessException(409,
                     "文件在读取后被外部修改过(可能你在编辑器里改了它)。请重新 workspace_read "
                             + relPath + " 再决定怎么改。");
@@ -581,7 +652,8 @@ public class WorkspaceFileService {
 
     private FileStamp currentStamp(Path target) {
         try {
-            return new FileStamp(Files.size(target), Files.getLastModifiedTime(target).toMillis());
+            return new FileStamp(Files.size(target), Files.getLastModifiedTime(target).toMillis(),
+                    System.currentTimeMillis());
         } catch (IOException e) {
             return null;
         }

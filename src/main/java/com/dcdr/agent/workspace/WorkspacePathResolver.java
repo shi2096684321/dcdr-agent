@@ -73,20 +73,11 @@ public class WorkspacePathResolver {
      * @throws BusinessException 任一校验不通过, message 直接面向用户, 说明具体原因
      */
     public Path resolve(WorkspaceEntity workspace, String relativePath, WorkspaceIntent intent) {
-        if (workspace == null) {
-            throw new BusinessException(400, "当前会话未绑定工作区, 请先在输入框上方选择要操作的目录");
-        }
-        if (workspace.getAccessLevel() == null || !workspace.getAccessLevel().allows(intent)) {
-            throw new BusinessException(403,
-                    "当前工作区为[" + (workspace.getAccessLevel() == null ? "未知" : workspace.getAccessLevel().label())
-                            + "]档, 不允许执行 " + intent + " 操作");
-        }
-
-        Path root = Paths.get(workspace.getRootPath()).toAbsolutePath().normalize();
+        Path root = requireAccess(workspace, intent);
         String rel = relativePath == null ? "" : relativePath.trim();
 
         // 闸1: 入参清洗
-        if (rel.isEmpty() || ".".equals(rel) || "/".equals(rel)) {
+        if (isEmptyRelative(rel)) {
             if (intent != WorkspaceIntent.READ) {
                 throw new BusinessException(400, "不允许对工作区根目录执行 " + intent + " 操作");
             }
@@ -95,10 +86,7 @@ public class WorkspacePathResolver {
         validateRawPath(rel);
 
         // 闸2: 拼接归一化 + 越界检查
-        Path target = root.resolve(rel.replace('\\', '/')).normalize();
-        if (!isInside(target, root)) {
-            throw new BusinessException(403, "路径越界, 拒绝访问: " + rel);
-        }
+        Path target = logicalTarget(root, rel);
 
         // 闸3: 真实路径 + 软链接逐级校验
         assertNoSymlinkEscape(target, root);
@@ -112,6 +100,59 @@ public class WorkspacePathResolver {
         assertNotDenied(realRel, intent);
 
         return real;
+    }
+
+    /**
+     * 删除专用的解析: 当<b>最后一段</b>是符号链接时, 返回链接本身而不是它指向的目标。
+     * <p>
+     * 通用 {@link #resolve} 走 {@code toRealPath()}, 会把链接解析成目标路径 —— 对读/写是对的
+     * (就是"透过链接操作目标"), 但对删除是灾难: {@code delete("link.txt")} 会删掉
+     * {@code link.txt} 指向的真实文件, 而链接本身还留在原地。
+     * <p>
+     * 其余校验一条不少: 档位、入参清洗、越界、以及链接指向是否仍在工作区内。
+     * 中间层级的链接仍然照常解析 —— 删 {@code linkdir/a.txt} 删的是真实文件, 链接目录不受影响。
+     */
+    public Path resolveForDelete(WorkspaceEntity workspace, String relativePath) {
+        Path root = requireAccess(workspace, WorkspaceIntent.DELETE);
+        String rel = relativePath == null ? "" : relativePath.trim();
+        if (isEmptyRelative(rel)) {
+            throw new BusinessException(400, "不允许对工作区根目录执行 DELETE 操作");
+        }
+        validateRawPath(rel);
+
+        Path logical = logicalTarget(root, rel);
+        if (!Files.isSymbolicLink(logical)) {
+            return resolve(workspace, relativePath, WorkspaceIntent.DELETE);
+        }
+        // 是链接: 校验它(以及沿途每一跳)都指向工作区内, 再交给调用方删除链接本身
+        assertNoSymlinkEscape(logical, root);
+        return logical;
+    }
+
+    /** 档位 + 入参的最前置校验, 返回工作区根 */
+    private Path requireAccess(WorkspaceEntity workspace, WorkspaceIntent intent) {
+        if (workspace == null) {
+            throw new BusinessException(400, "当前会话未绑定工作区, 请先在输入框上方选择要操作的目录");
+        }
+        if (workspace.getAccessLevel() == null || !workspace.getAccessLevel().allows(intent)) {
+            throw new BusinessException(403,
+                    "当前工作区为[" + (workspace.getAccessLevel() == null ? "未知" : workspace.getAccessLevel().label())
+                            + "]档, 不允许执行 " + intent + " 操作");
+        }
+        return Paths.get(workspace.getRootPath()).toAbsolutePath().normalize();
+    }
+
+    private static boolean isEmptyRelative(String rel) {
+        return rel.isEmpty() || ".".equals(rel) || "/".equals(rel);
+    }
+
+    /** 逻辑路径: root 拼相对路径后归一化, 并确认没有靠 {@code ..} 跳出去 */
+    private Path logicalTarget(Path root, String rel) {
+        Path target = root.resolve(rel.replace('\\', '/')).normalize();
+        if (!isInside(target, root)) {
+            throw new BusinessException(403, "路径越界, 拒绝访问: " + rel);
+        }
+        return target;
     }
 
     /**

@@ -187,6 +187,40 @@ class WorkspacePathResolverTest {
     }
 
     @Test
+    void 删除时作用于符号链接本身而不是它指向的目标() throws IOException {
+        Path real = root.resolve("real.txt");
+        Files.writeString(real, "真内容");
+        Path link = root.resolve("ln.txt");
+        try {
+            Files.createSymbolicLink(link, real);
+        } catch (UnsupportedOperationException | IOException e) {
+            return; // 无权限建链接时跳过
+        }
+
+        // 读: 透过链接读目标 —— 这是正确语义
+        assertEquals(real.toRealPath(), resolver.resolve(workspace, "ln.txt", WorkspaceIntent.READ));
+
+        // 删: 必须返回链接本身。返回目标路径的话, 删链接会把真实文件删掉
+        Path deleted = resolver.resolveForDelete(workspace, "ln.txt");
+        assertTrue(Files.isSymbolicLink(deleted));
+        assertEquals("ln.txt", deleted.getFileName().toString());
+    }
+
+    @Test
+    void 断链的符号链接也能被删除() throws IOException {
+        Path link = root.resolve("broken");
+        try {
+            Files.createSymbolicLink(link, root.resolve("not-there.txt"));
+        } catch (UnsupportedOperationException | IOException e) {
+            return;
+        }
+
+        // 断链时 toRealPath 会抛 NoSuchFileException, 删不了; 链接本身仍然应该可删
+        Path deleted = resolver.resolveForDelete(workspace, "broken");
+        assertTrue(Files.isSymbolicLink(deleted));
+    }
+
+    @Test
     void 回收区目录对模型不可见也不可删() throws IOException {
         // trashLocation=workspace 时回收区就在工作区里: 读它等于把"已删除"的内容再暴露一遍,
         // 删它则直接破坏可撤回性

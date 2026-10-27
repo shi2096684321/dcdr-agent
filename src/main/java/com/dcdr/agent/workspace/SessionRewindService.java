@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -271,6 +272,28 @@ public class SessionRewindService {
                 reverted.add(relPath);
             } catch (IOException ex) {
                 skipped.add(new Skipped(relPath, "重建目录失败: " + ex.getMessage()));
+            }
+            return;
+        }
+
+        // 符号链接记录(DELETE_LINK): 恢复 = 按记录的指向重建链接, 全程不碰目标文件
+        if ("DELETE_LINK".equals(e.type())) {
+            if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                skipped.add(new Skipped(relPath, "该位置已存在同名条目, 已跳过以免覆盖"));
+                return;
+            }
+            if (e.linkTarget() == null || e.linkTarget().isBlank()) {
+                skipped.add(new Skipped(relPath, "记录里没有链接目标, 无法恢复"));
+                return;
+            }
+            try {
+                if (target.getParent() != null) Files.createDirectories(target.getParent());
+                Files.createSymbolicLink(target, Path.of(e.linkTarget()));
+                reverted.add(relPath);
+            } catch (IOException | UnsupportedOperationException ex) {
+                // Windows 上创建符号链接需要开发者模式或管理员权限, 失败要明说而不是静默少一个
+                skipped.add(new Skipped(relPath,
+                        "重建符号链接失败(Windows 需开发者模式或管理员权限): " + ex.getMessage()));
             }
             return;
         }

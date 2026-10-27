@@ -62,7 +62,9 @@ public class WorkspaceJournal {
             String beforeSha,
             String afterSha,
             long bytes,
-            String status) {
+            String status,
+            /** 仅 {@code DELETE_LINK} 有值: 符号链接指向的目标(恢复时要按它重建) */
+            String linkTarget) {
     }
 
     /**
@@ -97,6 +99,32 @@ public class WorkspaceJournal {
         node.put("beforeSha", beforeSha);
         node.put("afterSha", afterSha);
         node.put("bytes", bytes);
+        node.put("status", "begin");
+        append(workspace, sessionId, node);
+        return opId;
+    }
+
+    /**
+     * 记录一次"删除符号链接"。
+     * <p>
+     * 单独一个方法而不是复用 {@link #begin}: 符号链接没有内容可进回收区, 要恢复它必须知道
+     * <b>指向哪里</b>。这个字段只有这一种记录用得上, 塞进通用参数会把签名撑得更长。
+     *
+     * @param linkTarget {@code Files.readSymbolicLink} 读到的原始目标(可能是相对路径)
+     */
+    public String beginLinkDelete(WorkspaceEntity workspace, String sessionId, String relPath,
+                                  String linkTarget, String presetOpId) {
+        String opId = presetOpId != null ? presetOpId : "op_" + System.nanoTime();
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("seq", nextSeq(workspace, sessionId));
+        node.put("ts", Instant.now().toString());
+        node.put("op", opId);
+        node.put("session", sessionId);
+        node.put("type", "DELETE_LINK");
+        node.put("path", relPath);
+        node.put("existed", true);
+        node.put("linkTarget", linkTarget);
+        node.put("bytes", 0);
         node.put("status", "begin");
         append(workspace, sessionId, node);
         return opId;
@@ -198,7 +226,8 @@ public class WorkspaceJournal {
                             n.hasNonNull("beforeSha") ? n.get("beforeSha").asText() : null,
                             n.hasNonNull("afterSha") ? n.get("afterSha").asText() : null,
                             n.path("bytes").asLong(),
-                            n.path("status").asText()));
+                            n.path("status").asText(),
+                            n.hasNonNull("linkTarget") ? n.get("linkTarget").asText() : null));
                 } catch (Exception e) {
                     // 单行损坏不能静默 —— 读不全的日志会让撤回少回滚一个文件, 比撤回失败更危险
                     log.warn("变更日志存在损坏行, 已跳过: session={}, line={}", sessionId, line);
@@ -213,7 +242,7 @@ public class WorkspaceJournal {
                 String status = statusByOp.get(e.opId());
                 merged.add(status == null || status.equals(e.status()) ? e
                         : new Entry(e.seq(), e.ts(), e.opId(), e.sessionId(), e.type(), e.path(),
-                        e.existed(), e.beforeSha(), e.afterSha(), e.bytes(), status));
+                        e.existed(), e.beforeSha(), e.afterSha(), e.bytes(), status, e.linkTarget()));
             }
             entries = merged;
         }

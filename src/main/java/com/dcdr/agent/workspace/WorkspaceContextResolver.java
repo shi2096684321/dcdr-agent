@@ -31,6 +31,7 @@ public class WorkspaceContextResolver {
     /** 当前上下文对应的工作区; 未绑定时抛带引导语的业务异常 */
     public WorkspaceEntity current() {
         String workspaceId = WorkspaceContextHolder.workspaceId();
+        String ownerId = WorkspaceContextHolder.ownerId();
         if (workspaceId == null) {
             String sessionId = WorkspaceContextHolder.sessionId();
             if (sessionId == null) {
@@ -42,10 +43,15 @@ public class WorkspaceContextResolver {
             if (workspaceId == null || workspaceId.isBlank()) {
                 throw new BusinessException(400, NOT_BOUND);
             }
+            // 归属按"会话的主人"判, 不按"当前请求者"判: 会话与工作区的绑定关系已经过 Controller 校验,
+            // 这里要回答的是"这个会话能不能用这个工作区"。用请求者判会让 admin 操作别人的会话时
+            // 被判 404 —— 而 admin 恰恰是被允许代操作的那类用户。
+            ownerId = session.getUserId();
             WorkspaceContextHolder.workspaceId(workspaceId);
+            WorkspaceContextHolder.ownerId(ownerId);
         }
-        String userId = WorkspaceContextHolder.userId();
-        return workspaceService.requireOwned(workspaceId, userId, false);
+        return workspaceService.requireOwned(workspaceId,
+                ownerId != null ? ownerId : WorkspaceContextHolder.userId(), false);
     }
 
     /** 当前上下文的会话 ID; 未设置时抛错(撤回与日志都依赖它) */

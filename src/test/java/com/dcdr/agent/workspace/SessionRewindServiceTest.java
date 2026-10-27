@@ -204,7 +204,7 @@ class SessionRewindServiceTest {
 
         when(journal.read(any(), anyString())).thenReturn(List.of(
                 new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", "op_dir", "s1",
-                        "DELETE_DIR", "logs/empty", true, null, null, 0, "done")));
+                        "DELETE_DIR", "logs/empty", true, null, null, 0, "done", null)));
 
         SessionRewindService.Report rep = service.undoOperation("s1", "op_dir", "u1", false);
 
@@ -214,10 +214,35 @@ class SessionRewindServiceTest {
         verify(fileService, never()).restore(any(), anyString(), anyBoolean(), any());
     }
 
+    @Test
+    @DisplayName("符号链接记录(DELETE_LINK): 撤回时按记录的目标重建")
+    void undoRecreatesSymbolicLink() throws Exception {
+        Path link = tempDir.resolve("ln");
+        when(pathResolver.resolve(any(), eq("ln"), any())).thenReturn(link);
+        // 平台不支持建链接时跳过(Windows 需要开发者模式或管理员权限)
+        Path probe = tempDir.resolve("probe");
+        try {
+            Files.createSymbolicLink(probe, tempDir.resolve("nothing"));
+            Files.deleteIfExists(probe);
+        } catch (UnsupportedOperationException | java.io.IOException e) {
+            return;
+        }
+
+        when(journal.read(any(), anyString())).thenReturn(List.of(
+                new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", "op_ln", "s1",
+                        "DELETE_LINK", "ln", true, null, null, 0, "done", "a.txt")));
+
+        SessionRewindService.Report rep = service.undoOperation("s1", "op_ln", "u1", false);
+
+        assertEquals(List.of("ln"), rep.reverted());
+        assertTrue(Files.isSymbolicLink(link));
+        assertEquals(Path.of("a.txt"), Files.readSymbolicLink(link));
+    }
+
     private static WorkspaceJournal.Entry entry(String opId, String path, boolean existed,
                                                 String beforeSha, String afterSha, String status) {
         return new WorkspaceJournal.Entry(1L, "2026-10-27T09:00:00Z", opId, "s1",
-                existed ? "MODIFY" : "CREATE", path, existed, beforeSha, afterSha, 5, status);
+                existed ? "MODIFY" : "CREATE", path, existed, beforeSha, afterSha, 5, status, null);
     }
 
     private static String sha(Path file) {

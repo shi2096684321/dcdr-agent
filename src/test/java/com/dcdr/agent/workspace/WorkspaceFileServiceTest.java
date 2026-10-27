@@ -1,5 +1,6 @@
 package com.dcdr.agent.workspace;
 
+import com.dcdr.agent.audit.AuditService;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.WorkspaceEntity;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,10 +10,12 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileTime;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
 
 /**
  * 文件读写的核心行为测试 —— 覆盖最容易做错的三件事: 编码保持、换行保持、外部改动保护。
@@ -24,6 +27,7 @@ class WorkspaceFileServiceTest {
     @TempDir
     Path tempDir;
 
+    private final AuditService auditService = mock(AuditService.class);
     private WorkspaceFileService files;
     private WorkspaceJournal journal;
     private WorkspaceEntity workspace;
@@ -37,7 +41,8 @@ class WorkspaceFileServiceTest {
         WorkspacePathResolver resolver = new WorkspacePathResolver(props);
         WorkspaceTrashService trash = new WorkspaceTrashService(props);
         journal = new WorkspaceJournal(props);
-        files = new WorkspaceFileService(props, resolver, trash, journal);
+        files = new WorkspaceFileService(props, resolver, trash, journal,
+                new WorkspaceAuditor(auditService));
 
         root = tempDir.resolve("ws");
         Files.createDirectories(root);
@@ -178,7 +183,8 @@ class WorkspaceFileServiceTest {
         props.setMaxWriteBytes(10);
         WorkspacePathResolver resolver = new WorkspacePathResolver(props);
         WorkspaceFileService small = new WorkspaceFileService(props, resolver,
-                new WorkspaceTrashService(props), new WorkspaceJournal(props));
+                new WorkspaceTrashService(props), new WorkspaceJournal(props),
+                new WorkspaceAuditor(mock(AuditService.class)));
 
         assertThrows(BusinessException.class,
                 () -> small.write(workspace, SESSION, "big.txt", "x".repeat(100), false));
@@ -240,6 +246,55 @@ class WorkspaceFileServiceTest {
         assertFalse(entries.stream().anyMatch(e ->
                 "DELETE_DIR".equals(e.type()) && "tree".equals(e.path())));
         assertFalse(Files.exists(tree));
+    }
+
+    @Test
+    void 删除符号链接时不碰目标文件并留下可恢复记录() throws IOException {
+        Path real = root.resolve("real.txt");
+        Files.writeString(real, "keep");
+        Path link = root.resolve("link.txt");
+        try {
+            Files.createSymbolicLink(link, real);
+        } catch (UnsupportedOperationException | IOException e) {
+            return; // Windows 上创链接需开发者模式/管理员权限, 无权限时跳过
+        }
+
+        files.delete(workspace, SESSION, "link.txt", false);
+
+        assertFalse(Files.exists(link, LinkOption.NOFOLLOW_LINKS));
+        assertTrue(Files.exists(real), "删链接不能动它指向的文件");
+        assertTrue(journal.read(workspace, SESSION).stream()
+                .anyMatch(e -> "DELETE_LINK".equals(e.type())
+                        && real.toString().equals(e.linkTarget())));
+    }
+
+    @Test
+    void 目录含符号链接时也能整体删除() throws IOException {
+        Path dir = root.resolve("proj");
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("a.txt"), "x");
+        try {
+            Files.createSymbolicLink(dir.resolve("ln"), root.resolve("a.txt"));
+        } catch (UnsupportedOperationException | IOException e) {
+            return;
+        }
+
+        // 回归: 以前 stash 只收普通文件, 遇到链接会让整个目录删除抛错
+        files.delete(workspace, SESSION, "proj", true);
+
+        assertFalse(Files.exists(dir));
+    }
+
+    @Test
+    void 写入成功会留审计记录() {
+        files.write(workspace, SESSION, "audited.txt", "x\n", false);
+
+        org.mockito.Mockito.verify(auditService).record(
+                org.mockito.ArgumentMatchers.eq("workspace.write"),
+                org.mockito.ArgumentMatchers.eq("workspace"),
+                org.mockito.ArgumentMatchers.eq("ws_test"),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
     }
 
     @Test
