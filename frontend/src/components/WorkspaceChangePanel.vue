@@ -33,6 +33,10 @@
           <label class="wc-toggle">
             <input v-model="showReverted" type="checkbox" /> 显示已撤销
           </label>
+          <div class="wc-seg">
+            <button :class="{ on: viewMode === 'inline' }" title="单列：改动上下相邻" @click="viewMode = 'inline'">内联</button>
+            <button :class="{ on: viewMode === 'side' }" title="左右对照：左边改前，右边改后" @click="viewMode = 'side'">并排</button>
+          </div>
           <span class="wc-spacer"></span>
           <button class="wc-ghost" :disabled="loading || busy" @click="load">刷新</button>
           <button class="wc-danger" :disabled="!activeCount || busy" @click="clearAll">清空本会话改动</button>
@@ -51,19 +55,73 @@
               <button v-if="f.active" class="wc-undo" :disabled="busy" title="把这个文件退回本会话开始前的状态" @click.stop="undoOne(f)">撤销</button>
               <span v-else class="wc-badge">已撤销</span>
             </div>
-            <p v-if="f.note" class="wc-note">{{ f.note }}</p>
-            <pre v-if="expanded.has(f.path) && f.diff.length" class="wc-diff"><span
-              v-for="(l, i) in f.diff" :key="i" :class="diffClass(l)">{{ l || ' ' }}</span></pre>
+
+            <template v-if="expanded.has(f.path)">
+              <p v-if="f.note" class="wc-note">{{ f.note }}</p>
+
+              <div v-if="f.diff.length" class="wc-diff-wrap">
+                <!-- 内联：单列，改动与上下文上下相邻 -->
+                <table v-if="viewMode === 'inline'" class="wc-tbl">
+                  <tbody>
+                    <tr v-for="(l, i) in f.diff" :key="i" :class="'r-' + l.type">
+                      <td v-if="l.type === 'skip'" colspan="3" class="skip-cell" @click="expandAll(f)">
+                        ⋯ 第 {{ l.oldNo }}–{{ l.oldNo + l.skipped - 1 }} 行未修改（{{ l.skipped }} 行）· 点此展开
+                      </td>
+                      <template v-else>
+                        <td class="ln">{{ l.type === 'add' ? '' : l.oldNo }}</td>
+                        <td class="ln">{{ l.type === 'del' ? '' : l.newNo }}</td>
+                        <td class="code"><span class="sign">{{ signOf(l) }}</span>{{ l.text }}</td>
+                      </template>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <!-- 并排：左改前 / 右改后，删增按行配对 -->
+                <table v-else class="wc-tbl side">
+                  <tbody>
+                    <tr v-for="(r, i) in sideRows[f.path] || []" :key="i">
+                      <td v-if="r.skip" colspan="4" class="skip-cell" @click="expandAll(f)">
+                        ⋯ 第 {{ r.skip.oldNo }}–{{ r.skip.oldNo + r.skip.skipped - 1 }} 行未修改（{{ r.skip.skipped }} 行）· 点此展开
+                      </td>
+                      <template v-else>
+                        <td class="ln">{{ r.left ? r.left.no : '' }}</td>
+                        <td class="code" :class="{ 'c-del': r.left && r.left.type === 'del' }">
+                          <span v-if="r.left" class="sign">{{ r.left.type === 'del' ? '-' : ' ' }}</span>{{ r.left ? r.left.text : '' }}
+                        </td>
+                        <td class="ln ln-r">{{ r.right ? r.right.no : '' }}</td>
+                        <td class="code" :class="{ 'c-add': r.right && r.right.type === 'add' }">
+                          <span v-if="r.right" class="sign">{{ r.right.type === 'add' ? '+' : ' ' }}</span>{{ r.right ? r.right.text : '' }}
+                        </td>
+                      </template>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="wc-diff-foot">
+                <span v-if="f.diffTruncated" class="wc-warn">
+                  只显示了前 {{ expandedFull.has(f.path) ? 2000 : 200 }} 行
+                </span>
+                <span class="wc-spacer"></span>
+                <button class="wc-link" :disabled="expanding.has(f.path)" @click="toggleFull(f)">
+                  {{ expanding.has(f.path) ? '读取中…'
+                    : expandedFull.has(f.path) ? '收起（只看改动附近）'
+                    : '展开全文' }}
+                </button>
+              </div>
+            </template>
+
             <p v-else-if="expanded.has(f.path) && !f.diff.length && !f.note" class="wc-note">内容没有差异</p>
           </div>
+
           <div v-if="!visibleFiles.length" class="wc-empty">
             {{ files.length ? '没有待撤销的改动，勾选「显示已撤销」可以看历史' : '让模型改几个文件，这里会显示逐行差异' }}
           </div>
         </div>
 
         <footer class="wc-foot">
-          改前内容取自回收区快照，改后内容是磁盘上的当前内容。撤销只回滚文件、不动对话；
-          你在编辑器里改过的文件会被跳过并单独提示，不会覆盖你的改动。
+          左边是改前（回收区快照），右边是磁盘当前内容，你在编辑器里又改过的地方也能看出来。
+          撤销只回滚文件、不动对话；被外部改过的文件会跳过并单独提示，不会覆盖你的改动。
         </footer>
       </aside>
     </div>
@@ -75,11 +133,16 @@
  * 会话文件变更面板(V3.3 F-49)。
  *
  * 为什么要有它：能改本机文件的 agent 若不能让人一眼看清"改了什么"，用户只能靠猜。
- * 三个层次的动作在这里汇合 —— 看 diff（本面板）、撤销单个文件、清空整个会话的改动。
- * 单次工具调用的撤销仍留在消息气泡上，那个粒度更细、上下文更明确。
  *
- * 数据全部来自后端聚合（journal → 文件 + diff）。前端拿不到磁盘，也没法读回收区快照，
- * 所以这里只负责渲染，不做任何对比计算。
+ * diff 的呈现照着主流产品的做法来（GitHub / VS Code 那一套）：
+ * - 两侧行号 + `+`/`-` 前缀，改动行的颜色与底色双重区分（只靠颜色对色弱不友好）；
+ * - 块之间的未改动区域显式标成"第 X–Y 行未修改"，可点击展开 —— 不做这一步，
+ *   界面上两个改动块直接挨着，看起来像文件只有这么长；
+ * - 内联 / 并排可切换：并排是最直观的"改前 vs 改后"；
+ * - 默认只给改动前后 3 行，要看全貌点「展开全文」按需拉取，避免一次塞几千行进响应。
+ *
+ * 数据全部来自后端聚合（journal → 文件 + 结构化 diff 行）。前端拿不到磁盘，
+ * 也没法读回收区快照，所以这里只负责渲染，不做任何对比计算。
  */
 import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -92,6 +155,9 @@ const props = defineProps({
 /** 变更被撤销后通知父组件（用于刷新消息上的撤销按钮状态） */
 const emit = defineEmits(['changed'])
 
+/** 默认只给 3 行上下文，与 git / GitHub 一致 */
+const DEFAULT_CONTEXT = 3
+
 const open = ref(false)
 const loading = ref(false)
 const busy = ref(false)
@@ -99,13 +165,62 @@ const files = ref([])
 const activeCount = ref(0)
 const showReverted = ref(false)
 const expanded = ref(new Set())
+/** 已展开全文的文件路径（之后收起时重新按默认上下文请求） */
+const expandedFull = ref(new Set())
+const expanding = ref(new Set())
+const viewMode = ref('inline')
 
 const visibleFiles = computed(() =>
   showReverted.value ? files.value : files.value.filter((f) => f.active)
 )
 
+/** 并排视图的行数据：删增按行配对，右侧不足时留空 */
+const sideRows = computed(() => {
+  const map = {}
+  for (const f of files.value) map[f.path] = buildSideRows(f.diff)
+  return map
+})
+
 const TYPE_LABEL = { added: 'A', modified: 'M', deleted: 'D', unchanged: '=' }
 const typeLabel = (t) => TYPE_LABEL[t] || '?'
+const signOf = (l) => (l.type === 'del' ? '-' : l.type === 'add' ? '+' : ' ')
+
+function buildSideRows(lines) {
+  const rows = []
+  let i = 0
+  while (i < lines.length) {
+    const l = lines[i]
+    if (l.type === 'skip') {
+      rows.push({ skip: l })
+      i++
+      continue
+    }
+    if (l.type === 'equal') {
+      rows.push({
+        left: { no: l.oldNo, text: l.text, type: 'equal' },
+        right: { no: l.newNo, text: l.text, type: 'equal' }
+      })
+      i++
+      continue
+    }
+    // 连续的删/增作为一块逐行左右配对：左边第 1 个删除对右边第 1 个新增
+    const dels = []
+    const adds = []
+    while (i < lines.length && (lines[i].type === 'del' || lines[i].type === 'add')) {
+      if (lines[i].type === 'del') dels.push(lines[i])
+      else adds.push(lines[i])
+      i++
+    }
+    const n = Math.max(dels.length, adds.length)
+    for (let k = 0; k < n; k++) {
+      rows.push({
+        left: dels[k] ? { no: dels[k].oldNo, text: dels[k].text, type: 'del' } : null,
+        right: adds[k] ? { no: adds[k].newNo, text: adds[k].text, type: 'add' } : null
+      })
+    }
+  }
+  return rows
+}
 
 function toggleExpand(path) {
   // Set 是引用类型，必须换一个新实例才会触发响应式更新
@@ -113,13 +228,6 @@ function toggleExpand(path) {
   if (next.has(path)) next.delete(path)
   else next.add(path)
   expanded.value = next
-}
-
-function diffClass(line) {
-  if (line.startsWith('+')) return 'd-add'
-  if (line.startsWith('-')) return 'd-del'
-  if (line.startsWith('@@')) return 'd-hunk'
-  return 'd-ctx'
 }
 
 async function load() {
@@ -133,6 +241,9 @@ async function load() {
     const res = await getSessionChanges(props.sessionId)
     files.value = res?.files || []
     activeCount.value = res?.activeCount || 0
+    // 列表刷新后内容已回退成默认上下文，"已展开全文"的标记要一起清掉，
+    // 否则按钮文案（收起）和实际内容（已收起）会对不上
+    expandedFull.value = new Set()
   } catch (e) {
     // 打开时给提示（用户正等着看），收起状态下静默 —— 辅助信息不该打断对话
     if (open.value) ElMessage.error(e?.message || '读取变更失败')
@@ -141,6 +252,40 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+/** 展开 / 收起全文：单文件按需拉一次，不把整个会话的完整内容都塞给前端 */
+async function toggleFull(f) {
+  const wantFull = !expandedFull.value.has(f.path)
+  const nextExpanding = new Set(expanding.value)
+  nextExpanding.add(f.path)
+  expanding.value = nextExpanding
+  try {
+    const res = await getSessionChanges(props.sessionId, {
+      path: f.path,
+      context: wantFull ? 'full' : String(DEFAULT_CONTEXT)
+    })
+    const one = res?.files?.[0]
+    if (one) {
+      const idx = files.value.findIndex((x) => x.path === f.path)
+      if (idx >= 0) files.value[idx] = one
+    }
+    const nextFull = new Set(expandedFull.value)
+    if (wantFull) nextFull.add(f.path)
+    else nextFull.delete(f.path)
+    expandedFull.value = nextFull
+  } catch (e) {
+    ElMessage.error(e?.message || '读取完整内容失败')
+  } finally {
+    const done = new Set(expanding.value)
+    done.delete(f.path)
+    expanding.value = done
+  }
+}
+
+/** 点折叠条 = 展开全文（比"只多显示 10 行"更符合意图） */
+function expandAll(f) {
+  if (!expandedFull.value.has(f.path)) toggleFull(f)
 }
 
 function toggle() {
@@ -219,6 +364,7 @@ watch(
     // 切会话等于换了一整套改动记录，旧列表必须清掉，面板也要收起来
     open.value = false
     expanded.value = new Set()
+    expandedFull.value = new Set()
     load()
   }
 )
@@ -249,10 +395,10 @@ defineExpose({ refresh: load })
   font-size: 11px; font-weight: 600; text-align: center; line-height: 16px;
 }
 
-/* 遮罩 + 右侧抽屉：diff 是宽内容，横着比竖着更难受，所以面板给到 720 */
+/* 遮罩 + 右侧抽屉：diff 是宽内容，横着比竖着更难受，所以面板给到 760 */
 .wc-mask { position: fixed; inset: 0; background: rgba(3, 5, 12, .5); z-index: 3000; }
 .wc-panel {
-  position: absolute; top: 0; right: 0; bottom: 0; width: 720px; max-width: 94vw;
+  position: absolute; top: 0; right: 0; bottom: 0; width: 760px; max-width: 94vw;
   display: flex; flex-direction: column;
   background: var(--dcdr-surface);
   border-left: 1px solid var(--dcdr-border);
@@ -279,6 +425,17 @@ defineExpose({ refresh: load })
 .wc-spacer { flex: 1; }
 .wc-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--dcdr-text-2); cursor: pointer; }
 .wc-toggle input { accent-color: var(--dcdr-accent); }
+
+/* 内联 / 并排 分段开关 */
+.wc-seg { display: inline-flex; border: 1px solid var(--dcdr-border); border-radius: 6px; overflow: hidden; }
+.wc-seg button {
+  height: 24px; padding: 0 10px; border: none; cursor: pointer; font-size: 12px;
+  background: transparent; color: var(--dcdr-text-2);
+}
+.wc-seg button + button { border-left: 1px solid var(--dcdr-border); }
+.wc-seg button.on { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); font-weight: 600; }
+.wc-seg button:hover:not(.on) { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
+
 .wc-ghost, .wc-danger {
   height: 26px; padding: 0 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
   background: transparent; border: 1px solid var(--dcdr-border); color: var(--dcdr-text-2);
@@ -324,25 +481,66 @@ defineExpose({ refresh: load })
 .wc-note { margin: 0; padding: 0 18px 10px 44px; font-size: 11.5px; color: var(--dcdr-text-3); }
 .wc-empty { padding: 24px 18px; font-size: 12px; color: var(--dcdr-text-3); text-align: center; }
 
-/* diff: 每行独立成块，正负号靠颜色 + 底色双重区分（只靠颜色对色弱不友好） */
-.wc-diff {
-  margin: 0; padding: 6px 0 10px;
+/* ===== diff 表 ===== */
+.wc-diff-wrap {
+  max-height: 440px; overflow: auto;
   background: var(--dcdr-code-bg);
   border-top: 1px solid var(--dcdr-code-border);
-  font-family: var(--dcdr-font-mono); font-size: 11.5px; line-height: 1.55;
-  max-height: 380px; overflow: auto; white-space: pre;
 }
-.wc-diff span { display: block; padding: 0 18px; color: var(--dcdr-code-fg); }
-.wc-diff .d-add {
+.wc-tbl {
+  border-collapse: collapse; min-width: 100%;
+  font-family: var(--dcdr-font-mono); font-size: 11.5px; line-height: 1.6;
+  color: var(--dcdr-code-fg);
+}
+.wc-tbl td { padding: 0 8px; white-space: pre; vertical-align: top; }
+.wc-tbl .ln {
+  width: 1%; color: var(--dcdr-code-dim); text-align: right;
+  user-select: none; white-space: nowrap;
+  border-right: 1px solid var(--dcdr-code-border);
+  padding: 0 6px;
+}
+/* 并排视图右半区的行号再补一条左边框，两侧分界更清楚 */
+.wc-tbl .ln-r { border-left: 1px solid var(--dcdr-code-border); }
+.wc-tbl .sign { display: inline-block; width: 1.1em; color: var(--dcdr-code-dim); }
+.wc-tbl .code { padding-left: 2px; }
+
+/* 正负行：颜色 + 底色双重区分，不只靠颜色 */
+.wc-tbl .r-add .code,
+.wc-tbl .code.c-add {
   color: var(--dcdr-success);
   background: color-mix(in srgb, var(--dcdr-success) 12%, transparent);
 }
-.wc-diff .d-del {
+.wc-tbl .r-del .code,
+.wc-tbl .code.c-del {
   color: var(--dcdr-danger);
   background: color-mix(in srgb, var(--dcdr-danger) 12%, transparent);
 }
-.wc-diff .d-hunk { color: var(--dcdr-code-dim); }
-.wc-diff .d-ctx { color: var(--dcdr-code-dim); }
+.wc-tbl .r-add .sign, .wc-tbl .code.c-add .sign { color: var(--dcdr-success); }
+.wc-tbl .r-del .sign, .wc-tbl .code.c-del .sign { color: var(--dcdr-danger); }
+
+/* 折叠条：一眼看出"这里还有内容没显示"，且可点开 */
+.skip-cell {
+  background: var(--dcdr-surface-2);
+  color: var(--dcdr-text-3);
+  font-size: 11px; text-align: center; cursor: pointer;
+  padding: 3px 8px !important;
+  border-top: 1px solid var(--dcdr-code-border);
+  border-bottom: 1px solid var(--dcdr-code-border);
+}
+.skip-cell:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
+
+.wc-diff-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px; border-top: 1px solid var(--dcdr-code-border);
+  background: var(--dcdr-surface-2);
+}
+.wc-warn { font-size: 11px; color: var(--dcdr-warning); }
+.wc-link {
+  border: none; background: transparent; cursor: pointer;
+  font-size: 11.5px; color: var(--dcdr-accent); padding: 0;
+}
+.wc-link:hover:not(:disabled) { text-decoration: underline; }
+.wc-link:disabled { color: var(--dcdr-text-3); cursor: default; }
 
 .wc-foot {
   padding: 10px 18px; border-top: 1px solid var(--dcdr-border);

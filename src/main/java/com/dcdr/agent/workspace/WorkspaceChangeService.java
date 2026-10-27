@@ -39,8 +39,14 @@ public class WorkspaceChangeService {
     /** 一次最多返回多少个文件; 再多前端也看不过来, 而且响应体要有界 */
     private static final int MAX_FILES = 50;
 
-    /** 单个文件的 diff 输出行上限 */
+    /** 单个文件的 diff 输出行上限(默认上下文模式) */
     private static final int MAX_DIFF_LINES = 200;
+
+    /** 展开全文时的行数上限: 再大就不是"人看"的量级了, 而且响应体要可控 */
+    private static final int MAX_DIFF_LINES_FULL = 2000;
+
+    /** 默认上下文行数, 与 git / GitHub 的默认一致 */
+    public static final int DEFAULT_CONTEXT = 3;
 
     /** 参与 diff 的文本大小上限(两侧各自); 超过就只报"改了多少字节", 不做逐行对比 */
     private static final long MAX_TEXT_BYTES = 2L * 1024 * 1024;
@@ -70,7 +76,7 @@ public class WorkspaceChangeService {
             int added,
             int removed,
             boolean diffTruncated,
-            List<String> diff,
+            List<TextDiff.DiffLine> diff,
             String note,
             long lastSeq) {
     }
@@ -83,6 +89,20 @@ public class WorkspaceChangeService {
 
     /** 汇总本会话的全部文件变更, 最近的排在前面 */
     public Changes list(WorkspaceEntity workspace, String sessionId) {
+        return list(workspace, sessionId, null, DEFAULT_CONTEXT, MAX_DIFF_LINES);
+    }
+
+    /**
+     * 按文件取 diff(供面板的「展开全文」)。
+     * <p>
+     * {@code contextLines} 传很大的值即"整个文件都展开", 此时 hs 会合并成一个、没有折叠条。
+     *
+     * @param onlyPath     只要这一个文件; null 表示全部
+     * @param contextLines 改动块上下保留的行数
+     * @param maxLines     单文件输出行数上限
+     */
+    public Changes list(WorkspaceEntity workspace, String sessionId, String onlyPath,
+                        int contextLines, int maxLines) {
         Map<String, List<WorkspaceJournal.Entry>> byPath = new LinkedHashMap<>();
         for (WorkspaceJournal.Entry e : journal.read(workspace, sessionId)) {
             byPath.computeIfAbsent(e.path(), k -> new ArrayList<>()).add(e);
@@ -90,8 +110,9 @@ public class WorkspaceChangeService {
 
         List<FileChange> all = new ArrayList<>(byPath.size());
         for (Map.Entry<String, List<WorkspaceJournal.Entry>> item : byPath.entrySet()) {
+            if (onlyPath != null && !onlyPath.equals(item.getKey())) continue;
             try {
-                FileChange change = build(workspace, item.getKey(), item.getValue());
+                FileChange change = build(workspace, item.getKey(), item.getValue(), contextLines, maxLines);
                 if (change != null) all.add(change);
             } catch (RuntimeException e) {
                 // 单个文件解析失败不能拖垮整个面板: 一个文件名带奇怪字符就整页 500 是不可接受的
@@ -105,9 +126,15 @@ public class WorkspaceChangeService {
         return new Changes(truncated ? new ArrayList<>(all.subList(0, MAX_FILES)) : all, truncated, activeCount);
     }
 
+    /** 展开全文时的行数上限, 供 Controller 判断 context=full */
+    public static int maxLinesForFull() {
+        return MAX_DIFF_LINES_FULL;
+    }
+
     // ===== 内部 =====
 
-    private FileChange build(WorkspaceEntity workspace, String relPath, List<WorkspaceJournal.Entry> entries) {
+    private FileChange build(WorkspaceEntity workspace, String relPath, List<WorkspaceJournal.Entry> entries,
+                             int contextLines, int maxLines) {
         // 全是失败记录: 磁盘从没被改动过, 列出来只会让人以为出过事
         boolean allFailed = entries.stream().allMatch(e -> "failed".equals(e.status()));
         if (allFailed) return null;
@@ -178,7 +205,7 @@ public class WorkspaceChangeService {
 
         String beforeText = beforeBytes.length == 0 ? "" : fileService.decode(beforeBytes).text();
         String afterText = afterBytes.length == 0 ? "" : fileService.decode(afterBytes).text();
-        TextDiff.Result diff = TextDiff.unified(beforeText, afterText, 3, MAX_DIFF_LINES);
+        TextDiff.Result diff = TextDiff.unified(beforeText, afterText, contextLines, maxLines);
         return new FileChange(relPath, changeType, active, false, false, diff.added(), diff.removed(),
                 diff.truncated(), diff.lines(), diff.coarse() ? "改动过大, 已简化为整体替换" : null, last.seq());
     }

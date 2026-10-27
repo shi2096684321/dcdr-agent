@@ -122,11 +122,16 @@ public class SessionWorkspaceController {
 
     @Operation(summary = "查看本会话的文件变更",
             description = "按文件聚合变更日志, 返回改前/改后的行级 diff。未绑定工作区时返回空清单。"
-                    + "改前内容取自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到")
+                    + "改前内容取自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到。"
+                    + "path 只看单个文件; context=full 展开整个文件(默认只给改动块前后 3 行)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkspaceChangeService.Changes.class)))
     @GetMapping("/changes")
     public Mono<Result<WorkspaceChangeService.Changes>> changes(
-            @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @Parameter(description = "只看这个文件(相对路径); 不传则返回全部")
+            @RequestParam(required = false) String path,
+            @Parameter(description = "3(默认) 或 full")
+            @RequestParam(required = false, defaultValue = "3") String context) {
         return ownershipGuard.currentContext().map(ctx -> {
             SessionEntity session = requireSession(id, ctx.userId(), ctx.admin());
             if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
@@ -134,7 +139,11 @@ public class SessionWorkspaceController {
             }
             WorkspaceEntity workspace = workspaceService.requireOwned(
                     session.getWorkspaceId(), session.getUserId(), true);
-            return Result.success(changeService.list(workspace, id));
+            boolean full = "full".equalsIgnoreCase(context);
+            int ctxLines = full ? Integer.MAX_VALUE / 4 : WorkspaceChangeService.DEFAULT_CONTEXT;
+            int maxLines = full ? WorkspaceChangeService.maxLinesForFull() : 200;
+            String onlyPath = path == null || path.isBlank() ? null : path;
+            return Result.success(changeService.list(workspace, id, onlyPath, ctxLines, maxLines));
         });
     }
 

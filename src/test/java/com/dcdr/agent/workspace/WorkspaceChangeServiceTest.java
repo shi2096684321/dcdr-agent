@@ -63,7 +63,7 @@ class WorkspaceChangeServiceTest {
         assertTrue(c.active());
         assertEquals(2, c.added());
         assertEquals(0, c.removed());
-        assertTrue(c.diff().stream().anyMatch(l -> l.startsWith("+line1")));
+        assertTrue(hasLine(c, "add", "line1"));
     }
 
     @Test
@@ -77,9 +77,9 @@ class WorkspaceChangeServiceTest {
 
         assertEquals(1, result.files().size(), "三次改动应聚合为一行");
         WorkspaceChangeService.FileChange c = result.files().get(0);
-        assertTrue(c.diff().stream().anyMatch(l -> l.equals("-v0")),
+        assertTrue(hasLine(c, "del", "v0"),
                 "改前应取最早的 v0 而不是上一次的 v1: " + c.diff());
-        assertTrue(c.diff().stream().anyMatch(l -> l.equals("+v2")));
+        assertTrue(hasLine(c, "add", "v2"));
     }
 
     @Test
@@ -117,6 +117,29 @@ class WorkspaceChangeServiceTest {
         WorkspaceChangeService.Changes result = changes.list(workspace, SESSION);
 
         assertTrue(result.files().isEmpty(), "磁盘没被动过的失败操作不该出现在变更列表");
+    }
+
+    @Test
+    void 按文件取并展开全文时整个文件都在且没有折叠() throws IOException {
+        StringBuilder before = new StringBuilder();
+        for (int i = 1; i <= 40; i++) before.append("line").append(i).append('\n');
+        preset("a.txt", before.toString());
+        files.edit(workspace, SESSION, "a.txt", "line20", "CHANGED", false);
+
+        // 默认: 只有改动附近的行, 其余折叠
+        var def = changes.list(workspace, SESSION).files().get(0);
+        assertTrue(def.diff().stream().anyMatch(l -> "skip".equals(l.type())),
+                "默认上下文下应有折叠标记");
+
+        // 单文件 + 全文: 40 行全在
+        var full = changes.list(workspace, SESSION, "a.txt", 1000, 2000).files().get(0);
+        assertFalse(full.diff().stream().anyMatch(l -> "skip".equals(l.type())),
+                "展开全文时不该有折叠标记");
+        // 40 行 + 替换产生的 1 条新增行
+        assertEquals(41, full.diff().size(), "整个文件的行都应输出");
+
+        // 指定不存在的文件 → 空清单, 而不是把全部文件返回
+        assertTrue(changes.list(workspace, SESSION, "nope.txt", 3, 200).files().isEmpty());
     }
 
     @Test
@@ -200,6 +223,11 @@ class WorkspaceChangeServiceTest {
         String opId = WorkspaceJournal.extractOpId(toolResult);
         assertNotNull(opId, "工具结果里应带 opId 标记: " + toolResult);
         return opId;
+    }
+
+    /** 结构化 diff 里是否存在某条指定类型与内容的行为 */
+    private static boolean hasLine(WorkspaceChangeService.FileChange c, String type, String text) {
+        return c.diff().stream().anyMatch(l -> type.equals(l.type()) && text.equals(l.text()));
     }
 
     /**

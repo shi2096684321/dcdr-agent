@@ -35,9 +35,11 @@ export const rewindSession = (sessionId, messageId, scope = 'ALL') =>
 export const undoOperation = (sessionId, opId) =>
   unwrap(api.post(`/api/sessions/${sessionId}/journal/${opId}/undo`))
 
-// ===== 变更面板(后端把 journal 聚合成「文件 + diff」) =====
-// 改前内容来自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到
-export const getSessionChanges = (sessionId) => unwrap(api.get(`/api/sessions/${sessionId}/changes`))
+// ===== 变更面板(后端把 journal 聚合成「文件 + 结构化 diff 行」) =====
+// 改前内容来自回收区快照, 改后内容直接读磁盘 —— 因此用户在编辑器里又改过的痕迹也能看到。
+// opts: { path?, context? } —— path 只看单个文件; context=full 展开整个文件(默认只给 3 行上下文)
+export const getSessionChanges = (sessionId, opts = {}) =>
+  unwrap(api.get(`/api/sessions/${sessionId}/changes`, { params: opts }))
 
 // 按文件撤销: 把这个文件在本会话里的所有未撤销改动退回它最早被改动之前
 export const undoSessionPath = (sessionId, path) =>
