@@ -325,92 +325,159 @@ watch(() => props.sessionId, async () => {
 </script>
 
 <style scoped>
+/* 配色一律走 theme.css 的设计令牌，不写 hex、不写 fallback。
+   不写 fallback 是刻意的：之前这里用了 --dcdr-text / --dcdr-text-secondary 这两个
+   并不存在的变量名，fallback #222/#666 在深色底(#06070f)上分别只有 1.2:1 和 3.7:1，
+   于是"浅色还好、暗色看不清"。去掉 fallback 后，变量名写错会立刻暴露成明显错误的观感。 */
+
 .ws-bar { display: flex; align-items: center; gap: 4px; padding: 0 28px 8px; }
 .ws-btn {
   display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
-  border: 1px solid var(--dcdr-border, #e5e5e5); border-radius: 14px; background: transparent;
-  color: var(--dcdr-text-secondary, #666); font-size: 12px; cursor: pointer;
+  border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-pill);
+  background: var(--dcdr-surface-faint);
+  color: var(--dcdr-text-2); font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: color var(--dcdr-dur) var(--dcdr-ease), border-color var(--dcdr-dur) var(--dcdr-ease);
 }
-.ws-btn:hover, .ws-btn.active { color: var(--dcdr-text, #222); border-color: var(--dcdr-border-strong, #ccc); }
+.ws-btn:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border-strong); background: var(--dcdr-hover); }
+.ws-btn.active { color: var(--dcdr-text-1); border-color: var(--dcdr-accent-line); background: var(--dcdr-accent-wash); }
 .ws-btn svg { width: 14px; height: 14px; }
 .ws-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-level { padding: 1px 6px; border-radius: 8px; font-size: 11px; background: rgba(120,120,120,.12); }
-.ws-level.lv-WRITE { background: rgba(50,120,255,.14); color: #2b6cf6; }
-.ws-level.lv-FULL { background: rgba(255,140,0,.16); color: #c96a00; }
-.ws-unbind { border: none; background: transparent; cursor: pointer; color: #999; font-size: 15px; line-height: 1; }
 
-.ws-mask { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; z-index: 3000; }
-.ws-dialog { width: 620px; max-height: 80vh; overflow: auto; background: var(--dcdr-bg, #fff); border-radius: 12px; padding: 20px; }
+/* 档位徽标：三档用「同底色 + 不同字色」区分，深色下不会因底色透明而糊成一片 */
+.ws-level {
+  padding: 1px 7px; border-radius: var(--dcdr-radius-pill); font-size: 11px;
+  background: var(--dcdr-hover); color: var(--dcdr-text-2);
+}
+.ws-level.lv-WRITE { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
+.ws-level.lv-FULL { color: var(--dcdr-warning); background: var(--dcdr-hover); }
+.ws-unbind {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dcdr-text-3); font-size: 15px; line-height: 1;
+}
+.ws-unbind:hover { color: var(--dcdr-danger); }
+
+/* 遮罩：两套主题共用一个足够沉的底，省去主题分支；
+   深色下它还要负责把面板和同样很暗的页面底色分开 */
+.ws-mask {
+  position: fixed; inset: 0; background: rgba(3, 5, 12, .6);
+  display: flex; align-items: center; justify-content: center; z-index: 3000;
+}
+.ws-dialog {
+  width: 620px; max-height: 80vh; overflow: auto;
+  background: var(--dcdr-surface);
+  border: 1px solid var(--dcdr-border);
+  border-radius: var(--dcdr-radius-card);
+  box-shadow: var(--dcdr-shadow-pop);
+  padding: 20px;
+}
 .ws-dialog-head { display: flex; align-items: center; justify-content: space-between; }
-.ws-dialog-head h3 { margin: 0; font-size: 15px; }
-.ws-close { border: none; background: transparent; font-size: 18px; cursor: pointer; color: #999; }
-.ws-tip { margin: 8px 0 14px; font-size: 12px; color: var(--dcdr-text-secondary, #777); line-height: 1.6; }
+.ws-dialog-head h3 { margin: 0; font-size: 15px; color: var(--dcdr-text-1); }
+.ws-close {
+  border: none; background: transparent; font-size: 18px; cursor: pointer;
+  color: var(--dcdr-text-3); line-height: 1;
+}
+.ws-close:hover { color: var(--dcdr-text-1); }
+.ws-tip { margin: 8px 0 14px; font-size: 12px; color: var(--dcdr-text-2); line-height: 1.6; }
+.ws-tip b { color: var(--dcdr-text-1); }
+
 .ws-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
-.ws-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--dcdr-border, #eee); border-radius: 8px; }
-.ws-item.selected { border-color: #2b6cf6; }
+.ws-item {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+  border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner);
+  background: var(--dcdr-surface-2);
+}
+.ws-item.selected { border-color: var(--dcdr-accent-line); background: var(--dcdr-accent-wash); }
 .ws-item-main { flex: 1; min-width: 0; cursor: pointer; }
-.ws-item-name { font-size: 13px; }
-.ws-item-path { font-size: 11px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ws-item-level, .ws-input { border: 1px solid var(--dcdr-border, #ddd); border-radius: 6px; padding: 4px 6px; font-size: 12px; background: transparent; color: inherit; }
-.ws-item-del { border: none; background: transparent; color: #b25; font-size: 12px; cursor: pointer; }
-.ws-empty { font-size: 12px; color: #999; padding: 6px 2px; }
+.ws-item-name { font-size: 13px; color: var(--dcdr-text-1); }
+.ws-item-path { font-size: 11px; color: var(--dcdr-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-item-level, .ws-input {
+  border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 4px 6px; font-size: 12px;
+  background: var(--dcdr-surface-2); color: var(--dcdr-text-1);
+}
+.ws-item-del { border: none; background: transparent; color: var(--dcdr-danger); font-size: 12px; cursor: pointer; }
+.ws-empty { font-size: 12px; color: var(--dcdr-text-3); padding: 6px 2px; }
+
 .ws-form { display: flex; gap: 8px; }
 .ws-input { flex: 1; height: 30px; }
 .ws-input-sm { max-width: 120px; }
-.ws-primary { height: 30px; padding: 0 14px; border-radius: 6px; border: none; background: #2b6cf6; color: #fff; font-size: 12px; cursor: pointer; }
+.ws-input::placeholder { color: var(--dcdr-text-3); }
+.ws-input:focus, .ws-item-level:focus { border-color: var(--dcdr-accent-line); outline: none; }
+/* 主按钮沿用全站的强调色渐变，与 el-button--primary 一致；
+   字重提到 600 是因为深色下亮蓝底上的白字笔画偏细，比浅色主题更需要重量 */
+.ws-primary {
+  height: 30px; padding: 0 14px; border-radius: 6px; border: none;
+  background-image: var(--dcdr-accent-grad); color: var(--dcdr-text-inverse);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+}
 .ws-primary:disabled { opacity: .6; cursor: default; }
-.ws-hint { margin: 10px 0 0; font-size: 11px; color: #999; line-height: 1.6; }
+.ws-hint { margin: 10px 0 0; font-size: 11px; color: var(--dcdr-text-3); line-height: 1.6; }
+.ws-hint b { color: var(--dcdr-text-2); }
 
-/* 目录浏览面板 */
+/* ===== 目录浏览面板 ===== */
 .ws-browse {
   height: 30px; padding: 0 10px; border-radius: 6px; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--dcdr-border, #ddd); background: transparent; color: var(--dcdr-text-secondary, #666);
-  white-space: nowrap;
+  border: 1px solid var(--dcdr-border); background: var(--dcdr-surface-2);
+  color: var(--dcdr-text-2); white-space: nowrap;
 }
-.ws-browse:hover { color: var(--dcdr-text, #222); border-color: var(--dcdr-border-strong, #bbb); }
+.ws-browse:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border-strong); }
 .ws-mask-top { z-index: 3100; }
 .ws-picker { width: 640px; display: flex; flex-direction: column; gap: 10px; }
+
 .ws-roots { display: flex; flex-wrap: wrap; gap: 6px; }
 .ws-root {
-  padding: 3px 10px; border-radius: 12px; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--dcdr-border, #e5e5e5); background: transparent; color: var(--dcdr-text-secondary, #666);
+  padding: 3px 10px; border-radius: var(--dcdr-radius-pill); font-size: 12px; cursor: pointer;
+  border: 1px solid var(--dcdr-border); background: var(--dcdr-surface-2); color: var(--dcdr-text-2);
 }
-.ws-root:hover { border-color: var(--dcdr-border-strong, #ccc); color: var(--dcdr-text, #222); }
-.ws-root.active { border-color: #2b6cf6; color: #2b6cf6; background: rgba(43,108,246,.08); }
+.ws-root:hover { border-color: var(--dcdr-border-strong); color: var(--dcdr-text-1); }
+.ws-root.active {
+  border-color: var(--dcdr-accent-line); color: var(--dcdr-accent); background: var(--dcdr-accent-wash);
+}
+
 .ws-crumbs {
   display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
-  padding: 6px 8px; border-radius: 8px; background: var(--dcdr-bg-subtle, #f7f7f8);
+  padding: 6px 8px; border-radius: 8px;
+  background: var(--dcdr-surface-2); border: 1px solid var(--dcdr-border);
   font-size: 12px; max-height: 66px; overflow: auto;
 }
 .ws-crumb-up {
-  border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-secondary, #666);
-  font-size: 13px; padding: 0 4px; line-height: 1;
+  border: none; background: transparent; cursor: pointer;
+  color: var(--dcdr-text-2); font-size: 13px; padding: 0 4px; line-height: 1;
 }
-.ws-crumb-up:disabled { opacity: .35; cursor: default; }
-.ws-crumb { border: none; background: transparent; cursor: pointer; font-size: 12px; color: #2b6cf6; padding: 0 2px; }
+.ws-crumb-up:hover:not(:disabled) { color: var(--dcdr-text-1); }
+.ws-crumb-up:disabled { opacity: .3; cursor: default; }
+.ws-crumb {
+  border: none; background: transparent; cursor: pointer; font-size: 12px;
+  color: var(--dcdr-accent); padding: 0 2px;
+}
 .ws-crumb:hover { text-decoration: underline; }
-.ws-crumb-sep { color: #bbb; font-size: 11px; }
+.ws-crumb-sep { color: var(--dcdr-text-3); font-size: 11px; }
+
 .ws-picker-list {
   min-height: 200px; max-height: 320px; overflow: auto;
-  border: 1px solid var(--dcdr-border, #eee); border-radius: 8px; padding: 4px;
+  border: 1px solid var(--dcdr-border); border-radius: var(--dcdr-radius-inner);
+  background: var(--dcdr-surface-2); padding: 4px;
   display: flex; flex-direction: column;
 }
 .ws-dir {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px;
   border: none; border-radius: 6px; background: transparent; cursor: pointer;
-  font-size: 13px; color: var(--dcdr-text, #222); text-align: left;
+  font-size: 13px; color: var(--dcdr-text-1); text-align: left;
 }
-.ws-dir:hover { background: var(--dcdr-bg-subtle, #f2f3f5); }
-.ws-dir svg { width: 14px; height: 14px; flex: none; color: #f0a92a; }
+.ws-dir:hover { background: var(--dcdr-hover); }
+/* 文件夹图标用语义色而不是写死橙色：深色下 --dcdr-warning 是 #fbbf24（亮），浅色是 #8f5f06（深），两边都够 */
+.ws-dir svg { width: 14px; height: 14px; flex: none; color: var(--dcdr-warning); }
 .ws-dir-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .ws-picker-foot { display: flex; align-items: center; gap: 8px; }
 .ws-picker-path {
-  flex: 1; min-width: 0; font-size: 11px; color: var(--dcdr-text-secondary, #777);
+  flex: 1; min-width: 0; font-size: 11px; color: var(--dcdr-text-3);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ws-ghost {
   height: 30px; padding: 0 12px; border-radius: 6px; font-size: 12px; cursor: pointer;
-  border: 1px solid var(--dcdr-border, #ddd); background: transparent; color: var(--dcdr-text-secondary, #666);
+  border: 1px solid var(--dcdr-border); background: transparent; color: var(--dcdr-text-2);
 }
-.mono { font-family: var(--dcdr-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.ws-ghost:hover { color: var(--dcdr-text-1); border-color: var(--dcdr-border-strong); background: var(--dcdr-hover); }
+
+.mono { font-family: var(--dcdr-font-mono); }
 </style>
