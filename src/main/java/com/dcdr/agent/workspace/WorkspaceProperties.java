@@ -31,8 +31,16 @@ public class WorkspaceProperties {
      */
     private boolean localMode = true;
 
-    /** 是否开放目录枚举接口(仅 admin); 关闭时前端只能手输路径 */
-    private boolean browseEnabled = false;
+    /**
+     * 是否开放目录枚举接口(仅 admin), 供前端「打开磁盘选目录」的面板使用。
+     * <p>
+     * 默认开启, 理由是 {@link #localMode} 已经保证了"服务跑在用户自己电脑上" ——
+     * 那时枚举目录等于让他自己看自己的盘, 没有新增暴露面; 而关掉它, 用户就只能手打绝对路径,
+     * 一个字符错了就得重来。服务器部署形态由 {@code localMode=false} 整体兜住。
+     * <p>
+     * 需要收紧(例如把本机服务临时暴露到局域网)时置 false, 前端自动回退为手输路径。
+     */
+    private boolean browseEnabled = true;
 
     // ===== 读写限额 =====
 

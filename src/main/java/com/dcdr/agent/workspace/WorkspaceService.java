@@ -9,11 +9,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -167,13 +169,30 @@ public class WorkspaceService {
      * 这是全功能里<b>最危险</b>的一个接口: 它能把服务器任意目录名枚举出来。
      * 因此三重限制: 功能开关 + 仅管理员 + 不可列文件内容(只返回目录名)。
      */
-    public List<Map<String, Object>> browse(String rawPath, boolean isAdmin) {
+    /**
+     * 列出某个目录下的子目录, 供前端「打开磁盘选择」的面板逐级下钻。
+     * <p>
+     * 返回体里一次带齐三样导航信息, 而不是让前端自己算:
+     * <ul>
+     *   <li>{@code path} —— 当前所在目录;</li>
+     *   <li>{@code parent} —— 上一级(已在根时为 null);</li>
+     *   <li>{@code roots} —— 本机的盘符/根列表, 这是前端自己拿不到的信息 ——
+     *       浏览器只知道相对路径, 不知道这台机器有几个盘。</li>
+     * </ul>
+     * 只返回目录不返回文件: 这个接口的唯一用途是选工作区根, 返回文件只是徒增噪声与暴露面。
+     *
+     * @param rawPath 要展开的目录绝对路径; 为空时从用户主目录开始
+     * @param isAdmin 目录枚举仅对管理员开放(它能枚举整台机器的目录结构)
+     */
+    public Map<String, Object> browse(String rawPath, boolean isAdmin) {
         ensureEnabled();
         if (!properties.isBrowseEnabled()) {
-            throw new BusinessException(403, "目录枚举未开启, 请直接输入工作区路径");
+            throw new BusinessException(403,
+                    "目录枚举已关闭(agent.workspace.browse-enabled=false), 请直接输入工作区路径");
         }
         if (!isAdmin) {
-            throw new BusinessException(403, "仅管理员可使用目录枚举");
+            throw new BusinessException(403,
+                    "目录枚举仅管理员可用, 请直接输入工作区路径; 或让管理员在本会话代为选择");
         }
 
         Path dir = (rawPath == null || rawPath.isBlank())
@@ -183,25 +202,51 @@ public class WorkspaceService {
             throw new BusinessException(400, "不是目录: " + dir);
         }
 
-        List<Map<String, Object>> result = new ArrayList<>();
+        List<Map<String, Object>> children = new ArrayList<>();
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {
             for (Path child : stream) {
                 try {
                     if (!Files.isDirectory(child)) continue;
-                    result.add(Map.of(
-                            "name", child.getFileName().toString(),
-                            "path", child.toAbsolutePath().normalize().toString(),
-                            "hidden", child.getFileName().toString().startsWith(".")));
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("name", child.getFileName().toString());
+                    item.put("path", child.toAbsolutePath().normalize().toString());
+                    item.put("hidden", child.getFileName().toString().startsWith("."));
+                    children.add(item);
                 } catch (SecurityException ignored) {
                     // 单个目录无权限不影响整体列表
                 }
-                if (result.size() >= 500) break;
+                if (children.size() >= 500) break;
             }
         } catch (IOException e) {
             throw new BusinessException(400, "无法读取目录: " + e.getMessage());
         }
-        result.sort(Comparator.comparing(m -> String.valueOf(m.get("name")).toLowerCase(Locale.ROOT)));
+        children.sort(Comparator.comparing(m -> String.valueOf(m.get("name")).toLowerCase(Locale.ROOT)));
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("path", dir.toString());
+        // 盘符根(D:\)的 getParent() 是 null —— 前端据此隐藏「上一级」
+        Path parent = dir.getParent();
+        result.put("parent", parent == null ? null : parent.toString());
+        result.put("roots", listRoots());
+        result.put("children", children);
         return result;
+    }
+
+    /**
+     * 本机盘符/根列表。Windows 是 C:\ D:\ …, 类 Unix 只有一个 /。
+     * <p>
+     * {@code File.listRoots()} 是 JDK 里唯一跨平台的做法; {@code FileStore} 拿到的是挂载点粒度,
+     * 在 Windows 上会把同一个盘的多个挂载点重复列出。
+     */
+    private List<Map<String, Object>> listRoots() {
+        List<Map<String, Object>> roots = new ArrayList<>();
+        for (File root : File.listRoots()) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("name", root.getPath());
+            item.put("path", root.getPath());
+            roots.add(item);
+        }
+        return roots;
     }
 
     // ===== 内部 =====

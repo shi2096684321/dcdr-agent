@@ -67,9 +67,10 @@ agent:
   #   语义错位；只读时最多读错文件，加了写删之后一句"清理一下"删的就是服务器的文件。
   # browse-enabled 控制目录枚举接口（能列服务器任意目录名，仅管理员、默认关闭）。
   workspace:
-    enabled: ${AGENT_WORKSPACE_ENABLED:false}
+    enabled: ${AGENT_WORKSPACE_ENABLED:true}
     local-mode: ${AGENT_WORKSPACE_LOCAL_MODE:true}
-    browse-enabled: ${AGENT_WORKSPACE_BROWSE_ENABLED:false}
+    # 目录枚举(打开磁盘选工作区): 仅 admin; 本机形态默认开放, 需要收紧时置 false 回退为手输路径
+    browse-enabled: ${AGENT_WORKSPACE_BROWSE_ENABLED:true}
     # 读：单文件上限 2MB；写：单次 1MB；单次回灌字符上限 8000
     max-file-size: 2097152
     max-write-bytes: 1048576

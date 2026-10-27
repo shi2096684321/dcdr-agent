@@ -94,9 +94,11 @@ public class WorkspaceController {
         });
     }
 
-    @Operation(summary = "浏览子目录", description = "目录选择器专用; 默认关闭, 仅管理员可用, 只返回目录名不返回文件内容")
+    @Operation(summary = "目录浏览",
+            description = "返回当前目录的子目录 + 上一级 + 本机盘符列表, 供前端逐级下钻选工作区根。"
+                    + "仅管理员可用, 只返回目录不返回文件; 服务器部署形态整体禁用")
     @GetMapping("/browse")
-    public Mono<Result<List<Map<String, Object>>>> browse(
+    public Mono<Result<Map<String, Object>>> browse(
             @Parameter(description = "要展开的目录绝对路径, 不传则从用户主目录开始")
             @RequestParam(required = false) String path) {
         return ownershipGuard.currentContext()
