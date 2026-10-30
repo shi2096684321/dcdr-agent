@@ -6,6 +6,7 @@ import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
+import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.ScheduledTaskDtos;
@@ -31,6 +32,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.Duration;
@@ -43,6 +45,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * V2.3 定时任务 Service (F-26 定时触发 Agent 执行任务)。
@@ -353,9 +356,11 @@ public class ScheduledTaskService {
             req.setSessionId(sess.getId());
             req.setMessage(input);
             req.setAgentId(task.getAgentId());
-            req.setStream(false);
-            ChatResponse resp = orchestrator.chatSync(req, task.getUserId());
-            String content = resp.getContent() == null ? "" : resp.getContent();
+            req.setStream(true);
+            // 必须走流式路径: chatSync 是"单轮简化路径", 不给模型工具定义、不跑工具循环,
+            // 抓取/检索类任务在它下面拿不到真实数据, 模型只能凭训练知识编 —— 表现为"产出偏差大"。
+            // 流式路径的工具循环才是 Agent 真正能联网/查库的那条链路。
+            String content = collectStream(orchestrator.chat(req, task.getUserId()));
             result.setOutput(content);
             result.setStatus("success");
             // 回写任务状态
@@ -379,6 +384,41 @@ public class ScheduledTaskService {
             notifyAsync(task, result, elapsed, run);
         }
         return result;
+    }
+
+    /** 流式执行的最长等待时间: 含工具循环与长文生成, 给足余量 */
+    private static final Duration STREAM_TIMEOUT = Duration.ofMinutes(30);
+
+    /**
+     * 把流式输出收集成完整文本。
+     * <p>
+     * 只累加 {@code type=chunk} 的正文。{@code tool_call} / {@code tool_result} 是过程事件,
+     * 拼进去会让输出变成"搜索关键词 + JSON 片段"的混合物, 完全没法读。
+     * <p>
+     * 错误块不会让 Flux 抛异常（它是正常的数据元素）, 所以单独取值再判断 ——
+     * 否则模型报错会被记成"任务成功但内容为空", 排查时完全没有线索。
+     */
+    private String collectStream(Flux<ChatChunk> flux) {
+        StringBuilder sb = new StringBuilder();
+        AtomicReference<String> error = new AtomicReference<>();
+        flux.doOnNext(chunk -> {
+                    String type = chunk.getType();
+                    if ("chunk".equals(type)) {
+                        if (chunk.getContent() != null) sb.append(chunk.getContent());
+                    } else if ("error".equals(type)) {
+                        error.set(chunk.getMessage() == null ? "模型调用失败" : chunk.getMessage());
+                    }
+                })
+                .timeout(STREAM_TIMEOUT)
+                .blockLast();
+
+        if (error.get() != null) {
+            throw new BusinessException(500, error.get(), "SCHEDULE_STREAM_ERROR");
+        }
+        if (sb.isEmpty()) {
+            throw new BusinessException(500, "Agent 未返回任何内容", "SCHEDULE_EMPTY_OUTPUT");
+        }
+        return sb.toString();
     }
 
     /**
