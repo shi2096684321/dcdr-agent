@@ -66,6 +66,23 @@ class WorkspacePromptProviderTest {
         assertEquals(WorkspacePromptProvider.FRAGMENT_NAME, provider.forSession("s1").getName());
     }
 
+    @Test
+    @DisplayName("档位查询: 未绑定返回 null, 绑定后按字段, 脏数据按最小权限")
+    void accessForSessionDistinguishesUnboundFromRead() {
+        when(resolver.resolveForSession("none")).thenReturn(null);
+        // 未绑定必须是 null 而不是 READ: 前者表示"这个会话没有工作区"(不裁剪工具),
+        // 后者表示"有工作区但只读"(裁剪掉写/删工具), 交给注入层是两套不同的决策
+        assertNull(provider.accessForSession("none"));
+        assertNull(provider.accessForSession(null));
+
+        when(resolver.resolveForSession("s1")).thenReturn(workspace(WorkspaceAccess.WRITE));
+        assertEquals(WorkspaceAccess.WRITE, provider.accessForSession("s1"));
+
+        when(resolver.resolveForSession("s2")).thenReturn(workspace(null));
+        assertEquals(WorkspaceAccess.READ, provider.accessForSession("s2"),
+                "档位字段为空时按最小权限, 不能因为脏数据放出写权限");
+    }
+
     private static WorkspaceEntity workspace(WorkspaceAccess access) {
         WorkspaceEntity ws = new WorkspaceEntity();
         ws.setId("ws_1");

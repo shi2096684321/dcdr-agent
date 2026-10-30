@@ -48,6 +48,18 @@ public class WorkspacePromptProvider {
         return fragment;
     }
 
+    /**
+     * 当前会话的授权档位, 供工具注入期按档位裁剪({@code ToolRegistry})。
+     * <p>
+     * 和 {@link #forSession} 一样按 sessionId 查库、不依赖 ThreadLocal: 注入发生在工具循环之前,
+     * 那时 holder 里还没有值。未绑定工作区返回 {@code null}(调用方据此不做裁剪, 而不是按 READ 裁) ——
+     * "没有工作区"和"有工作区但只读"是两件事, 混为一谈会让前者的提示与工具集合对不上。
+     */
+    public WorkspaceAccess accessForSession(String sessionId) {
+        WorkspaceEntity ws = resolver.resolveForSession(sessionId);
+        return ws == null ? null : resolveAccess(ws);
+    }
+
     private String build(WorkspaceEntity ws) {
         WorkspaceAccess access = resolveAccess(ws);
         StringBuilder sb = new StringBuilder(512);

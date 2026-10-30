@@ -4,6 +4,7 @@ import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
 import com.dcdr.agent.tool.result.ToolResultReadTool;
 import com.dcdr.agent.tool.skill.SkillLoadTool;
+import com.dcdr.agent.workspace.WorkspaceAccess;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
@@ -215,7 +216,7 @@ public class ToolRegistry {
      * 的差别只剩"是否要求 supportsStreaming"。
      */
     public List<ToolSpecification> getToolSpecifications() {
-        return getStreamingToolSpecificationsFiltered(null, false);
+        return getStreamingToolSpecificationsFiltered(null, false, null);
     }
 
     /**
@@ -244,11 +245,27 @@ public class ToolRegistry {
      * 且平台机制工具始终放行。
      */
     public List<ToolSpecification> getStreamingToolSpecificationsFiltered(List<String> allowedToolNames) {
-        return getStreamingToolSpecificationsFiltered(allowedToolNames, true);
+        return getStreamingToolSpecificationsFiltered(allowedToolNames, true, null);
+    }
+
+    /**
+     * 追加"工作区授权档位"过滤的流式工具规范(V3.3 F-49)。
+     * <p>
+     * 为什么要在注入期就按档位裁掉, 而不是保留全部定义、等执行期由
+     * {@code WorkspacePathResolver.requireAccess} 返回 403: 后者虽然同样安全, 但模型会先发起调用、
+     * 拿到一段"权限不足"的文案、再换一种方式重试 —— 白白烧掉一到两轮, 用户看到的是"它卡住了"。
+     * 不注入, 模型就压根没有这个选项。
+     * <p>
+     * {@code access} 为 {@code null} 表示调用方不关心档位(如启动期自检、Agent 定义校验),
+     * 此时不做这层裁剪, 其余过滤条件照旧。
+     */
+    public List<ToolSpecification> getStreamingToolSpecificationsFiltered(
+            List<String> allowedToolNames, WorkspaceAccess access) {
+        return getStreamingToolSpecificationsFiltered(allowedToolNames, true, access);
     }
 
     private List<ToolSpecification> getStreamingToolSpecificationsFiltered(
-            List<String> allowedToolNames, boolean streamingOnly) {
+            List<String> allowedToolNames, boolean streamingOnly, WorkspaceAccess access) {
         boolean filter = allowedToolNames != null && !allowedToolNames.isEmpty();
         List<ToolSpecification> result = new ArrayList<>();
         for (Map.Entry<String, ToolSpecification> e : specifications.entrySet()) {
@@ -257,16 +274,27 @@ public class ToolRegistry {
             if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
                 continue;
             }
+            if (!accessAllows(e.getKey(), access)) continue;
             result.add(e.getValue());
         }
         return result;
     }
 
     /**
+     * 授权档位过滤: 只作用于工作区工具族, 其它工具一律放行。
+     * <p>
+     * {@code access} 为 null 时全部放行 —— "不知道档位"不等于"没有权限", 把它当成 READ
+     * 会让没绑定工作区的会话连只读工具都看不到, 而那时本来也没有工作区工具可裁。
+     */
+    private static boolean accessAllows(String toolName, WorkspaceAccess access) {
+        return access == null || !WorkspaceAccess.isWorkspaceTool(toolName) || access.allowsTool(toolName);
+    }
+
+    /**
      * 返回全部已注册工具的 OpenAI tools 定义(legacy 手写 Provider 兼容路径)。
      */
     public List<Map<String, Object>> getToolDefinitions() {
-        return getStreamingToolSpecificationsFiltered(null, false).stream()
+        return getStreamingToolSpecificationsFiltered(null, false, null).stream()
                 .map(spec -> openAiDefinitions.get(spec.name()))
                 .filter(Objects::nonNull)
                 .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
@@ -286,6 +314,16 @@ public class ToolRegistry {
      * {@link #getStreamingToolDefinitions()} 等价); 否则仅返回名称在白名单中的工具。
      */
     public List<Map<String, Object>> getStreamingToolDefinitionsFiltered(List<String> allowedToolNames) {
+        return getStreamingToolDefinitionsFiltered(allowedToolNames, null);
+    }
+
+    /**
+     * 追加"工作区授权档位"过滤的流式工具定义(OpenAI 兼容格式), 与
+     * {@link #getStreamingToolSpecificationsFiltered(List, WorkspaceAccess)} 保持同一套判定 ——
+     * 两条注入路径(框架原生 / legacy Map)必须给出同样的工具集合, 否则换个 Provider 就换了权限。
+     */
+    public List<Map<String, Object>> getStreamingToolDefinitionsFiltered(
+            List<String> allowedToolNames, WorkspaceAccess access) {
         boolean filter = allowedToolNames != null && !allowedToolNames.isEmpty();
         List<Map<String, Object>> defs = new ArrayList<>();
         for (Map.Entry<String, Tool> e : tools.entrySet()) {
@@ -294,6 +332,7 @@ public class ToolRegistry {
             if (filter && !allowedToolNames.contains(e.getKey()) && !PLATFORM_TOOLS.contains(e.getKey())) {
                 continue;
             }
+            if (!accessAllows(e.getKey(), access)) continue;
             Map<String, Object> def = openAiDefinitions.get(e.getKey());
             if (def != null) {
                 defs.add(def);
