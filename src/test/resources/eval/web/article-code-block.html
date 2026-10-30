@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>用 Java 文本块写 SQL 的几个坑 - 编程笔记</title>
+</head>
+<body>
+<header>
+    <nav><a href="/">首页</a> <a href="/archive">归档</a> <a href="/tags">标签</a></nav>
+</header>
+
+<div id="content">
+    <h1>用 Java 文本块写 SQL 的几个坑 - 编程笔记</h1>
+    <p class="post-meta">2026-09-12 · 阅读 872</p>
+
+    <p>文本块在 Java 15 定型，用于书写多行字符串。相比拼接加号，它让 SQL、JSON、HTML 片段重新变得可读。但它在缩进和转义上有几处容易踩的地方，下面按踩坑顺序记录。</p>
+
+    <h2>坑一：缩进由结束分隔符决定</h2>
+    <p>文本块的公共缩进量，取的是"内容行"与"结束分隔符所在行"中较小的缩进。也就是说，把结束的三个引号顶格写，内容里的缩进会被原样保留。</p>
+
+    <pre><code class="language-java">String sql = """
+        SELECT id, name
+        FROM users
+        WHERE created_at &gt; ?
+        """;
+</code></pre>
+
+    <p>上面的写法里，结束分隔符与内容行同缩进，因此生成的字符串不含前导空格。如果把结束分隔符往左移，那部分缩进就会进入字符串。</p>
+
+    <h2>坑二：反斜杠仍然是转义符</h2>
+    <p>文本块并没有关闭转义。写正则时，一个反斜杠仍要写成两个；否则编译期就会报非法转义字符。这一点在从普通字符串粘贴过来时最容易被忽略。</p>
+
+    <pre><code class="language-java">// 正确：文本块里的正则需要双反斜杠
+String pattern = """
+        ^\\d{4}-\\d{2}-\\d{2}$
+        """;
+</code></pre>
+
+    <h2>坑三：注释里也不能写非法转义</h2>
+    <p>Java 的词法预解析对注释同样生效。如果在注释里写下一个非法的反斜杠加字母组合，编译会直接失败，而不是把注释忽略掉。这个行为在别的语言里很少见，第一次遇到时很难联想到注释。</p>
+
+    <ul>
+        <li>文本块不能用于单行短字符串，收益不明显。</li>
+        <li>拼接变量仍然要用 formatted 或加号。</li>
+        <li>换行符统一为 LF，不受平台影响。</li>
+    </ul>
+</div>
+
+<aside class="related">
+    <h3>相关文章</h3>
+    <ul>
+        <li><a href="/p/1">JVM 内存模型速查</a></li>
+        <li><a href="/p/2">虚拟线程的适用边界</a></li>
+    </ul>
+</aside>
+
+<footer><p>Powered by 编程笔记 · 转载请注明出处</p></footer>
+</body>
+</html>

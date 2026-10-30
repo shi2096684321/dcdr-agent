@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>工作区与本地文件操作正式上线_技术日报</title>
+    <meta name="description" content="工作区能力的设计取舍与撤回机制">
+    <meta name="author" content="技术日报编辑部">
+    <link rel="stylesheet" href="/static/main.css">
+    <script src="/static/analytics.js"></script>
+</head>
+<body>
+<header class="site-header">
+    <div class="logo">技术日报</div>
+    <nav class="main-nav">
+        <a href="/">首页</a>
+        <a href="/tech">科技</a>
+        <a href="/finance">财经</a>
+        <a href="/auto">汽车</a>
+        <a href="/sports">体育</a>
+        <a href="/login">登录</a>
+    </nav>
+    <form class="search" action="/search"><input name="q" placeholder="搜索"></form>
+</header>
+
+<div class="breadcrumb"><a href="/">首页</a> &gt; <a href="/tech">科技</a> &gt; 正文</div>
+
+<main>
+    <article>
+        <h1>工作区与本地文件操作正式上线_技术日报</h1>
+        <div class="meta">2026-10-30 10:20 · 技术日报 · 阅读 1204</div>
+
+        <p>工作区能力让智能体可以直接读写用户指定的本地目录。此前模型只能把文件内容塞进对话上下文，超过长度上限就被截断，长文档几乎无法处理。接入工作区之后，模型可以按需读取片段、定位后再修改，不再需要一次性把全文塞进提示词。</p>
+
+        <h2>为什么要有权限档位</h2>
+        <p>允许写入之后，风险面随之扩大。模型可能误删文件，也可能把无关目录纳入范围。为此我们引入三级权限档位，读、写、删除分别授予，默认只读。档位在会话建立时由用户确认，模型无法自己提升，也无法通过参数绕开。</p>
+
+        <h2>撤回是兜底而不是补救</h2>
+        <p>撤回能力是这套设计的兜底。每次改动都会记录到操作日志，用户可以在界面上按单次操作或按文件回滚，不必依赖版本控制。日志同时保存改动前后的内容快照，因此即使文件没有纳入 Git，也能回到改动前的状态。</p>
+
+        <p>需要强调的是，撤回不替代版本控制。它解决的是会话内的一次性误操作，跨度以单次会话为限；跨会话的长期演进仍应交给 Git 之类的工具管理。</p>
+
+        <figure>
+            <img src="/static/workspace-panel.png" alt="变更面板示意">
+            <figcaption>图 1 变更面板：逐行 diff 与单文件撤回</figcaption>
+        </figure>
+    </article>
+
+    <aside class="sidebar">
+        <h3>热门推荐</h3>
+        <ul>
+            <li><a href="/a/1">另一种视角看缓存穿透</a></li>
+            <li><a href="/a/2">十个 JVM 参数调优技巧</a></li>
+            <li><a href="/a/3">响应式编程的五个误解</a></li>
+        </ul>
+        <div class="ad">广告 · 点击了解更多</div>
+    </aside>
+</main>
+
+<section class="comments">
+    <h3>网友评论</h3>
+    <div class="comment"><span>张三</span>说得好，收藏了。</div>
+    <div class="comment"><span>李四</span>权限档位这块确实必要。</div>
+    <div class="comment"><span>王五</span>希望支持远程目录。</div>
+</section>
+
+<footer class="site-footer">
+    <p>版权所有 © 2026 技术日报</p>
+    <p>京ICP备00000000号</p>
+    <p>关于我们 | 联系方式 | 隐私政策</p>
+</footer>
+</body>
+</html>

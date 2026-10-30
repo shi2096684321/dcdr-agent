@@ -1,0 +1,107 @@
+{
+  "_comment": [
+    "网页正文抽取的黄金集 (Web Extract Fixture Eval)。由 WebExtractFixtureTest 加载。",
+    "",
+    "设计要点:",
+    "1. fixture 是**存档的 HTML 字节**, 不访问网络 —— 抽取链路的每次改动都能在毫秒级内验证,",
+    "   且不会因为某个站点改版、下线、开始拦爬虫而变成红叉。",
+    "2. 断言用「必须出现的正文句子」而不是「必须等于某段 markdown」:",
+    "   后者会把 crux / flexmark 的每一个空格差异都算作失败, 维护成本高到没人愿意改。",
+    "3. mustNotContain 里放的是**噪声特征词**(导航、侧栏推荐、评论、版权、广告) ——",
+    "   这类词出现在正文里, 说明提取算法把整页都当成正文了, 比「抽得少」更糟:",
+    "   它们会占据模型上下文, 且内容完全不可信。",
+    "4. 特意覆盖三种最容易静默出错的形态: GBK 编码(乱码)、纯 JS 渲染空壳(抽空)、",
+    "   登录拦截页(抽到但极短)。三者对外都表现为「抓取成功」, 只有内容能说明真相。",
+    "",
+    "如何扩充: 线上遇到抓取出错的 URL, 把响应字节存成 fixture 追加一条即可。",
+    "真实页面冒烟见 WebExtractLiveSmokeTest(默认不执行)。"
+  ],
+  "cases": [
+    {
+      "id": "zh-clean",
+      "description": "标准中文新闻页: 正文完整抽出, 导航/侧栏/评论/版权/广告全部剔除",
+      "file": "article-zh-clean.html",
+      "url": "https://example.com/news/2026/10/30/workspace.html",
+      "expectExtracted": true,
+      "titleContains": "工作区与本地文件操作正式上线",
+      "titleNotContains": "技术日报",
+      "mustContain": [
+        "允许写入之后，风险面随之扩大",
+        "每次改动都会记录到操作日志",
+        "撤回不替代版本控制",
+        "为什么要有权限档位"
+      ],
+      "mustNotContain": [
+        "京ICP备",
+        "热门推荐",
+        "网友评论",
+        "点击了解更多",
+        "另一种视角看缓存穿透",
+        "关于我们",
+        "{#"
+      ],
+      "minChars": 300
+    },
+    {
+      "id": "zh-gbk",
+      "description": "GBK 编码的中文页面: 必须按 meta charset 正确解码, 不能出现替换字符",
+      "file": "article-zh-gbk.html",
+      "url": "https://example.com/city/2026/10/28/metro.html",
+      "expectExtracted": true,
+      "titleContains": "城市轨道交通新线开通运营",
+      "mustContain": [
+        "全线共设车站二十三座",
+        "开通后，沿线居民前往中心城区的通勤时间预计缩短约二十五分钟",
+        "这是本市首条全自动运行线路"
+      ],
+      "mustNotContain": [
+        "\uFFFD",
+        "城市新闻编辑部 版权所有"
+      ],
+      "minChars": 200
+    },
+    {
+      "id": "code-block",
+      "description": "技术博客: 代码块与列表结构必须保真, 不能被 <p> 碎片拆散",
+      "file": "article-code-block.html",
+      "url": "https://example.com/p/text-block-sql.html",
+      "expectExtracted": true,
+      "titleContains": "用 Java 文本块写 SQL 的几个坑",
+      "mustContain": [
+        "文本块在 Java 15 定型",
+        "坑一：缩进由结束分隔符决定",
+        "SELECT id, name",
+        "WHERE created_at",
+        "反斜杠仍然是转义符",
+        "```java"
+      ],
+      "mustNotContain": [
+        "<p>",
+        "</p>",
+        "Powered by 编程笔记",
+        "虚拟线程的适用边界",
+        "{#"
+      ],
+      "minChars": 200
+    },
+    {
+      "id": "spa-shell",
+      "description": "纯 JS 渲染的空壳页: 必须明确判定为抓取失败, 而不是返回一段空壳 HTML",
+      "file": "spa-shell.html",
+      "url": "https://example.com/p/10086",
+      "expectExtracted": false
+    },
+    {
+      "id": "login-wall",
+      "description": "登录拦截页: 若抽到内容也必须是极短的一两句(会被计入 thinPages), 绝不能把页脚菜单当正文",
+      "file": "login-wall.html",
+      "url": "https://example.com/p/10087",
+      "maxCharsIfExtracted": 200,
+      "mustNotContain": [
+        "隐私",
+        "条款",
+        "关于我们"
+      ]
+    }
+  ]
+}
