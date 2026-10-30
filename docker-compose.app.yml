@@ -70,9 +70,23 @@ services:
       # 自建联网搜索：容器内访问 dcdr-net 上的 searxng 服务
       # （本机跑 jar 时无需设置，application.yml 默认 http://localhost:8888）
       AGENT_TOOLS_WEB_SEARXNG_URL: ${AGENT_TOOLS_WEB_SEARXNG_URL:-http://searxng:8080}
+      # V3.3 F-50 定时任务执行结果推送（默认关闭）。
+      # webhook 地址与加签 secret 都是凭据，放 .env，不要写进本文件。
+      # 注意：compose 不会自动把宿主环境变量传进容器，未在此声明的变量在容器内一律为空。
+      AGENT_NOTIFY_ENABLED: ${AGENT_NOTIFY_ENABLED:-false}
+      # 全局默认渠道：WECOM_BOT / DINGTALK_BOT；任务级可在界面上单独覆盖
+      AGENT_NOTIFY_CHANNEL: ${AGENT_NOTIFY_CHANNEL:-WECOM_BOT}
+      AGENT_NOTIFY_WECOM_WEBHOOK: ${AGENT_NOTIFY_WECOM_WEBHOOK:-}
+      AGENT_NOTIFY_DINGTALK_WEBHOOK: ${AGENT_NOTIFY_DINGTALK_WEBHOOK:-}
+      AGENT_NOTIFY_DINGTALK_SECRET: ${AGENT_NOTIFY_DINGTALK_SECRET:-}
+      AGENT_NOTIFY_DINGTALK_KEYWORD: ${AGENT_NOTIFY_DINGTALK_KEYWORD:-}
+      # 详情页外部基址（如 https://agent.example.com）。留空则只推概览、不生成链接
+      AGENT_NOTIFY_SHARE_BASE_URL: ${AGENT_NOTIFY_SHARE_BASE_URL:-}
     volumes:
       # 上传文件 / 生成图片视频 / 知识库文档落盘持久化，容器重建不丢
       - ./data:/app/data
+      # 推送消息模板：只读挂载，改完重启容器即生效（也可直接改镜像内默认值）
+      - ./config/notify/templates:/app/config/notify/templates:ro
     networks:
       - dcdr-net
     restart: unless-stopped

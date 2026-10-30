@@ -22,3 +22,11 @@ export const deleteScheduledTask = (id) =>
 // 手动触发一次执行 (同步阻塞调用 LLM)
 export const triggerScheduledTask = (id, inputMessage) =>
   unwrap(api.post(`/api/scheduled-tasks/${id}/trigger`, { inputMessage }))
+
+// 测试推送 (V3.3): 立即向该任务的推送渠道发一条测试消息, 不触发任务执行
+export const testScheduledTaskNotify = (id) =>
+  unwrap(api.post(`/api/scheduled-tasks/${id}/notify-test`))
+
+// 预览消息模板 (V3.3): 用示例数据渲染成功/失败两份消息, 不发送
+export const previewScheduledTaskNotify = (id, channel) =>
+  unwrap(api.get(`/api/scheduled-tasks/${id}/notify-preview`, { params: { channel } }))

@@ -26,6 +26,10 @@ public class ScheduledTaskDtos {
         private String inputMessage;
         @Schema(description = "是否启用")
         private Boolean enabled;
+        @Schema(description = "执行完成后是否推送到通知渠道 (V3.3)")
+        private Boolean notifyEnabled;
+        @Schema(description = "通知渠道 code, 如 wecom_bot; 留空=使用全局默认")
+        private String notifyChannel;
     }
 
     /** 定时任务视图 */
@@ -47,6 +51,18 @@ public class ScheduledTaskDtos {
         private LocalDateTime nextRunAt;
         private LocalDateTime createdAt;
         private LocalDateTime updatedAt;
+
+        // ===== V3.3 推送状态 =====
+        @Schema(description = "执行完成后是否推送到通知渠道")
+        private boolean notifyEnabled;
+        @Schema(description = "通知渠道 code; 留空=使用全局默认")
+        private String notifyChannel;
+        @Schema(description = "最近一次推送状态: success / failed / skipped")
+        private String notifyLastStatus;
+        @Schema(description = "最近一次推送失败或跳过原因")
+        private String notifyLastError;
+        @Schema(description = "最近一次推送时间")
+        private LocalDateTime notifyLastAt;
     }
 
     /** 手动触发一次执行 */
@@ -55,6 +71,22 @@ public class ScheduledTaskDtos {
     public static class TriggerRequest {
         @Schema(description = "可选: 覆盖任务默认的输入消息")
         private String inputMessage;
+    }
+
+    /** 消息模板预览结果 (V3.3 F-50) */
+    @Data
+    @Schema(description = "消息模板预览（用示例正文渲染，未真正发送）")
+    public static class NotifyPreview {
+        private String channel;
+        private String channelLabel;
+        /** 成功消息渲染后的原始 markdown */
+        private String successContent;
+        /** 失败消息渲染后的原始 markdown */
+        private String failureContent;
+        /** 该渠道单条消息长度上限 */
+        private int maxSize;
+        /** 计长单位: BYTES / CHARS */
+        private String unit;
     }
 
     /** 触发结果 */

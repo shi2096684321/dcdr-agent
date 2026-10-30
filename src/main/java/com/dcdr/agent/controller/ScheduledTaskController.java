@@ -4,6 +4,7 @@ import com.dcdr.agent.agent.schedule.ScheduledTaskService;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.ScheduledTaskDtos;
+import com.dcdr.agent.notify.NotifyResult;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -112,6 +113,38 @@ public class ScheduledTaskController {
         // LLM 调用为阻塞操作, 必须切到 boundedElastic 线程池
         return ownershipGuard.currentContext()
                 .flatMap(ctx -> Mono.fromCallable(() -> scheduledTaskService.trigger(id, req, ctx.userId(), ctx.admin()))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .map(Result::success));
+    }
+
+    @Operation(summary = "预览消息模板 (V3.3)",
+            description = "用示例正文渲染该渠道的成功/失败两份消息，返回原始 markdown。"
+                    + "不发送、不触发执行，用于在配置模板或切换渠道前确认效果。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ScheduledTaskDtos.NotifyPreview.class)))
+    @ApiResponse(responseCode = "404", description = "定时任务不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'SCHEDULED_TASK', principal)")
+    @GetMapping("/{id}/notify-preview")
+    public Mono<Result<ScheduledTaskDtos.NotifyPreview>> notifyPreview(
+            @Parameter(description = "任务 ID", required = true) @PathVariable String id,
+            @Parameter(description = "渠道 code，如 dingtalk_bot；留空用全局默认") @RequestParam(required = false) String channel) {
+        // 纯渲染，无网络与数据库阻塞调用，无需切 boundedElastic
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(
+                        scheduledTaskService.previewNotify(id, channel, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "测试推送 (V3.3)",
+            description = "立即向该任务配置的通知渠道发一条测试消息, 用于验证 Webhook 是否打通。"
+                    + "不触发 Agent 执行, 也不写入任务的推送状态。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = NotifyResult.class)))
+    @ApiResponse(responseCode = "404", description = "定时任务不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'SCHEDULED_TASK', principal)")
+    @PostMapping("/{id}/notify-test")
+    public Mono<Result<NotifyResult>> notifyTest(
+            @Parameter(description = "任务 ID", required = true) @PathVariable String id) {
+        // 推送是阻塞 HTTP 调用, 与 trigger 一样必须切到 boundedElastic
+        return ownershipGuard.currentContext()
+                .flatMap(ctx -> Mono.fromCallable(() -> scheduledTaskService.testNotify(id, ctx.userId(), ctx.admin()))
                         .subscribeOn(Schedulers.boundedElastic())
                         .map(Result::success));
     }

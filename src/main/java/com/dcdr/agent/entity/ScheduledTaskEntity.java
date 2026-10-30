@@ -69,6 +69,37 @@ public class ScheduledTaskEntity implements OwnedEntity {
     @Column(name = "next_run_at")
     private LocalDateTime nextRunAt;
 
+    // ===== V3.3 执行结果推送 (agent.notify.*) =====
+
+    /**
+     * 执行完成后是否推送到通知渠道。
+     * <p>注意这里<b>不加</b> {@code nullable=false}: ddl-auto=update 给存量表加非空列会失败,
+     * 且 Java 侧默认 false 已经表达了语义, 非空约束交给 DDL 脚本声明。
+     */
+    @Schema(description = "执行结果是否推送到通知渠道")
+    @Column(name = "notify_enabled")
+    private boolean notifyEnabled = false;
+
+    /** 任务级渠道覆盖 (如 wecom_bot); 留空使用全局默认 agent.notify.channel */
+    @Schema(description = "通知渠道 code; 留空=使用全局默认")
+    @Column(name = "notify_channel", length = 32)
+    private String notifyChannel;
+
+    /** 最近一次推送状态: success / failed / skipped */
+    @Schema(description = "最近一次推送状态: success / failed / skipped")
+    @Column(name = "notify_last_status", length = 16)
+    private String notifyLastStatus;
+
+    /** 最近一次推送的失败/跳过原因 */
+    @Schema(description = "最近一次推送失败或跳过原因")
+    @Column(name = "notify_last_error", columnDefinition = "TEXT")
+    private String notifyLastError;
+
+    /** 最近一次推送时间 */
+    @Schema(description = "最近一次推送时间")
+    @Column(name = "notify_last_at")
+    private LocalDateTime notifyLastAt;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

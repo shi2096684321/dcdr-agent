@@ -665,6 +665,48 @@ agent:
       # 危险 API 审计: 扫描插件字节码, 发现 Runtime/ProcessBuilder/反射特征即拒绝加载
       block-dangerous: true
 
+  # V3.3 执行结果推送 (定时任务跑完把结果发到企业微信)
+  # 为什么走企业微信而不是个人微信: 个人微信没有任何官方推送 API, 第三方中转
+  # (Server酱/PushPlus) 会把任务正文完整落到对方服务器; 企业微信是自家接口,
+  # 配合「我的企业 -> 微信插件」用个人微信扫码关注后, 推送可直接进个人微信。
+  # 默认关闭: 不配置就完全不产生外部请求。
+  notify:
+    enabled: ${AGENT_NOTIFY_ENABLED:false}
+    # 默认渠道 (任务级 notify-channel 可覆盖); 枚举名或 code 均可
+    channel: ${AGENT_NOTIFY_CHANNEL:WECOM_BOT}
+    # 成功消息节流窗口(ms): 同一任务窗口内最多推 1 条, 防止高频任务刷屏并触发
+    # 机器人 20 条/分钟 的硬限制 (企微 45009 / 钉钉 130101)。失败消息不受节流限制。0 = 不节流
+    throttle-window-ms: 600000
+    # 请求超时(ms); 推送跑在 boundedElastic 上, 不占调度线程
+    timeout-ms: 5000
+    # 消息模板目录 (相对工作目录); 结构 <dir>/<渠道code>/<success|failed>.md
+    # 文件不存在时用代码内置的默认模板, 所以该目录可以不存在; 每次推送重新读, 改完立即生效
+    templates-dir: ${AGENT_NOTIFY_TEMPLATES_DIR:./config/notify/templates}
+    # 概览字数: 抓取类任务的正文可能上万字, {{summary}} 只取前 N 字(在句末断开), 详情走链接
+    summary-chars: 300
+    # 详情页外部基址, 如 https://agent.example.com
+    # 留空则不生成"查看完整结果"链接, 只推概览(相对路径在 IM 里点不开)
+    # 注意: 详情页免登录, 拿到链接即可查看, 内容敏感时建议保持留空
+    share-base-url: ${AGENT_NOTIFY_SHARE_BASE_URL:}
+    # 详情链接有效期(天); 过期后页面返回 404
+    share-ttl-days: 7
+    wecom:
+      # 群聊右上角 -> 消息推送(群机器人) -> 创建后复制 Webhook 地址
+      # 地址里含机器人 key, 属凭据: 用环境变量注入, 不要写进仓库
+      webhook-url: ${AGENT_NOTIFY_WECOM_WEBHOOK:}
+      # markdown 最大字节数 (企业微信硬限 4096 字节; 中文 3 字节/字, 约合 1300 汉字)
+      max-bytes: 4096
+    dingtalk:
+      # 群设置 -> 智能群助手 -> 添加机器人 -> 自定义, 创建后复制 Webhook 地址
+      webhook-url: ${AGENT_NOTIFY_DINGTALK_WEBHOOK:}
+      # 机器人安全设置选「加签」时必填 (SEC 开头); 选「自定义关键词」或「IP 白名单」时留空
+      secret: ${AGENT_NOTIFY_DINGTALK_SECRET:}
+      # 机器人安全设置选「自定义关键词」时必填: 正文必须含该词, 否则 310000「关键词不匹配」
+      # 会追加到正文末尾, 截断时也为它预留位置 (关键词被切掉同样会被拒收)
+      keyword: ${AGENT_NOTIFY_DINGTALK_KEYWORD:}
+      # markdown 最大字符数 (钉钉约 20000 字符上限, 按字符计长, 与企微的字节口径不同)
+      max-chars: 18000
+
 # 工具配置
 agent-tools:
   # ===== 工具暴露白名单 (V3.2) =====

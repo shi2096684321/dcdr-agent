@@ -47,6 +47,12 @@
           </div>
           <div class="task-toolbar-right">
             <el-button type="primary" size="small" :loading="triggering" @click="triggerTask">立即触发</el-button>
+            <el-button v-if="currentTask.notifyEnabled" size="small" :loading="testingNotify" @click="testNotify">
+              测试推送
+            </el-button>
+            <el-button v-if="currentTask.notifyEnabled" size="small" @click="openPreview">
+              预览消息
+            </el-button>
             <el-button size="small" @click="openEditDialog">编辑</el-button>
             <el-button type="danger" size="small" @click="removeTask">删除</el-button>
           </div>
@@ -81,6 +87,25 @@
           <div class="detail-row" v-if="currentTask.lastError">
             <div class="detail-label">最近错误</div>
             <div class="detail-value error">{{ currentTask.lastError }}</div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">结果推送</div>
+            <div class="detail-value">
+              <template v-if="currentTask.notifyEnabled">
+                <el-tag size="small" type="success">已开启</el-tag>
+                <span class="notify-channel-name">{{ notifyChannelLabel(currentTask.notifyChannel) }}</span>
+                <el-tag v-if="currentTask.notifyLastStatus" size="small"
+                        :type="notifyTagType(currentTask.notifyLastStatus)" style="margin-left:8px">
+                  {{ notifyStatusLabel(currentTask.notifyLastStatus) }}
+                </el-tag>
+                <span v-if="currentTask.notifyLastAt" class="notify-time">{{ formatTime(currentTask.notifyLastAt) }}</span>
+              </template>
+              <el-tag v-else size="small" type="info">未开启</el-tag>
+            </div>
+          </div>
+          <div class="detail-row" v-if="currentTask.notifyEnabled && currentTask.notifyLastError">
+            <div class="detail-label">推送异常</div>
+            <div class="detail-value error">{{ currentTask.notifyLastError }}</div>
           </div>
         </div>
 
@@ -126,10 +151,48 @@
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
         </el-form-item>
+        <el-form-item label="结果推送">
+          <div class="notify-row">
+            <el-switch v-model="form.notifyEnabled" />
+            <el-select v-if="form.notifyEnabled" v-model="form.notifyChannel" size="small"
+                       placeholder="跟随全局默认" clearable style="width:190px">
+              <el-option v-for="c in notifyChannels" :key="c.value" :label="c.label" :value="c.value" />
+            </el-select>
+          </div>
+          <div class="notify-hint">
+            执行完成后把结果推送到企业微信（经「微信插件」可在个人微信收到）。
+            失败消息必定推送；成功消息同一任务在节流窗口内最多一条，避免刷屏。
+          </div>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="saving" @click="submitForm">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 消息模板预览：用示例数据渲染，不发送 -->
+    <el-dialog v-model="previewVisible" title="消息预览" width="680px">
+      <div v-if="previewData">
+        <div class="preview-meta">
+          渠道：{{ previewData.channelLabel }} · 单条上限
+          {{ previewData.maxSize }} {{ previewData.unit === 'BYTES' ? '字节' : '字符' }}
+        </div>
+        <el-tabs v-model="previewTab">
+          <el-tab-pane label="执行成功" name="success">
+            <pre class="preview-pre">{{ previewData.successContent }}</pre>
+          </el-tab-pane>
+          <el-tab-pane label="执行失败" name="failure">
+            <pre class="preview-pre">{{ previewData.failureContent }}</pre>
+          </el-tab-pane>
+        </el-tabs>
+        <div class="preview-hint">
+          这是发给机器人的原始文本（markdown 源码），实际排版以群内渲染结果为准。
+        </div>
+      </div>
+      <div v-else class="preview-loading">加载中…</div>
+      <template #footer>
+        <el-button @click="previewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>
@@ -140,7 +203,7 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getScheduledTasks, createScheduledTask, updateScheduledTask, deleteScheduledTask, triggerScheduledTask,
-  getAgents, extractMessage
+  testScheduledTaskNotify, previewScheduledTaskNotify, getAgents, extractMessage
 } from '@/api'
 
 const loading = ref(false)
@@ -153,11 +216,21 @@ const agents = ref([])
 
 const triggering = ref(false)
 const triggerResult = ref(null)
+const testingNotify = ref(false)
+const previewVisible = ref(false)
+const previewData = ref(null)
+const previewTab = ref('success')
 
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
-const form = reactive({ id: '', name: '', agentId: '', cron: '', inputMessage: '', enabled: true })
+const form = reactive({ id: '', name: '', agentId: '', cron: '', inputMessage: '', enabled: true, notifyEnabled: false, notifyChannel: '' })
+
+// V3.3 推送渠道。后端每新增一个 Notifier 实现, 在此追加一项即可。
+const notifyChannels = [
+  { value: 'wecom_bot', label: '企业微信群机器人' },
+  { value: 'dingtalk_bot', label: '钉钉群机器人' }
+]
 
 // 常用 cron 预设
 const cronPresets = [
@@ -177,6 +250,19 @@ function statusTagType(s) {
 }
 function statusLabel(s) {
   return ({ success: '成功', failed: '失败', running: '运行中' })[s] || s
+}
+function notifyChannelLabel(code) {
+  const hit = notifyChannels.find(c => c.value === code)
+  return hit ? hit.label : '跟随全局默认'
+}
+function notifyStatusLabel(s) {
+  // skipped 不是故障: 总开关关闭 / 触发节流都会走到这里, 单独一种配色避免误判为失败
+  return ({ success: '推送成功', failed: '推送失败', skipped: '已跳过' })[s] || s
+}
+function notifyTagType(s) {
+  if (s === 'success') return 'success'
+  if (s === 'failed') return 'danger'
+  return 'info'
 }
 function formatTime(t) {
   if (!t) return '—'
@@ -240,6 +326,8 @@ function openEditDialog() {
   form.cron = t.cron
   form.inputMessage = t.inputMessage || ''
   form.enabled = t.enabled
+  form.notifyEnabled = !!t.notifyEnabled
+  form.notifyChannel = t.notifyChannel || ''
   dialogVisible.value = true
 }
 
@@ -250,6 +338,8 @@ function resetForm() {
   form.cron = ''
   form.inputMessage = ''
   form.enabled = true
+  form.notifyEnabled = false
+  form.notifyChannel = ''
 }
 
 async function submitForm() {
@@ -263,7 +353,9 @@ async function submitForm() {
       agentId: form.agentId,
       cron: form.cron.trim(),
       inputMessage: form.inputMessage || null,
-      enabled: form.enabled
+      enabled: form.enabled,
+      notifyEnabled: form.notifyEnabled,
+      notifyChannel: form.notifyChannel || null
     }
     if (editing.value) {
       await updateScheduledTask(form.id, payload)
@@ -311,11 +403,43 @@ async function triggerTask() {
   }
 }
 
+async function testNotify() {
+  if (!currentTask.value) return
+  testingNotify.value = true
+  try {
+    const r = await testScheduledTaskNotify(currentTask.value.id)
+    if (r && r.success) {
+      ElMessage.success('测试推送已发出，请查看企业微信')
+    } else {
+      // skipped 也走这里: 总开关没开时用户需要知道"不是网络问题, 是配置没开"
+      ElMessage.error((r && (r.error || r.reason)) || '推送未成功')
+    }
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '推送失败')
+  } finally {
+    testingNotify.value = false
+  }
+}
+
+async function openPreview() {
+  if (!currentTask.value) return
+  previewVisible.value = true
+  previewData.value = null
+  previewTab.value = 'success'
+  try {
+    // 传任务的渠道；任务没选则传 null，由后端回退全局默认
+    previewData.value = await previewScheduledTaskNotify(
+      currentTask.value.id, currentTask.value.notifyChannel || null)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '预览失败')
+    previewVisible.value = false
+  }
+}
+
 onMounted(() => {
   loadTasks()
   loadAgents()
-})
-</script>
+})</script>
 
 <style scoped>
 .sched-mode { flex: 1; display: flex; overflow: hidden; }
@@ -362,4 +486,16 @@ onMounted(() => {
 .empty-icon { font-size: 56px; }
 
 .cron-presets { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* V3.3 结果推送 */
+.notify-row { display: flex; align-items: center; gap: 10px; }
+.notify-hint { color: var(--dcdr-text-3); font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.notify-channel-name { margin-left: 8px; color: var(--dcdr-text-2); font-size: 12px; }
+.notify-time { margin-left: 8px; color: var(--dcdr-text-3); font-size: 12px; }
+
+/* 消息预览 */
+.preview-meta { font-size: 12px; color: var(--dcdr-text-3); margin-bottom: 10px; }
+.preview-pre { background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; max-height: 320px; overflow-y: auto; margin: 0; }
+.preview-hint { font-size: 12px; color: var(--dcdr-text-3); margin-top: 10px; line-height: 1.6; }
+.preview-loading { padding: 40px; text-align: center; color: var(--dcdr-text-3); font-size: 13px; }
 </style>
