@@ -17,6 +17,7 @@ import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.audit.AuditService;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
+import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.SessionDTO;
 import com.dcdr.agent.agent.image.ChatImageService;
@@ -64,6 +65,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -581,7 +583,7 @@ public class AgentOrchestrator {
                                 }
                             }
                             sink.next(ChatChunk.interrupted());
-                            sink.next(ChatChunk.done(estP, estC, estT, durationMs));
+                            sink.next(ChatChunk.done(estP, estC, estT, durationMs).withModel(provider.getName()));
                             sink.complete();
                             activeChatRegistry.unregister(sessId);
                             // V3.0-beta F-34: 中断路径补记 token 用量(成本/配额口径不漏记)。
@@ -797,7 +799,7 @@ public class AgentOrchestrator {
                                 imgDetail.put("model", modelName);
                                 imgDetail.put("imageCount", urls.size());
                                 auditService.record("chat_image", "session", sessId, imgDetail, currentUserId);
-                                return Flux.just(ChatChunk.done(0, 0, 0, 0));
+                                return Flux.just(ChatChunk.done(0, 0, 0, 0).withModel(modelName));
                             }));
                         })
                         .onErrorResume(e -> {
@@ -1639,9 +1641,9 @@ public class AgentOrchestrator {
         // done 块: collectedSources 含联网搜索/知识库检索的引用来源(Agentic RAG 模式下由工具返回),
         // 随 done 下发给前端渲染引用卡片
         if (collectedSources != null && !collectedSources.isEmpty()) {
-            tail.add(ChatChunk.done(p, c, t, durationMs, collectedSources));
+            tail.add(ChatChunk.done(p, c, t, durationMs, collectedSources).withModel(provider.getName()));
         } else {
-            tail.add(ChatChunk.done(p, c, t, durationMs));
+            tail.add(ChatChunk.done(p, c, t, durationMs).withModel(provider.getName()));
         }
         if (taskTokenExceeded) {
             // V3.1 单任务 token 上限: 内容已随 done 正常下发/落库, 此处仅补充"为何停在这里"
@@ -2084,181 +2086,74 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 同步对话(带 LLM 调用链追踪)。为空 trace 内部自建并输出汇总(工作流/定时任务等直调方也能拿到链路)。
+     * 同步对话。
+     * <p>
+     * 实现上<b>直接复用流式管线</b>再收集结果 —— 与 Spring AI 的 {@code call()} / {@code stream()}
+     * 共用同一条执行链（ToolCallingAdvisor 同时服务两者）是同一思路：同步/流式只是"取结果的方式"，
+     * 工具循环、顾问链、RAG 都属于下面的执行层。
+     * <p>
+     * 为什么不再单独实现一份：这里原本是独立链路（{@code doChatSync}），只做单轮
+     * {@code provider.invoke(...)}，<b>不注入工具定义、不跑工具循环</b>。结果是同步调用方
+     * （工作流、定时任务、/api/chat）拿不到联网/知识库/工作区能力，而系统提示仍然宣称具备 ——
+     * 模型只能凭训练数据编。两套实现必然漂移，索性只留一条。
      */
     public ChatResponse chatSync(ChatRequest request, String currentUserId, com.dcdr.agent.common.log.LlmCallTrace trace) {
-        // 调用链: Controller 传入(含路由)或内部自建
-        final com.dcdr.agent.common.log.LlmCallTrace t =
-                trace != null ? trace : com.dcdr.agent.common.log.LlmCallTrace.begin();
-        final boolean ownTrace = trace == null;
-        try {
-            return doChatSync(request, currentUserId, t);
-        } finally {
-            if (ownTrace) {
-                t.summary("COMPLETE");
-            }
-        }
+        return collectToResponse(chat(request, currentUserId, trace));
     }
 
-    private ChatResponse doChatSync(ChatRequest request, String currentUserId, com.dcdr.agent.common.log.LlmCallTrace t) {
-        // V3.0-beta F-39: 用户级 token 配额检查 (超额抛 429, 拦截本次 LLM 调用)
-        costTracker.checkUserQuota(currentUserId);
+    /** 同步收集流式输出的最长等待: 含工具循环与长文生成 */
+    private static final Duration SYNC_COLLECT_TIMEOUT = Duration.ofMinutes(30);
 
-        // V2.3: 自定义 Agent 应用 (model/temperature/kb_ids/systemPrompt 覆盖)
-        AgentOverride agentOverride = applyAgentDefinition(request);
+    /**
+     * 把流式块收集成 {@link ChatResponse}。
+     * <p>
+     * 只累加 {@code type=chunk} 的正文。工具调用块单独记成 {@code toolsUsed} ——
+     * 拼进正文会让输出变成"搜索关键词 + JSON 片段"的混合物，完全没法读。
+     * <p>
+     * 错误块不会让 Flux 抛异常（它是正常的数据元素），必须单独取值判断，
+     * 否则"模型报错"会被记成"成功但内容为空"，排查时没有任何线索。
+     */
+    private ChatResponse collectToResponse(Flux<ChatChunk> flux) {
+        StringBuilder content = new StringBuilder();
+        Set<String> tools = new LinkedHashSet<>();
+        AtomicReference<ChatResponse.TokenUsage> usage = new AtomicReference<>();
+        AtomicReference<String> warning = new AtomicReference<>();
+        AtomicReference<String> model = new AtomicReference<>();
+        AtomicReference<String> error = new AtomicReference<>();
 
-        // V2.2: userId 由 Controller 从 exchange 取出后传入, 用于会话绑定
-        String sessionId = request.getSessionId();
-        if (sessionId == null || sessionId.isBlank()) {
-            SessionDTO session = sessionManager.createSession("新对话", request.getModel(), null, currentUserId);
-            sessionId = session.getId();
-            request.setSessionId(sessionId);
-        }
-        // V3.1 记录本会话使用的 Agent(与流式 1.1 同口径): Agent 级长期记忆的归属依据
-        sessionManager.bindAgent(sessionId, request.getAgentId());
-
-        // 记忆窗口: 同步路径同样只把滑窗视图发给 LLM(system 全保留 + 最近 N 条), 超限时通过 contextWarning 提示
-        List<Message> fullHistorySync = memory.load(sessionId);
-        List<Message> history = memory.loadWindow(sessionId);
-        int memoryTrimmedSync = fullHistorySync.size() - history.size();
-        ChatModelProvider provider = router.route(request, history, currentUserId);
-
-        // V3.1 清除历史中的裸 system 消息(与流式 prepareForChat 2.1 同口径, 见该处注释)
-        fullHistorySync = new ArrayList<>(fullHistorySync);
-        history = new ArrayList<>(history);
-        fullHistorySync.removeIf(m -> "system".equals(m.getRole()) && m.getName() == null);
-        history.removeIf(m -> "system".equals(m.getRole()) && m.getName() == null);
-
-        // 分层 system prompt 注入(与流式 chat 路径保持一致: 统一注入完整 L1+L2/chat)
-        String resolvedChatPromptSync = systemPromptResolver.resolveChat();
-        if (resolvedChatPromptSync != null && history.stream().noneMatch(m ->
-                "system".equals(m.getRole()) && resolvedChatPromptSync.equals(m.getContent()))) {
-            List<Message> withSys = new ArrayList<>(history);
-            withSys.add(0, Message.system(resolvedChatPromptSync));
-            history = withSys;
-        }
-
-        // 会话角色设定包装注入(与流式 3.1.1 同口径, 平台包壳转述)
-        SessionDTO sessionDtoSync = sessionManager.getSession(sessionId);
-        String sessionPersonaSync = sessionDtoSync != null ? sessionDtoSync.getPersona() : null;
-        if (sessionPersonaSync != null && !sessionPersonaSync.isBlank()) {
-            List<Message> withInstr = new ArrayList<>(history);
-            withInstr.add(Message.system("session:persona", wrapSessionPersona(sessionPersonaSync)));
-            history = withInstr;
+        try {
+            flux.doOnNext(chunk -> {
+                String type = chunk.getType();
+                if (type == null) return;
+                switch (type) {
+                    case "chunk" -> {
+                        if (chunk.getContent() != null) content.append(chunk.getContent());
+                    }
+                    case "tool_call" -> {
+                        if (chunk.getTool() != null) tools.add(chunk.getTool());
+                    }
+                    case "context_warning" -> warning.set(chunk.getMessage());
+                    case "error" -> error.set(chunk.getMessage());
+                    case "done" -> {
+                        if (chunk.getTokenUsage() != null) usage.set(chunk.getTokenUsage());
+                        if (chunk.getModel() != null) model.set(chunk.getModel());
+                    }
+                    default -> { /* status / interrupted / image / trace_step: 同步侧无需处理 */ }
+                }
+            }).timeout(SYNC_COLLECT_TIMEOUT).blockLast();
+        } catch (Exception e) {
+            throw new BusinessException(500, "同步对话执行失败: " + e.getMessage(), "CHAT_SYNC_FAILED");
         }
 
-        // V2.3 自定义 Agent 角色提示词注入 (与流式 3.1.2 同口径, 平台包装)
-        if (agentOverride != null && agentOverride.systemPrompt() != null
-                && !agentOverride.systemPrompt().isBlank()) {
-            List<Message> withAgent = new ArrayList<>(history);
-            withAgent.add(Message.system("agent:persona", wrapAgentPersona(agentOverride.systemPrompt())));
-            history = withAgent;
+        if (error.get() != null) {
+            throw new BusinessException(500, error.get(), "CHAT_SYNC_ERROR");
         }
-
-        // V3.1 长期记忆注入 (与流式 3.1.3 同口径, 保证两条链路注入一致)
-        history = injectLongTermMemory(history, currentUserId, request, t);
-
-        // 图片自动路由(必须先执行, 因其会 mutate request 并决定最终回答模型)
-        String userOriginal = request.getMessage();
-        List<String> originalImages = request.getImages();  // 捕获原始图片(相对路径/url), 单独用于落库; 模型侧统一用解析后的 base64
-        ImagePrep prepSync = prepareImagesForModel(request, history, provider);
-        String imageFallbackWarning = prepSync.fallbackWarning();
-
-        // 分层 system prompt 已在路由后注入; 此处补齐平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录),
-        // 与流式 chat 路径完全一致
-        history = injectRuntimeSystemPrompts(history, provider, request, currentUserId, sessionId);
-
-        // RAG 已改为 Agentic 模式(混合式): chatSync 路径同样由 LLM 决定是否调用 knowledge_base_search 工具,
-        // 不再在此处强制检索。同步路径暂不支持工具循环(chatSync 为简化路径, 仅 agent 模式才走工具),
-        // 若需 Agentic RAG 请使用流式 /api/chat/stream 端点。
-
-        boolean firstMessage = history.stream().noneMatch(m -> "user".equals(m.getRole()));
-        Message userMsg = Message.user(userOriginal, originalImages);
-        userMsg.setVisionModel(prepSync.visionModel());
-        userMsg.setImageStatus(prepSync.imageStatus());
-        userMsg.setImageCaption(prepSync.imageCaption());
-        userMsg.setImageTokenUsage(prepSync.imageTokenUsage());
-        memory.save(sessionId, userMsg);
-        if (firstMessage) {
-            sessionManager.autoTitleFromFirstMessage(sessionId, userOriginal);
-        }
-
-        // 图片未能识别: 直接返回提示, 不再调用模型作答
-        if (prepSync.unrecognizedError() != null) {
-            ChatResponse r = new ChatResponse();
-            r.setContent(prepSync.unrecognizedError());
-            r.setContextWarning(prepSync.unrecognizedError());
-            r.setModel(prepSync.visionModel());
-            return r;
-        }
-
-        final long syncStartNanos = System.nanoTime();
-        ChatResponse response = prepSync.answerProvider().invoke(request, history);
-        {
-            ChatResponse.TokenUsage u = response.getTokenUsage();
-            // 请求参数明细: 同步路径温度、上下文规模与实际提交的 system prompt
-            java.util.Map<String, Object> params = new java.util.LinkedHashMap<>();
-            params.put("temperature", request.getTemperature());
-            params.put("messageCount", history.size());
-            // 同流式路径: 不截断, 体积控制下沉到接口层(列表剔除重字段 / 详情给全量)
-            String sysJoinedSync = joinSystemPrompts(history);
-            if (!sysJoinedSync.isEmpty()) {
-                params.put("systemPrompt", sysJoinedSync);
-            }
-            params.put("messages", snapshotMessages(history));
-            // 实际请求体快照(权威口径, 同流式): 同步 invoke 内部固定 includeCurrentUser=true
-            String wireRequestSync = prepSync.answerProvider()
-                    .describeWireRequest(request, history, true, false);
-            if (wireRequestSync != null && !wireRequestSync.isBlank()) {
-                params.put("wireRequest", wireRequestSync);
-            }
-            // 本轮输出预览: chatSync 为单轮同步调用, 此内容即该轮(也是本次请求)的最终答案正文
-            com.dcdr.agent.common.log.LlmCallTrace.putOutput(params, response.getContent());
-            t.recordLlm("chatSync-answer", prepSync.answerProvider().getName(),
-                    u != null ? u.getPrompt() : null,
-                    u != null ? u.getCompletion() : null,
-                    (System.nanoTime() - syncStartNanos) / 1_000_000, false, params);
-        }
-
-        // 上下文接近上限提示(与流式 chat 路径一致): 用「全量历史 + 当前提问」做估算,
-        // 而非滑窗视图(滑窗仅保留最近 max-messages 条, 估算远达不到阈值导致提示从未触发)
-        List<Message> contextForEstimateSync = new ArrayList<>(fullHistorySync);
-        contextForEstimateSync.add(Message.user(request.getMessage()));
-        if (tokenEstimator.isNearLimit(contextForEstimateSync) && response.getContextWarning() == null) {
-            response.setContextWarning(String.format(
-                    "对话已较长（约 %d token），接近上下文上限，建议开启新对话以免丢失早期内容。",
-                    tokenEstimator.estimate(contextForEstimateSync)));
-        }
-        // 记忆窗口超限提示(优先级低于图片降级与 token 接近上限提示, 未被覆盖时下发)
-        if (memoryTrimmedSync > 0 && response.getContextWarning() == null) {
-            response.setContextWarning(String.format(
-                    "对话已达记忆窗口上限，仅保留最近 %d 条消息参与回答（已省略最早 %d 条），完整历史仍可在会话中查看。",
-                    history.stream().filter(m -> !"system".equals(m.getRole())).count(), memoryTrimmedSync));
-        }
-        // V3.0-beta F-34: 记录本次对话 token 用量 (成本统计/配额口径, 仅模型自身消耗;
-        // 路由为平台探测成本, 不计入用户用量 —— 见 routing_logs.token 字段)
-        ChatResponse.TokenUsage syncUsage = response.getTokenUsage();
-        costTracker.record(currentUserId, sessionId, null, CostSource.CHAT,
-                prepSync.answerProvider().getName(), syncUsage);
-
-        Integer usage = syncUsage != null ? syncUsage.getTotal() : null;
-        Message assistantMsg = Message.assistant(response.getContent(), null, prepSync.answerProvider().getName(), usage);
-        memory.save(sessionId, assistantMsg);
-
-        sessionManager.touch(sessionId);
-
-        // 审计日志: 同步对话元数据 (F-28)
-        auditService.record("chat_sync", "session", sessionId,
-                buildChatAuditDetail(prepSync.answerProvider().getName(),
-                        syncUsage != null ? syncUsage.getPrompt() : null,
-                        syncUsage != null ? syncUsage.getCompletion() : null,
-                        syncUsage != null ? syncUsage.getTotal() : null,
-                        null, request.isWebSearch(), buildEffectiveKbIds(request),
-                        null, false, null),
-                currentUserId);
-
-        // 记忆自动抽取(默认关闭): 与流式链路同一口径, 收尾后异步派发
-        dispatchMemoryExtraction(currentUserId, sessionId);
+        ChatResponse response = new ChatResponse();
+        response.setContent(content.toString());
+        response.setModel(model.get());
+        response.setTokenUsage(usage.get());
+        response.setContextWarning(warning.get());
+        if (!tools.isEmpty()) response.setToolsUsed(String.join(", ", tools));
         return response;
     }
 

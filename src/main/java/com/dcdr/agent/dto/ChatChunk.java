@@ -71,6 +71,14 @@ public class ChatChunk {
     @Schema(description = "本次请求服务端耗时(毫秒)")
     private Long durationMs;
 
+    /**
+     * 实际使用的模型名（type=done 时）。
+     * <p>供 {@code chatSync} 把流式块收集回 {@code ChatResponse} 时补齐 model 字段 ——
+     * 流式前端不需要它，但成本计价（{@code costTracker.record}）依赖模型名查单价。
+     */
+    @Schema(description = "实际使用的模型名")
+    private String model;
+
     // ===== 静态工厂方法 =====
 
     public static ChatChunk chunk(String content) {
@@ -156,6 +164,12 @@ public class ChatChunk {
         return c;
     }
 
+    /** 附加实际模型名（链式，供 chatSync 拼装 ChatResponse） */
+    public ChatChunk withModel(String model) {
+        this.model = model;
+        return this;
+    }
+
     public static ChatChunk error(String message, String code) {
         ChatChunk c = new ChatChunk();
         c.setType("error");
@@ -164,8 +178,7 @@ public class ChatChunk {
         return c;
     }
 
-    /** 中断块: 用户主动中断或客户端断开后由后端下发 */
-    public static ChatChunk interrupted() {
+    /** 中断块: 用户主动中断或客户端断开后由后端下发 */    public static ChatChunk interrupted() {
         ChatChunk c = new ChatChunk();
         c.setType("interrupted");
         c.setMessage("对话已被用户中断");
