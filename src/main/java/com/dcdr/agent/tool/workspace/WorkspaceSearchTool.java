@@ -60,6 +60,12 @@ public class WorkspaceSearchTool extends AbstractWorkspaceTool {
     }
 
     @Override
+    public boolean untrustedOutput() {
+        // 命中的是文件里的片段(含上下文行), 与 workspace_read 同源
+        return true;
+    }
+
+    @Override
     public String execute(Map<String, Object> params) {
         return run(() -> {
             WorkspaceEntity ws = contextResolver.current();

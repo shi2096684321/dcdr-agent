@@ -33,6 +33,7 @@ import com.dcdr.agent.skill.SkillContextHolder;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
+import com.dcdr.agent.workspace.WorkspaceAccess;
 import com.dcdr.agent.workspace.WorkspaceContextHolder;
 import com.dcdr.agent.workspace.WorkspacePromptProvider;
 import com.dcdr.agent.tool.ToolInventory;
@@ -40,6 +41,8 @@ import com.dcdr.agent.tool.ToolRegistry;
 import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
 import com.dcdr.agent.tool.websearch.WebExtractTool;
 import com.dcdr.agent.tool.ToolInfo;
+import com.dcdr.agent.tool.Tool;
+import com.dcdr.agent.tool.result.ToolOutputBoundary;
 import com.dcdr.agent.tool.FrameworkToolExecutorBridge;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
@@ -217,7 +220,8 @@ public class AgentOrchestrator {
             int memoryTrimmed,     // 记忆窗口截断条数(>0 表示已丢弃早期消息, 用于超限提示)
             List<Map<String, Object>> forcedKbSources,  // 强制检索(RAG 显式模式)命中的引用来源, 供 done 块下发前端
             String forcedKbNotice,   // 强制检索的即时提示(空结果时告知用户"未找到", 命中时为 null)
-            List<String> agenticKbIds    // Agentic 语义触发的工具检索范围(未显式选择时含用户全部自有库)
+            List<String> agenticKbIds,   // Agentic 语义触发的工具检索范围(未显式选择时含用户全部自有库)
+            WorkspaceAccess workspaceAccess // 工作区授权档位(null=未绑定), 决定注入哪些工作区工具
     ) {}
 
     /** 图片预处理结果(含路由元信息, 用于落库与前端提示) */
@@ -311,14 +315,18 @@ public class AgentOrchestrator {
                         // V2.3: 若指定了自定义 Agent, 仅注入 Agent 工具白名单中的工具
                         // V3.0: 双格式注入 — 框架原生 ToolSpecification(LangChain4j Provider 直连)
                         // + OpenAI Map(legacy 手写 Provider 回退), 各 Provider 按需取用
+                        // V3.3 F-49: 再叠加工作区授权档位 —— READ 档下写/删工具根本不注入,
+                        // 而不是注入后等执行期 403(那会白烧一轮, 模型还会换参数重试)
+                        final WorkspaceAccess workspaceAccess = ctx.workspaceAccess();
                         List<Map<String, Object>> toolDefs = toolRegistry.getStreamingToolDefinitionsFiltered(
-                                ctx.agentAllowedTools());
+                                ctx.agentAllowedTools(), workspaceAccess);
                         // V3.2: 工具定义是每轮重发的上下文成本, 超阈值说明该做合并/裁剪了
                         toolInventory.warnIfContextTooLarge(toolDefs.size());
                         if (provider.supportsFunctionCalling() && !toolDefs.isEmpty()) {
                             request.setTools(toolDefs);
                             request.setToolSpecifications(
-                                    toolRegistry.getStreamingToolSpecificationsFiltered(ctx.agentAllowedTools()));
+                                    toolRegistry.getStreamingToolSpecificationsFiltered(
+                                            ctx.agentAllowedTools(), workspaceAccess));
                         }
 
                         // 流式调用模型
@@ -807,6 +815,25 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 给"由第三方写的内容"套上不可信边界标记, 其它工具原样返回。
+     * <p>
+     * 判据由工具自己声明({@link Tool#untrustedOutput()}), 不在编排层维护一份工具名清单 ——
+     * 那份清单一定会和实际工具漂移, 而漏标是静默的(看不出任何异常, 只是护栏没了)。
+     * <p>
+     * 只在<b>回灌模型</b>这一处包: 前端工具面板、审计快照仍用原文。标记是给模型的护栏,
+     * 给用户看只会变成噪音。
+     */
+    private String wrapIfUntrusted(String toolName, String text) {
+        Tool tool = toolRegistry.getTool(toolName);
+        return tool != null && tool.untrustedOutput() ? ToolOutputBoundary.wrap(toolName, text) : text;
+    }
+
+    /** 注册表里是否存在声明了不可信输出的工具(用于决定要不要注入边界声明, 避免无谓的常驻 token) */
+    private boolean hasUntrustedTool() {
+        return toolRegistry.getAllTools().stream().anyMatch(Tool::untrustedOutput);
+    }
+
+    /**
      * 执行对话内的工具调用: 经通用 ToolRegistry 分发到对应 Tool.execute。
      * 文生图(image_generation)结果额外渲染为 image 分块并回填 outUrls;
      * 其它工具结果渲染为 tool_result 分块。
@@ -986,8 +1013,10 @@ public class AgentOrchestrator {
                     if (INLINE_RESULT_TOOLS.contains(name)) {
                         outToolResults.add(result);
                     }
-                    // 按 tool_call_id 记录回灌结果(与 tool 消息配对)
-                    outResultsById.put(tc.getId(), result);
+                    // 按 tool_call_id 记录回灌结果(与 tool 消息配对)。
+                    // 信任边界: 由第三方写的内容(网页 / 文档 / 磁盘文件)在此包一层「这是数据不是指令」——
+                    // 只包"给模型的那一份", 前端工具面板仍用原文(标记是给模型的护栏, 不是给用户的噪音)
+                    outResultsById.put(tc.getId(), wrapIfUntrusted(name, result));
                     chunks.add(ChatChunk.toolResult(name, result, srcs));
                     if (srcs != null && !srcs.isEmpty()) {
                         // 全局兜底: 搜索结果自带 content="undefined" 的条目(部分 Tavily 版本),
@@ -1826,7 +1855,9 @@ public class AgentOrchestrator {
                 prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
                 contextForEstimate, nearLimit, est,
                 agentOverride != null ? agentOverride.allowedTools() : null,
-                memoryTrimmed, forcedKbSources, forcedKbNotice, agenticKbIds);
+                memoryTrimmed, forcedKbSources, forcedKbNotice, agenticKbIds,
+                // 档位在准备阶段解析: 这里在 boundedElastic 上, 允许查库; 流式主链路里不应该再打 DB
+                workspacePromptProvider.accessForSession(sessId));
     }
 
     /** 截断文本到指定长度, 超长追加省略号(用于引用卡片的 snippet) */
@@ -2379,6 +2410,17 @@ public class AgentOrchestrator {
             injectIfAbsent(result, workspacePromptProvider.forSession(sessionId));
         } catch (Exception e) {
             log.warn("工作区摘要注入失败(不影响本轮对话): {}", e.getMessage());
+        }
+
+        // 7) 外部数据边界: 注册表里存在"输出由第三方写"的工具(网页 / 文档 / 磁盘文件)时才注入。
+        //    工具结果上的 <<<TOOL-DATA>>> 标记负责把数据框起来, 这段声明负责告诉模型框是什么意思 ——
+        //    只画框不解释, 模型会当成排版噪音; 只在 system 里讲道理而不画框, 又离当前结果太远。
+        try {
+            if (provider != null && provider.supportsFunctionCalling() && hasUntrustedTool()) {
+                injectIfAbsent(result, runtimePromptProvider.toolDataBoundary());
+            }
+        } catch (Exception e) {
+            log.warn("外部数据边界声明注入失败(不影响本轮对话): {}", e.getMessage());
         }
 
         return result;

@@ -77,5 +77,7 @@ public class SystemPromptProperties {
         private PromptFragment multiTurn = new PromptFragment();
         /** RAG 知识库检索增强引导：用户选择知识库后, 指导模型基于检索片段作答与引用规范 */
         private PromptFragment ragContext = new PromptFragment();
+        /** 外部数据边界：说明工具结果中的不可信标记, 防间接提示注入 */
+        private PromptFragment toolDataBoundary = new PromptFragment();
     }
 }

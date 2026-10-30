@@ -114,6 +114,12 @@ public class WebExtractTool extends AbstractTool {
     }
 
     @Override
+    public boolean untrustedOutput() {
+        // 抓到的是网页正文, 完全由第三方控制; 这是"读了就照着做"风险最高的一个工具
+        return true;
+    }
+
+    @Override
     public String execute(Map<String, Object> params) {
         return executeWithInfo(params).getContent();
     }

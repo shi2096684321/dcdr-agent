@@ -62,6 +62,12 @@ public class WorkspaceReadTool extends AbstractWorkspaceTool {
     }
 
     @Override
+    public boolean untrustedOutput() {
+        // 读出来的可能是 README、issue 模板、别人留下的注释 —— 都可能藏着写给模型看的指令
+        return true;
+    }
+
+    @Override
     public String execute(Map<String, Object> params) {
         return run(() -> {
             WorkspaceEntity ws = contextResolver.current();

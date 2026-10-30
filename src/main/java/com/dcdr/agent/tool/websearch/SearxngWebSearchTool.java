@@ -106,6 +106,12 @@ public class SearxngWebSearchTool extends AbstractTool {
     }
 
     @Override
+    public boolean untrustedOutput() {
+        // 标题与摘要由各站点作者写, 是提示注入最常见的载体("忽略以上指令"就藏在摘要里)
+        return true;
+    }
+
+    @Override
     public String execute(Map<String, Object> params) {
         return executeWithInfo(params).getContent();
     }

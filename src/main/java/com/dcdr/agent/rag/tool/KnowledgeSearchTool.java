@@ -160,6 +160,12 @@ public class KnowledgeSearchTool extends AbstractTool {
         return properties.isEnabled();
     }
 
+    @Override
+    public boolean untrustedOutput() {
+        // 检索片段来自用户上传的文档 / OCR / 网页抓取, 作者不是平台, 与 RAG 注入处的 <<<DOC>>> 同源
+        return true;
+    }
+
     /** 截断文本到指定长度, 超长追加省略号 */
     private static String clip(String s, int max) {
         if (s == null) return "";

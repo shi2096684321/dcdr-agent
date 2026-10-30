@@ -77,6 +77,12 @@ public class ToolResultReadTool extends AbstractTool {
     }
 
     @Override
+    public boolean untrustedOutput() {
+        // 分页读出的是当初落盘的那份原始工具输出, 信任等级与原工具一致(不是"落盘了就更可信")
+        return true;
+    }
+
+    @Override
     public String execute(Map<String, Object> params) {
         String path = getString(params, "path");
         if (path == null || path.isBlank()) {
