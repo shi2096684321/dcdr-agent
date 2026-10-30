@@ -70,7 +70,7 @@ docker-compose -f docker-compose.yml up -d          # 只起中间件，应用�
 docker ps             # 等 postgres、redis 变成 healthy
 ```
 
-首次建库时 `docs/sql/v2.0|v3.0|v3.1_schema.sql` 会被自动执行，**无需手工建表**。
+首次建库时 `docs/sql/v2.0|v3.0|v3.1|v3.2|v3.3_schema.sql` 会被自动执行，**无需手工建表**。
 
 ### 1.4 第三步：启动后端
 
@@ -320,7 +320,7 @@ mvn verify
 - **本地运行与部署教程**：`docs/18-本地运行与部署教程.md`
 - **生产级测试报告**：`docs/19-生产级测试报告-v3.2.md`
 - 运维脚本索引：`scripts/README.md`
-- V3.1 规划：`docs/14-V3.1规划文档.md`（V3.0 见 `docs/07-V3.0规划文档.md`）
+- V3.3 规划：`docs/22-V3.3规划文档.md`（V3.1 见 `docs/14-V3.1规划文档.md`，V3.0 见 `docs/07-V3.0规划文档.md`）
 - 发布说明：`docs/RELEASE-v3.2.0-ui.md`（历史版本见 `docs/RELEASE-*.md`）
 
 ---
