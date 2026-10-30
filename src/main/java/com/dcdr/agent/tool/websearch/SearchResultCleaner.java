@@ -39,10 +39,14 @@ public final class SearchResultCleaner {
      * 非文章页的路径特征: 标签 / 栏目 / 话题 / 列表 / 频道 / 视频 / 搜索页等聚合形态。
      * <p>要求特征词后紧跟分隔符或结尾, 以免误伤 {@code /newsroom}、{@code /newsDetail_xxx}
      * 这类真实文章路径(实测 {@code m.thepaper.cn/newsDetail_forward_xxx} 不会被误判)。
+     * <p><b>{@code news} 刻意不在这个列表里</b> —— 新闻站的文章路径往往就是
+     * {@code /news/12345} 或 {@code /news/2026/10/30/xxx}, 与栏目页 {@code /news}、
+     * {@code /news/tech} 只差一段。一律按"分隔符后即聚合"处理会把真实文章全部丢掉,
+     * 故单独走 {@link #isNewsSectionPage(String)} 按"路径里有没有数字"区分。
      */
     private static final Pattern NON_ARTICLE_PATH = Pattern.compile(
             "/(?:tag|tags|topic|topics|category|categories|channel|channels|list|lists"
-                    + "|news|video|videos|search|special|zhuanti|column|columns)(?:[/.\\-]|$)",
+                    + "|video|videos|search|special|zhuanti|column|columns)(?:[/.\\-]|$)",
             Pattern.CASE_INSENSITIVE);
 
     /**
@@ -91,16 +95,45 @@ public final class SearchResultCleaner {
             "\\d{4}-\\d{2}-\\d{2}\\s+\\d{1,2}:\\d{2}(?::\\d{2})?");
 
     /**
-     * 清洗主入口。
+     * 一次清洗的结果与损耗明细。
+     *
+     * <p><b>为什么要把损耗也返回</b>: 清洗规则一旦写严(多加一条黑名单、多判一类聚合页),
+     * 就可能把好结果一起干掉 —— 而调用方看到的只是"结果变少了", 无法判断是上游不给
+     * 还是自己过滤太狠。{@code raw - kept} 的差额拆成"过滤"与"去重"两半, 才是能定位的数字。
+     *
+     * @param raw        上游返回条数(清洗前)
+     * @param filtered   被判为非文章页 / 字段缺失而丢弃的条数
+     * @param duplicated 因 URL 或标题重复而丢弃的条数
+     * @param items      保留下来的来源卡片
+     */
+    public record CleanResult(int raw, int filtered, int duplicated, List<Map<String, Object>> items) {
+
+        public int kept() {
+            return items == null ? 0 : items.size();
+        }
+    }
+
+    /**
+     * 清洗主入口(不关心损耗明细时的便捷重载)。
      *
      * @param rawResults SearXNG 响应中 {@code results} 数组的元素
      * @param limit      期望返回条数; 因过滤/去重会淘汰部分条目, 故会继续向后扫描补齐
      * @return 清洗后的来源卡片({@code index/title/url/snippet}), {@code index} 从 1 重新编号
      */
     public static List<Map<String, Object>> clean(List<JsonNode> rawResults, int limit) {
+        return cleanWithReport(rawResults, limit).items();
+    }
+
+    /**
+     * 清洗并返回损耗明细(供联网健康度统计使用)。
+     *
+     * @see #clean(List, int)
+     */
+    public static CleanResult cleanWithReport(List<JsonNode> rawResults, int limit) {
         List<Map<String, Object>> out = new ArrayList<>();
+        int raw = rawResults == null ? 0 : rawResults.size();
         if (rawResults == null || rawResults.isEmpty() || limit <= 0) {
-            return out;
+            return new CleanResult(raw, 0, 0, out);
         }
         Set<String> seenUrls = new HashSet<>();
         Set<String> seenTitles = new HashSet<>();
@@ -141,9 +174,9 @@ public final class SearchResultCleaner {
         }
         if (filtered > 0 || duplicated > 0) {
             log.info("搜索结果清洗: 原始 {} 条 → 过滤非文章页 {} 条 / 去重 {} 条 / 保留 {} 条",
-                    rawResults.size(), filtered, duplicated, out.size());
+                    raw, filtered, duplicated, out.size());
         }
-        return out;
+        return new CleanResult(raw, filtered, duplicated, out);
     }
 
     // ===================== 过滤实现 =====================
@@ -158,13 +191,41 @@ public final class SearchResultCleaner {
             String path = uri.getPath();
             if (path != null
                     && (NON_ARTICLE_PATH.matcher(path).find()
-                            || SHALLOW_SECTION_PATH.matcher(path).matches())) {
+                            || SHALLOW_SECTION_PATH.matcher(path).matches()
+                            || isNewsSectionPage(path))) {
                 return true;
             }
         } catch (Exception ignored) {
             // URL 非法时不据此丢弃, 交由后续清洗环节处理
         }
         return AGGREGATE_TITLE.matcher(title).find();
+    }
+
+    /**
+     * 判断 {@code /news} 类路径是<b>栏目页</b>还是<b>文章页</b>。
+     *
+     * <p>新闻站的文章路径普遍是 {@code /news/12345}、{@code /news/2026/10/30/xxx},
+     * 而栏目页是 {@code /news}、{@code /news/}、{@code /news/tech} ——
+     * 两者只差一段, 任何"看到 news 就当聚合页"的规则都会把真实文章一起丢掉。
+     * 实测 {@code https://a.com/news/1} 这类路径会被旧规则过滤, 而它是标准的文章地址。
+     *
+     * <p>区分依据: <b>文章路径几乎必含数字</b>(内容 ID 或日期), 栏目名几乎不含。
+     *
+     * @return true 表示应作为聚合页过滤掉
+     */
+    private static boolean isNewsSectionPage(String path) {
+        if (!path.startsWith("/news")) {
+            return false;
+        }
+        // 只处理 /news 与 /news/... 两种形态; /newsroom、/newsDetail_xxx 的下一字符不是 '/'
+        if (path.length() > 5 && path.charAt(5) != '/') {
+            return false;
+        }
+        String rest = path.length() > 6 ? path.substring(6) : "";
+        if (rest.isEmpty()) {
+            return true;              // /news 或 /news/ —— 栏目首页
+        }
+        return !rest.matches(".*\\d.*");   // 无数字 → 栏目子页(如 /news/tech); 有数字 → 文章
     }
 
     // ===================== 清洗实现 =====================

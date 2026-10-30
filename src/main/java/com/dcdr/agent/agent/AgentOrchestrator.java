@@ -740,6 +740,49 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 把联网工具上报的执行统计与「串联抓取」的结果合并后写入调用链。
+     *
+     * <p><b>为什么合并点在编排层</b>: {@code SearxngWebSearchTool} 只负责搜索, 正文抓取发生在
+     * {@link #enrichWithExtract} —— 工具自己无从知道抓了几篇、抓到多少字。若让工具去猜或让编排层
+     * 另起一条记录, 要么数字不准、要么调用链里同一次联网出现两个互不相干的步骤。
+     *
+     * @param stat  工具上报的统计; {@code null} 表示非联网工具, 直接返回
+     * @param srcs  已补全正文的来源卡片(此时 {@code content=undefined} 已被清理)
+     * @param ext   串联抓取的成功/失败计数
+     * @param start 单次工具执行的起点(纳秒)
+     */
+    private static void recordWebStat(com.dcdr.agent.common.log.LlmCallTrace t, String name,
+                                      com.dcdr.agent.tool.WebStat stat,
+                                      List<Map<String, Object>> srcs,
+                                      ExtractStat ext, long start) {
+        if (stat == null) {
+            return;
+        }
+        int contentChars = 0;
+        int thinPages = 0;
+        if (srcs != null) {
+            for (Map<String, Object> s : srcs) {
+                Object c = s.get("content");
+                if (c == null) {
+                    continue;   // 仅用搜索摘要的条目没有正文, 不算"薄页"(它本来就没抓)
+                }
+                int len = c.toString().length();
+                contentChars += len;
+                if (len < com.dcdr.agent.tool.WebStat.THIN_CONTENT_CHARS) {
+                    thinPages++;
+                }
+            }
+        }
+        com.dcdr.agent.tool.WebStat merged = stat;
+        if (SearxngWebSearchTool.NAME.equals(name)) {
+            // 搜索侧的 stat 产生于抓取之前, 这里补上抓取结果与正文总量
+            merged = stat.withExtract(srcs == null ? 0 : srcs.size(),
+                    ext.ok(), ext.failed(), contentChars, thinPages);
+        }
+        t.recordWeb(merged, (System.nanoTime() - start) / 1_000_000);
+    }
+
+    /**
      * 对话内文生图(按钮触发): 即时流式返回生成的图片, 并落库用户消息与助手图片消息
      */
     public Flux<ChatChunk> generateImageInChat(ChatImageRequest req, String currentUserId) {
@@ -898,6 +941,8 @@ public class AgentOrchestrator {
             int callCount = 0;
             for (ChatChunk tc : effectiveCalls) {
                 String name = tc.getTool();
+                // 单次工具执行的起点: 联网统计要用它算"这一步总共花了多久"(含串联抓取)
+                long toolStart = System.nanoTime();
                 Map<String, Object> params = new LinkedHashMap<>();
                 try {
                     if (tc.getArgs() != null && !tc.getArgs().isBlank()) {
@@ -1044,6 +1089,10 @@ public class AgentOrchestrator {
                             chunks.add(ChatChunk.status(step2.toString()));
                         }
                     }
+                    // 联网工具的执行质量统计(空结果成因 / 清洗损耗 / 抓取成功率 / 正文长度)。
+                    // 放在"清理 undefined → 累计来源"之后: 此时 sources 里的正文才是最终形态,
+                    // 统计出的 contentChars 与模型真正看到的内容一致
+                    recordWebStat(t, name, toolInfo.getWebStat(), srcs, ext, toolStart);
                 }
             }
             if (callCount > 1) {

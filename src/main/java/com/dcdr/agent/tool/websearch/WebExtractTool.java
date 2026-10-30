@@ -6,6 +6,7 @@ import com.dcdr.agent.common.util.WebClientFactory;
 import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.tool.AbstractTool;
 import com.dcdr.agent.tool.ToolInfo;
+import com.dcdr.agent.tool.WebStat;
 import com.vladsch.flexmark.html2md.converter.FlexmarkHtmlConverter;
 import dev.langchain4j.model.chat.request.json.JsonArraySchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
@@ -57,7 +58,12 @@ public class WebExtractTool extends AbstractTool {
 
     private final ToolsProperties.WebToolsConfig config;
     private final WebClient webClient;
-    private final FlexmarkHtmlConverter mdConverter = FlexmarkHtmlConverter.builder().build();
+    /**
+     * HTML → Markdown 转换器。
+     * <p>static 是安全的: 本类本身就是 Spring 单例, 此前"实例字段"在最外层也只有一个实例在跑;
+     * 而 {@code FlexmarkHtmlConverter} 内部无会话状态, 每次 {@code convert} 自建上下文。
+     */
+    private static final FlexmarkHtmlConverter mdConverter = FlexmarkHtmlConverter.builder().build();
 
     public WebExtractTool(ToolsProperties properties) {
         this.config = properties.getWeb();
@@ -127,7 +133,8 @@ public class WebExtractTool extends AbstractTool {
     @Override
     public ToolInfo executeWithInfo(Map<String, Object> params) {
         if (!config.isEnabled()) {
-            return ToolInfo.text("网页抓取未启用");
+            return ToolInfo.text("网页抓取未启用")
+                    .withStat(WebStat.unavailable(NAME, null, WebStat.Empty.DISABLED));
         }
         List<String> urls = resolveUrls(params);
         if (urls.isEmpty()) {
@@ -136,20 +143,29 @@ public class WebExtractTool extends AbstractTool {
 
         List<Map<String, Object>> sources = new ArrayList<>();
         StringBuilder compact = new StringBuilder();
-        int ok = 0, failed = 0;
+        int ok = 0, failed = 0, contentChars = 0, thin = 0;
         for (String url : urls) {
             Map<String, Object> source = extractOne(url, sources.size() + 1);
             if (source != null) {
                 sources.add(source);
                 ok++;
+                // 正文长度与"薄页"在这里一并统计: 只报"抓取成功 N 篇"会掩盖
+                // "抓到的其实是登录页/验证码页"(正文几十个字, 模型拿到的等于废话)
+                String content = String.valueOf(source.get("content"));
+                contentChars += content.length();
+                if (content.length() < WebStat.THIN_CONTENT_CHARS) {
+                    thin++;
+                }
             } else {
                 failed++;
             }
         }
+        String firstUrl = urls.get(0);
 
         if (sources.isEmpty()) {
             return ToolInfo.text("网页抓取失败: 未能从 " + urls.size() + " 个 URL 中提取到正文"
-                    + "（可能是纯 JS 渲染页面、需要登录、或已阻止抓取）");
+                            + "（可能是纯 JS 渲染页面、需要登录、或已阻止抓取）")
+                    .withStat(WebStat.extract(firstUrl, 0, failed, 0, 0));
         }
         compact.append("已抓取 ").append(ok).append(" 个页面");
         if (failed > 0) {
@@ -164,7 +180,8 @@ public class WebExtractTool extends AbstractTool {
             }
             compact.append("\n").append(s.get("content")).append("\n");
         }
-        return new ToolInfo(compact.toString(), sources);
+        return new ToolInfo(compact.toString(), sources,
+                WebStat.extract(firstUrl, ok, failed, contentChars, thin));
     }
 
     /**
@@ -189,7 +206,58 @@ public class WebExtractTool extends AbstractTool {
                 log.warn("web_extract 响应为空: {}", url);
                 return null;
             }
+            Extracted extracted = extractFromHtml(raw, url, config.getMaxContentLength());
+            if (extracted == null) {
+                log.warn("web_extract 未能提取到正文(可能是纯 JS 渲染页面): {}", url);
+                return null;
+            }
+            Map<String, Object> source = new LinkedHashMap<>();
+            source.put("index", index);
+            source.put("title", extracted.title());
+            source.put("url", url);
+            source.put("snippet", clip(extracted.content(), SNIPPET_MAX));
+            source.put("content", extracted.content());
+            log.info("web_extract 成功: url={}, 标题={}, 正文字符数={}",
+                    url, extracted.title(), extracted.content().length());
+            return source;
+        } catch (Exception e) {
+            log.warn("web_extract 抓取失败: url={}, cause={}", url, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 一次正文抽取的结果。
+     *
+     * @param title   已清洗的标题(去站点后缀 / 话题标签)
+     * @param content 已裁剪到上限的 Markdown 正文
+     */
+    record Extracted(String title, String content) {
+    }
+
+    /**
+     * 从<b>已拿到的 HTML 字节</b>中抽取正文 —— 不涉及任何网络。
+     *
+     * <p><b>为什么必须把这一步单独拆出来</b>: 原先取字节、解析、转 Markdown 全写在一个方法里,
+     * 想验证"某个页面能不能被正确抽出来"就<b>只能起一个 HTTP 服务</b>再让工具去请求。
+     * 于是这条链路长期没有任何测试 —— 而它恰恰是最容易静默出错的:
+     * crux 的 {@code doc.body()} 恒为空(见 {@link #toMarkdown} 的说明)、
+     * 中文站的 GBK 编码、SPA 空壳页, 任何一处退化都只表现为"抓不到内容",
+     * 与"站点拒绝抓取"在外部完全无法区分。
+     *
+     * <p>拆开之后 {@code WebExtractFixtureTest} 可以直接喂 fixture 字节,
+     * 纯内存、毫秒级、每次构建都跑。
+     *
+     * @param raw      原始响应字节(交给 jsoup 按 {@code <meta charset>}/BOM 判编码)
+     * @param url      页面地址(仅用于解析相对链接与兜底标题)
+     * @param maxChars 正文最大长度
+     * @return 抽取结果; 正文为空(纯 JS 渲染页 / 空壳页)时返回 {@code null}
+     */
+    static Extracted extractFromHtml(byte[] raw, String url, int maxChars) {
+        try {
             Document doc = Jsoup.parse(new ByteArrayInputStream(raw), null, url);
+            // crux 会**原地修改**传入的文档, 故先留一份原件 —— 结构化重建要拿它做基准
+            Document original = doc.clone();
             HttpUrl httpUrl = HttpUrl.get(url);
             Article article = new ArticleExtractor(httpUrl, doc)
                     .extractMetadata()
@@ -202,22 +270,108 @@ public class WebExtractTool extends AbstractTool {
             String title = SearchResultCleaner.cleanTitle(rawTitle);
             String markdown = toMarkdown(article);
             if (markdown.isBlank()) {
-                log.warn("web_extract 未能提取到正文(可能是纯 JS 渲染页面): {}", url);
                 return null;
             }
-            String content = clip(markdown, config.getMaxContentLength());
-            Map<String, Object> source = new LinkedHashMap<>();
-            source.put("index", index);
-            source.put("title", title);
-            source.put("url", url);
-            source.put("snippet", clip(content, SNIPPET_MAX));
-            source.put("content", content);
-            log.info("web_extract 成功: url={}, 原标题={}, 正文字符数={}", url, title, content.length());
-            return source;
+            String structural = rebuildFromBodyContainer(original, article.getDocument());
+            if (structural != null && structural.length() > markdown.length()) {
+                // 只在**严格更长**时采用: 结构化版本保留了标题与代码块, 但它多走了
+                // "容器定位"这一步 —— 容器若框小了(只圈住开头一两段), 结果会比 crux 的
+                // 段落级提取还少。用"必须更长"作为硬门槛, 保证这条路只会变好不会变差。
+                markdown = structural;
+            }
+            return new Extracted(title, clip(markdown, maxChars));
         } catch (Exception e) {
-            log.warn("web_extract 抓取失败: url={}, cause={}", url, e.getMessage());
+            log.warn("正文抽取失败: url={}, cause={}", url, e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * 用 crux 的段落做锚点, 在<b>原始文档</b>里定位正文容器, 重建保留结构的 Markdown。
+     *
+     * <p><b>为什么必须补这一步</b>: 实测 crux 4.0 的 {@code extractContent()}
+     * <b>会丢弃所有标题(h1~h6)与代码块(pre)</b> —— 一个含 3 个 h2、2 个 pre 的技术博客,
+     * 抽完只剩段落文本。对"这个错误怎么解决""怎么配置 XX"这类查询, 模型拿到的就是
+     * <b>没有代码的答案</b>, 而外部表现完全正常(有正文、长度也不短), 无从察觉。
+     * 该行为关不掉: {@code ArticleExtractor} 只有 extractMetadata/extractContent/estimateReadingTime
+     * 三个无参步骤, 没有保留标签的选项。
+     *
+     * <p><b>为什么用 crux 的结果当锚点, 而不是自己重跑一遍 readability</b>:
+     * crux 已经准确判断出"哪些段落属于正文", 这是最难的部分。我们只需要它回答
+     * "正文长什么样", 再用它反查"这些段落在原始文档中位于哪个容器", 就能拿到
+     * 带完整结构的原始 DOM, 不必自己重新实现一遍噪声剔除。
+     *
+     * @param original 原始文档(未经 crux 修改)
+     * @param cruxDoc  crux 提取后的文档(只含段落, 用作锚点)
+     * @return 重建的 Markdown; 无法可靠定位容器时返回 {@code null}, 由调用方退回 crux 结果
+     */
+    private static String rebuildFromBodyContainer(Document original, Document cruxDoc) {
+        if (original == null || cruxDoc == null) {
+            return null;
+        }
+        // 锚点: crux 判定为正文的段落。太短的不要(标题、图注容易被误当锚点)
+        List<String> anchors = cruxDoc.select("p").stream()
+                .map(e -> e.text().trim())
+                .filter(t -> t.length() >= 20)
+                .limit(30)
+                .toList();
+        if (anchors.size() < 2) {
+            return null;
+        }
+        Element first = findAnchorElement(original, anchors.get(0));
+        Element last = findAnchorElement(original, anchors.get(anchors.size() - 1));
+        if (first == null || last == null) {
+            return null;
+        }
+        // 向上冒泡, 直到该祖先同时包含首尾两个锚点 —— 那就是覆盖整篇正文的最小容器
+        String lastText = last.text().trim();
+        Element container = first;
+        while (container != null && !container.text().contains(lastText)) {
+            container = container.parent();
+        }
+        // 退到 body/html 说明正文分散在多个互不相邻的容器里, 此时容器 = 整页,
+        // 硬用会把导航与页脚一起搬进来 —— 交给 crux 的段落级结果更安全
+        if (container == null
+                || "body".equals(container.tagName()) || "html".equals(container.tagName())) {
+            return null;
+        }
+        Document shell = Jsoup.parse("<html><body></body></html>");
+        shell.body().appendChild(container.clone());
+        // 容器内仍可能挂着评论区 / 推荐位 / 广告位: crux 的噪声判断是逐块的,
+        // 而这里我们整块搬走, 必须自己再清一遍
+        shell.select("nav, aside, footer, header, .comment, .comments, .related, .share, "
+                + ".ad, .ads, .advert, .recommend, .sidebar").remove();
+        // 去掉 id/class: flexmark 会把它们转成 `{#content}` / `{.article}` 这类属性语法,
+        // 对模型是纯噪声(且会粘在标题行后面, 看起来像正文的一部分)。
+        // 例外是代码语言标注(language-xxx): flexmark 靠它生成 ```java 围栏, 丢了代码就没有语言提示了
+        shell.select("[id]").forEach(e -> e.removeAttr("id"));
+        shell.select("[class]").forEach(e -> {
+            List<String> kept = new ArrayList<>();
+            for (String c : e.className().split("\\s+")) {
+                if (c.startsWith("language-") || c.startsWith("lang-")) {
+                    kept.add(c);
+                }
+            }
+            if (kept.isEmpty()) {
+                e.removeAttr("class");
+            } else {
+                e.attr("class", String.join(" ", kept));
+            }
+        });
+        normalizeDom(shell);
+        String html = shell.body() == null ? "" : shell.body().html();
+        return normalizeMarkdown(mdConverter.convert(html));
+    }
+
+    /** 在原始文档里找到"包含该锚点文本"的最内层段落级元素 */
+    private static Element findAnchorElement(Document original, String anchor) {
+        String key = anchor.substring(0, Math.min(20, anchor.length()));
+        for (Element el : original.select("p, li, td, blockquote")) {
+            if (el.text().trim().contains(key)) {
+                return el;
+            }
+        }
+        return null;
     }
 
     /**
@@ -229,7 +383,7 @@ public class WebExtractTool extends AbstractTool {
      * 必须先重新解析一次(jsoup 会把游离的元素归入 body), 再取其 body 内容。
      * 实测: 不重新解析 → Markdown 长度 0; 重新解析后 → 正常提取。
      */
-    private String toMarkdown(Article article) {
+    private static String toMarkdown(Article article) {
         try {
             Document clean = article.getDocument();
             if (clean == null) {

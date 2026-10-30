@@ -375,7 +375,8 @@ const phaseStats = computed(() => {
     { kind: 'llm', label: '模型' },
     { kind: 'tool', label: '工具' },
     { kind: 'rag', label: '检索' },
-    { kind: 'memory', label: '记忆' }
+    { kind: 'memory', label: '记忆' },
+    { kind: 'web', label: '联网' }
   ]
   const stats = defs
     .map((d) => {
@@ -448,7 +449,11 @@ const STEP_LABELS = {
   kbCount: '知识库数', hits: '命中条数', outputChars: '输出字数',
   // 记忆召回步骤(kind=memory): 与 rag 共用 query/hits/costMs, 额外的两个是它特有的
   chars: '注入字数', memoryIds: '召回记忆',
-  ragSource: '检索来源'
+  ragSource: '检索来源',
+  // 联网步骤(kind=web): 与 rag 共用 query/costMs, 其余是它特有的
+  rawCount: '上游条数', results: '保留条数',
+  extractOk: '抓取成功', extractFailed: '抓取失败',
+  contentChars: '正文字数', thinPages: '薄页数', emptyReason: '空结果原因'
 }
 
 
@@ -476,6 +481,8 @@ const STEP_HEAD_FIELDS = {
     'systemPrompt', 'messages', 'wireRequest', 'outputPreview', 'outputChars'],
   tool: ['kind', 'seq', 'tools', 'costMs', 'interrupted', 'calls'],
   rag: ['kind', 'seq', 'query', 'kbCount', 'hits', 'costMs', 'topScore', 'ragSource', 'ragSourceLabel'],
+  web: ['kind', 'seq', 'tool', 'query', 'rawCount', 'results', 'extractOk', 'extractFailed',
+    'contentChars', 'thinPages', 'emptyReason', 'emptyReasonLabel', 'costMs'],
   memory: ['kind', 'seq', 'query', 'hits', 'chars', 'costMs'],
   prompt: ['kind', 'seq', 'systemPromptFingerprint', 'systemPromptChars'],
   citation: ['kind', 'seq', 'citedCount', 'availableCount', 'outOfRange'],
@@ -564,6 +571,40 @@ function buildStepCard(s, no) {
       if (s.chars != null) card.chips.push({ text: `注入 ${fmtTokens(s.chars)} 字` })
       card.quote = s.query || ''
       break
+    case 'web':
+      // 联网步骤的价值全在"拿到了什么"上: 只显示一条"已完成"等于没显示。
+      // chips 顺序刻意按排查时的关注度排: 结果条数 → 上游给了几条 → 抓取 → 正文量 → 空原因
+      card.title = s.tool === 'web_extract' ? '网页抓取' : '联网搜索'
+      card.chips.push({
+        text: `结果 ${s.results ?? 0} 条`,
+        tone: (s.results || 0) > 0 ? '' : 'warn'
+      })
+      if (s.rawCount != null) {
+        // 原始条数与保留条数并排才看得出"是上游没给, 还是被清洗规则扔了"
+        card.chips.push({ text: `上游 ${s.rawCount} 条` })
+        if (s.rawCount > 0) {
+          card.chips.push({ text: `存活 ${Math.round((s.results || 0) / s.rawCount * 100)}%` })
+        }
+      }
+      if (s.extractOk != null || s.extractFailed != null) {
+        const failed = s.extractFailed || 0
+        card.chips.push({
+          text: `抓取 ${s.extractOk || 0}/${(s.extractOk || 0) + failed}`,
+          tone: failed > 0 ? 'warn' : ''
+        })
+      }
+      if (s.contentChars != null) {
+        card.chips.push({ text: `正文 ${fmtTokens(s.contentChars)} 字` })
+      }
+      if (s.thinPages > 0) {
+        // 薄页 = 抓到了但只有一两句话(登录页/验证码页), 成功率看着正常却对回答零贡献
+        card.chips.push({ text: `薄页 ${s.thinPages}`, tone: 'warn' })
+      }
+      if (s.emptyReasonLabel) {
+        card.chips.push({ text: s.emptyReasonLabel, tone: 'bad' })
+      }
+      card.quote = s.query || ''
+      break
     case 'prompt':
       card.title = 'System Prompt 指纹'
       if (s.systemPromptFingerprint) card.chips.push({ text: s.systemPromptFingerprint, mono: true })
@@ -646,6 +687,7 @@ function endClass(s) {
 function stepLabel(s) {
   if (s.kind === 'rag') return 'RAG'
   if (s.kind === 'memory') return '记忆'
+  if (s.kind === 'web') return '联网'
   if (s.kind === 'route') return '路由'
   if (s.kind === 'prompt') return '提示词'
   if (s.kind === 'citation') return '引用'
@@ -655,6 +697,7 @@ function stepLabel(s) {
 function stepClass(kind) {
   if (kind === 'rag') return 'step-rag'
   if (kind === 'memory') return 'step-memory'
+  if (kind === 'web') return 'step-web'
   if (kind === 'route') return 'step-route'
   if (kind === 'prompt') return 'step-prompt'
   if (kind === 'citation') return 'step-citation'
@@ -791,6 +834,7 @@ onMounted(() => {
 .step-tool { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
 .step-rag { color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 14%, transparent); }
 .step-memory { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 14%, transparent); }
+.step-web { color: var(--dcdr-accent); background: color-mix(in srgb, var(--dcdr-accent) 14%, transparent); }
 .step-prompt { color: var(--dcdr-text-2); background: var(--dcdr-hover); }
 .step-citation { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 12%, transparent); }
 .step-error { color: var(--dcdr-danger); background: color-mix(in srgb, var(--dcdr-danger) 14%, transparent); }
@@ -931,6 +975,7 @@ onMounted(() => {
 .cd-bar-fill.step-tool { background: var(--dcdr-success); }
 .cd-bar-fill.step-rag { background: var(--dcdr-warning); }
 .cd-bar-fill.step-memory { background: var(--dcdr-accent-2); }
+.cd-bar-fill.step-web { background: var(--dcdr-accent); }
 .cd-bar-fill.step-prompt, .cd-bar-fill.step-citation { background: var(--dcdr-text-3); }
 
 /* 时间轴主体 */
@@ -952,6 +997,7 @@ onMounted(() => {
 .cd-dot.step-tool { background: var(--dcdr-success); }
 .cd-dot.step-rag { background: var(--dcdr-warning); }
 .cd-dot.step-memory { background: var(--dcdr-accent-2); }
+.cd-dot.step-web { background: var(--dcdr-accent); }
 .cd-dot.step-route { background: var(--dcdr-text-3); }
 .cd-dot.step-prompt { background: var(--dcdr-text-3); }
 .cd-dot.step-citation { background: var(--dcdr-accent-2); }

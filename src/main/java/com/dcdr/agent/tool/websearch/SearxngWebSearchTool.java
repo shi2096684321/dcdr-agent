@@ -4,6 +4,7 @@ import com.dcdr.agent.common.util.WebClientFactory;
 import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.tool.AbstractTool;
 import com.dcdr.agent.tool.ToolInfo;
+import com.dcdr.agent.tool.WebStat;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
@@ -119,7 +120,8 @@ public class SearxngWebSearchTool extends AbstractTool {
     @Override
     public ToolInfo executeWithInfo(Map<String, Object> params) {
         if (!config.isEnabled()) {
-            return ToolInfo.text("联网搜索未启用");
+            return ToolInfo.text("联网搜索未启用")
+                    .withStat(WebStat.searchFailed(null, WebStat.Empty.DISABLED));
         }
         String query = getString(params, "query");
         if (query == null || query.isBlank()) {
@@ -138,18 +140,28 @@ public class SearxngWebSearchTool extends AbstractTool {
                     .retrieve()
                     .bodyToMono(String.class)
                     .block();
-            List<Map<String, Object>> sources = parseSources(body, limit);
+            SearchResultCleaner.CleanResult clean = parseSources(body, limit);
+            List<Map<String, Object>> sources = clean.items();
             if (sources.isEmpty()) {
-                log.warn("SearXNG 未返回可用结果: query='{}'", query);
-                return ToolInfo.text("（联网搜索未返回可用结果）");
+                // 区分两种"空": 上游一条没给 vs 给了但全被自家规则过滤掉 ——
+                // 前者是外部依赖故障, 后者是清洗规则过严, 排查方向完全相反。
+                // 提示文案也要说清楚, 否则模型与用户都只能看到一句"未返回可用结果"。
+                String hint = clean.raw() > 0
+                        ? "（联网搜索返回 " + clean.raw() + " 条，但均非可用文章页，已全部过滤）"
+                        : "（联网搜索未返回可用结果）";
+                log.warn("SearXNG 未返回可用结果: query='{}', 原始 {} 条, 过滤 {} / 去重 {}",
+                        query, clean.raw(), clean.filtered(), clean.duplicated());
+                return ToolInfo.text(hint).withStat(WebStat.search(query, clean.raw(), 0));
             }
-            log.info("SearXNG 检索: query='{}', 返回 {} 条", query, sources.size());
-            return new ToolInfo(buildCompactContent(sources), sources);
+            log.info("SearXNG 检索: query='{}', 原始 {} 条 → 保留 {} 条", query, clean.raw(), sources.size());
+            return new ToolInfo(buildCompactContent(sources), sources,
+                    WebStat.search(query, clean.raw(), sources.size()));
         } catch (Exception e) {
             // 不抛异常: 工具失败不应中断整个对话, 由模型基于已有信息继续回答
             log.error("SearXNG 检索失败: query='{}', cause={}", query, e.getMessage(), e);
             return ToolInfo.text("联网搜索失败: " + e.getMessage()
-                    + "（请检查 SearXNG 服务是否可用, 以及 settings.yml 是否开启 json 格式）");
+                            + "（请检查 SearXNG 服务是否可用, 以及 settings.yml 是否开启 json 格式）")
+                    .withStat(WebStat.searchFailed(query, WebStat.Empty.ERROR));
         }
     }
 
@@ -173,21 +185,23 @@ public class SearxngWebSearchTool extends AbstractTool {
      * 解析 SearXNG 响应为来源卡片, 随后交由 {@link SearchResultCleaner} 做
      * 「过滤非文章页 → 清洗 URL/标题/摘要 → 去重」。
      * <p>响应形如 {@code {"results":[{"url","title","content","engine","score",...}]}}。
+     * <p>返回 {@link SearchResultCleaner.CleanResult} 而非裸列表: 原始条数与损耗明细是
+     * 「清洗规则是否过严」的唯一证据, 丢了就再也算不出来。
      */
-    private List<Map<String, Object>> parseSources(String body, int limit) throws Exception {
+    private SearchResultCleaner.CleanResult parseSources(String body, int limit) throws Exception {
         if (body == null || body.isBlank()) {
-            return List.of();
+            return new SearchResultCleaner.CleanResult(0, 0, 0, List.of());
         }
         JsonNode root = mapper.readTree(body);
         JsonNode results = root.path("results");
         if (!results.isArray()) {
             log.warn("SearXNG 响应缺少 results 数组(可能未开启 json 输出格式): 响应前 200 字符={}",
                     body.length() > 200 ? body.substring(0, 200) : body);
-            return List.of();
+            return new SearchResultCleaner.CleanResult(0, 0, 0, List.of());
         }
         List<JsonNode> raw = new ArrayList<>(results.size());
         results.forEach(raw::add);
-        return SearchResultCleaner.clean(raw, Math.min(limit, MAX_SOURCES));
+        return SearchResultCleaner.cleanWithReport(raw, Math.min(limit, MAX_SOURCES));
     }
 
     /**

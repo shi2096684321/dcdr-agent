@@ -1,6 +1,7 @@
 package com.dcdr.agent.common.log;
 
 import com.dcdr.agent.rag.RagSource;
+import com.dcdr.agent.tool.WebStat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -49,6 +50,8 @@ public final class LlmCallTrace {
     private int toolSteps = 0;
     /** RAG 检索次数 */
     private int ragCount = 0;
+    /** 联网搜索/抓取次数 */
+    private int webCount = 0;
     /** 长期记忆召回次数 */
     private int memoryCount = 0;
     /** 引用忠实度校验次数(每次回答收尾校验一次) */
@@ -246,6 +249,84 @@ public final class LlmCallTrace {
         emit(step);
         log.info("[llm-trace] turn={} RAG {} query='{}' {} topScore={}{}", turnId, tag, query, fmtMs(costMs),
                 topScore > 0 ? String.format("%.3f", topScore) : "-", hits == 0 ? " [未命中]" : "");
+    }
+
+    /**
+     * 记录一次联网搜索 / 网页抓取(含执行质量明细)。
+     *
+     * <p><b>为什么需要这一步</b>: 联网工具此前只留下 {@code recordTool} 那一条通用记录 ——
+     * 工具名、耗时、结果前 500 字。于是"最近联网效果是不是变差了"这个问题,
+     * <b>一个可聚合的数字都答不出来</b>, 只能翻零散的 {@code log.warn}。
+     * RAG 侧靠 {@code recordRag} + 检索健康度 SQL 已经能看趋势, 联网侧缺的正是对应的这一半。
+     *
+     * <p><b>为什么必须记 {@code rawCount} 与 {@code results} 两个数</b>:
+     * "联网没搜到东西"有两种成因, 混在一个数字里就永远分不清是谁的问题 ——
+     * <ul>
+     *   <li>{@code rawCount=0} —— 上游引擎一条没给(限流 / 服务异常 / 查询词过窄),
+     *       是<b>外部依赖</b>故障;</li>
+     *   <li>{@code rawCount=20, results=0} —— 上游给了 20 条全被清洗规则过滤掉,
+     *       是<b>自家规则</b>过严(加一条黑名单就可能把好结果全干掉)。</li>
+     * </ul>
+     * 两者对调用方的表现完全一样, 只看结果条数无法区分。
+     *
+     * <p><b>为什么记 {@code contentChars} 与 {@code thinPages}</b>:
+     * "抓取成功 3 篇"听起来正常, 但 3 篇都只有 50 个字(登录页 / 验证码页 / 404)时,
+     * 模型拿到的等于废话。分开记才能算出「成功率虚高、实际可用内容很少」。
+     *
+     * @param stat   工具上报的执行统计(见 {@link WebStat}); 为 null 时静默忽略
+     * @param costMs 本次工具执行耗时(含串联抓取)
+     */
+    public synchronized void recordWeb(WebStat stat, long costMs) {
+        if (stat == null) {
+            return;
+        }
+        webCount++;
+        String tag = webTag(stat);
+        chain.add(tag);
+        java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
+        step.put("kind", "web");
+        step.put("seq", webCount);
+        step.put("tool", stat.tool());
+        step.put("query", stat.query());
+        step.put("costMs", costMs);
+        // 原始条数: -1 表示该工具不适用(web_extract 直接抓 URL, 没有"上游返回几条"的概念)。
+        // 不写这个字段而不是写 0 —— 0 会被库侧统计成"一次零结果", 污染空结果率
+        if (stat.rawCount() >= 0) {
+            step.put("rawCount", stat.rawCount());
+        }
+        step.put("results", stat.results());
+        // 抓取明细只在真的触发过抓取时写, 否则全是 0 的字段会让详情页多出一串无意义的 chip
+        if (stat.extractOk() + stat.extractFailed() > 0) {
+            step.put("extractOk", stat.extractOk());
+            step.put("extractFailed", stat.extractFailed());
+            step.put("contentChars", stat.contentChars());
+            step.put("thinPages", stat.thinPages());
+        }
+        if (stat.emptyReason() != null) {
+            // 取值 + 中文名一起下发, 与 ragSource 的做法一致: 前端不再自己维护映射表
+            step.put("emptyReason", stat.emptyReason().value());
+            step.put("emptyReasonLabel", stat.emptyReason().label());
+        }
+        steps.add(step);
+        emit(step);
+        log.info("[llm-trace] turn={} WEB {} query='{}' {} {} {}{}", turnId, stat.tool(), stat.query(),
+                stat.rawCount() >= 0
+                        ? stat.rawCount() + "→" + stat.results() + "条"
+                        : stat.results() + "条",
+                stat.extractOk() + stat.extractFailed() > 0
+                        ? "抓取" + stat.extractOk() + "/" + (stat.extractOk() + stat.extractFailed())
+                                + " " + stat.contentChars() + "字" + (stat.thinPages() > 0 ? "(薄页" + stat.thinPages() + ")" : "")
+                        : "",
+                fmtMs(costMs),
+                stat.emptyReason() == null ? "" : " [" + stat.emptyReason().label() + "]");
+    }
+
+    /** 链路标签: 搜索显示「原始→保留」, 抓取只显示篇数 */
+    private static String webTag(WebStat stat) {
+        if (stat.rawCount() >= 0) {
+            return "web[" + stat.rawCount() + "→" + stat.results() + "]";
+        }
+        return "web[" + stat.results() + "条]";
     }
 
     /**

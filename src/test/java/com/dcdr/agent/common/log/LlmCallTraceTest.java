@@ -1,6 +1,7 @@
 package com.dcdr.agent.common.log;
 
 import com.dcdr.agent.rag.RagSource;
+import com.dcdr.agent.tool.WebStat;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -109,5 +110,91 @@ class LlmCallTraceTest {
                 .orElseThrow();
         assertFalse(step.containsKey("memoryIds"), "空列表不该白占一个字段");
         assertEquals(0, step.get("hits"));
+    }
+
+    @Test
+    @DisplayName("联网搜索步骤: rawCount 与 results 必须并存 —— 缺一个就分不清是谁的问题")
+    void webSearchStepKeepsRawAndKept() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordWeb(WebStat.search("最新的 Java 版本", 20, 8), 1830);
+
+        Map<String, Object> step = webStep(trace);
+        assertEquals("web_search", step.get("tool"));
+        assertEquals("最新的 Java 版本", step.get("query"), "空结果时全靠它去回溯是哪类查询失效了");
+        assertEquals(20, step.get("rawCount"), "上游给了几条: 用来区分限流与规则过严");
+        assertEquals(8, step.get("results"));
+        assertEquals(1830L, step.get("costMs"));
+        assertFalse(step.containsKey("emptyReason"), "有结果时不该带空结果原因");
+    }
+
+    @Test
+    @DisplayName("联网搜索全被过滤: 必须记下 all_filtered, 而不是笼统的“没搜到”")
+    void webSearchAllFilteredCarriesReason() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        // 上游给了 20 条, 清洗后 0 条 —— 这是我们自己的规则太严, 与上游限流是两回事
+        trace.recordWeb(WebStat.search("某话题", 20, 0), 900);
+
+        Map<String, Object> step = webStep(trace);
+        assertEquals(0, step.get("results"));
+        assertEquals("all_filtered", step.get("emptyReason"));
+        assertEquals("结果全被过滤", step.get("emptyReasonLabel"),
+                "中文名由后端下发: 前端与库侧不再各自维护映射表");
+    }
+
+    @Test
+    @DisplayName("联网搜索上游无返回: 成因是 no_results, 排查方向指向 SearXNG 而非清洗规则")
+    void webSearchNoResultsCarriesReason() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordWeb(WebStat.search("某个极冷门的词", 0, 0), 1200);
+
+        Map<String, Object> step = webStep(trace);
+        assertEquals("no_results", step.get("emptyReason"));
+    }
+
+    @Test
+    @DisplayName("网页抓取步骤: 不写 rawCount(该工具没有“上游返回几条”的概念, 写 0 会污染空结果率)")
+    void webExtractStepOmitsRawCount() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordWeb(WebStat.extract("https://example.com/a", 2, 1, 9000, 0), 2500);
+
+        Map<String, Object> step = webStep(trace);
+        assertEquals("web_extract", step.get("tool"));
+        assertFalse(step.containsKey("rawCount"), "web_extract 无上游概念, 不该出现该字段");
+        assertEquals(2, step.get("extractOk"));
+        assertEquals(1, step.get("extractFailed"));
+        assertEquals(9000, step.get("contentChars"));
+        assertEquals(0, step.get("thinPages"));
+    }
+
+    @Test
+    @DisplayName("搜索后补抓取: 抓取明细回填到同一条步骤, 而不是另起一条")
+    void webSearchStepMergesExtractResult() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        WebStat merged = WebStat.search("q", 20, 8).withExtract(8, 3, 1, 12000, 1);
+        trace.recordWeb(merged, 5000);
+
+        java.util.List<Map<String, Object>> all = trace.snapshot().stream()
+                .filter(s -> "web".equals(s.get("kind"))).toList();
+        assertEquals(1, all.size(), "一次联网只该有一条 web 步骤, 否则耗时会被重复计算");
+        Map<String, Object> step = all.get(0);
+        assertEquals(3, step.get("extractOk"));
+        assertEquals(1, step.get("extractFailed"));
+        assertEquals(1, step.get("thinPages"), "薄页数: 抓取成功率虚高的唯一证据");
+        assertEquals(12000, step.get("contentChars"));
+    }
+
+    @Test
+    @DisplayName("联网统计为 null(非联网工具)时不产生步骤")
+    void nullWebStatIsIgnored() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordWeb(null, 100);
+        assertEquals(0, trace.snapshot().size());
+    }
+
+    private static Map<String, Object> webStep(LlmCallTrace trace) {
+        return trace.snapshot().stream()
+                .filter(s -> "web".equals(s.get("kind")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("未写入 kind=web 的步骤"));
     }
 }

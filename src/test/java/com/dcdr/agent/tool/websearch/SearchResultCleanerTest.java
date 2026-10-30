@@ -207,6 +207,28 @@ class SearchResultCleanerTest {
         }
 
         @Test
+        @DisplayName("/news/ 路径: 有数字的是文章(保留), 没数字的是栏目(过滤)")
+        void newsPathDistinguishesArticleFromSection() {
+            String json = """
+                    [
+                      {"url":"https://a.com/news","title":"新闻中心"},
+                      {"url":"https://a.com/news/","title":"新闻首页"},
+                      {"url":"https://a.com/news/tech","title":"科技栏目"},
+                      {"url":"https://a.com/news/12345","title":"文章一"},
+                      {"url":"https://a.com/news/2026/10/30/abcdef","title":"文章二"},
+                      {"url":"https://a.com/newsDetail_forward_34218660","title":"文章三"}
+                    ]
+                    """;
+            List<Map<String, Object>> out = SearchResultCleaner.clean(results(json), 10);
+
+            // 旧规则把 /news/12345 这类**真实文章路径**一并当聚合页丢弃,
+            // 而不少新闻站的文章地址就是这个形态 —— 这是会把好结果干掉的那类误伤
+            List<Object> kept = out.stream().map(m -> m.get("title")).toList();
+            assertEquals(List.of("文章一", "文章二", "文章三"), kept,
+                    "只应保留含数字 ID/日期的文章路径, 实际: " + kept);
+        }
+
+        @Test
         @DisplayName("过滤缺 url 或 title 的残缺条目")
         void filtersIncompleteEntries() {
             String json = """
@@ -293,6 +315,71 @@ class SearchResultCleanerTest {
                     """;
             List<Map<String, Object>> out = SearchResultCleaner.clean(results(json), 10);
             assertEquals("正文摘要 (发布于 2026-10-11)", out.get(0).get("snippet"));
+        }
+    }
+
+    // ==================================================================
+    //  cleanWithReport: 损耗明细(联网健康度统计的依据)
+    // ==================================================================
+
+    @Nested
+    @DisplayName("cleanWithReport")
+    class WithReport {
+
+        @Test
+        @DisplayName("原始条数 / 过滤数 / 去重数 / 保留数 四个数必须对得上")
+        void reportsLossBreakdown() {
+            // 路径特意避开 /news/、/tag/ —— 它们在 NON_ARTICLE_PATH 里, 会被当成聚合页过滤掉
+            // 5 条: 1 条聚合页被过滤 + 1 条与第 3 条 URL 重复 + 3 条保留
+            String json = """
+                    [
+                      {"url":"https://a.com/tag/ai","title":"AI 最新资讯","content":"x"},
+                      {"url":"https://a.com/post/101","title":"文章一","content":"正文一"},
+                      {"url":"https://a.com/post/101","title":"文章一","content":"正文一"},
+                      {"url":"https://a.com/post/102","title":"文章二","content":"正文二"},
+                      {"url":"https://a.com/post/103","title":"文章三","content":"正文三"}
+                    ]
+                    """;
+            SearchResultCleaner.CleanResult r = SearchResultCleaner.cleanWithReport(results(json), 10);
+
+            assertEquals(5, r.raw(), "原始条数: 「上游一条没给」与「给了但全被过滤」靠它区分");
+            assertEquals(1, r.filtered());
+            assertEquals(1, r.duplicated(), "去重与过滤分开计: 前者正常, 后者可能是规则误伤");
+            assertEquals(3, r.kept());
+        }
+
+        @Test
+        @DisplayName("上游有返回但全被过滤: kept=0 而 raw>0(这是规则过严的信号)")
+        void allFilteredKeepsRawCount() {
+            String json = """
+                    [{"url":"https://a.com/tag/ai","title":"最新资讯","content":"x"},
+                     {"url":"https://page.sm.cn/x","title":"短视频合集","content":"y"}]
+                    """;
+            SearchResultCleaner.CleanResult r = SearchResultCleaner.cleanWithReport(results(json), 10);
+
+            assertEquals(2, r.raw());
+            assertEquals(0, r.kept());
+        }
+
+        @Test
+        @DisplayName("空输入: raw 也应为 0 而不是 NPE")
+        void emptyInputYieldsZero() {
+            SearchResultCleaner.CleanResult r = SearchResultCleaner.cleanWithReport(null, 5);
+            assertEquals(0, r.raw());
+            assertEquals(0, r.kept());
+            assertEquals(0, r.filtered());
+            assertEquals(0, r.duplicated());
+        }
+
+        @Test
+        @DisplayName("clean 与 cleanWithReport 结果一致(前者只是后者的便捷重载)")
+        void cleanDelegatesToReport() {
+            String json = """
+                    [{"url":"https://a.com/news/1","title":"新闻一","content":"正文一"},
+                     {"url":"https://a.com/tag/ai","title":"最新资讯","content":"x"}]
+                    """;
+            assertEquals(SearchResultCleaner.cleanWithReport(results(json), 10).items(),
+                    SearchResultCleaner.clean(results(json), 10));
         }
     }
 }
