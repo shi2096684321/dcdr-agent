@@ -30,3 +30,11 @@ export const testScheduledTaskNotify = (id) =>
 // 预览消息模板 (V3.3): 用示例数据渲染成功/失败两份消息, 不发送
 export const previewScheduledTaskNotify = (id, channel) =>
   unwrap(api.get(`/api/scheduled-tasks/${id}/notify-preview`, { params: { channel } }))
+
+// 执行历史列表 (V3.3): 倒序, 仅摘要
+export const getScheduledTaskRuns = (id, limit = 20) =>
+  unwrap(api.get(`/api/scheduled-tasks/${id}/runs`, { params: { limit } }))
+
+// 执行历史详情: 含完整正文
+export const getScheduledTaskRun = (id, runId) =>
+  unwrap(api.get(`/api/scheduled-tasks/${id}/runs/${runId}`))

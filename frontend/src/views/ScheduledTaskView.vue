@@ -117,6 +117,29 @@
           </div>
           <pre class="tr-output">{{ triggerResult.output || triggerResult.error || '(无输出)' }}</pre>
         </div>
+
+        <!-- 执行历史 -->
+        <div class="run-history">
+          <div class="rh-head">
+            <span>执行历史</span>
+            <div class="rh-actions">
+              <span v-if="runs.length" class="rh-count">最近 {{ runs.length }} 条</span>
+              <el-button link type="primary" size="small" @click="loadRuns">刷新</el-button>
+            </div>
+          </div>
+          <div v-if="runsLoading" class="rh-empty">加载中…</div>
+          <div v-else-if="!runs.length" class="rh-empty">
+            暂无执行记录（定时触发或手动触发后产生）
+          </div>
+          <div v-else class="rh-list">
+            <div v-for="r in runs" :key="r.id" class="rh-item" @click="openRun(r)">
+              <el-tag size="small" :type="statusTagType(r.status)">{{ statusLabel(r.status) }}</el-tag>
+              <span class="rh-time">{{ formatTime(r.startedAt) }}</span>
+              <span class="rh-dur">{{ formatDuration(r.durationMs) }}</span>
+              <span class="rh-preview">{{ r.preview || r.error || '(无输出)' }}</span>
+            </div>
+          </div>
+        </div>
       </template>
       <div v-else class="empty-detail">
         <div class="empty-icon">⏰</div>
@@ -195,6 +218,25 @@
         <el-button @click="previewVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 执行历史详情 -->
+    <el-dialog v-model="runVisible" title="执行详情" width="720px">
+      <div v-if="runDetail">
+        <div class="preview-meta">
+          <el-tag size="small" :type="statusTagType(runDetail.status)">{{ statusLabel(runDetail.status) }}</el-tag>
+          <span class="rh-time">{{ formatTime(runDetail.startedAt) }}</span>
+          <span class="rh-dur">{{ formatDuration(runDetail.durationMs) }}</span>
+          <a v-if="runDetail.shareUrl" :href="runDetail.shareUrl" target="_blank" rel="noopener" class="rh-link">
+            分享页
+          </a>
+        </div>
+        <pre class="preview-pre">{{ runDetail.output || runDetail.error || '(无输出)' }}</pre>
+      </div>
+      <div v-else class="preview-loading">加载中…</div>
+      <template #footer>
+        <el-button @click="runVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -203,7 +245,8 @@ import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getScheduledTasks, createScheduledTask, updateScheduledTask, deleteScheduledTask, triggerScheduledTask,
-  testScheduledTaskNotify, previewScheduledTaskNotify, getAgents, extractMessage
+  testScheduledTaskNotify, previewScheduledTaskNotify, getScheduledTaskRuns, getScheduledTaskRun,
+  getAgents, extractMessage
 } from '@/api'
 
 const loading = ref(false)
@@ -220,6 +263,12 @@ const testingNotify = ref(false)
 const previewVisible = ref(false)
 const previewData = ref(null)
 const previewTab = ref('success')
+
+// 执行历史
+const runs = ref([])
+const runsLoading = ref(false)
+const runVisible = ref(false)
+const runDetail = ref(null)
 
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -308,6 +357,8 @@ async function loadAgents() {
 function selectTask(id) {
   currentTaskId.value = id
   triggerResult.value = null
+  runs.value = []
+  loadRuns()
 }
 
 function openCreateDialog() {
@@ -394,8 +445,9 @@ async function triggerTask() {
   try {
     triggerResult.value = await triggerScheduledTask(currentTask.value.id, null)
     ElMessage.success('触发完成')
-    // 刷新列表以获取最新状态
+    // 刷新列表以获取最新状态, 并重新拉历史（手动触发也会落一条执行记录）
     await loadTasks()
+    await loadRuns()
   } catch (e) {
     ElMessage.error(extractMessage(e) || '触发失败')
   } finally {
@@ -436,9 +488,43 @@ async function openPreview() {
   }
 }
 
-onMounted(() => {
-  loadTasks()
+async function loadRuns() {
+  if (!currentTask.value) return
+  runsLoading.value = true
+  try {
+    runs.value = await getScheduledTaskRuns(currentTask.value.id, 20)
+  } catch (e) {
+    // 历史是辅助信息，失败不该打断主流程
+    console.warn('[ScheduledTaskView] 加载执行历史失败:', e)
+    runs.value = []
+  } finally {
+    runsLoading.value = false
+  }
+}
+
+async function openRun(r) {
+  if (!currentTask.value) return
+  runVisible.value = true
+  runDetail.value = null
+  try {
+    runDetail.value = await getScheduledTaskRun(currentTask.value.id, r.id)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载执行详情失败')
+    runVisible.value = false
+  }
+}
+
+function formatDuration(ms) {
+  if (ms == null || ms < 0) return '—'
+  if (ms < 1000) return ms + ' ms'
+  if (ms < 60000) return (ms / 1000).toFixed(1) + ' s'
+  return Math.floor(ms / 60000) + ' 分 ' + Math.round((ms % 60000) / 1000) + ' 秒'
+}
+
+onMounted(async () => {
+  await loadTasks()
   loadAgents()
+  loadRuns()
 })</script>
 
 <style scoped>
@@ -498,4 +584,18 @@ onMounted(() => {
 .preview-pre { background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.6; max-height: 320px; overflow-y: auto; margin: 0; }
 .preview-hint { font-size: 12px; color: var(--dcdr-text-3); margin-top: 10px; line-height: 1.6; }
 .preview-loading { padding: 40px; text-align: center; color: var(--dcdr-text-3); font-size: 13px; }
+
+/* 执行历史 */
+.run-history { margin-top: 20px; }
+.rh-head { display: flex; align-items: center; justify-content: space-between; padding-bottom: 8px; border-bottom: 1px solid var(--dcdr-border); font-size: 13px; font-weight: 500; color: var(--dcdr-text-1); }
+.rh-actions { display: flex; align-items: center; gap: 8px; }
+.rh-count { font-size: 12px; font-weight: 400; color: var(--dcdr-text-3); }
+.rh-empty { padding: 20px 0; text-align: center; color: var(--dcdr-text-3); font-size: 12px; }
+.rh-list { max-height: 260px; overflow-y: auto; }
+.rh-item { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px dashed var(--dcdr-border); cursor: pointer; }
+.rh-item:hover { background: var(--dcdr-bg-subtle); }
+.rh-time { font-size: 12px; color: var(--dcdr-text-2); flex-shrink: 0; }
+.rh-dur { font-size: 12px; color: var(--dcdr-text-3); flex-shrink: 0; min-width: 56px; }
+.rh-preview { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rh-link { margin-left: auto; font-size: 12px; color: var(--dcdr-accent); text-decoration: none; }
 </style>

@@ -27,6 +27,7 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
@@ -277,6 +278,75 @@ public class ScheduledTaskService {
         return channel;
     }
 
+    // ===== 执行历史 =====
+
+    /**
+     * 任务的执行历史（倒序，不含完整正文）。
+     * <p>列表只给摘要：抓取类任务一次输出可能上万字，全量返回会让接口慢得没必要，
+     * 用户点开某条再单独取详情。
+     */
+    public List<ScheduledTaskDtos.RunSummary> listRuns(String taskId, Integer limit,
+                                                       String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, taskId, userId, isAdmin, false);
+        int size = (limit == null || limit <= 0) ? 20 : Math.min(limit, 100);
+        return runRepository.findByTaskIdOrderByCreatedAtDesc(taskId, PageRequest.of(0, size))
+                .stream()
+                .map(this::toRunSummary)
+                .toList();
+    }
+
+    /** 执行历史详情（含完整正文） */
+    public ScheduledTaskDtos.RunDetail getRun(String taskId, String runId, String userId, boolean isAdmin) {
+        ownershipGuard.check(ResourceType.SCHEDULED_TASK, taskId, userId, isAdmin, false);
+        ScheduledTaskRunEntity run = runRepository.findById(runId)
+                // 记录必须属于该任务: 否则换个 taskId 就能读到别人任务的执行结果
+                .filter(r -> taskId.equals(r.getTaskId()))
+                .orElseThrow(() -> new BusinessException(404, "执行记录不存在", "RUN_NOT_FOUND"));
+
+        ScheduledTaskDtos.RunDetail d = new ScheduledTaskDtos.RunDetail();
+        d.setId(run.getId());
+        d.setTaskId(run.getTaskId());
+        d.setStatus(run.getStatus());
+        d.setDurationMs(run.getDurationMs());
+        d.setStartedAt(run.getStartedAt());
+        d.setFinishedAt(run.getFinishedAt());
+        d.setOutput(run.getOutput());
+        d.setError(run.getError());
+        d.setShareUrl(buildRunUrl(run));
+        return d;
+    }
+
+    private ScheduledTaskDtos.RunSummary toRunSummary(ScheduledTaskRunEntity run) {
+        ScheduledTaskDtos.RunSummary s = new ScheduledTaskDtos.RunSummary();
+        s.setId(run.getId());
+        s.setStatus(run.getStatus());
+        s.setDurationMs(run.getDurationMs());
+        s.setStartedAt(run.getStartedAt());
+        s.setFinishedAt(run.getFinishedAt());
+        s.setOutputLength(run.getOutput() == null ? 0 : run.getOutput().length());
+        s.setError(run.getError());
+        s.setPreview(previewOf(run));
+        s.setShareUrl(buildRunUrl(run));
+        return s;
+    }
+
+    /** 摘要：压掉换行后截到 120 字；失败时退化成错误信息，否则列表里会是一行空白 */
+    private static String previewOf(ScheduledTaskRunEntity run) {
+        String text = run.getOutput();
+        if (text == null || text.isBlank()) {
+            text = run.getError() == null ? "" : run.getError();
+        }
+        return abbrev(text.replaceAll("\\s+", " ").strip(), 120);
+    }
+
+    /** 截断时不要留下孤立的高位代理，否则 emoji 会变成方块 */
+    private static String abbrev(String text, int max) {
+        if (text.length() <= max) return text;
+        int end = max;
+        if (Character.isHighSurrogate(text.charAt(end - 1))) end--;
+        return text.substring(0, end) + "…";
+    }
+
     // ===== 调度内部 =====
     private void scheduleInternal(ScheduledTaskEntity task) {
         try {
@@ -409,10 +479,34 @@ public class ScheduledTaskService {
                 run.setShareToken(UUID.randomUUID().toString().replace("-", ""));
                 run.setShareExpiresAt(now.plusDays(ttlDays));
             }
-            return runRepository.save(run);
+            ScheduledTaskRunEntity saved = runRepository.save(run);
+            trimRuns(task.getId());
+            return saved;
         } catch (Exception e) {
             log.warn("保存定时任务执行记录失败 (task={}): {}", task.getId(), e.getMessage());
             return null;
+        }
+    }
+
+    /** 每个任务保留的执行记录条数上限 */
+    private static final int RUN_HISTORY_KEEP = 50;
+
+    /**
+     * 只保留最近 N 条执行记录。
+     * <p>
+     * 单次输出是 TEXT（抓取类任务可能上万字），定时任务按分钟级跑，不清理的话这张表
+     * 会以「每天几十条 × 每条几十 KB」的速度膨胀。清理失败只记日志 ——
+     * 它是维护性动作，不该影响任务本身的成败。
+     */
+    private void trimRuns(String taskId) {
+        try {
+            List<ScheduledTaskRunEntity> recent = runRepository.findByTaskIdOrderByCreatedAtDesc(
+                    taskId, PageRequest.of(0, RUN_HISTORY_KEEP + 1));
+            if (recent.size() > RUN_HISTORY_KEEP) {
+                runRepository.deleteAll(recent.subList(RUN_HISTORY_KEEP, recent.size()));
+            }
+        } catch (Exception e) {
+            log.warn("清理历史执行记录失败 (task={}): {}", taskId, e.getMessage());
         }
     }
 

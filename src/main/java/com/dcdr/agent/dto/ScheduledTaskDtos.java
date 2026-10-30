@@ -89,6 +89,39 @@ public class ScheduledTaskDtos {
         private String unit;
     }
 
+    /** 执行历史条目 (V3.3 F-50) */
+    @Data
+    @Schema(description = "执行历史条目（不含完整正文）")
+    public static class RunSummary {
+        private String id;
+        private String status;
+        private long durationMs;
+        private LocalDateTime startedAt;
+        private LocalDateTime finishedAt;
+        /** 正文开头的摘要，列表里给个印象 */
+        private String preview;
+        /** 正文字符数，用于判断值不值得点开 */
+        private int outputLength;
+        private String error;
+        /** 免登录详情页；未配 share-base-url 时为空 */
+        private String shareUrl;
+    }
+
+    /** 执行历史详情 (V3.3 F-50) */
+    @Data
+    @Schema(description = "执行历史详情（含完整正文）")
+    public static class RunDetail {
+        private String id;
+        private String taskId;
+        private String status;
+        private long durationMs;
+        private LocalDateTime startedAt;
+        private LocalDateTime finishedAt;
+        private String output;
+        private String error;
+        private String shareUrl;
+    }
+
     /** 触发结果 */
     @Data
     @Schema(description = "触发执行结果")

@@ -133,6 +133,31 @@ public class ScheduledTaskController {
                         scheduledTaskService.previewNotify(id, channel, ctx.userId(), ctx.admin())));
     }
 
+    @Operation(summary = "执行历史列表 (V3.3)",
+            description = "返回该任务最近若干次执行记录，按时间倒序，只含摘要（正文前 120 字）。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ScheduledTaskDtos.RunSummary.class)))
+    @ApiResponse(responseCode = "404", description = "定时任务不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'SCHEDULED_TASK', principal)")
+    @GetMapping("/{id}/runs")
+    public Mono<Result<List<ScheduledTaskDtos.RunSummary>>> runs(
+            @Parameter(description = "任务 ID", required = true) @PathVariable String id,
+            @Parameter(description = "返回条数，默认 20，上限 100") @RequestParam(required = false) Integer limit) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(scheduledTaskService.listRuns(id, limit, ctx.userId(), ctx.admin())));
+    }
+
+    @Operation(summary = "执行历史详情 (V3.3)", description = "含完整输出正文")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ScheduledTaskDtos.RunDetail.class)))
+    @ApiResponse(responseCode = "404", description = "任务或执行记录不存在")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'SCHEDULED_TASK', principal)")
+    @GetMapping("/{id}/runs/{runId}")
+    public Mono<Result<ScheduledTaskDtos.RunDetail>> run(
+            @Parameter(description = "任务 ID", required = true) @PathVariable String id,
+            @Parameter(description = "执行记录 ID", required = true) @PathVariable String runId) {
+        return ownershipGuard.currentContext()
+                .map(ctx -> Result.success(scheduledTaskService.getRun(id, runId, ctx.userId(), ctx.admin())));
+    }
+
     @Operation(summary = "测试推送 (V3.3)",
             description = "立即向该任务配置的通知渠道发一条测试消息, 用于验证 Webhook 是否打通。"
                     + "不触发 Agent 执行, 也不写入任务的推送状态。")

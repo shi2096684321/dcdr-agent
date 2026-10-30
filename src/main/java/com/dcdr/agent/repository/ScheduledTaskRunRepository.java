@@ -1,6 +1,7 @@
 package com.dcdr.agent.repository;
 
 import com.dcdr.agent.entity.ScheduledTaskRunEntity;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -17,9 +18,12 @@ public interface ScheduledTaskRunRepository extends JpaRepository<ScheduledTaskR
     /** 详情页按 token 查（免登录） */
     Optional<ScheduledTaskRunEntity> findByShareToken(String token);
 
-    /** 任务最近若干次执行（任务详情页展示用） */
-    List<ScheduledTaskRunEntity> findTop20ByTaskIdOrderByCreatedAtDesc(String taskId);
+    /** 任务的执行历史，按时间倒序；条数由 Pageable 控制 */
+    List<ScheduledTaskRunEntity> findByTaskIdOrderByCreatedAtDesc(String taskId, Pageable pageable);
 
     /** 清理过期记录（预留：当前由保留策略决定是否调用） */
     long deleteByCreatedAtBefore(LocalDateTime cutoff);
+
+    /** 某任务的记录总数（分页展示用） */
+    long countByTaskId(String taskId);
 }
