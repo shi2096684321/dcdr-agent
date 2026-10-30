@@ -161,16 +161,12 @@ import { changePassword } from '@/api/auth'
 import { getUserModels, createUserModel, updateUserModel, deleteUserModel, extractMessage } from '@/api'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import logoUrl from '@/assets/dcdr-logo.png'
+// 版本号来自虚拟模块(见 vite.config.js): 唯一真值源是 package.json。
+// 此前这里是硬编码的 "v3.1", package.json 升到 3.2.0-ui 后它一直没跟着改。
+import appVersion from 'virtual:app-version'
 
 // 模型下拉中的"管理自定义模型"哨兵选项值
 const MANAGE_MODELS = '__manage_models__'
-
-/**
- * 顶栏展示的版本号, 由 vite.config.js 的 define 从 package.json 注入。
- * 此前这里是硬编码的 "v3.1" —— package.json 升到 3.2.0-ui 后它一直没跟着改,
- * 于是界面长期显示着两个大版本之前的号。版本号只留一个真值源, 才不会漏。
- */
-const appVersion = __APP_VERSION__
 
 const isCustom = (m) => typeof m.name === 'string' && m.name.startsWith('custom:')
 
