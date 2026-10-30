@@ -3,7 +3,7 @@
     <div class="brand">
       <img class="brand-mark" :src="logoUrl" alt="DCDR" />
       <span class="brand-name">DCDR</span>
-      <span class="brand-ver">v3.1</span>
+      <span class="brand-ver">v{{ appVersion }}</span>
     </div>
 
     <!-- 全局命令入口：一级导航已在左侧轨道，这里只留"去哪儿"的兜底搜索 -->
@@ -164,6 +164,14 @@ import logoUrl from '@/assets/dcdr-logo.png'
 
 // 模型下拉中的"管理自定义模型"哨兵选项值
 const MANAGE_MODELS = '__manage_models__'
+
+/**
+ * 顶栏展示的版本号, 由 vite.config.js 的 define 从 package.json 注入。
+ * 此前这里是硬编码的 "v3.1" —— package.json 升到 3.2.0-ui 后它一直没跟着改,
+ * 于是界面长期显示着两个大版本之前的号。版本号只留一个真值源, 才不会漏。
+ */
+const appVersion = __APP_VERSION__
+
 const isCustom = (m) => typeof m.name === 'string' && m.name.startsWith('custom:')
 
 // 内置常见 OpenAI 兼容厂商 (V3.1)
