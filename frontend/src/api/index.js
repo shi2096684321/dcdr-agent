@@ -20,6 +20,8 @@ export * from './monitor'
 export * from './llmCalls'
 // 检索健康度 (RAG 可观测性, 仅管理员)
 export * from './retrievalHealth'
+// 联网健康度 (联网搜索/抓取的可观测性, 仅管理员)
+export * from './webHealth'
 // V3.1 用户自定义模型
 export * from './userModels'
 // V3.1 回答反馈 (F-48)

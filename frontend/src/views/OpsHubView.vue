@@ -5,6 +5,7 @@
     <RoutingView v-else-if="tab === 'routing'" />
     <!-- 与 App.vue 原先的守卫一致: 页签已按角色过滤, 这里再兜一层, 避免非管理员落到 403 -->
     <RetrievalHealthView v-else-if="tab === 'retrieval-health' && authStore.isAdmin" />
+    <WebHealthView v-else-if="tab === 'web-health' && authStore.isAdmin" />
   </HubShell>
 </template>
 
@@ -15,6 +16,7 @@ import MonitorView from '@/views/MonitorView.vue'
 import LlmCallLogView from '@/views/LlmCallLogView.vue'
 import RoutingView from '@/views/RoutingView.vue'
 import RetrievalHealthView from '@/views/RetrievalHealthView.vue'
+import WebHealthView from '@/views/WebHealthView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 /**
@@ -31,7 +33,8 @@ const TABS = [
   { key: 'llm-logs', label: '调用链', hint: '每次请求的完整调用链(路由判断 / 生成轮 / 工具步骤 / token / 耗时)' },
   { key: 'routing', label: '智能路由', hint: '路由判断结果, 用于分析准确率与调优置信度阈值' },
   // 零命中样本含用户原始提问, 属运维数据 → 仅管理员(后端亦校验)
-  { key: 'retrieval-health', label: '检索健康', hint: 'RAG 检索质量的可观测性', adminOnly: true }
+  { key: 'retrieval-health', label: '检索健康', hint: 'RAG 检索质量的可观测性', adminOnly: true },
+  { key: 'web-health', label: '联网健康', hint: '联网搜索/抓取质量的可观测性(空结果率 / 清洗存活率 / 抓取成功率)', adminOnly: true }
 ]
 
 const authStore = useAuthStore()
