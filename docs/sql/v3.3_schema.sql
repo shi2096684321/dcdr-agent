@@ -93,3 +93,44 @@ COMMENT ON COLUMN scheduled_task_runs.share_expires_at IS '分享链接过期时
 
 CREATE INDEX IF NOT EXISTS idx_run_task    ON scheduled_task_runs (task_id);
 CREATE INDEX IF NOT EXISTS idx_run_created ON scheduled_task_runs (created_at);
+
+-- =============================================================================
+-- 定时任务增强 + 用户级推送配置（V3.4）
+--
+-- 设计要点：
+--   1. scheduled_tasks.model：任务可显式指定执行模型，优先级高于 Agent 配置的模型
+--      （见 ChatRequest#modelLocked）。NULL = 跟随 Agent 配置 / 平台默认。
+--   2. user_notify_configs：每个用户自己维护机器人 Webhook，一套部署下的任务结果
+--      可以进各自的群，而不是全公司共用一个群。
+--   3. Webhook 地址里带机器人 key/token，属凭据：落库为 AES-GCM 密文
+--      （复用 ApiKeyCipher，主密钥 MODEL_API_KEY_SECRET），对外只回显掩码。
+--   4. (user_id, channel) 唯一：一个用户在一个渠道上只保留一份配置，
+--      既是业务约束也天然按用户隔离，不存在跨用户读取路径。
+--   5. 服务端会按用户填的地址发请求，因此地址要在应用层过 SSRF 白名单
+--      （仅 https + 官方域名 + 443），数据库层面不做校验。
+-- =============================================================================
+
+ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS model VARCHAR(128);
+
+COMMENT ON COLUMN scheduled_tasks.model IS '执行模型名；NULL=跟随 Agent 配置或平台默认，非空时优先级最高';
+
+CREATE TABLE IF NOT EXISTS user_notify_configs (
+    id                     VARCHAR(64)  PRIMARY KEY,
+    user_id                VARCHAR(64)  NOT NULL,
+    channel                VARCHAR(32)  NOT NULL,
+    webhook_url_encrypted  VARCHAR(4096),
+    secret_encrypted       VARCHAR(4096),
+    keyword                VARCHAR(128),
+    enabled                BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at             TIMESTAMP    NOT NULL,
+    updated_at             TIMESTAMP    NOT NULL,
+    CONSTRAINT uk_unc_user_channel UNIQUE (user_id, channel)
+);
+
+COMMENT ON TABLE  user_notify_configs                       IS '用户级推送配置：各用户自己的机器人 Webhook';
+COMMENT ON COLUMN user_notify_configs.webhook_url_encrypted IS 'Webhook 地址（AES-GCM 密文，不存明文）';
+COMMENT ON COLUMN user_notify_configs.secret_encrypted      IS '钉钉加签密钥（AES-GCM 密文）';
+COMMENT ON COLUMN user_notify_configs.keyword               IS '钉钉自定义关键词（非凭据，明文）';
+COMMENT ON COLUMN user_notify_configs.enabled               IS '关闭后回退部署级 agent.notify.* 配置';
+
+CREATE INDEX IF NOT EXISTS idx_unc_user ON user_notify_configs (user_id);

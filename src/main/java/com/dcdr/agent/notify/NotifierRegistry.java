@@ -1,10 +1,12 @@
 package com.dcdr.agent.notify;
 
+import com.dcdr.agent.service.UserNotifyConfigService;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
@@ -31,6 +33,8 @@ public class NotifierRegistry {
 
     private final NotifyProperties props;
     private final List<Notifier> notifiers;
+    /** V3.4: 用户级推送配置 (按 userId + 渠道 取解密后的 Webhook) */
+    private final UserNotifyConfigService userNotifyConfigService;
 
     /** 渠道 → 实现 */
     private final Map<NotifyChannel, Notifier> byChannel = new EnumMap<>(NotifyChannel.class);
@@ -68,13 +72,13 @@ public class NotifierRegistry {
     }
 
     private NotifyResult doDispatch(NotifyMessage message, boolean throttled) {
-        if (!props.isEnabled()) {
-            return NotifyResult.skipped(null, "通知总开关未启用 (agent.notify.enabled=false)");
-        }
         if (message == null || message.getTaskId() == null) {
             return NotifyResult.skipped(null, "通知消息为空");
         }
-        NotifyChannel channel = resolveChannel(message.getChannel());
+        // 用户配置只查一次: 渠道选择与凭据必须来自同一份快照, 否则可能出现
+        // "按渠道 A 选的路由, 拿到的却是渠道 B 的凭据"这种自相矛盾的组合
+        Map<NotifyChannel, UserNotifyConfigService.Credential> mine = loadUserCredentials(message.getUserId());
+        NotifyChannel channel = resolveChannel(message.getChannel(), mine);
         if (channel == null) {
             // 配错渠道名属于配置事故, 必须报出来, 不能静默退化成默认渠道
             return NotifyResult.failed(null, "无法识别的通知渠道: " + message.getChannel());
@@ -82,6 +86,18 @@ public class NotifierRegistry {
         Notifier notifier = byChannel.get(channel);
         if (notifier == null) {
             return NotifyResult.failed(channel.code(), "渠道暂无实现: " + channel.code());
+        }
+        // V3.4: 用户自己配了 Webhook 就优先用它 —— 一套部署下不同用户的任务该进各自的群。
+        // 用户配置视为对该用户的"授权": 即使部署级总开关关闭也放行, 否则个人配置永远不会生效。
+        CredentialSource source = applyUserCredential(message, channel, mine);
+        if (source == CredentialSource.DISABLED) {
+            // 用户明明配过、只是把开关关了, 报"未配置"会让他反复重填 —— 必须说清真正原因
+            return NotifyResult.failed(channel.code(),
+                    "该渠道的个人推送已停用, 且部署未配置默认机器人");
+        }
+        if (!props.isEnabled() && source != CredentialSource.USER) {
+            return NotifyResult.skipped(null,
+                    "通知总开关未启用 (agent.notify.enabled=false), 且当前用户未配置个人推送渠道");
         }
 
         boolean failedMessage = message.isFailed();
@@ -121,12 +137,80 @@ public class NotifierRegistry {
 
     // ===== 内部 =====
 
-    /** 任务级渠道优先, 留空回退全局默认; 无法识别返回 null */
-    private NotifyChannel resolveChannel(String taskChannel) {
+    /** 本次推送最终用的是谁的凭据 */
+    private enum CredentialSource {
+        /** 用用户自己的 Webhook */
+        USER,
+        /** 无个人配置, 回退部署级 agent.notify.* */
+        FALLBACK,
+        /** 用户配了但关掉了, 且部署也没有默认机器人 —— 明确失败, 不要报成"未配置" */
+        DISABLED
+    }
+
+    private Map<NotifyChannel, UserNotifyConfigService.Credential> loadUserCredentials(String userId) {
+        if (userId == null || userId.isBlank()) return Map.of();
+        try {
+            return userNotifyConfigService.credentials(userId);
+        } catch (Exception e) {
+            // 查库/解密失败只降级, 不能让推送整体崩掉
+            log.warn("读取用户推送配置失败, 回退部署级配置 (user={}): {}", userId, e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
+     * 把用户自己的推送凭据填进消息 (渠道实现发现非空时优先使用)。
+     * <p>区分 {@link CredentialSource#DISABLED} 的原因: 用户配了却关掉开关时,
+     * 若笼统回退, 最终报错是"未配置 Webhook", 会把人引向完全错误的排查方向。
+     */
+    private CredentialSource applyUserCredential(NotifyMessage message, NotifyChannel channel,
+                                                 Map<NotifyChannel, UserNotifyConfigService.Credential> mine) {
+        UserNotifyConfigService.Credential cred = mine.get(channel);
+        if (cred == null || !cred.configured()) return CredentialSource.FALLBACK;
+        if (!cred.enabled()) {
+            return globalConfigured(channel) ? CredentialSource.FALLBACK : CredentialSource.DISABLED;
+        }
+        message.setWebhookUrl(cred.webhookUrl());
+        message.setSecret(cred.secret());
+        if (cred.keyword() != null && !cred.keyword().isBlank()) {
+            message.setKeyword(cred.keyword());
+        }
+        return CredentialSource.USER;
+    }
+
+    /**
+     * 渠道优先级: 任务指定 → 用户已配置的渠道 → 部署默认。
+     * <p>中间这一步很关键: 用户只配了钉钉、部署默认却是企业微信时, 若不看用户配置,
+     * 每次推送都会打到"未配置企业微信"上, 而用户明明已经配好了钉钉。
+     * 无法识别返回 {@code null}。
+     */
+    private NotifyChannel resolveChannel(String taskChannel,
+                                         Map<NotifyChannel, UserNotifyConfigService.Credential> mine) {
         if (taskChannel != null && !taskChannel.isBlank()) {
             return NotifyChannel.fromCode(taskChannel);
         }
+        List<NotifyChannel> usable = new ArrayList<>();
+        for (Map.Entry<NotifyChannel, UserNotifyConfigService.Credential> e : mine.entrySet()) {
+            if (e.getValue().configured() && e.getValue().enabled()) usable.add(e.getKey());
+        }
+        if (usable.size() == 1) return usable.get(0);
+        if (!usable.isEmpty()) {
+            NotifyChannel dft = props.getChannel();
+            return usable.contains(dft) ? dft : usable.get(0);
+        }
         return props.getChannel();
+    }
+
+    /** 部署级是否配了该渠道的机器人地址 */
+    private boolean globalConfigured(NotifyChannel channel) {
+        return switch (channel) {
+            case WECOM_BOT -> hasText(props.getWecom().getWebhookUrl());
+            case DINGTALK_BOT -> hasText(props.getDingtalk().getWebhookUrl());
+        };
+    }
+
+    private static boolean hasText(String s) {
+        return s != null && !s.isBlank();
     }
 
     /** 防止长期运行后 Map 无限增长 (任务删了但节流记录还在) */

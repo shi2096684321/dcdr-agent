@@ -30,6 +30,30 @@ public enum NotifyChannel {
         return label;
     }
 
+    /** 是否支持加签 / 自定义关键词 (目前只有钉钉; 企微机器人只有 key 一种鉴权) */
+    public boolean supportsSign() {
+        return this == DINGTALK_BOT;
+    }
+
+    /**
+     * 官方域名 (SSRF 白名单的唯一真值源)。
+     * <p>用户填的地址会被服务端直接请求，只允许请求各渠道官方域名。
+     */
+    public String allowedHost() {
+        return switch (this) {
+            case WECOM_BOT -> "qyapi.weixin.qq.com";
+            case DINGTALK_BOT -> "oapi.dingtalk.com";
+        };
+    }
+
+    /** 填写示例, 前端展示用 (不含真实凭据) */
+    public String exampleWebhook() {
+        return switch (this) {
+            case WECOM_BOT -> "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxxxxx";
+            case DINGTALK_BOT -> "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxx";
+        };
+    }
+
     /**
      * 按 code 或枚举名解析 (大小写不敏感)。
      *

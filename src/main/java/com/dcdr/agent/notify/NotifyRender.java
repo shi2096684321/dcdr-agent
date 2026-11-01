@@ -89,6 +89,26 @@ final class NotifyRender {
         return (s == null || s.isBlank()) ? def : s;
     }
 
+    /**
+     * 把推送异常转成"能展示也能入库"的简短原因。
+     * <p>
+     * <b>为什么不直接用 {@code e.getMessage()}</b>: 推送失败的典型原因是 4xx/5xx，
+     * 而 {@code WebClientResponseException#getMessage()} 会把完整请求 URI 拼进去 ——
+     * Webhook 的 key/token 就在 query 里。这条字符串最终会写进
+     * {@code scheduled_tasks.notify_last_error} 并渲染到任务详情页，
+     * 等于把机器人凭据打印在页面上（管理员还能看到所有人的）。
+     * 所以这里只保留状态码与异常类型。
+     */
+    static String safeReason(Throwable e) {
+        if (e == null) return "未知错误";
+        if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException ex) {
+            return "HTTP " + ex.getStatusCode().value();
+        }
+        if (e instanceof java.util.concurrent.TimeoutException) return "请求超时";
+        String name = e.getClass().getSimpleName();
+        return (name == null || name.isBlank()) ? "请求异常" : name;
+    }
+
     static String formatTime(LocalDateTime t) {
         return (t == null ? LocalDateTime.now() : t).format(TIME_FMT);
     }

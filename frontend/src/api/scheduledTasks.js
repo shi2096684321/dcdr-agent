@@ -8,7 +8,7 @@ export const getScheduledTasks = () => unwrap(api.get('/api/scheduled-tasks'))
 // 任务详情
 export const getScheduledTask = (id) => unwrap(api.get(`/api/scheduled-tasks/${id}`))
 
-// 创建任务 (关联 Agent + cron + 输入)
+// 创建任务 (cron + 输入, 关联 Agent 可选)
 export const createScheduledTask = (data) => unwrap(api.post('/api/scheduled-tasks', data))
 
 // 更新任务 (更新 cron 会重新调度)

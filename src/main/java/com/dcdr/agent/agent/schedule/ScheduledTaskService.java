@@ -12,8 +12,10 @@ import com.dcdr.agent.dto.ScheduledTaskDtos;
 import com.dcdr.agent.entity.AgentDefinitionEntity;
 import com.dcdr.agent.entity.ScheduledTaskEntity;
 import com.dcdr.agent.entity.ScheduledTaskRunEntity;
+import com.dcdr.agent.model.registry.ModelRegistry;
 import com.dcdr.agent.repository.ScheduledTaskRepository;
 import com.dcdr.agent.repository.ScheduledTaskRunRepository;
+import com.dcdr.agent.service.UserModelService;
 import com.dcdr.agent.cluster.ClusterLock;
 import com.dcdr.agent.notify.Notifier;
 import com.dcdr.agent.notify.NotifierRegistry;
@@ -73,6 +75,10 @@ public class ScheduledTaskService {
     private final NotifyProperties notifyProperties;
     /** V3.3: 执行记录（推送里的详情链接指向它） */
     private final ScheduledTaskRunRepository runRepository;
+    /** 执行模型校验: 平台模型注册中心 */
+    private final ModelRegistry modelRegistry;
+    /** 执行模型校验: 用户自定义模型 (custom: 前缀, 需校验归属) */
+    private final UserModelService userModelService;
 
     /** 租约 TTL(秒): 需 >= 单次任务最长执行时间(Agent 调用可能较久) */
     @Value("${agent.v3.cluster.lock-ttl-seconds:300}")
@@ -148,6 +154,7 @@ public class ScheduledTaskService {
     @Transactional
     public ScheduledTaskDtos.ScheduledTaskView create(ScheduledTaskDtos.SaveScheduledTaskRequest req, String userId) {
         validate(req);
+        validateModel(req.getModel(), userId);
         ScheduledTaskEntity e = new ScheduledTaskEntity();
         e.setId("sched_" + UUID.randomUUID().toString().replace("-", ""));
         e.setUserId(userId);
@@ -170,6 +177,8 @@ public class ScheduledTaskService {
         ownershipGuard.check(ResourceType.SCHEDULED_TASK, id, userId, isAdmin, true);
         ScheduledTaskEntity e = loadEntity(id);
         validate(req);
+        // 用任务归属人校验自定义模型, 而不是当前操作者(admin 可能编辑他人任务)
+        validateModel(req.getModel(), e.getUserId());
         // 取消旧调度
         cancelSchedule(e.getId());
         applyRequest(e, req);
@@ -218,6 +227,8 @@ public class ScheduledTaskService {
                 .taskId(e.getId() + "#test")
                 .taskName(e.getName() + " (测试)")
                 .channel(e.getNotifyChannel())
+                // V3.4: 用任务归属人的推送配置, 而不是操作者 —— 任务跑完结果本就该进他配的群
+                .userId(e.getUserId())
                 .status("success")
                 .content("收到这条消息说明 Webhook 地址与网络都正常。\n"
                         + "真正的推送会在任务执行完成后发送, 内容是该次执行的 Agent 输出。")
@@ -423,6 +434,11 @@ public class ScheduledTaskService {
             req.setSessionId(sess.getId());
             req.setMessage(input);
             req.setAgentId(task.getAgentId());
+            // 任务上显式选了模型时优先级最高: 连 Agent 配置的模型也不覆盖 (见 ChatRequest#modelLocked)
+            if (task.getModel() != null && !task.getModel().isBlank()) {
+                req.setModel(task.getModel());
+                req.setModelLocked(true);
+            }
             req.setStream(false);
             // chatSync 内部复用流式管线（含工具循环），抓取/检索类任务才能真正拿到数据。
             // 曾经直接用 chatSync 的旧实现（单轮 invoke）时，模型没有工具可用，产出全是编的。
@@ -541,6 +557,8 @@ public class ScheduledTaskService {
                 .taskId(taskId)
                 .taskName(task.getName())
                 .channel(task.getNotifyChannel())
+                // V3.4: 用户级推送配置按任务归属人解析
+                .userId(task.getUserId())
                 .status(result.getStatus())
                 .content(result.getOutput())
                 .error(result.getError())
@@ -602,9 +620,6 @@ public class ScheduledTaskService {
         if (req.getName() == null || req.getName().isBlank()) {
             throw new BusinessException(400, "任务名称不能为空");
         }
-        if (req.getAgentId() == null || req.getAgentId().isBlank()) {
-            throw new BusinessException(400, "必须指定关联 Agent");
-        }
         if (req.getCron() == null || req.getCron().isBlank()) {
             throw new BusinessException(400, "cron 表达式不能为空");
         }
@@ -613,13 +628,47 @@ public class ScheduledTaskService {
         } catch (IllegalArgumentException e) {
             throw new BusinessException(400, "cron 表达式无效: " + e.getMessage());
         }
-        // Agent 必须存在
-        agentDefinitionService.loadEntity(req.getAgentId());
+        // 关联 Agent 可选: 不关联时按默认助手执行(平台默认模型 + 无 Agent 配置/工具白名单)。
+        // 指定了才校验存在性, 避免用户填了个已删除的 ID 后到点执行才失败。
+        if (req.getAgentId() != null && !req.getAgentId().isBlank()) {
+            agentDefinitionService.loadEntity(req.getAgentId());
+        }
+    }
+
+    /**
+     * 校验执行模型是否可用。留空直接放行(= 跟随 Agent 配置/平台默认)。
+     * <p>
+     * 为什么在<b>保存时</b>校验: 模型名是用户手选的, 配错只会在下一次 cron 到点才暴露,
+     * 那时只剩一条失败记录, 排查成本远高于保存当下就被拒。
+     * <p>
+     * 用户自定义模型 ({@code custom:<id>}) 必须按<b>任务归属人</b>校验 —— 否则 admin 建任务时
+     * 可能填上别人私有的模型 ID, 到点执行才 404。
+     */
+    private void validateModel(String model, String userId) {
+        if (model == null || model.isBlank()) return;
+        String m = model.trim();
+        try {
+            if (userModelService.isCustomModelName(m)) {
+                // 只校验存在性/启用状态, 不构建 provider: 保存动作不该解密 apiKey 或建客户端
+                userModelService.assertUsable(userId, m);
+            } else {
+                modelRegistry.getChatProvider(m);
+            }
+        } catch (BusinessException e) {
+            throw new BusinessException(400, "执行模型不可用: " + e.getMessage());
+        } catch (Exception e) {
+            throw new BusinessException(400, "执行模型不可用: " + m);
+        }
     }
 
     private void applyRequest(ScheduledTaskEntity e, ScheduledTaskDtos.SaveScheduledTaskRequest req) {
         e.setName(req.getName().trim());
-        e.setAgentId(req.getAgentId());
+        // 关联 Agent 可选: 空串归一化成 null, 避免 "" 与 null 两种空值
+        e.setAgentId(req.getAgentId() == null || req.getAgentId().isBlank()
+                ? null : req.getAgentId().trim());
+        // 执行模型可选: 空串归一化成 null(= 跟随 Agent 配置/平台默认)
+        e.setModel(req.getModel() == null || req.getModel().isBlank()
+                ? null : req.getModel().trim());
         e.setCron(req.getCron().trim());
         e.setInputMessage(req.getInputMessage());
         if (req.getEnabled() != null) e.setEnabled(req.getEnabled());
@@ -636,11 +685,14 @@ public class ScheduledTaskService {
         v.setUserId(e.getUserId());
         v.setName(e.getName());
         v.setAgentId(e.getAgentId());
-        // 关联 Agent 名称 (前端展示用)
-        try {
-            AgentDefinitionEntity agent = agentDefinitionService.loadEntity(e.getAgentId());
-            v.setAgentName(agent.getName());
-        } catch (Exception ignored) {}
+        // 关联 Agent 名称 (前端展示用); 未关联 Agent 时留空, 由前端展示"默认助手"
+        if (e.getAgentId() != null && !e.getAgentId().isBlank()) {
+            try {
+                AgentDefinitionEntity agent = agentDefinitionService.loadEntity(e.getAgentId());
+                v.setAgentName(agent.getName());
+            } catch (Exception ignored) {}
+        }
+        v.setModel(e.getModel());
         v.setCron(e.getCron());
         v.setInputMessage(e.getInputMessage());
         v.setEnabled(e.isEnabled());

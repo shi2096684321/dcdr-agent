@@ -1,14 +1,18 @@
 package com.dcdr.agent.notify;
 
+import com.dcdr.agent.service.UserNotifyConfigService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * 分发器行为测试。
@@ -22,6 +26,8 @@ class NotifierRegistryTest {
     private NotifyProperties props;
     private AtomicInteger sendCount;
     private NotifierRegistry registry;
+    /** V3.4: 用户级推送配置; 测试关心的是"分发语义", 凭据解析用 mock 代替数据库 */
+    private UserNotifyConfigService notifyConfigService;
 
     /** 只计数的假渠道, 避免测试触网 */
     private final class CountingNotifier implements Notifier {
@@ -58,7 +64,8 @@ class NotifierRegistryTest {
         props.setEnabled(true);
         props.setThrottleWindowMs(60_000L);
         sendCount = new AtomicInteger();
-        registry = new NotifierRegistry(props, List.of(new CountingNotifier()));
+        notifyConfigService = mock(UserNotifyConfigService.class);
+        registry = new NotifierRegistry(props, List.of(new CountingNotifier()), notifyConfigService);
         registry.init();
     }
 
@@ -71,6 +78,33 @@ class NotifierRegistryTest {
         assertFalse(r.isSuccess());
         assertEquals(0, sendCount.get());
         assertTrue(r.getReason().contains("总开关"));
+    }
+
+    @Test
+    @DisplayName("总开关关闭但用户已配置个人渠道时仍然发送")
+    void userConfigAllowsSendWhenGlobalSwitchOff() {
+        props.setEnabled(false);
+        when(notifyConfigService.credentials("u1")).thenReturn(Map.of(
+                NotifyChannel.WECOM_BOT, userCredential(true)));
+
+        NotifyMessage m = userMessage("u1");
+        assertTrue(registry.dispatch(m).isSuccess());
+        assertEquals(1, sendCount.get());
+        assertNotNull(m.getWebhookUrl(), "用户凭据应填入消息, 供渠道实现优先使用");
+    }
+
+    @Test
+    @DisplayName("个人渠道已停用且部署未配置时, 明确报停用而不是报未配置")
+    void disabledUserConfigWithoutGlobalFails() {
+        // 全局开关开着, 但部署级 webhook 没配: 此时用户"配了又关掉"必须说清原因
+        when(notifyConfigService.credentials("u1")).thenReturn(Map.of(
+                NotifyChannel.WECOM_BOT, userCredential(false)));
+
+        NotifyResult r = registry.dispatch(userMessage("u1"));
+        assertFalse(r.isSuccess());
+        assertFalse(r.isSkipped());
+        assertTrue(r.getError().contains("已停用"), "应提示已停用, 实际: " + r.getError());
+        assertEquals(0, sendCount.get());
     }
 
     @Test
@@ -124,7 +158,7 @@ class NotifierRegistryTest {
     @Test
     @DisplayName("渠道没有实现时给出明确原因, 而不是默默无反应")
     void channelWithoutImplementationFails() {
-        NotifierRegistry empty = new NotifierRegistry(props, List.of());
+        NotifierRegistry empty = new NotifierRegistry(props, List.of(), notifyConfigService);
         empty.init();
         NotifyResult r = empty.dispatch(message("s1", "success"));
         assertFalse(r.isSuccess());
@@ -171,7 +205,7 @@ class NotifierRegistryTest {
                 return "";
             }
         };
-        NotifierRegistry reg = new NotifierRegistry(p, List.of(new CountingNotifier(), ding));
+        NotifierRegistry reg = new NotifierRegistry(p, List.of(new CountingNotifier(), ding), notifyConfigService);
         reg.init();
 
         NotifyMessage m = NotifyMessage.builder()
@@ -180,6 +214,18 @@ class NotifierRegistryTest {
         assertTrue(reg.dispatch(m).isSuccess());
         assertEquals(1, dingCount.get(), "应当路由到钉钉渠道");
         assertEquals(0, sendCount.get(), "不应误发给企业微信渠道");
+    }
+
+    /** 用户级凭据 (configured=true, 可选启用) */
+    private UserNotifyConfigService.Credential userCredential(boolean enabled) {
+        return new UserNotifyConfigService.Credential(
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", null, null, true, enabled);
+    }
+
+    private NotifyMessage userMessage(String userId) {
+        return NotifyMessage.builder()
+                .taskId("s1").taskName("t").status("success").content("x")
+                .durationMs(1).runAt(LocalDateTime.now()).userId(userId).build();
     }
 
     private NotifyMessage message(String taskId, String status) {

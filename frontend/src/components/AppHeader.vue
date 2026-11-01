@@ -63,6 +63,7 @@
         <template #dropdown>
           <el-dropdown-menu>
             <el-dropdown-item command="profile" :icon="UserIcon">个人信息</el-dropdown-item>
+            <el-dropdown-item command="notify" :icon="Bell">推送配置</el-dropdown-item>
             <el-dropdown-item command="password" :icon="Lock">修改密码</el-dropdown-item>
             <el-dropdown-item v-if="authStore.isAdmin" command="admin" :icon="Setting">管理后台</el-dropdown-item>
             <el-dropdown-item command="logout" :icon="SwitchButton" divided>退出登录</el-dropdown-item>
@@ -149,17 +150,21 @@
       <el-button type="primary" :loading="umSaving" @click="submitUm">保存</el-button>
     </template>
   </el-dialog>
+
+  <!-- V3.4 推送配置 -->
+  <NotifyConfigDialog v-model="notifyConfigVisible" />
 </template>
 
 <script setup>
 import { reactive, ref, computed, watch } from 'vue'
-import { User as UserIcon, Lock, Setting, SwitchButton } from '@element-plus/icons-vue'
+import { User as UserIcon, Lock, Setting, SwitchButton, Bell } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
 import { changePassword } from '@/api/auth'
 import { getUserModels, createUserModel, updateUserModel, deleteUserModel, extractMessage } from '@/api'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import NotifyConfigDialog from '@/components/NotifyConfigDialog.vue'
 import logoUrl from '@/assets/dcdr-logo.png'
 // 版本号来自虚拟模块(见 vite.config.js): 唯一真值源是 package.json。
 // 此前这里是硬编码的 "v3.1", package.json 升到 3.2.0-ui 后它一直没跟着改。
@@ -346,10 +351,16 @@ function onUserCommand(cmd) {
     emit('update:mode', 'admin')
   } else if (cmd === 'password') {
     pwdDialogVisible.value = true
+  } else if (cmd === 'notify') {
+    // V3.4: 推送配置与任务解耦, 从用户菜单随时可改
+    notifyConfigVisible.value = true
   } else if (cmd === 'profile') {
     ElMessage.info(`当前账号: ${authStore.username} (${authStore.user?.role || '-'})`)
   }
 }
+
+// V3.4 推送配置
+const notifyConfigVisible = ref(false)
 
 // 修改密码
 const pwdDialogVisible = ref(false)

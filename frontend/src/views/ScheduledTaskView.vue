@@ -17,9 +17,9 @@
               <el-tag v-if="!t.enabled" size="small" type="info" class="tag">停用</el-tag>
             </div>
             <div class="task-meta">
-              <span class="cron">{{ t.cron }}</span>
+              <span class="cron" :title="t.cron">{{ cronText(t.cron) }}</span>
               <span>·</span>
-              <span>{{ t.agentName || t.agentId }}</span>
+              <span>{{ agentLabel(t) }}</span>
             </div>
             <div class="task-status">
               <el-tag v-if="t.lastStatus" size="small" :type="statusTagType(t.lastStatus)" class="tag">
@@ -47,6 +47,7 @@
           </div>
           <div class="task-toolbar-right">
             <el-button type="primary" size="small" :loading="triggering" @click="triggerTask">立即触发</el-button>
+            <el-button size="small" @click="notifyConfigVisible = true">推送配置</el-button>
             <el-button v-if="currentTask.notifyEnabled" size="small" :loading="testingNotify" @click="testNotify">
               测试推送
             </el-button>
@@ -61,14 +62,21 @@
         <div class="task-detail">
           <div class="detail-row">
             <div class="detail-label">关联专家</div>
-            <div class="detail-value">{{ currentTask.agentName || currentTask.agentId }}</div>
+            <div class="detail-value">{{ agentLabel(currentTask) }}</div>
           </div>
           <div class="detail-row">
-            <div class="detail-label">Cron 表达式</div>
-            <div class="detail-value"><code>{{ currentTask.cron }}</code> <span class="cron-hint">{{ cronHint(currentTask.cron) }}</span></div>
+            <div class="detail-label">执行模型</div>
+            <div class="detail-value">{{ modelLabel(currentTask.model) }}</div>
           </div>
           <div class="detail-row">
-            <div class="detail-label">触发输入</div>
+            <div class="detail-label">执行时间</div>
+            <div class="detail-value">
+              {{ cronText(currentTask.cron) }}
+              <code class="cron-raw" :title="currentTask.cron">{{ currentTask.cron }}</code>
+            </div>
+          </div>
+          <div class="detail-row">
+            <div class="detail-label">提示词</div>
             <div class="detail-value pre">{{ currentTask.inputMessage || '(默认: 定时触发)' }}</div>
           </div>
           <div class="detail-row">
@@ -153,23 +161,61 @@
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如: 每日晨报" maxlength="100" />
         </el-form-item>
-        <el-form-item label="关联专家" required>
-          <el-select v-model="form.agentId" placeholder="选择触发执行的专家" filterable style="width:100%">
+        <el-form-item label="关联专家">
+          <el-select v-model="form.agentId" placeholder="可选: 留空则用默认助手执行" filterable clearable style="width:100%">
             <el-option v-for="a in agents" :key="a.id" :label="a.name + (a.isTemplate ? ' (模板)' : '')" :value="a.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="Cron 表达式" required>
-          <el-input v-model="form.cron" placeholder="Spring 6 字段: 秒 分 时 日 月 周 (如: 0 0 9 * * * = 每天9点)" />
-          <div class="cron-presets">
+        <el-form-item label="执行模型">
+          <el-select v-model="form.model" clearable filterable
+                     placeholder="可选: 留空则用专家配置的模型 / 平台默认" style="width:100%">
+            <el-option-group label="平台模型">
+              <el-option v-for="m in platformChatModels" :key="m.name" :label="m.label" :value="m.name" />
+            </el-option-group>
+            <el-option-group v-if="customChatModels.length" label="我的自定义模型">
+              <el-option v-for="m in customChatModels" :key="m.name" :label="m.label" :value="m.name" />
+            </el-option-group>
+          </el-select>
+          <div class="notify-hint">指定后优先级最高：即使专家配置了别的模型，也按这里执行。</div>
+        </el-form-item>
+        <el-form-item label="执行时间" required>
+          <div class="sched-config">
+            <el-select v-model="form.scheduleType" style="width:128px">
+              <el-option v-for="o in scheduleTypes" :key="o.value" :label="o.label" :value="o.value" />
+            </el-select>
+            <el-select v-if="form.scheduleType === 'weekly'" v-model="form.weekday" style="width:96px">
+              <el-option v-for="d in weekdays" :key="d.value" :label="d.label" :value="d.value" />
+            </el-select>
+            <el-select v-if="form.scheduleType === 'monthly'" v-model="form.monthDay" style="width:104px">
+              <el-option v-for="d in 31" :key="d" :label="d + ' 日'" :value="d" />
+            </el-select>
+            <el-time-select v-if="needTimeOfDay" v-model="form.timeOfDay" start="00:00" step="00:05" end="23:55"
+                            placeholder="时间" style="width:118px" />
+            <template v-if="form.scheduleType === 'hourly'">
+              <span class="sched-word">第</span>
+              <el-input-number v-model="form.minuteOfHour" :min="0" :max="59" controls-position="right" style="width:92px" />
+              <span class="sched-word">分</span>
+            </template>
+            <template v-if="form.scheduleType === 'minutes'">
+              <span class="sched-word">每</span>
+              <el-input-number v-model="form.intervalMinutes" :min="1" :max="59" controls-position="right" style="width:92px" />
+              <span class="sched-word">分钟</span>
+            </template>
+          </div>
+          <el-input v-if="form.scheduleType === 'custom'" v-model="form.cron"
+                    placeholder="Spring 6 字段: 秒 分 时 日 月 周 (如: 0 0 9 * * *)" style="margin-top:8px" />
+          <div class="cron-presets" v-if="form.scheduleType === 'custom'">
             <el-button v-for="p in cronPresets" :key="p.value" link type="primary" @click="form.cron = p.value">
               {{ p.label }}
             </el-button>
           </div>
-          <div class="cron-hint" v-if="form.cron">{{ cronHint(form.cron) }}</div>
+          <div class="cron-hint">
+            {{ cronText(effectiveCron) }}<template v-if="form.scheduleType === 'custom'"> · {{ effectiveCron }}</template>
+          </div>
         </el-form-item>
-        <el-form-item label="触发输入">
+        <el-form-item label="提示词">
           <el-input v-model="form.inputMessage" type="textarea" :rows="3"
-                    placeholder="触发时喂给专家的输入消息 (留空则用 '(定时触发)')" />
+                    placeholder="每次触发时发给模型的提示词 (留空则用 '(定时触发)')" />
         </el-form-item>
         <el-form-item label="启用">
           <el-switch v-model="form.enabled" />
@@ -178,13 +224,18 @@
           <div class="notify-row">
             <el-switch v-model="form.notifyEnabled" />
             <el-select v-if="form.notifyEnabled" v-model="form.notifyChannel" size="small"
-                       placeholder="跟随全局默认" clearable style="width:190px">
-              <el-option v-for="c in notifyChannels" :key="c.value" :label="c.label" :value="c.value" />
+                       placeholder="跟随默认渠道" clearable style="width:220px">
+              <el-option v-for="c in notifyChannels" :key="c.value"
+                         :label="c.label + (c.configured ? '' : ' (未配置)')"
+                         :value="c.value" />
             </el-select>
           </div>
           <div class="notify-hint">
-            执行完成后把结果推送到企业微信（经「微信插件」可在个人微信收到）。
+            执行完成后把结果推到<i>你自己的</i>机器人：企业微信（经「微信插件」可在个人微信收到）或钉钉。
             失败消息必定推送；成功消息同一任务在节流窗口内最多一条，避免刷屏。
+            <el-button link type="primary" size="small" @click="notifyConfigVisible = true">
+              去配置推送渠道
+            </el-button>
           </div>
         </el-form-item>
       </el-form>
@@ -237,6 +288,9 @@
         <el-button @click="runVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- V3.4 个人推送渠道配置: 与任务解耦, 配一次所有任务共用 -->
+    <NotifyConfigDialog v-model="notifyConfigVisible" @saved="loadNotifyConfigs" />
   </div>
 </template>
 
@@ -246,8 +300,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getScheduledTasks, createScheduledTask, updateScheduledTask, deleteScheduledTask, triggerScheduledTask,
   testScheduledTaskNotify, previewScheduledTaskNotify, getScheduledTaskRuns, getScheduledTaskRun,
-  getAgents, extractMessage
+  getAgents, getNotifyConfigs, extractMessage
 } from '@/api'
+import NotifyConfigDialog from '@/components/NotifyConfigDialog.vue'
+import { useModelStore } from '@/stores/model'
 
 const loading = ref(false)
 const tasks = ref([])
@@ -273,13 +329,101 @@ const runDetail = ref(null)
 const dialogVisible = ref(false)
 const editing = ref(false)
 const saving = ref(false)
-const form = reactive({ id: '', name: '', agentId: '', cron: '', inputMessage: '', enabled: true, notifyEnabled: false, notifyChannel: '' })
 
-// V3.3 推送渠道。后端每新增一个 Notifier 实现, 在此追加一项即可。
-const notifyChannels = [
-  { value: 'wecom_bot', label: '企业微信群机器人' },
-  { value: 'dingtalk_bot', label: '钉钉群机器人' }
+const DEFAULT_TIME = '09:00'
+// scheduleType 是"给人看"的选项, 真正存库的仍是 cron(兼容存量任务与内部调度)
+const form = reactive({
+  id: '', name: '', agentId: '', model: '',
+  scheduleType: 'daily', timeOfDay: DEFAULT_TIME, weekday: 'MON', monthDay: 1,
+  minuteOfHour: 0, intervalMinutes: 30,
+  cron: '', inputMessage: '', enabled: true, notifyEnabled: false, notifyChannel: ''
+})
+
+const modelStore = useModelStore()
+
+// ===== V3.4 用户级推送配置 =====
+const notifyConfigVisible = ref(false)
+const notifyConfigs = ref([])
+
+/**
+ * 渠道清单唯一来源是后端 /api/notify-config。
+ * 前端再维护一份常量, 新增渠道时必然漏改一处, 表现为"能配不能选"或"选了发不出去"。
+ */
+const notifyChannels = computed(() =>
+  notifyConfigs.value.map((c) => ({
+    value: c.channel,
+    label: c.channelLabel,
+    configured: c.configured && c.enabled
+  })))
+
+async function loadNotifyConfigs() {
+  try {
+    notifyConfigs.value = await getNotifyConfigs()
+  } catch (e) {
+    // 静默失败会让下拉整体变成"(未配置)", 看起来像"配置丢了", 必须提示
+    console.warn('[ScheduledTaskView] 加载推送配置失败:', e)
+    ElMessage.warning('推送配置加载失败，渠道列表可能不完整')
+  }
+}
+
+// ===== 执行时间: 可读选项 → cron =====
+const scheduleTypes = [
+  { value: 'daily', label: '每天' },
+  { value: 'workdays', label: '工作日' },
+  { value: 'weekly', label: '每周' },
+  { value: 'monthly', label: '每月' },
+  { value: 'hourly', label: '每小时' },
+  { value: 'minutes', label: '按分钟间隔' },
+  { value: 'custom', label: '自定义 Cron' }
 ]
+const weekdays = [
+  { value: 'MON', label: '周一' },
+  { value: 'TUE', label: '周二' },
+  { value: 'WED', label: '周三' },
+  { value: 'THU', label: '周四' },
+  { value: 'FRI', label: '周五' },
+  { value: 'SAT', label: '周六' },
+  { value: 'SUN', label: '周日' }
+]
+const WEEK_LABEL = Object.fromEntries(weekdays.map((d) => [d.value, d.label]))
+
+// Spring cron 的星期字段同时接受名称(MON)和数字(0/7=周日, 1=周一), 展示与回填都要认
+const DAY_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
+
+function normalizeWeek(w) {
+  const s = String(w || '').toUpperCase()
+  return /^[0-7]$/.test(s) ? DAY_NAMES[Number(s) % 7] : s
+}
+
+/** 哪些类型需要"几点几分" */
+const needTimeOfDay = computed(() =>
+  ['daily', 'workdays', 'weekly', 'monthly'].includes(form.scheduleType))
+
+/** 由可读选项拼出的 cron; 自定义模式直接用用户填的 */
+const effectiveCron = computed(() => {
+  const [h, m] = String(form.timeOfDay || DEFAULT_TIME).split(':').map(Number)
+  switch (form.scheduleType) {
+    case 'daily': return `0 ${m} ${h} * * *`
+    case 'workdays': return `0 ${m} ${h} * * MON-FRI`
+    case 'weekly': return `0 ${m} ${h} * * ${form.weekday}`
+    case 'monthly': return `0 ${m} ${h} ${form.monthDay} * *`
+    case 'hourly': return `0 ${form.minuteOfHour} * * * *`
+    case 'minutes': return `0 0/${Math.min(59, Math.max(1, form.intervalMinutes || 1))} * * * *`
+    default: return (form.cron || '').trim()
+  }
+})
+
+// ===== 模型 =====
+const platformChatModels = computed(() =>
+  modelStore.chatModels.filter((m) => !String(m.name).startsWith('custom:')))
+const customChatModels = computed(() =>
+  modelStore.chatModels.filter((m) => String(m.name).startsWith('custom:')))
+
+function modelLabel(name) {
+  if (!name) return '跟随专家/平台默认'
+  const hit = modelStore.chatModels.find((m) => m.name === name)
+  return hit ? hit.label : name
+}
 
 // 常用 cron 预设
 const cronPresets = [
@@ -300,9 +444,14 @@ function statusTagType(s) {
 function statusLabel(s) {
   return ({ success: '成功', failed: '失败', running: '运行中' })[s] || s
 }
+// 关联专家可选: 未关联时用默认助手执行
+function agentLabel(t) {
+  return t.agentName || t.agentId || '默认助手（未关联）'
+}
 function notifyChannelLabel(code) {
-  const hit = notifyChannels.find(c => c.value === code)
-  return hit ? hit.label : '跟随全局默认'
+  if (!code) return '跟随默认渠道'
+  const hit = notifyChannels.value.find((c) => c.value === code)
+  return hit ? hit.label : code
 }
 function notifyStatusLabel(s) {
   // skipped 不是故障: 总开关关闭 / 触发节流都会走到这里, 单独一种配色避免误判为失败
@@ -320,16 +469,64 @@ function formatTime(t) {
   if (isNaN(d.getTime())) return String(t)
   return d.toLocaleString('zh-CN', { hour12: false })
 }
-function cronHint(cron) {
-  // 简单 cron 提示 (不完整, 仅辅助)
-  const p = (cron || '').trim().split(/\s+/)
-  if (p.length !== 6) return '需 6 字段: 秒 分 时 日 月 周'
+/**
+ * cron → 人话。只覆盖平台自己生成的几种形态 (列表/详情展示用),
+ * 其它一律回落成 "自定义 (原始 cron)", 绝不猜错时间点。
+ */
+function cronText(cron) {
+  const p = String(cron || '').trim().split(/\s+/)
+  if (p.length !== 6) return '自定义时间'
   const [s, m, h, d, mo, w] = p
-  if (s === '0' && m === '0' && h === '9' && d === '*' && mo === '*' && w === '*') return '每天 9:00'
-  if (s === '0' && m === '0' && h === '0' && d === '*' && mo === '*' && w === '*') return '每天 0:00'
-  if (s === '0' && m === '0' && h === '*' && d === '*' && mo === '*' && w === '*') return '每小时整点'
-  if (s === '0' && m === '*' && h === '*' && d === '*' && mo === '*' && w === '*') return '每分钟'
-  return ''
+  const week = normalizeWeek(w)
+  const star = week === '*' || week === '?'
+  const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+  if (s !== '0') return `自定义 (${cron})`
+  if (h === '*' && m === '*' && d === '*' && mo === '*' && star) return '每分钟'
+  if (h === '*' && /^\d+$/.test(m) && d === '*' && mo === '*' && star) return `每小时第 ${m} 分`
+  const everyN = /^(?:\*|0)\/(\d+)$/.exec(m)
+  if (h === '*' && everyN && d === '*' && mo === '*' && star) return `每 ${everyN[1]} 分钟`
+  if (/^\d+$/.test(h) && /^\d+$/.test(m) && mo === '*') {
+    const t = hhmm(h, m)
+    if (d === '*' && star) return `每天 ${t}`
+    if (d === '*' && week === 'MON-FRI') return `工作日 ${t}`
+    if (d === '*' && WEEK_LABEL[week]) return `每${WEEK_LABEL[week]} ${t}`
+    if (/^\d+$/.test(d) && star) return `每月 ${d} 日 ${t}`
+  }
+  return `自定义 (${cron})`
+}
+
+/** cron → 表单选项 (编辑存量任务时用); 认不出来就落到"自定义", 原样保留 */
+function parseCronToForm(cron) {
+  form.timeOfDay = DEFAULT_TIME
+  form.weekday = 'MON'
+  form.monthDay = 1
+  form.minuteOfHour = 0
+  form.intervalMinutes = 30
+  form.cron = cron || ''
+  const p = String(cron || '').trim().split(/\s+/)
+  if (p.length !== 6) { form.scheduleType = 'custom'; return }
+  const [s, m, h, d, mo, w] = p
+  const week = normalizeWeek(w)
+  const star = week === '*' || week === '?'
+  if (s === '0' && /^\d+$/.test(m) && /^\d+$/.test(h) && mo === '*') {
+    const time = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+    if (d === '*' && star) { form.scheduleType = 'daily'; form.timeOfDay = time; return }
+    if (d === '*' && week === 'MON-FRI') { form.scheduleType = 'workdays'; form.timeOfDay = time; return }
+    if (d === '*' && WEEK_LABEL[week]) {
+      form.scheduleType = 'weekly'; form.weekday = week; form.timeOfDay = time; return
+    }
+    if (/^\d+$/.test(d) && star) {
+      form.scheduleType = 'monthly'; form.monthDay = Number(d); form.timeOfDay = time; return
+    }
+  }
+  if (s === '0' && h === '*' && /^\d+$/.test(m) && d === '*' && mo === '*' && star) {
+    form.scheduleType = 'hourly'; form.minuteOfHour = Number(m); return
+  }
+  const everyN = /^(?:\*|0)\/(\d+)$/.exec(m)
+  if (s === '0' && h === '*' && everyN && d === '*' && mo === '*' && star) {
+    form.scheduleType = 'minutes'; form.intervalMinutes = Number(everyN[1]); return
+  }
+  form.scheduleType = 'custom'
 }
 
 async function loadTasks() {
@@ -373,8 +570,9 @@ function openEditDialog() {
   const t = currentTask.value
   form.id = t.id
   form.name = t.name
-  form.agentId = t.agentId
-  form.cron = t.cron
+  form.agentId = t.agentId || ''
+  form.model = t.model || ''
+  parseCronToForm(t.cron)
   form.inputMessage = t.inputMessage || ''
   form.enabled = t.enabled
   form.notifyEnabled = !!t.notifyEnabled
@@ -386,6 +584,13 @@ function resetForm() {
   form.id = ''
   form.name = ''
   form.agentId = ''
+  form.model = ''
+  form.scheduleType = 'daily'
+  form.timeOfDay = DEFAULT_TIME
+  form.weekday = 'MON'
+  form.monthDay = 1
+  form.minuteOfHour = 0
+  form.intervalMinutes = 30
   form.cron = ''
   form.inputMessage = ''
   form.enabled = true
@@ -395,14 +600,15 @@ function resetForm() {
 
 async function submitForm() {
   if (!form.name || !form.name.trim()) { ElMessage.warning('请填写任务名称'); return }
-  if (!form.agentId) { ElMessage.warning('请选择关联专家'); return }
-  if (!form.cron || !form.cron.trim()) { ElMessage.warning('请填写 Cron 表达式'); return }
+  const cron = effectiveCron.value
+  if (!cron) { ElMessage.warning('请填写 Cron 表达式'); return }
   saving.value = true
   try {
     const payload = {
       name: form.name.trim(),
-      agentId: form.agentId,
-      cron: form.cron.trim(),
+      agentId: form.agentId || null,
+      model: form.model || null,
+      cron,
       inputMessage: form.inputMessage || null,
       enabled: form.enabled,
       notifyEnabled: form.notifyEnabled,
@@ -525,6 +731,9 @@ onMounted(async () => {
   await loadTasks()
   loadAgents()
   loadRuns()
+  loadNotifyConfigs()
+  // 模型列表用于"执行模型"下拉; store 内部幂等, 重复调用不会重复请求
+  modelStore.loadModels().catch(() => {})
 })</script>
 
 <style scoped>
@@ -562,7 +771,11 @@ onMounted(async () => {
 .detail-value.pre { white-space: pre-wrap; word-break: break-word; }
 .detail-value code { background: var(--dcdr-bg-subtle); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
 .detail-value.error { color: var(--dcdr-danger); }
-.cron-hint { color: var(--dcdr-text-3); font-size: 12px; margin-left: 8px; }
+.cron-hint { color: var(--dcdr-text-3); font-size: 12px; margin-top: 4px; }
+.cron-raw { margin-left: 10px; background: var(--dcdr-bg-subtle); padding: 1px 6px; border-radius: 4px; font-family: var(--dcdr-font-mono); font-size: 11px; color: var(--dcdr-text-3); }
+/* 执行时间的可读配置行 */
+.sched-config { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; width: 100%; }
+.sched-word { font-size: 12.5px; color: var(--dcdr-text-2); }
 
 .trigger-result { margin-top: 16px; background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; }
 .tr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 500; }

@@ -2,6 +2,7 @@ package com.dcdr.agent.notify;
 
 import lombok.Builder;
 import lombok.Data;
+import lombok.ToString;
 
 import java.time.LocalDateTime;
 
@@ -38,6 +39,28 @@ public class NotifyMessage {
 
     /** 任务级渠道覆盖; 为空时用 {@code NotifyProperties#channel} */
     private String channel;
+
+    /**
+     * 消息所属用户 (V3.4)。非空时, {@link NotifierRegistry} 会按该用户自己的推送配置
+     * 填充下面的凭据字段; 为空则只用部署级配置。
+     */
+    private String userId;
+
+    /**
+     * 以下三项是<b>服务端内部</b>凭据: 由 {@link NotifierRegistry} 在发送前从用户配置解密填入,
+     * 非空时优先于部署级 {@code agent.notify.*}; 不得写日志、不得序列化给前端。
+     * <p>
+     * {@code @ToString.Exclude} 不是可选项: 本类是 {@code @Data}, 默认 {@code toString()}
+     * 会把这三个字段原样打出来 —— 一句 {@code log.debug("{}", message)} 就能把用户的
+     * 机器人 key 写进日志文件。"不得写日志"这条约定必须由代码保证, 而不是靠人记得。
+     */
+    @ToString.Exclude
+    private String webhookUrl;
+    /** 钉钉加签密钥 (用户级) */
+    @ToString.Exclude
+    private String secret;
+    /** 钉钉自定义关键词 (用户级) */
+    private String keyword;
 
     /**
      * 完整结果的访问地址（免登录详情页）。

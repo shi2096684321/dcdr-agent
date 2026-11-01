@@ -18,11 +18,13 @@ public class ScheduledTaskDtos {
     public static class SaveScheduledTaskRequest {
         @Schema(description = "任务名称", requiredMode = Schema.RequiredMode.REQUIRED)
         private String name;
-        @Schema(description = "关联的 Agent ID", requiredMode = Schema.RequiredMode.REQUIRED)
+        @Schema(description = "关联的 Agent ID; 可选, 留空则使用默认助手执行")
         private String agentId;
+        @Schema(description = "执行模型名; 可选, 留空=跟随 Agent 配置/平台默认", example = "qwen-plus")
+        private String model;
         @Schema(description = "Cron 表达式 (Spring 6 字段: 秒 分 时 日 月 周)", example = "0 0 9 * * *")
         private String cron;
-        @Schema(description = "触发时喂给 Agent 的输入消息")
+        @Schema(description = "提示词: 每次触发时发给模型的输入")
         private String inputMessage;
         @Schema(description = "是否启用")
         private Boolean enabled;
@@ -40,8 +42,10 @@ public class ScheduledTaskDtos {
         private String userId;
         private String name;
         private String agentId;
-        /** 关联 Agent 名称 (前端展示用) */
+        /** 关联 Agent 名称 (前端展示用); 未关联 Agent 时为空 */
         private String agentName;
+        /** 执行模型名; 为空表示跟随 Agent 配置/平台默认 */
+        private String model;
         private String cron;
         private String inputMessage;
         private boolean enabled;
@@ -69,7 +73,7 @@ public class ScheduledTaskDtos {
     @Data
     @Schema(description = "手动触发定时任务执行")
     public static class TriggerRequest {
-        @Schema(description = "可选: 覆盖任务默认的输入消息")
+        @Schema(description = "可选: 覆盖任务默认的提示词")
         private String inputMessage;
     }
 

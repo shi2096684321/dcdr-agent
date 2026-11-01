@@ -52,10 +52,19 @@ public class WecomBotNotifier implements Notifier {
 
     @Override
     public NotifyResult send(NotifyMessage message) {
-        String url = props.getWecom().getWebhookUrl();
+        // 用户级配置优先 (V3.4), 未配置时回退部署级 agent.notify.wecom.webhook-url
+        String userUrl = message.getWebhookUrl();
+        // 纵深防御: 保存时校验过一次, 发请求前再校验一次, 防绕过写入路径的脏数据。
+        // 只校验用户级地址 —— 部署级是运维显式配置的, 可能走公司代理域名, 不该被白名单卡住。
+        if (userUrl != null && !userUrl.isBlank()) {
+            String deny = NotifyUrlGuard.check(channel(), userUrl);
+            if (deny != null) return NotifyResult.failed(channel().code(), deny);
+        }
+        String url = firstNonBlank(userUrl, props.getWecom().getWebhookUrl());
         if (url == null || url.isBlank()) {
             return NotifyResult.failed(channel().code(),
-                    "未配置企业微信机器人地址 (agent.notify.wecom.webhook-url)");
+                    "未配置企业微信机器人地址: 请在「推送配置」中填写个人 Webhook, "
+                            + "或由管理员设置 agent.notify.wecom.webhook-url");
         }
         // 按渠道 + 状态渲染模板；默认模板里企业微信用 <font> 给错误信息着色
         String markdown = template.render(channel(), message, limitBytes(),
@@ -72,7 +81,8 @@ public class WecomBotNotifier implements Notifier {
             return parseResponse(resp);
         } catch (Exception e) {
             log.warn("企业微信推送失败 (task={}): {}", message.getTaskId(), e.toString());
-            return NotifyResult.failed(channel().code(), "请求异常: " + e.getMessage());
+            // 不能透传 e.getMessage(): 它可能含带 key 的完整 Webhook, 会落库并展示到页面
+            return NotifyResult.failed(channel().code(), "请求异常: " + NotifyRender.safeReason(e));
         }
     }
 
@@ -89,6 +99,11 @@ public class WecomBotNotifier implements Notifier {
     @Override
     public String truncateSuffix() {
         return TRUNCATE_SUFFIX;
+    }
+
+    /** 用户级凭据优先, 空则回退部署级 */
+    private static String firstNonBlank(String preferred, String fallback) {
+        return (preferred != null && !preferred.isBlank()) ? preferred : fallback;
     }
 
     // ===== 响应解析 =====

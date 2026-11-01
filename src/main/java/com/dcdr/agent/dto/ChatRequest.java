@@ -27,6 +27,17 @@ public class ChatRequest {
     @Schema(description = "指定模型名称（可选，不传则用会话默认或系统默认）", example = "openai-chat")
     private String model;
 
+    /**
+     * 模型是否由调用方"锁定"(服务端内部字段, 不参与 JSON 传输)。
+     * <p>
+     * 默认 {@code null/false}: 指定了 Agent 时, Agent 配置的模型覆盖请求模型(前端选模型 + 选专家
+     * 的既有语义)。置为 {@code true} 时 Agent 不再覆盖模型 —— 定时任务里用户显式选的执行模型
+     * 必须落地, 否则"选了模型却跑了另一个"是不可解释的行为。
+     */
+    @JsonIgnore
+    @Schema(hidden = true)
+    private Boolean modelLocked;
+
     /** 图片URL列表(多模态输入,可选) */
     @Schema(description = "图片 URL 列表（多模态输入，可选）")
     private List<String> images = new ArrayList<>();

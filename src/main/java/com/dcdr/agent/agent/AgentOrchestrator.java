@@ -1929,8 +1929,9 @@ public class AgentOrchestrator {
         if (request.getAgentId() == null || request.getAgentId().isBlank()) return null;
         try {
             AgentDefinitionEntity agent = agentDefinitionService.loadEntity(request.getAgentId());
-            // 1. model override (Agent 配置的模型优先于请求模型)
-            if (agent.getModel() != null && !agent.getModel().isBlank()) {
+            // 1. model override (Agent 配置的模型优先于请求模型; 调用方锁定模型时除外 —— 定时任务场景)
+            if (!Boolean.TRUE.equals(request.getModelLocked())
+                    && agent.getModel() != null && !agent.getModel().isBlank()) {
                 request.setModel(agent.getModel());
             }
             // 2. temperature override

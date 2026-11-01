@@ -16,7 +16,7 @@
 | `v3.0_schema.sql` | routing_logs / webhook_endpoints / workflow_executions → workflow_versions / llm_usage_logs / template_shares → tenants → llm_call_logs | `02_`；由原 beta / rc / llm_trace 三个分脚本合并，段落保留来源标注 |
 | `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback → 混合检索索引（pg_trgm + trigram GIN） | `03_`；由原 5 个功能分脚本合并（2026-10-15 又并入原 v3.2 的混合检索索引 —— 该能力已随 v3.1 交付且随仓默认开启），**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
 | `v3.2_schema.sql` | llm_call_logs.failed_step / error_message（调用链失败定位） | `04_`；纯增量，全部 `IF NOT EXISTS`，仅补列与 COMMENT |
-| `v3.3_schema.sql` | workspaces + sessions.workspace_id（F-49 工作区）→ scheduled_tasks 推送字段（F-50 结果推送） | `05_`；两段各自独立，均为 `IF NOT EXISTS` |
+| `v3.3_schema.sql` | workspaces + sessions.workspace_id（F-49 工作区）→ scheduled_tasks 推送字段（F-50 结果推送）→ scheduled_tasks.model + user_notify_configs（用户级推送配置） | `05_`；各段独立，均为 `IF NOT EXISTS` |
 
 > **升级路径**：从旧库升级 = 按版本逐个执行（或一条 psql 带多个 `-f`，见第九节）；
 > 全新部署 = `docker compose up -d` 自动完成。应用侧 `ddl-auto=update` 始终兜底补齐表与列。

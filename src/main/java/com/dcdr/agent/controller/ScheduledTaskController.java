@@ -71,7 +71,7 @@ public class ScheduledTaskController {
     }
 
     @Operation(summary = "创建定时任务",
-            description = "关联一个 Agent, 指定 Spring 6 字段 cron 表达式 (秒 分 时 日 月 周) 与触发输入消息")
+            description = "可选关联 Agent / 执行模型, 指定 Spring 6 字段 cron 表达式 (秒 分 时 日 月 周) 与提示词")
     @PostMapping
     public Mono<Result<ScheduledTaskDtos.ScheduledTaskView>> create(
             @RequestBody ScheduledTaskDtos.SaveScheduledTaskRequest req) {

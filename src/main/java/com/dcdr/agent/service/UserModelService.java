@@ -119,6 +119,20 @@ public class UserModelService {
      * 找不到或未启用抛 404, 由上层转为不可用。
      */
     public ChatModelProvider resolveProvider(String userId, String modelName) {
+        return wrap(buildProvider(loadUsable(userId, modelName)));
+    }
+
+    /**
+     * 只校验可用性(存在 + 归属 + 未禁用), <b>不</b>构建 provider。
+     * <p>给"保存时校验模型名"这类场景用: 那里只需要判断能不能用, 没必要解密 apiKey、
+     * new 一个客户端 —— 构造有成本, 也让一次纯校验带上了副作用。
+     */
+    public void assertUsable(String userId, String modelName) {
+        loadUsable(userId, modelName);
+    }
+
+    /** 取出"归属当前用户且已启用"的自定义模型, 不满足抛 404(与越权统一口径) */
+    private UserModelConfigEntity loadUsable(String userId, String modelName) {
         String id = modelName.substring(CUSTOM_PREFIX.length());
         UserModelConfigEntity e = repository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> new BusinessException(404,
@@ -126,7 +140,7 @@ public class UserModelService {
         if (!e.isEnabled()) {
             throw new BusinessException(404, "自定义模型已禁用: " + modelName, "USER_MODEL_NOT_FOUND");
         }
-        return wrap(buildProvider(e));
+        return e;
     }
 
     /** 构建底层 ChatModelProvider (langchain4j 内核) */

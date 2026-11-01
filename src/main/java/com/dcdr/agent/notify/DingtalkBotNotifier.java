@@ -64,13 +64,21 @@ public class DingtalkBotNotifier implements Notifier {
 
     @Override
     public NotifyResult send(NotifyMessage message) {
-        String rawUrl = props.getDingtalk().getWebhookUrl();
+        // 用户级配置优先 (V3.4), 未配置时回退部署级 agent.notify.dingtalk.*
+        String userUrl = message.getWebhookUrl();
+        // 纵深防御: 保存时校验过一次, 发请求前再校验一次; 部署级地址不校验(可能走公司代理)
+        if (userUrl != null && !userUrl.isBlank()) {
+            String deny = NotifyUrlGuard.check(channel(), userUrl);
+            if (deny != null) return NotifyResult.failed(channel().code(), deny);
+        }
+        String rawUrl = firstNonBlank(userUrl, props.getDingtalk().getWebhookUrl());
         if (rawUrl == null || rawUrl.isBlank()) {
             return NotifyResult.failed(channel().code(),
-                    "未配置钉钉机器人地址 (agent.notify.dingtalk.webhook-url)");
+                    "未配置钉钉机器人地址: 请在「推送配置」中填写个人 Webhook, "
+                            + "或由管理员设置 agent.notify.dingtalk.webhook-url");
         }
         String title = buildTitle(message);
-        String keyword = props.getDingtalk().getKeyword();
+        String keyword = firstNonBlank(message.getKeyword(), props.getDingtalk().getKeyword());
         // 关键词模式下正文必须含该词(否则 310000)，所以先把它占的字符从预算里扣掉，
         // 再渲染正文 —— 顺序反了的话超长消息会把关键词截没，报的仍是"关键词不匹配"
         int budget = Math.max(64, limitChars() - keywordCost(keyword));
@@ -78,7 +86,8 @@ public class DingtalkBotNotifier implements Notifier {
                 template.render(channel(), message, budget, NotifyTemplate.Unit.CHARS, TRUNCATE_SUFFIX),
                 keyword);
         try {
-            String url = signedUrl(rawUrl, props.getDingtalk().getSecret(), System.currentTimeMillis());
+            String secret = firstNonBlank(message.getSecret(), props.getDingtalk().getSecret());
+            String url = signedUrl(rawUrl, secret, System.currentTimeMillis());
             String resp = client()
                     .post()
                     .uri(url)
@@ -92,7 +101,8 @@ public class DingtalkBotNotifier implements Notifier {
             return parseResponse(resp);
         } catch (Exception e) {
             log.warn("钉钉推送失败 (task={}): {}", message.getTaskId(), e.toString());
-            return NotifyResult.failed(channel().code(), "请求异常: " + e.getMessage());
+            // 不能透传 e.getMessage(): 它可能含带 access_token 的完整 Webhook, 会落库并展示到页面
+            return NotifyResult.failed(channel().code(), "请求异常: " + NotifyRender.safeReason(e));
         }
     }
 
@@ -109,6 +119,11 @@ public class DingtalkBotNotifier implements Notifier {
     @Override
     public String truncateSuffix() {
         return TRUNCATE_SUFFIX;
+    }
+
+    /** 用户级凭据优先, 空则回退部署级 */
+    private static String firstNonBlank(String preferred, String fallback) {
+        return (preferred != null && !preferred.isBlank()) ? preferred : fallback;
     }
 
     // ===== 加签 =====

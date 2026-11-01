@@ -41,11 +41,20 @@ public class ScheduledTaskEntity implements OwnedEntity {
     @Column(name = "agent_id", length = 64)
     private String agentId;
 
+    /**
+     * 执行模型 (可选)。留空表示"跟随 Agent 配置或平台默认模型"。
+     * <p>显式指定时优先级最高: 即使是 Agent 上配了别的模型也不覆盖, 见
+     * {@code ChatRequest#modelLocked}。
+     */
+    @Schema(description = "执行模型名; 留空=跟随 Agent 配置/平台默认")
+    @Column(name = "model", length = 128)
+    private String model;
+
     @Schema(description = "Cron 表达式 (Spring CronExpression 格式, 6 字段: 秒 分 时 日 月 周)")
     @Column(nullable = false)
     private String cron;
 
-    @Schema(description = "触发时喂给 Agent 的输入消息")
+    @Schema(description = "提示词: 每次触发时发给模型的输入")
     @Column(name = "input_message", columnDefinition = "TEXT")
     private String inputMessage;
 
