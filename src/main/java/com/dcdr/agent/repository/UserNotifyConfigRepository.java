@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * 用户级推送配置持久层 (V3.4)。
+ * 用户级推送配置持久层 (V3.3)。
  */
 @Repository
 public interface UserNotifyConfigRepository extends JpaRepository<UserNotifyConfigEntity, String> {

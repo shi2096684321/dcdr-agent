@@ -21,6 +21,10 @@ public final class LlmCallLogDtos {
         private String userId;
         @Schema(description = "会话 ID")
         private String sessionId;
+        @Schema(description = "来源: user / schedule / workflow; 历史数据为 user")
+        private String source;
+        @Schema(description = "来源中文名(用户对话 / 定时任务 / 工作流)")
+        private String sourceLabel;
         @Schema(description = "用户消息(截取)")
         private String userMessage;
         @Schema(description = "结束信号: ON_COMPLETE / ON_ERROR / ON_CANCEL")

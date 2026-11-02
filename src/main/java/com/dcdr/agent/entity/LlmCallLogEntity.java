@@ -39,6 +39,19 @@ public class LlmCallLogEntity {
     @Column(length = 64)
     private String sessionId;
 
+    /**
+     * 本次调用的来源: {@code user}(用户对话) / {@code schedule}(定时任务) / {@code workflow}(工作流)。
+     * <p>
+     * <b>为什么不能靠"有没有 sessionId"推断</b>: 定时任务与工作流 V3.3 起也会建会话
+     * (归档到「自动化 → 任务对话」), 所以三类来源都有 sessionId, 从字段有无完全区分不出来。
+     * 取值与 {@code sessions.source} 共用 {@code SessionSource} 枚举, 不另造一套。
+     * <p>
+     * 历史数据为 {@code null} —— 那时只有用户对话会产生日志, 前端按 {@code user} 兜底展示。
+     */
+    @Schema(description = "来源: user / schedule / workflow; 历史数据为 null(等同 user)")
+    @Column(length = 16)
+    private String source;
+
     @Schema(description = "用户消息(截取前 200 字符)")
     @Column(columnDefinition = "TEXT")
     private String userMessage;

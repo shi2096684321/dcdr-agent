@@ -3,6 +3,7 @@ package com.dcdr.agent.controller;
 import com.dcdr.agent.agent.feedback.FeedbackService;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.agent.session.SessionSource;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
 import com.dcdr.agent.dto.MessageDTO;
@@ -57,12 +58,18 @@ public class SessionController {
     /** V3.1 F-41: 响应式读取当前登录用户(替代原先的 ServerWebExchange 参数) */
     private final OwnershipGuard ownershipGuard;
 
-    @Operation(summary = "获取会话列表", description = "返回当前用户的所有会话(认证启用时按 userId 隔离; 未登录返回全部)")
+    @Operation(summary = "获取会话列表",
+            description = "返回当前用户的可访问会话(认证启用时按 userId 隔离; 未登录返回全部)。"
+                    + "V3.3: 默认只返回用户自己开的对话(user); 定时任务 / 工作流自动执行产生的会话"
+                    + "需显式传 source=automation 才会返回")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionDTO.class)))
     @GetMapping
-    public Mono<Result<List<SessionDTO>>> list() {
+    public Mono<Result<List<SessionDTO>>> list(
+            @Parameter(description = "会话来源: user(默认) | schedule | workflow | automation(两者合并) | all")
+            @RequestParam(required = false) String source) {
+        List<String> sources = SessionSource.parseFilter(source);
         return ownershipGuard.currentContext()
-                .map(ctx -> Result.success(sessionManager.listSessions(ctx.userId(), ctx.admin())));
+                .map(ctx -> Result.success(sessionManager.listSessions(ctx.userId(), ctx.admin(), sources)));
     }
 
     @Operation(summary = "创建会话", description = "创建新的对话会话; V2.2 关联当前登录用户")

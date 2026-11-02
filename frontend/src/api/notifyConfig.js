@@ -1,6 +1,6 @@
 import { api, unwrap } from './http'
 
-// ===== V3.4 用户级推送配置 =====
+// ===== V3.3 用户级推送配置 =====
 
 // 我的推送配置: 返回全部渠道概览, Webhook 只回显掩码
 export const getNotifyConfigs = () => unwrap(api.get('/api/notify-config'))

@@ -32,5 +32,5 @@ export * from './memories'
 export * from './skill'
 // V3.3 工作区(本地文件读写删 + 撤回)
 export * from './workspaces'
-// V3.4 用户级推送配置
+// V3.3 用户级推送配置
 export * from './notifyConfig'

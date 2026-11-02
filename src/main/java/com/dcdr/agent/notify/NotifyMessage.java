@@ -41,7 +41,7 @@ public class NotifyMessage {
     private String channel;
 
     /**
-     * 消息所属用户 (V3.4)。非空时, {@link NotifierRegistry} 会按该用户自己的推送配置
+     * 消息所属用户 (V3.3)。非空时, {@link NotifierRegistry} 会按该用户自己的推送配置
      * 填充下面的凭据字段; 为空则只用部署级配置。
      */
     private String userId;

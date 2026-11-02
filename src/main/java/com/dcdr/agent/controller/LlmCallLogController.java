@@ -1,7 +1,9 @@
 package com.dcdr.agent.controller;
 
+import com.dcdr.agent.agent.session.SessionSource;
 import com.dcdr.agent.auth.SecurityContext;
 import com.dcdr.agent.common.Result;
+import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.LlmCallLogDtos;
 import com.dcdr.agent.entity.LlmCallLogEntity;
 import com.dcdr.agent.repository.LlmCallLogRepository;
@@ -54,16 +56,16 @@ public class LlmCallLogController {
             @Parameter(description = "页码 (从 0 开始)") @RequestParam(defaultValue = "0") int page,
             @Parameter(description = "每页条数 (1~100)") @RequestParam(defaultValue = "20") int size,
             @Parameter(description = "查询全部用户 (仅管理员)") @RequestParam(required = false) String userId,
+            @Parameter(description = "来源筛选: user / schedule / workflow; 不传=全部")
+            @RequestParam(required = false) String source,
             ServerWebExchange exchange) {
         String currentUserId = SecurityContext.getUserId(exchange);
         boolean isAdmin = SecurityContext.isAdmin(exchange);
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
-        Page<LlmCallLogEntity> p;
-        if (isAdmin && "all".equalsIgnoreCase(userId)) {
-            p = llmCallLogRepository.findAllByOrderByCreatedAtDesc(pageable);
-        } else {
-            p = llmCallLogRepository.findByUserIdOrderByCreatedAtDesc(currentUserId, pageable);
-        }
+        // 普通用户不接受 userId 入参(只能查自己), 管理员传 all 才放开
+        String userFilter = (isAdmin && "all".equalsIgnoreCase(userId)) ? null : currentUserId;
+        String sourceFilter = normalizeSource(source);
+        Page<LlmCallLogEntity> p = llmCallLogRepository.findForList(userFilter, sourceFilter, pageable);
         List<LlmCallLogDtos.LlmCallLogView> views = p.getContent().stream()
                 .map(e -> toView(e, false))
                 .toList();
@@ -93,12 +95,31 @@ public class LlmCallLogController {
         return Result.success(toView(entity, true));
     }
 
+    /**
+     * 解析来源筛选参数。
+     * <p><b>非法值必须报错而不是静默返回全部</b>: 用户传了 {@code scedule}(拼错) 时若返回全部记录,
+     * 界面看起来"筛选生效了", 实际是假象 —— 与 {@code SessionSource.parseFilter} 同一口径。
+     */
+    private static String normalizeSource(String raw) {
+        if (raw == null || raw.isBlank() || "all".equalsIgnoreCase(raw.trim())) {
+            return null;
+        }
+        String v = raw.trim().toLowerCase();
+        for (SessionSource s : SessionSource.values()) {
+            if (s.code().equals(v)) return s.code();
+        }
+        throw new BusinessException(400, "无法识别的调用来源: " + raw);
+    }
+
     private LlmCallLogDtos.LlmCallLogView toView(LlmCallLogEntity e, boolean full) {
         LlmCallLogDtos.LlmCallLogView v = new LlmCallLogDtos.LlmCallLogView();
         v.setId(e.getId());
         v.setTurnId(e.getTurnId());
         v.setUserId(e.getUserId());
         v.setSessionId(e.getSessionId());
+        // 历史数据没有该列, 而那时只有用户对话会写日志 —— 兜底成 user 是事实, 不是猜
+        v.setSource(e.getSource() == null ? SessionSource.USER.code() : e.getSource());
+        v.setSourceLabel(SessionSource.labelOf(e.getSource()));
         v.setUserMessage(e.getUserMessage());
         v.setEndSignal(e.getEndSignal());
         v.setLlmCalls(e.getLlmCalls());
@@ -114,8 +135,7 @@ public class LlmCallLogController {
         return v;
     }
 
-    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 单条可达数十 KB, 仅详情接口返回 */
-    private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
+    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 单条可达数十 KB, 仅详情接口返回 */    private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
     private static final String STEP_MESSAGES = "messages";
     private static final String STEP_WIRE_REQUEST = "wireRequest";
 

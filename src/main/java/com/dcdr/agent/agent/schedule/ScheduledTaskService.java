@@ -3,9 +3,11 @@ package com.dcdr.agent.agent.schedule;
 import com.dcdr.agent.agent.AgentOrchestrator;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.agent.session.SessionSource;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
+import com.dcdr.agent.common.log.LlmCallTrace;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.ScheduledTaskDtos;
@@ -29,6 +31,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.scheduling.support.CronExpression;
@@ -45,7 +49,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * V2.3 定时任务 Service (F-26 定时触发 Agent 执行任务)。
@@ -79,10 +86,28 @@ public class ScheduledTaskService {
     private final ModelRegistry modelRegistry;
     /** 执行模型校验: 用户自定义模型 (custom: 前缀, 需校验归属) */
     private final UserModelService userModelService;
+    /** V3.3: 调用链日志落库(与用户对话、工作流共用同一套字段映射) */
+    private final com.dcdr.agent.agent.log.LlmCallLogWriter callLogWriter;
 
     /** 租约 TTL(秒): 需 >= 单次任务最长执行时间(Agent 调用可能较久) */
     @Value("${agent.v3.cluster.lock-ttl-seconds:300}")
     private long lockTtlSeconds;
+
+    /**
+     * 启动时是否补跑「错过的那一次」(V3.3)。
+     * <p>cron 只在进程活着的时候才有意义: 早上 9 点任务而 8:50 重启、9:20 才起来, 这一天就没有任何推送,
+     * 而且没有任何提示 —— 表现与"推送坏了"完全一样。
+     */
+    @Value("${agent.schedule.misfire-catchup-enabled:true}")
+    private boolean misfireCatchupEnabled;
+
+    /**
+     * 补跑的时间窗(秒): 只补 {@code next_run_at} 距今不超过该值的任务。
+     * <p>为什么要有上限: 隔夜启动时把一整天错过的任务全补一遍, 既烧模型费用又没有时效性
+     * (早上 9 点的招聘日报在晚上 11 点补出来毫无意义)。默认 1 小时, 只兜"重启窗口"这一种场景。
+     */
+    @Value("${agent.schedule.misfire-max-lag-seconds:3600}")
+    private long misfireMaxLagSeconds;
 
     /** 模板预览用的示例正文: 刻意写成多行 + 列表 + 加粗, 覆盖常见排版 */
     private static final String PREVIEW_SAMPLE_CONTENT = """
@@ -96,6 +121,12 @@ public class ScheduledTaskService {
             """;
 
     private ThreadPoolTaskScheduler scheduler;
+    /**
+     * 租约续期专用线程 (V3.3)。
+     * <p>为什么不复用 {@link #scheduler}: 那个池只有 4 个线程, 续期任务一旦排队等线程,
+     * 就会出现"该续的时候没续上" —— 而这正是要修的 bug。
+     */
+    private ScheduledExecutorService leaseRenewer;
     /** 任务 ID → 调度句柄, 用于启停 */
     private final Map<String, ScheduledFuture<?>> scheduledFutures = new ConcurrentHashMap<>();
 
@@ -107,6 +138,11 @@ public class ScheduledTaskService {
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(15);
         scheduler.initialize();
+        leaseRenewer = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "sched-lease-renewer");
+            t.setDaemon(true);
+            return t;
+        });
         // 启动时加载全部 enabled 任务
         try {
             List<ScheduledTaskEntity> tasks = repository.findByEnabledTrue();
@@ -119,12 +155,92 @@ public class ScheduledTaskService {
         }
     }
 
+    /**
+     * 启动后补跑错过的那一次 (V3.3)。
+     * <p>
+     * 为什么放在 {@link ApplicationReadyEvent} 而不是 {@link #init()}: 补跑会真的调用
+     * {@code AgentOrchestrator}, 需要全部 bean(模型、工具、记忆)就绪; {@code @PostConstruct}
+     * 阶段别的 bean 可能还没装配完, 这里跑会在最不该失败的地方失败。
+     * <p>
+     * 判定条件三条, 缺一不可:
+     * <ol>
+     *   <li>{@code next_run_at} 已过期 —— 说明到点时进程不在;</li>
+     *   <li>过期时长 ≤ {@code misfire-max-lag-seconds} —— 太久的补跑没有时效价值;</li>
+     *   <li>{@code last_run_at} 早于该时间点 —— 防"跑完了但还没来得及回写 next_run_at 就崩了"
+     *       导致重启后重复执行(多花一次模型费用)。</li>
+     * </ol>
+     * 无论补不补, 都会按当前时间重算 {@code next_run_at} 并落库, 否则每次重启都会重复到这里。
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void catchUpMissedRuns() {
+        LocalDateTime now = LocalDateTime.now();
+        List<ScheduledTaskEntity> tasks;
+        try {
+            tasks = repository.findByEnabledTrue();
+        } catch (Exception e) {
+            log.warn("补跑扫描失败: {}", e.getMessage());
+            return;
+        }
+        for (ScheduledTaskEntity task : tasks) {
+            try {
+                LocalDateTime due = task.getNextRunAt();
+                LocalDateTime next = computeNextRun(task.getCron(), now);
+                if (due == null) {
+                    // 没算过(存量数据/上次 cron 解析失败): 只补算, 不补跑
+                    task.setNextRunAt(next);
+                    repository.save(task);
+                    continue;
+                }
+                if (!due.isBefore(now)) continue;   // 还没到点
+                long lagSeconds = Duration.between(due, now).getSeconds();
+                if (!misfireCatchupEnabled) {
+                    // 开关关掉时也要重算, 否则下次启动还是同一个过期值
+                } else if (ranAfter(due, task.getLastRunAt())) {
+                    log.info("定时任务 {} 在 {} 之后已执行过, 跳过补跑", task.getId(), due);
+                } else if (!withinCatchUpWindow(lagSeconds, misfireMaxLagSeconds)) {
+                    log.warn("错过定时任务 {} ({}), 已超出 {}s 补跑窗口(实际晚 {}s), 本次不补跑",
+                            task.getId(), task.getName(), misfireMaxLagSeconds, lagSeconds);
+                } else {
+                    log.info("补跑错过的定时任务: {} (name={}), 计划 {} 实际 {}, 晚 {}s",
+                            task.getId(), task.getName(), due, now, lagSeconds);
+                    // 走 runJob 而不是 runOnce: 补跑同样要抢集群锁, 否则多实例会各补一次
+                    scheduler.execute(() -> runJob(task.getId()));
+                }
+                task.setNextRunAt(next);
+                repository.save(task);
+            } catch (Exception e) {
+                log.warn("补跑处理失败 (task={}): {}", task.getId(), e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 补跑窗口判定 (抽成静态方法纯粹为了能单测: 三条条件里任何一条写反,
+     * 表现都是"要么该补没补, 要么重启后重复烧钱", 而这两种都很难在集成里复现)。
+     *
+     * @param lagSeconds    已过期的秒数
+     * @param maxLagSeconds 允许补跑的最大迟到秒数
+     */
+    static boolean withinCatchUpWindow(long lagSeconds, long maxLagSeconds) {
+        return lagSeconds >= 0 && lagSeconds <= maxLagSeconds;
+    }
+
+    /**
+     * 该时间点之后是否已经执行过。
+     * <p>防的是"任务跑完、还没把 next_run_at 推到下一次就崩了" —— 重启后 next_run_at 仍是过去时间,
+     * 不加这层判断就会把同一时刻的任务再跑一遍(重复会话 + 重复模型费用 + 重复推送)。
+     */
+    static boolean ranAfter(LocalDateTime due, LocalDateTime lastRunAt) {
+        return lastRunAt != null && !lastRunAt.isBefore(due);
+    }
+
     @PreDestroy
     public void shutdown() {
         for (ScheduledFuture<?> f : scheduledFutures.values()) {
             f.cancel(false);
         }
         scheduledFutures.clear();
+        if (leaseRenewer != null) leaseRenewer.shutdownNow();
         if (scheduler != null) scheduler.shutdown();
     }
 
@@ -207,8 +323,10 @@ public class ScheduledTaskService {
         String input = (req != null && req.getInputMessage() != null && !req.getInputMessage().isBlank())
                 ? req.getInputMessage() : e.getInputMessage();
         if (input == null || input.isBlank()) input = "(定时触发)";
-        log.info("手动触发定时任务: {} (name={}, input={})", e.getId(), e.getName(), input);
-        return runOnce(e, input, true);
+        // 手动触发默认不推送; 需要推送时由前端显式传 notify=true (按钮「执行并推送」)
+        boolean notify = req != null && Boolean.TRUE.equals(req.getNotify());
+        log.info("手动触发定时任务: {} (name={}, notify={}, input={})", e.getId(), e.getName(), notify, input);
+        return runOnce(e, input, true, notify);
     }
 
     /**
@@ -227,7 +345,7 @@ public class ScheduledTaskService {
                 .taskId(e.getId() + "#test")
                 .taskName(e.getName() + " (测试)")
                 .channel(e.getNotifyChannel())
-                // V3.4: 用任务归属人的推送配置, 而不是操作者 —— 任务跑完结果本就该进他配的群
+                // V3.3: 用任务归属人的推送配置, 而不是操作者 —— 任务跑完结果本就该进他配的群
                 .userId(e.getUserId())
                 .status("success")
                 .content("收到这条消息说明 Webhook 地址与网络都正常。\n"
@@ -394,11 +512,15 @@ public class ScheduledTaskService {
      */
     private void runJob(String taskId) {
         String lockName = "scheduled:task:" + taskId;
-        if (!clusterLock.tryAcquire(lockName, Duration.ofSeconds(Math.max(1L, lockTtlSeconds)))) {
+        Duration ttl = Duration.ofSeconds(Math.max(1L, lockTtlSeconds));
+        if (!clusterLock.tryAcquire(lockName, ttl)) {
             // 其他实例已抢到执行权, 本次跳过 —— 属正常调度竞争, 不是错误
             log.debug("定时任务 {} 已由其他实例执行, 本次跳过", taskId);
             return;
         }
+        // V3.3: 持有期间持续续租。原来只在开始时拿一次 300s 租约, 而实测单次执行要 405s ——
+        // 锁中途过期后其他实例会再跑一遍同一任务(重复会话 + 重复模型费用 + 重复推送)。
+        ScheduledFuture<?> lease = startLeaseRenewal(lockName, ttl);
         try {
             ScheduledTaskEntity task = repository.findById(taskId).orElse(null);
             if (task == null || !task.isEnabled()) return;
@@ -408,28 +530,66 @@ public class ScheduledTaskService {
             task.setLastRunAt(LocalDateTime.now());
             task.setLastStatus("running");
             repository.save(task);
-            runOnce(task, input, false);
+            runOnce(task, input, false, false);
         } catch (Exception e) {
             log.error("定时任务执行异常: {}", taskId, e);
         } finally {
+            if (lease != null) lease.cancel(false);
             clusterLock.release(lockName);
         }
     }
 
     /**
+     * 起一个续租心跳 (V3.3)。
+     * <p>周期取 TTL 的一半: 留一半容错, 单次续期失败(网络抖动)不至于立刻丢锁。
+     *
+     * @return 心跳句柄; 无需续租时返回 {@code null}
+     */
+    private ScheduledFuture<?> startLeaseRenewal(String lockName, Duration ttl) {
+        if (leaseRenewer == null) return null;
+        long periodMs = Math.max(1000L, ttl.toMillis() / 2);
+        return leaseRenewer.scheduleAtFixedRate(() -> {
+            try {
+                if (!clusterLock.renew(lockName, ttl)) {
+                    // 续不上说明租约已被接管(或锁后端故障)。已经跑出去的任务没法中断,
+                    // 但必须留下痕迹 —— 否则"同一任务跑了两遍"永远查不出原因
+                    log.warn("租约续期失败, 该任务可能已被其他实例接管: lock={}", lockName);
+                }
+            } catch (Exception e) {
+                log.warn("租约续期异常: lock={}, {}", lockName, e.getMessage());
+            }
+        }, periodMs, periodMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
      * 执行一次任务并回写状态。
      *
-     * @param manual 手动触发 (用户点「立即触发」)。<b>手动触发不推送通知</b> ——
-     *               结果就展示在页面上, 再往微信推一条只会让调试/试用变成刷屏。
+     * @param manual          手动触发 (用户点「立即触发」)
+     * @param notifyRequested 手动触发时是否要求推送 (cron 触发恒为 false, 由任务开关决定)
      */
-    private ScheduledTaskDtos.TriggerResult runOnce(ScheduledTaskEntity task, String input, boolean manual) {
+    private ScheduledTaskDtos.TriggerResult runOnce(ScheduledTaskEntity task, String input,
+                                                    boolean manual, boolean notifyRequested) {
         long startedAtMs = System.currentTimeMillis();
         LocalDateTime startedAt = LocalDateTime.now();
         ScheduledTaskDtos.TriggerResult result = new ScheduledTaskDtos.TriggerResult();
+        // V3.3: 定时任务也要留调用链日志。此前这里不传 trace, 编排层会自建一个但<b>没人注册监听</b>,
+        // 快照只进了日志文件、从不落库 —— 表现是「调用链日志」页面里搜不到任何定时任务,
+        // 而失败时最需要它: 只看到一句 "定时任务执行失败", 分不清是第几轮生成超时还是工具挂了。
+        LlmCallTrace trace = LlmCallTrace.begin();
+        String endSignal = "ON_COMPLETE";
+        // 最近运行时间统一记"开始时间": 之前只在末尾写完成时间, 17:58 触发、18:05 才回写,
+        // 列表里显示的时间与执行记录的 startedAt 差出 7 分钟, 长任务完全看不出跑了多久
+        task.setLastRunAt(startedAt);
+        task.setLastStatus("running");
         try {
-            // 创建临时会话执行 (与 WorkflowEngine 一致, 避免污染用户主会话)
+            // V3.3: 执行会话标记来源=schedule + sourceRef=任务 ID。
+            // 会话不再用完即删: 它归档到「自动化 → 任务对话」, 用户可以回看"这次到底问了/答了什么"。
+            // 保留数量按任务收敛(见 finally), 不会因为分钟级 cron 无限膨胀。
             var sess = sessionManager.createSession(
-                    "schedule:" + task.getName(), null, null, task.getUserId());
+                    "定时任务 · " + task.getName(), null, null, task.getUserId(),
+                    SessionSource.SCHEDULE.code(), task.getId());
+            // 绑在会话创建之后: sessionId 是日志跳回「任务对话」的唯一线索, 早于它就拿不到
+            callLogWriter.bind(trace, task.getUserId(), sess.getId(), input, SessionSource.SCHEDULE);
             ChatRequest req = new ChatRequest();
             req.setSessionId(sess.getId());
             req.setMessage(input);
@@ -442,30 +602,35 @@ public class ScheduledTaskService {
             req.setStream(false);
             // chatSync 内部复用流式管线（含工具循环），抓取/检索类任务才能真正拿到数据。
             // 曾经直接用 chatSync 的旧实现（单轮 invoke）时，模型没有工具可用，产出全是编的。
-            ChatResponse resp = orchestrator.chatSync(req, task.getUserId());
+            ChatResponse resp = orchestrator.chatSync(req, task.getUserId(), trace);
             String content = resp.getContent() == null ? "" : resp.getContent();
             result.setOutput(content);
             result.setStatus("success");
             // 回写任务状态
             task.setLastStatus("success");
             task.setLastError(null);
-            try { sessionManager.deleteSession(sess.getId()); } catch (Exception ignored) {}
         } catch (Exception e) {
             result.setStatus("failed");
             result.setError(e.getMessage());
             task.setLastStatus("failed");
             task.setLastError(e.getMessage());
+            endSignal = "ON_ERROR";
             log.error("定时任务执行失败: {}", task.getId(), e);
+        } finally {
+            // 收尾必须在 trim 之前: summary 是同步落库, 会话被清理掉不影响已写入的日志行,
+            // 但顺序反过来会让人误以为"会话没了日志也没了"
+            trace.summary(endSignal);
+            // 成功与失败都要收敛: 失败留下的会话同样进「任务对话」, 否则只有成功那批被清理
+            sessionManager.trimAutoSessions(SessionSource.SCHEDULE.code(), task.getId(),
+                    AUTO_SESSION_KEEP);
         }
-        task.setLastRunAt(LocalDateTime.now());
         task.setNextRunAt(computeNextRun(task.getCron(), LocalDateTime.now()));
         repository.save(task);
         long elapsed = System.currentTimeMillis() - startedAtMs;
-        // 执行记录总是保存（手动触发也要能回看），只是手动触发不推送
+        result.setDurationMs(elapsed);
+        // 执行记录总是保存（手动触发也要能回看），只是手动触发默认不推送
         ScheduledTaskRunEntity run = saveRun(task, result, startedAt, elapsed);
-        if (!manual) {
-            notifyAsync(task, result, elapsed, run);
-        }
+        applyNotify(task, result, elapsed, run, manual, notifyRequested);
         return result;
     }
 
@@ -506,6 +671,14 @@ public class ScheduledTaskService {
 
     /** 每个任务保留的执行记录条数上限 */
     private static final int RUN_HISTORY_KEEP = 50;
+
+    /**
+     * 每个任务保留的执行会话条数上限 (V3.3)。
+     * <p>
+     * 执行记录已存 50 条正文, 会话再留 50 条就是两倍存储 —— 会话的用处只是"回看那次对话的
+     * 完整往返(含工具调用)", 取执行记录的一半足够覆盖"昨天/上一次"这类查看需求。
+     */
+    private static final int AUTO_SESSION_KEEP = 20;
 
     /**
      * 只保留最近 N 条执行记录。
@@ -549,15 +722,57 @@ public class ScheduledTaskService {
      * 只是消息没发出去, 任务结果依然有效; 若把 lastStatus 改成 failed,
      * 用户会误以为 Agent 执行失败而重跑, 白白多花一次模型费用。
      */
-    private void notifyAsync(ScheduledTaskEntity task, ScheduledTaskDtos.TriggerResult result,
-                             long elapsedMs, ScheduledTaskRunEntity run) {
-        if (!task.isNotifyEnabled()) return;
-        final String taskId = task.getId();
-        NotifyMessage message = NotifyMessage.builder()
-                .taskId(taskId)
+    /**
+     * 决定本次执行要不要推送, 并把结果写回 {@link ScheduledTaskDtos.TriggerResult} (V3.3)。
+     * <p>
+     * <b>三件事必须同时成立才推送</b>: 任务开了推送开关 + (cron 触发 或 手动触发明确要求推送)。
+     * 其余情况一律把原因回传前端 —— 早先这里是静默 {@code return}, 用户点十次「立即触发」
+     * 也收不到消息, 而页面上还留着上一次 cron 的"推送成功", 完全无法判断是没推还是推失败。
+     * <p>
+     * <b>手动触发为什么同步</b>: 用户点这一下就是为了当场验证"能不能收到"。异步只能回一句
+     * "已提交", 失败了也看不见原因; 而手动触发本来就跑在 controller 的 boundedElastic 线程上,
+     * 推送自带 5s 超时, 阻塞几秒不影响任何人。
+     * <p>
+     * 节流对手动触发同样生效({{@code dispatch}} 而非 {@code dispatchNow}): 连点两次时第二条会
+     * 明确回"节流中", 而不是重复往群里灌 —— 只是这次用户看得见原因。
+     */
+    private void applyNotify(ScheduledTaskEntity task, ScheduledTaskDtos.TriggerResult result,
+                             long elapsedMs, ScheduledTaskRunEntity run,
+                             boolean manual, boolean notifyRequested) {
+        if (!task.isNotifyEnabled()) {
+            result.setNotifyStatus("skipped");
+            result.setNotifyReason("该任务未开启「结果推送」");
+            return;
+        }
+        if (manual && !notifyRequested) {
+            result.setNotifyStatus("skipped");
+            result.setNotifyReason("手动触发默认不推送, 需要推送请用「执行并推送」");
+            return;
+        }
+        NotifyMessage message = buildNotifyMessage(task, result, elapsedMs, run);
+        if (!manual) {
+            notifyAsync(task.getId(), message);
+            return;
+        }
+        NotifyResult r;
+        try {
+            r = notifierRegistry.dispatch(message);
+        } catch (Exception e) {
+            // Notifier 实现按约定不抛异常, 这里仍是最后一道兜底
+            r = NotifyResult.failed(null, e.getMessage());
+        }
+        recordNotifyState(task.getId(), r);
+        result.setNotifyStatus(r.statusText());
+        result.setNotifyReason(r.isSuccess() ? null : r.detail());
+    }
+
+    private NotifyMessage buildNotifyMessage(ScheduledTaskEntity task, ScheduledTaskDtos.TriggerResult result,
+                                             long elapsedMs, ScheduledTaskRunEntity run) {
+        return NotifyMessage.builder()
+                .taskId(task.getId())
                 .taskName(task.getName())
                 .channel(task.getNotifyChannel())
-                // V3.4: 用户级推送配置按任务归属人解析
+                // V3.3: 用户级推送配置按任务归属人解析
                 .userId(task.getUserId())
                 .status(result.getStatus())
                 .content(result.getOutput())
@@ -566,6 +781,20 @@ public class ScheduledTaskService {
                 .runAt(LocalDateTime.now())
                 .runUrl(buildRunUrl(run))
                 .build();
+    }
+
+    /**
+     * 异步推送执行结果 (cron 路径)。
+     * <p>
+     * <b>为什么必须异步</b>: 调度线程池只有 4 个线程, 而推送是阻塞 HTTP 调用。
+     * 一个渠道卡住 5 秒, 就会挤占其它定时任务的执行窗口。这里丢到
+     * {@code boundedElastic} (Reactor 的阻塞任务池), 既不占调度线程也不占 reactor-http-nio。
+     * <p>
+     * <b>为什么推送失败不能改 lastStatus</b>: 推送是旁路能力。任务跑成功了,
+     * 只是消息没发出去, 任务结果依然有效; 若把 lastStatus 改成 failed,
+     * 用户会误以为 Agent 执行失败而重跑, 白白多花一次模型费用。
+     */
+    private void notifyAsync(String taskId, NotifyMessage message) {
         try {
             Schedulers.boundedElastic().schedule(() -> {
                 NotifyResult r;

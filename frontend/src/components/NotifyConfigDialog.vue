@@ -11,12 +11,20 @@
     </div>
 
     <el-tabs v-model="active" class="nc-tabs" v-loading="loading">
-      <el-tab-pane v-for="c in configs" :key="c.channel" :label="c.channelLabel" :name="c.channel">
+      <el-tab-pane v-for="c in configs" :key="c.channel" :name="c.channel">
+        <!-- tab 上带"已配置"圆点: 只配了钉钉却在企微页看到"未配置", 很容易被当成"没保存上" -->
+        <template #label>
+          <span class="nc-tab-label">
+            {{ c.channelLabel }}
+            <span v-if="c.configured" class="nc-dot" :class="{ off: !c.enabled }" />
+          </span>
+        </template>
+
         <div class="nc-status">
           <el-tag size="small" :type="c.configured ? 'success' : 'info'">
-            {{ c.configured ? '已配置' : '未配置' }}
+            {{ c.configured ? (c.enabled ? '已配置 · 启用中' : '已配置 · 已停用') : '未配置' }}
           </el-tag>
-          <span v-if="c.configured" class="nc-mask">{{ c.webhookMasked }}</span>
+          <span v-if="c.configured" class="nc-hint">当前已保存的地址见下方 Webhook 一栏</span>
           <span v-else-if="c.globalFallbackAvailable" class="nc-hint">当前使用部署级默认机器人</span>
           <span v-else class="nc-hint">未配置前该渠道无法推送</span>
         </div>
@@ -25,17 +33,28 @@
           <el-form-item label="Webhook">
             <el-input
               v-model="form.webhookUrl"
-              :placeholder="c.configured ? '留空则保留原地址' : c.webhookExample"
+              :placeholder="c.configured ? '留空则保留已保存的地址；要修改请整条重新粘贴' : c.webhookExample"
               clearable
-            />
+            >
+              <!-- 输入框空着不等于"没配置": 用后缀明确告诉用户保存时会沿用旧值 -->
+              <template v-if="c.configured && !form.webhookUrl" #suffix>
+                <span class="nc-keep">沿用已保存</span>
+              </template>
+            </el-input>
+            <!-- 已保存地址的回显: 凭据不回传明文, 所以只能给掩码 —— 但至少让人看得见"确实存下来了" -->
+            <div v-if="c.configured" class="nc-saved">
+              已保存：<code>{{ c.webhookMasked }}</code>
+              <span v-if="c.updatedAt" class="nc-updated">更新于 {{ formatDate(c.updatedAt) }}</span>
+            </div>
           </el-form-item>
           <el-form-item v-if="c.supportsSecret" label="加签密钥">
             <el-input
               v-model="form.secret"
               type="password"
               show-password
-              :placeholder="c.hasSecret ? '留空则保留原密钥' : 'SEC 开头；机器人选「加签」时必填'"
+              :placeholder="c.hasSecret ? '留空则保留已保存的密钥' : 'SEC 开头；机器人选「加签」时必填'"
             />
+            <div v-if="c.hasSecret" class="nc-saved">已保存加签密钥（出于安全不回显，留空则沿用）</div>
           </el-form-item>
           <el-form-item v-if="c.supportsSecret" label="关键词">
             <el-input v-model="form.keyword" placeholder="机器人选「自定义关键词」时填写，会追加到消息末尾" />
@@ -75,6 +94,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getNotifyConfigs, saveNotifyConfig, deleteNotifyConfig, testNotifyConfig, extractMessage
 } from '@/api'
+import { formatDate } from '@/utils/format'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false }
@@ -108,7 +128,10 @@ function syncForm() {
   form.webhookUrl = ''
   form.secret = ''
   form.keyword = c?.keyword || ''
-  form.enabled = c ? c.enabled : true
+  // 后端对"未配置"的渠道恒返回 enabled=false(避免让人误以为已经在推), 那个值只用于**展示**。
+  // 直接拿它当表单初值, 就会出现"填好 webhook 保存 → 状态是已停用 → 一条都收不到" ——
+  // 现场数据里第一次保存确实落成了 enabled=false。故只有已配置过的渠道才沿用它的开关值。
+  form.enabled = c && c.configured ? c.enabled : true
 }
 
 watch(active, syncForm)
@@ -118,8 +141,14 @@ async function load() {
   loading.value = true
   try {
     configs.value = await getNotifyConfigs()
-    if (configs.value.length && !configs.value.some((c) => c.channel === active.value)) {
-      active.value = configs.value[0].channel
+    // 默认停在"已配置"的渠道上。
+    // 后端会把所有渠道都返回(未配置的也返回, 便于展示"去配置"), 所以不能简单地取第一个 ——
+    // 只配了钉钉的用户打开弹窗落在"企业微信 · 未配置"上, 看上去就像配置没保存住。
+    const currentCfg = configs.value.find((c) => c.channel === active.value)
+    if (!currentCfg || !currentCfg.configured) {
+      const firstConfigured = configs.value.find((c) => c.configured)
+      if (firstConfigured) active.value = firstConfigured.channel
+      else if (!currentCfg && configs.value.length) active.value = configs.value[0].channel
     }
     syncForm()
   } catch (e) {
@@ -193,18 +222,40 @@ async function remove(c) {
   margin-top: 4px;
 }
 
+/* tab 上的"已配置"圆点: 绿色=启用中, 灰色=已配置但停用 */
+.nc-tab-label { display: inline-flex; align-items: center; gap: 5px; }
+.nc-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #2fbf71; box-shadow: 0 0 0 2px rgba(47, 191, 113, 0.16);
+}
+.nc-dot.off { background: var(--dcdr-text-3); box-shadow: none; }
+
+/* 输入框空着时的"沿用已保存"提示, 避免被理解成"没有回显" */
+.nc-keep {
+  font-size: 11.5px;
+  color: var(--dcdr-text-3);
+  white-space: nowrap;
+}
+
+.nc-saved {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--dcdr-text-2);
+}
+.nc-saved code {
+  font-family: var(--dcdr-font-mono);
+  font-size: 11.5px;
+  color: var(--dcdr-accent-soft, var(--dcdr-text-1));
+  word-break: break-all;
+}
+.nc-updated { margin-left: 8px; color: var(--dcdr-text-3); }
+
 .nc-status {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
-}
-
-.nc-mask {
-  font-family: var(--dcdr-font-mono);
-  font-size: 12px;
-  color: var(--dcdr-text-2);
-  word-break: break-all;
 }
 
 .nc-hint {

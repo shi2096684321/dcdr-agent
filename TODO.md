@@ -1311,3 +1311,261 @@ PostgreSQL 全部业务数据（用户账号 / 会话 / 知识库 / Agent / 工�
   `~/.m2` 只有 Maven 3.8.4 且无 `settings.xml`。
   `mvn test-compile` 因此失败在环境层（非代码层）；IDE 诊断对 `src` 全量为 0 错误。
   **需在有完整 JDK 17 的机器上跑一次 `mvn -o test-compile` 与 `mvn test` 确认。**
+
+---
+
+## V3.3 联网能力接入 DeepSeek（已实现，2026-11-02）
+
+### 已实现
+- **策略 + 注册表工厂**（`tool/websearch/`）：
+  - `WebSearchProvider` / `WebFetchProvider` 两个策略接口，`SearchOutcome` / `FetchedPage` 两个统一结果载体；
+  - 实现：`SearxngSearchProvider`、`LocalHtmlFetchProvider`、`DeepseekSearchProvider`、`DeepseekFetchProvider`；
+  - `WebProviderFactory` 构造期解析一次，按 `agent-tools.web.provider` / `fetch-provider` 选定；
+  - `FallbackFetchProvider` 把"DeepSeek 抓不到 → 本地 crux 兜底"做成可组合的一层。
+- **门面化**：`SearxngWebSearchTool` 改名 `WebSearchTool`（工具名仍是 `web_search`），
+  `WebExtractTool` 保留原名与 `extractFromHtml` 入口；两者只做参数钳制 / 拼 `[[n]]` / 上报 `WebStat`。
+  编排层只改了 4 处类名引用，工具名、schema、前端全部零改动。
+- **抽取**：crux 链路整体搬到 `HtmlArticleExtractor`（纯静态、可离线测），
+  SSRF 闸搬到 `SsrfGuard`（两个抓取源共用同一道闸）。
+- **配置**：`agent-tools.web.{provider, fetch-provider, fetch-fallback, deepseek.*}`；
+  `deepseek.api-key` 默认复用 `DEEPSEEK_API_KEY`。
+
+### 关键设计决策
+
+- **为什么是注册表而不是 `switch`**：新增第三个源时只需加一个 `@Component`，工厂零改动；
+  `switch` 必然要回来补分支，而漏补的症状是"配置了但没生效"。
+- **为什么在构造期解析、且"名字错=启动失败 / 缺 Key=降级"两套待遇**：
+  联网是"配错了也照常启动、只是搜不到东西"的典型。名字写错属于配置错误，必须立刻炸；
+  缺 Key 属于依赖缺失，不该让整个应用起不来 —— 但降级必须打 ERROR 并说清补哪个 key。
+- **为什么抓取是"主源 + 兜底"而不是二选一**：实测 DeepSeek Fetch 对
+  `springframework.org.cn/authors/wilkinsona`、`/blog/page-36` 返回 **404（提不出可用 Markdown）**，
+  这是黑盒行为、无从改进；而本地 crux 对中文站编码、结构化重建有大量实测适配。两者互补最划算。
+  兜底**只在完全没拿到正文时触发**，不做"薄页也重抓" —— 后者每个 URL 多一次往返，收益不确定。
+- **为什么 DeepSeek 路径不套 `SearchResultCleaner` 的过滤管线**：
+  实测它的 top3 里确实还有作者页 / 分页栏目页，但那些是**真实内容页**（只是抓不到正文），
+  不是 SearXNG 那种"摘要堆十条标题"的空壳。而正则管线**也拦不住** `/blog/page-36`
+  （不含 `list/tag` 关键词、也不是单层短路径），硬套只会误伤真实文章。
+  空壳问题应交给 `rerank_score` / `authority` 阈值，而不是 URL 猜测。
+- **为什么 `need-content` 默认关**：编排层对 `web_search` 本来就会串联 `web_extract` 补正文，
+  开着等于同一篇抓两次、付两次钱。开启时已在 `enrichWithExtract` 加 `hasUsableContent` 跳过
+  （该校验必须排除字符串 `"undefined"`，见方法注释）。
+- **为什么保留 `snippet` 与 `summary` 两个字段**：前者给前端卡片（200 字符），
+  后者给模型读（600~800 字符）。门面拼提示词时优先 `summary`、缺失回落 `snippet`，
+  于是 SearXNG 路径(只有 snippet)的输出与改造前逐字节相同。
+
+### 实测记录（真实 API，非推测）
+
+- `POST /v1/tools/search` 返回字段与文档一致：`rerank_score`(如 2.086) / `authority`(如 4) / `date` / `summary`(长) / `snippet`。
+- `POST /v1/tools/fetch` 返回 `{content, title}`，content 为 Markdown；该页面约 1622 字符，
+  **比本地 crux 抓同一站点的正文短** —— 这是黑盒抽取的代价，也是保留本地兜底/可切换的理由。
+- 对 `http://127.0.0.1:8080/` 发起 Fetch 返回 **403**（被其安全策略拒），说明内网地址即使发出去也拿不到内容；
+  但项目侧仍保留 `SsrfGuard` 预检 —— 防的是内网拓扑泄露，不只是内容读取。
+
+### 验证状态
+- `mvn test` 全量 **644 条，0 失败**（含新增 `WebProviderFactoryTest` 6 条、`DeepseekWebLiveTest` 默认跳过）。
+- `WebExtractFixtureTest` 8 条全部通过 —— 证明 crux 链路搬迁未改变行为。
+- `DeepseekWebLiveTest` 在 `DEEPSEEK_LIVE_TEST=true` 下真实跑通（搜索 3 条 + 逐条抓取直至成功）。
+
+### 待办
+- **A/B 对比未做**：需要同一批中文 query 跑两个源，比对"过滤后可用条数 / 权威站点占比 /
+  模型引用率 / 平均工具轮数"。目前只有单次冒烟数据，不足以支撑"该默认用哪个"的结论。
+- **`ori_question` 未启用**：工具无状态、拿不到用户原话。要用需在编排层透传（像
+  `enrichWithExtract` 传 `query` 那样），不适合在工具里查库。
+- **QPS 未压测**：社区文档对 Search QPS 的说法不一致（5 与 100 都有），并发场景需先确认再上量。
+
+### 调用链日志补齐定时任务/工作流（2026-11-02）
+
+- **缺口**：`llm_call_logs` 只有走 `ChatController` 的对话会写。定时任务与工作流调
+  `orchestrator.chatSync(req, userId)` 时不传 trace，编排层会**自建**一个（`ownTrace=true`），
+  但<b>没有任何监听器</b>——快照只打了 `[llm-trace]` 日志行，从不落库。
+  表现：调用链日志页搜不到定时任务；失败时只看到"定时任务执行失败"，分不清是第几轮生成超时还是工具挂了。
+- **改法**：新增 `agent/log/LlmCallLogWriter`，把原先 `ChatController#registerLogSink` 的字段映射搬出来，
+  三类入口共用；`ScheduledTaskService#runOnce` 与 `WorkflowEngine#invokeStep` 改为
+  `begin → bind → chatSync(trace) → finally summary(signal)`。
+- **代价**：三处都要记得在 `finally` 里 `summary()` —— 传了 trace，编排层就不再替调用方收尾
+  （`ownTrace=false` 的依据）。遗漏的症状是"有日志行、无日志记录"，仍是静默故障。
+- **来源列**：`llm_call_logs.source`（复用 `SessionSource` 的 code，不另造枚举），列表页加筛选与徽标。
+  **坑**：`source='user'` 的筛选必须带上 `source IS NULL` —— 存量行没有该列，
+  精确匹配会让历史记录整批从"用户对话"里消失。已用 `LlmCallLogRepositoryTest` 钉住。
+- **验证**：`mvn test` 654 条 0 失败；前端 `npm run build` 通过。
+  **未做**：真实 cron 触发下的端到端（需启动应用 + PG），目前只有组件级与仓储级验证。
+
+### 联网健康无数据 / 联网"死循环"排查（2026-11-02）
+
+**现象一：联网健康看板全空。**
+- 排查结论：**不是统计逻辑的问题**，是数据源里根本没有联网步骤。查 PG：
+  `select s->>'kind', count(*) from llm_call_logs, lateral jsonb_array_elements(steps_json::jsonb) s group by 1`
+  → 只有 llm/tool/prompt/citation/memory/rag，**`web` 一条都没有**；40 条日志里最新的是 11-02 14:17:02。
+- 根因链：产生联网流量的那些对话是**定时任务/工作流**跑的（日志里 SUMMARY 完整打印了
+  `web[37→12]` 等链路，但同一条 turn 在库里不存在，且紧随其后有"删除会话"）。
+  当时 `chatSync(req, userId)` 不传 trace → 编排层自建 trace 但无监听器 → 只打日志不落库。
+- 修复：见上一节（`LlmCallLogWriter` + 三处入口）。统计侧 `WebHealthServiceTest` 已有 10 条用例
+  覆盖 web 步骤解析，无需改动。
+
+**现象二：联网搜索像死循环（一轮反复搜索、界面长时间停在"检索中"）。**
+- 证据（`logs/dcdr-agent.log`，turn=aad182）：
+  `round-1 → web[37→12] → web[27→12] → web[27→12] → web[27→12] → round-2 → …`，共 6 轮、
+  5 个工具步、43.9s、输入 90580 token。
+- 不是无限循环（`MAX_TOOL_ROUNDS=10` 兜住了），是两个放大叠加：
+  1. 模型**一轮并行发 3~4 个 web_search**（参数不同，绕过了"完全相同指纹只执行一次"的拦截）；
+  2. 每个 web_search 都无条件触发 `enrichWithExtract`（top-3 抓取）→ 4 次搜索 = 12 次网页请求。
+- 还有一个长期存在的诱因：`runtime-web-search.md` 仍写着 `topic: "news"` / `exclude_domains`
+  —— 那是 **Tavily 时代**的参数，现在的 `web_search` 只有 `query` / `maxResults`。
+  模型按提示词传了不存在的参数，等于每次调用都白费一次。
+- 修复：
+  1. prompt 重写：只描述真实参数，并明确"多个方面优先合并进一个 query，确有必要时最多 2 次"；
+  2. `AgentOrchestrator` 改为**每轮抓取预算**（`agent-tools.web.extract-budget-per-round`，默认 6 篇）：
+     本轮多次搜索共享预算，前两次能拿到完整正文，之后降级为摘要。
+- **为什么不是"只抓第一次"**（初版做法，已纠正）：那样后续搜索只剩摘要，
+  而它们可能才是主题最相关的。用预算则 1 次搜索 3 篇、2 次搜索 6 篇（与改动前完全一致），
+  只有第 3 次起才开始削减 —— 既挡住 12 次请求的放大，又不在常规场景损失信息。
+- **调参口径**：3 = 只够一次（最快）；6 = 两次（默认）；9/12 = 三到四次（更全更慢）；0 = 不抓正文。
+  主要用 SearXNG 时建议调到 9：它的摘要只有几十到两百字，比 DeepSeek 的 600~800 字更依赖正文。
+- **未做**：没有端到端实跑（需重启应用 + 真实模型）。改动的验证只有编译 + 654 条单测。
+
+### 对齐 WorkBuddy 的工具循环治理（2026-11-02）
+
+参照 WorkBuddy 客户端（`app.asar.unpacked/cli`）的做法补了三块。它的核心思路与"事前砍次数"相反：
+**平时不干预，只在真出问题时介入；撑爆上下文的根因是历史累积，用清理解决而不是少干活的**。
+
+1. **`ToolCallLoopDetector`**（新增，`agent/loop/`）
+   - 连续 **4** 次相同签名才算循环，第 5 次起拦截并回灌 STOP 文案；阈值与 WorkBuddy 一致。
+   - 签名 = 工具名 + **归一化参数**（JSON 递归按 key 排序）。原实现用原始字符串比对，
+     `{"q":"a","n":8}` 与 `{ "n": 8, "q": "a" }` 会被当成两个调用，循环检测形同虚设。
+   - **不持状态**：连续序列直接从 `history` 的 `assistant.toolCalls` 反推，避免在响应式链路里
+     引入 ThreadLocal 或给 `executeTools` 再加参数。注意要排除 history 末尾那条
+     本轮 `assistant(tool_calls)`（`historyBeforeCurrentRound`），否则同一批被数两次、阈值实际变 2。
+2. **微压缩**（`ToolResultCompressor#microcompact`）
+   - 保留最近 6 条只读工具结果，更早的替换成一行占位文本。
+   - **白名单而非黑名单**：生图/文件写入/沙箱执行的结果重放一次就是另一份，清掉就真丢了。
+   - **必须在 `allowanceForRound` 之前调用**：窗口预算只看"历史 tool 结果 token 总量"，
+     只清不算是白清。这条是整个功能存在的理由 —— 原来一旦触顶，之后每轮新结果都被压到 800 字符，
+     模型越往后看到的信息越少，而日志上一切正常。
+3. **同轮去重升级**：指纹同样改用归一化签名。
+
+**为什么仍保留抓取预算**：WorkBuddy 的 `web_search` 是服务端 hosted tool，搜索+抓取一次完成，
+不存在"客户端串联抓取放大"；我们的 `enrichWithExtract` 会让一次搜索放大成 3 次 HTTP 请求，
+这是它没有的问题，预算必须留着。两者互补：预算管事前的量，循环检测与微压缩管事中的异常。
+
+### 评审后修掉的四处（2026-11-02）
+
+1. **`WebSearchTool#resolveLimit` 让配置失效**：我加的 `MAX_SOURCES=12` 把
+   `agent-tools.web.max-results-limit`(15) 静默压成 12。已删除该常量 —— 上限只由配置决定，
+   否则运维改配置不生效且无从发现。
+2. **兜底链导致超时叠加**：两源超时都是 15s，无脑兜底 = 最坏 30s/篇 × 6 篇 = 180s/轮，
+   把"死循环"换成了"单轮超长"。改为**主源耗时超过 `fetch-fallback-budget-ms`(默认 5s) 就不兜底**
+   —— 兜底真正救得回的是 403/404 这类秒级快速失败的页面；主源已耗满超时的场景换源也救不回来。
+   没有按错误类型区分（要改接口契约），用耗时当闸门更简单且覆盖更全。
+3. **`ChatController#doFinally` 里同步 JPA 落库**：正常 complete 在 boundedElastic 上没事，
+   但 cancel（点停止/前端断开）时终止信号可能来自 reactor-http-nio。4 处收尾已改为
+   `Schedulers.boundedElastic().schedule(...)`。
+4. **微压缩与异步落库的竞态**：工具消息 add 进 history 后是 **fire-and-forget 落库**，
+   此时改 content 可能把占位文本写进库。现改为**最近一整轮的 tool 消息无条件保留**
+   （数尾部连续 tool 条数，取 max(keepRecent, 该数)）。没用 `Message.seq` —— 它只在从库加载时赋值，
+   内存里新建的恒为 null，判断不了"是否已落库"。
+
+**验证**：`mvn test` 670 条 0 失败（新增 `FallbackFetchProviderTest` 4 条；`MicrocompactTest` 按真实
+history 结构重写，补了 assistant(tool_calls) 分隔 —— 原来用纯 tool 列表根本模拟不出"最近一轮"）。
+仍未做真实对话端到端。
+
+### 联网搜索排序评测集（2026-11-02）
+
+- **资产**：`docs/eval/web-search-eval.json`（20 条用例）+ `docs/eval/web-search-eval.README.md`（维护口径）
+  + `WebSearchEvalIT`（运行器，`WEB_EVAL=true` 开启，默认跳过）。
+- **指标**：HitRate@K + **MRR@K**（主指标）。**刻意不用 Recall** —— RAG 那边一条 query 有多个独立正例，
+  Recall 才有意义；这里的金标是一组**等价 URL 前缀**（命中任一即算），算 Recall 只会得到恒偏低的假指标。
+- **金标铁律**：按"什么算好答案"定，**不能按引擎返回了什么反推**，否则评测退化成"给现有结果打分"。
+  问"官方怎么说"的用例金标必须是官方域名；问"怎么排查"的排错类允许 StackOverflow。
+- **首测基线（20 条 / topK=10）**：
+
+  | | searxng | deepseek |
+  |---|---|---|
+  | HitRate@10 | 35.0% | **60.0%** |
+  | MRR@10 | 0.205 | **0.433** |
+
+- **首测暴露的真问题**：SearXNG 当前部署**只剩 bing 一个引擎在工作**
+  （`unresponsive_engines`: baidu/quark 被 CAPTCHA 封、sogou 崩溃）。
+  同一个查询"Java 17 text block"返回的首条是 java.com 下载页 —— 30~35% 的命中率是真实水平，
+  不是金标太严。这直接量化了"接 DeepSeek"的收益。
+- **共同短板**：`tech`（技术排错）两类都极低（0.045 / 0.110），与搜索源无关 ——
+  说明这类查询需要的是"官方文档 + SO 高票"组合，通用引擎都不擅长。后续要做也该在这里下手。
+- **校准记录**：首版金标偏严（news 只列科技媒体，漏了央媒），已按"什么算好答案"补
+  `xinhua.org` / `people.com.cn`；tech 类补 StackOverflow。**没有**按"DeepSeek 返回了什么"去改
+  （比如它返回的 `kubernetes.io/pt-br/...` 葡语版就没放进去 —— 对中文用户无用）。
+- **报告归档（补齐缺口）**：原先只写 `target/web-search-eval.md`，`mvn clean` 就没了 ——
+  而评测的全部价值在于"跟上次比"。现归档到 `docs/eval/reports/{时间戳}-{源}.json`
+  （含逐条结果，页面直接读它渲染，不再生成 markdown）。文件名带时间戳不覆盖。
+  首份新格式基线：`docs/eval/reports/2026-11-02-1722-searxng+deepseek.json`。
+
+### 评测做成页面（2026-11-02）
+
+**动机**：命令行 + markdown 的形态只有写它的人会用。用户在反馈里直说"我现在都不知道怎么用"——
+排序质量是产品问题，需要有界面入口。
+
+- **逻辑从 test 搬到 main**：新增 `WebSearchEvalService`（执行 + 归档 + 运行状态 + 历史读取）。
+  `WebSearchEvalIT` 退化成薄壳，只做"跑一次、断言产物合法"的冒烟，**不再自己实现评分** ——
+  两份实现必然漂移，页面上显示的数与命令行跑出来的数不一致时没人知道该信哪个。
+- **接口** `WebSearchEvalController`：`/api/eval/web-search/{overview,reports,reports/{file},run}`，
+  全部管理员专属（跑一次真实计费）。`GET` 类接口用 `Mono.fromCallable + boundedElastic` 包住
+  文件 IO，不在 reactor-http-nio 线程上读盘。
+- **异步执行**：`run` 立即返回，重活丢单线程池；前端轮询 `overview.state` 看进度。
+  同一时刻只允许一个任务，重复提交返回当前状态而不重复计费。
+- **页面** `WebSearchEvalView.vue`，挂在「运维台 → 联网评测」：来源选择 + 运行 + 进度条 +
+  历史列表（左）+ 对比表与未命中明细（右）。
+- **归档目录可配**（`agent.eval.web-search.reports-dir`）：部署路径可能不同，测试也需写临时目录。
+
+**验证**：`mvn test` 670 条 0 失败；`WebSearchEvalIT` 在 `WEB_EVAL=true` 下跑通完整链路
+（提交 → 执行 → 归档 → 读回 → 出现在列表）；前端 `npm run build` 通过。
+**未做**：页面交互未在浏览器实测（需起应用 + 管理员登录），只验证了接口链路与构建。
+
+### 联网用量与成本统计（2026-11-02）
+
+- **前置缺口**：`WebStat` 只有工具名，没有 provider —— 分不出收费的 DeepSeek 与自建的 SearXNG，
+  成本无从算起（从配置反推也不行：用户中途换过源，历史就全错）。已加 `provider` 字段，
+  由 `WebSearchTool` / `WebExtractTool` 在产出统计时填自己的 `id()`；`LlmCallTrace#recordWeb`
+  写进 steps_json。
+- **统计** `WebUsageService`：扫 `llm_call_logs.steps_json` 的 `kind=web` 步骤，
+  按 provider × tool 与按天汇总，成本 = Σ(次数 × 该源单价)。
+- **单价与计费口径**：DeepSeek 官方为 **Search / Fetch 各 5 元 / 1000 次成功请求**（即 0.005 元/次）。
+  关键是"**成功**"：`error`(请求异常) 与 `disabled`(未发出) **不计费**；
+  而 `no_results` / `all_filtered`（请求成功但结果 0 条/全被过滤）**照常计费** ——
+  后者是最贵的失败：付了钱、模型什么也没拿到，应与「空结果率」对照看。
+  统计侧因此拆出 `billableSearch` / `billableExtract`，成本只乘计费次数。
+- 配置项 `agent-tools.web.pricing`，key 为 `{provider}:{tool}` 或 `{provider}`。
+  **默认空 = 不估钱**（`estimatedCost=null`、`pricingConfigured=false`，界面显示"未配置单价"）。
+  原因：报价会随调价/合同变化，不让某个时点的数字写死进代码；假数字比没数字更危险。
+- **历史数据**：11-02 之前的 web 步骤没有 provider，统计归入 `none` 且**不计费** ——
+  仍计入总次数（否则历史用量凭空消失），但不猜它当时用的哪个源。
+- **接口** `GET /api/web-health/usage?days=30`（管理员）；**页面**挂在「联网健康」页的
+  「联网用量与成本」块：总数卡片 + 按源表格（搜索/抓取/单价/费用）。
+- **已知限制**：靠扫日志，`SCAN_LIMIT=5000`，超限取最近部分并标 `truncated`。
+  真实流量到这个量级时应改为"每次调用累加一张日汇总表"，而不是继续加大上限。
+- **验证**：`mvn test` 678 条 0 失败（`WebUsageServiceTest` 8 条，覆盖按源分组、成本乘法、
+  未配置单价返回 null、历史 none 不计费、组合源按主源计价、坏 JSON 跳过、
+  **按「成功请求」计费**（error/disabled 不乘价，no_results 照乘））。
+
+### 联网搜索"打到轮次上限"的治理（2026-11-02）
+
+**现象**（真实链路）：`round-1 → web[10→10] ×4 → round-2 → … → round-10`，
+一次对话 **40 次搜索、约 0.2 元**，回答只用其中几条。
+
+**为什么三道现有闸都没拦住**：
+- `MAX_TOOL_ROUNDS=10`：打满才停，不是"够了就停"；
+- 循环检测（连续 4 次相同签名）：模型一轮发的是**不同关键词**，签名各不相同，一个都不命中；
+- 抓取预算：只管抓正文，不管搜索次数。
+
+**修复（两维预算 + prompt）**：
+1. `agent-tools.web.max-search-per-turn`（默认 8）：单次请求内的搜索次数上限。
+   超限的调用直接拦下并回灌"立即基于已有结果作答"，**不提示"换个词再试"**——那会诱导模型绕过限制。
+2. `agent-tools.web.source-saturation`（默认 30）：跨轮**去重 URL** 数达到该值后不再允许新搜索（本轮第一次除外）。
+   只看次数不够：8 次都拿到新东西是有价值的；3 次都在翻同一批站点则第 4 次纯浪费。
+3. `runtime-web-search.md` 加"够了就停"：判断标准是"能不能答好这个问题"，不是"还能不能搜到更多"。
+
+**实现上的取舍**：度量放在 `agent/loop/WebSearchBudget`（纯静态），全部**零状态**——
+已搜次数从 `history` 数（只数到最近一条 user 消息，否则用户追问第二个问题时预算被上个问题吃光），
+去重来源从跨轮累积的 `collectedSources` 取。
+没用"新增来源为 0 就停"这个更准的信号，因为它需要跨轮状态，要往 `executeTools` 再加参数或走 ThreadLocal。
+
+**验证**：`mvn test` 685 条 0 失败（新增 `WebSearchBudgetTest` 7 条，重点锁住"只数本次请求内"这条——
+算错方向会表现为"第一个问题正常、第二个问题完全搜不了"）。
+**未做**：真实对话验证，阈值 8 / 30 是否合适需实测再调。

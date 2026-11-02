@@ -580,7 +580,15 @@ function isImage(file) {
   return file.file.type.startsWith('image/')
 }
 
-async function loadSessions() { sessions.value = await getSessions() }
+/**
+ * 会话列表只取 source=user(用户自己开的对话)。
+ * <p>
+ * V3.5 起定时任务 / 工作流自动执行产生的会话会被后端排除 —— 它们归到
+ * 「自动化 → 任务对话」, 这样侧边栏里每条都是"我聊过的", 不用再从一堆
+ * "定时任务 · xxx"里翻自己的会话。显式传 user 而不是依赖后端默认值,
+ * 是为了让这里出现"要不要改取哪些来源"的意图变得可见。
+ */
+async function loadSessions() { sessions.value = await getSessions('user') }
 
 async function newSession() {
   const s = await createSession({ title: 'New Chat', model: props.currentModel })

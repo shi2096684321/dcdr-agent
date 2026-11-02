@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.UUID;
 
 /**
- * 用户级推送配置 (V3.4)。
+ * 用户级推送配置 (V3.3)。
  * <p>
  * <b>安全边界</b>（这段配置会把服务端变成"给任意地址发 POST"的代理，是最典型的 SSRF 入口）：
  * <ol>

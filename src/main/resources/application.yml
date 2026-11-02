@@ -227,6 +227,13 @@ agent:
         max-page-size: 1000
         # 落盘文件保留天数(0 = 不清理)
         retain-days: 7
+      microcompact:
+        # 清理较早的只读工具结果(检索/读取/列表), 把回灌窗口让出来。
+        # 只清 web_search / web_extract / knowledge_base_search / workspace_read 等**可重新获取**的;
+        # 生图、文件写入、沙箱执行一律不动 —— 那些结果重放一次就是另一份, 清掉就真丢了。
+        enabled: true
+        # 保留最近多少条不清(更早的清成一行占位文本); 与工具轮次上限配合看, 6 约等于最近两轮
+        keep-recent: 6
 
   # ===== V2.2 用户认证配置 =====
   # enabled=false 时所有接口免鉴权(兼容 V2.1 单用户场景); 生产环境务必 enabled=true
@@ -415,7 +422,7 @@ agent:
 
   # 模型配置
   models:
-    default-chat: "qwen-chat"
+    default-chat: "deepseek-chat"
     # 用户自定义模型 apiKey 的 AES 加密主密钥。**必须**经环境变量 MODEL_API_KEY_SECRET 注入
     # (不可与其他密钥复用: 复用会让"一处泄露"波及两处)。
     # 缺省(空)时启动会被 SecretGuard 拒绝 —— 主密钥公开可知时, 拿到库里的密文即可解出用户真实 Key。
@@ -665,6 +672,17 @@ agent:
       # 危险 API 审计: 扫描插件字节码, 发现 Runtime/ProcessBuilder/反射特征即拒绝加载
       block-dangerous: true
 
+  # V3.3 定时任务调度的运维行为
+  schedule:
+    # 启动时补跑「错过的那一次」。
+    # 为什么需要: cron 只在进程活着的时候才有意义 —— 9 点的任务, 8:50 重启、9:20 才起来,
+    # 这一天就完全不跑也不推送, 表现与"推送坏了"一模一样, 且没有任何提示。
+    misfire-catchup-enabled: ${AGENT_SCHEDULE_MISFIRE_CATCHUP:true}
+    # 补跑时间窗(秒): 只补 next_run_at 距今不超过该值的任务。
+    # 隔夜启动时把一整天错过的任务全补一遍既烧钱又没时效性(晚上 11 点补出早上的日报),
+    # 默认 1 小时, 只兜"重启窗口"这一种场景。
+    misfire-max-lag-seconds: ${AGENT_SCHEDULE_MISFIRE_MAX_LAG:3600}
+
   # V3.3 执行结果推送 (定时任务跑完把结果发到企业微信)
   # 为什么走企业微信而不是个人微信: 个人微信没有任何官方推送 API, 第三方中转
   # (Server酱/PushPlus) 会把任务正文完整落到对方服务器; 企业微信是自家接口,
@@ -762,16 +780,61 @@ agent-tools:
     max-concurrent: 2
     # 禁止沙箱出网(NetworkPolicy 默认 DENY)
     network-disabled: true
-  # ===== V3.1 自建联网搜索(替代第三方 Tavily) =====
+  # ===== V3.1 自建联网搜索(替代第三方 Tavily) / V3.3 增加 DeepSeek 源 =====
   # 由两个原生 Tool 提供能力, 工具名与原先 MCP 版本完全一致(web_search / web_extract),
-  # 因此 Agent 编排层(硬编码按 web_search 判断)与前端联网开关均零改动:
-  #   web_search  → SearXNG 元搜索(自托管, AGPL-3.0, 无 API Key, 无调用费用)
-  #   web_extract → 抓取网页正文(crux = Mozilla Readability 移植 + flexmark 转 Markdown)
-  # 前置条件: SearXNG 的 settings.yml 必须开启 search.formats: [html, json],
+  # 因此 Agent 编排层(硬编码按 web_search 判断)与前端联网开关均零改动。
+  #
+  # V3.3 起底层是"策略 + 工厂", 两个能力各有两套实现, 用 provider / fetch-provider 二选一:
+  #   search  searxng  → SearXNG 元搜索(自托管, AGPL-3.0, 无 API Key, 无调用费用)
+  #           deepseek → DeepSeek 自研索引(结果已 rerank + 带 authority, 按次计费)
+  #   fetch   local    → crux(Mozilla Readability 移植) + flexmark 转 Markdown
+  #           deepseek → /v1/tools/fetch, 直接返回 Markdown
+  #           auto     → 跟随 search: search=deepseek 时抓取也走 deepseek
+  #
+  # 前置条件(SearXNG): settings.yml 必须开启 search.formats: [html, json],
   #           否则 format=json 会被拒绝(403)。部署见 docker-compose.yml 的 searxng 服务。
-  # 能力边界: 抓取不执行 JavaScript, 纯 SPA 站点提取不到正文(上游会降级为搜索摘要)。
+  # 能力边界: 两条抓取链路都不执行 JavaScript, 纯 SPA 站点提取不到正文(上游降级为搜索摘要)。
   web:
     enabled: true
+    # 搜索源: searxng | deepseek。写错会导致启动失败; 选了 deepseek 但没配 Key 则降级为 searxng 并打 ERROR
+    provider: ${AGENT_TOOLS_WEB_PROVIDER:deepseek}
+    # 抓取源: auto | local | deepseek
+    fetch-provider: ${AGENT_TOOLS_WEB_FETCH_PROVIDER:auto}
+    # 抓取主源拿不到正文时回落本地 crux(DeepSeek 的 403/404 无法改进, 兜一层能提高成功率)
+    fetch-fallback: true
+    # 兜底耗时预算(毫秒): 主源超过它就不再换源重试。
+    # 两源超时都是 15s, 不设闸的话最坏 30s/篇 × 单轮 6 篇 = 180s, 用户看到的就是卡死。
+    # 兜底真正救得回的是 403/404 这类秒级快速失败的页面, 主源已耗满超时的场景换源也救不回来。
+    fetch-fallback-budget-ms: 5000
+    # 按源的调用单价(元/次), 用于「联网用量与成本」的估算。key = {provider}:{tool}
+    #
+    # DeepSeek 官方口径: Search 与 Fetch 均为 **5 元 / 1000 次成功请求**, 即 0.005 元/次。
+    # 注意是"成功请求": 请求异常(error)与未启用(disabled)不计费, 统计侧已按此折算;
+    # 而"请求成功但结果 0 条"(no_results / all_filtered)照常计费 —— 那是最贵的失败:
+    # 付了钱、模型什么都没拿到。
+    #
+    # 仍默认留空 = 只统计次数、不估钱: 单价会随合同/调价变化, 由使用方按账单填一次,
+    # 而不是把某个时点的报价写死进代码。
+    #   pricing:
+    #     "deepseek:web_search": 0.005
+    #     "deepseek:web_extract": 0.005
+    #     "searxng:web_search": 0
+    #     "searxng:web_extract": 0
+    pricing: {}
+    # 单轮内「串联抓取」的总篇数预算(本轮多次搜索共享)。每次搜索最多抓 3 篇, 故:
+    #   3 = 只够一次搜索拿到正文(最快、信息最少)
+    #   6 = 前两次搜索都能拿到正文, 之后降级为摘要(默认, 兼顾延迟与信息)
+    #   9/12 = 允许三到四次(更全但更慢; 4 次×3 篇=12 次网页请求实测单轮 40s+)
+    #   0 = 不做串联抓取, 只返回搜索摘要
+    extract-budget-per-round: ${AGENT_TOOLS_WEB_EXTRACT_BUDGET:6}
+    # 单次请求内最多发起几次 web_search。
+    # 模型会在一轮里并行发 3~4 个**不同关键词**的搜索, 循环检测按"相同签名"判重, 关键词不同就拦不住,
+    # 于是能一路搜到 MAX_TOOL_ROUNDS(10) —— 实测一次对话 40 次搜索、约 0.2 元, 回答只用到其中几条。
+    # 正常"搜一次 → 不够 → 换词再搜"最多 2~3 次收敛; 8 是留了余量的上限, 按场景取 4~10。
+    max-search-per-turn: ${AGENT_TOOLS_WEB_MAX_SEARCH:8}
+    # 去重来源数达到该值后不再允许新的搜索(本轮第一次除外)。
+    # 只看次数不够: 8 次搜索若每次都有新东西是有价值的; 反之 3 次都在翻同一批站点, 第 4 次纯浪费。
+    source-saturation: ${AGENT_TOOLS_WEB_SOURCE_SATURATION:30}
     # 本机跑 jar 用 localhost; 若应用跑在 compose 内则改为 http://searxng:8080
     searxng-url: ${AGENT_TOOLS_WEB_SEARXNG_URL:http://localhost:8888}
     language: zh-CN
@@ -783,8 +846,25 @@ agent-tools:
     max-content-length: 8000
     # 单次 web_extract 最多抓取的 URL 数
     max-extract-urls: 3
-    # SSRF 防护: 拒绝环回/内网/链路本地(含云元数据 169.254.169.254)
+    # SSRF 防护: 拒绝环回/内网/链路本地(含云元数据 169.254.169.254)。
+    # 两个抓取源都要过这道闸 —— DeepSeek 那条虽然读不到内网, 但把内网地址发给第三方本身就是信息泄露
     ssrf-guard: true
+    # ===== DeepSeek 自研搜索/抓取(provider=deepseek 时才用) =====
+    # 计费: 每 1000 次"成功"请求 5 元(Search 返回非空结果 / Fetch 返回正文且 HTTP 200 才算),
+    #       空结果、超时、失败不计费; count 不影响单价。2026-11-01 起开始计费。
+    # 限流: 按账号 QPS, Search 与 Fetch 分别计, Fetch 另有单目标域名限制。
+    deepseek:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      # 留空则 deepseek 策略不可用(工厂会降级到 searxng); 默认复用模型侧的 Key
+      api-key: ${DEEPSEEK_SEARCH_API_KEY:${DEEPSEEK_API_KEY:}}
+      # 让 Search 直接返回正文。默认关: 编排层本来就会串联 web_extract, 开着是重复抓取
+      need-content: false
+      # 相关性阈值(rerank_score 0~3, 官方口径 >=1.5 优质); 0 = 不过滤
+      min-rerank-score: 0
+      # 权威性阈值(authority 0~4, -1 未知); 默认 -1 = 不过滤, 含未知
+      min-authority: -1
+      # 本地化 IP, 用于优先返回该地区的搜索结果; 空串表示不指定
+      localization: ""
 
 # ===== MCP Server 连接配置 (本应用作为 Host, 连接外部 MCP Server) =====
 # 只需写 Client 去访问别人提供的 MCP Server, 不需要自己起 Server。

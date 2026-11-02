@@ -20,8 +20,9 @@ export const deleteScheduledTask = (id) =>
   api.delete(`/api/scheduled-tasks/${id}`).then((r) => r.data)
 
 // 手动触发一次执行 (同步阻塞调用 LLM)
-export const triggerScheduledTask = (id, inputMessage) =>
-  unwrap(api.post(`/api/scheduled-tasks/${id}/trigger`, { inputMessage }))
+// notify=true: 执行完把结果推送到任务配置的渠道, 推送结果直接回在响应里 (V3.3)
+export const triggerScheduledTask = (id, inputMessage, notify = false) =>
+  unwrap(api.post(`/api/scheduled-tasks/${id}/trigger`, { inputMessage, notify }))
 
 // 测试推送 (V3.3): 立即向该任务的推送渠道发一条测试消息, 不触发任务执行
 export const testScheduledTaskNotify = (id) =>

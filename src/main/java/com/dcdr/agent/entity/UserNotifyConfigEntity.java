@@ -7,7 +7,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 用户级推送配置 (V3.4)：每个用户自己维护通知渠道的 Webhook。
+ * 用户级推送配置 (V3.3)：每个用户自己维护通知渠道的 Webhook。
  * <p>
  * 为什么需要它：{@code agent.notify.*} 是<b>部署级</b>配置，只能由运维通过环境变量注入 ——
  * 一套部署下所有用户的定时任务结果都推到同一个群，既没有隔离，也没法各自收自己的任务。
@@ -21,7 +21,7 @@ import java.time.LocalDateTime;
  */
 @Data
 @Entity
-@Schema(description = "用户级推送配置 (V3.4)")
+@Schema(description = "用户级推送配置 (V3.3)")
 @Table(name = "user_notify_configs", uniqueConstraints = {
         @UniqueConstraint(name = "uk_unc_user_channel", columnNames = {"user_id", "channel"})
 }, indexes = {

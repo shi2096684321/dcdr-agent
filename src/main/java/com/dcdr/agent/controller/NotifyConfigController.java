@@ -21,7 +21,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 /**
- * 用户级推送配置接口 (V3.4)。
+ * 用户级推送配置接口 (V3.3)。
  * <p>
  * 与 {@code agent.notify.*} 的关系: 部署级配置是<b>兜底</b>, 用户没配自己的 Webhook 时才会用到;
  * 用户配了就以用户的为准。所有端点都以当前登录用户为作用域, 没有"按 id 读他人配置"的入口。
@@ -33,7 +33,7 @@ import java.util.List;
 @RestController
 @RequestMapping("/api/notify-config")
 @RequiredArgsConstructor
-@Tag(name = "推送配置", description = "V3.4: 用户自行配置定时任务结果推送渠道")
+@Tag(name = "推送配置", description = "V3.3: 用户自行配置定时任务结果推送渠道")
 public class NotifyConfigController {
 
     private final UserNotifyConfigService configService;

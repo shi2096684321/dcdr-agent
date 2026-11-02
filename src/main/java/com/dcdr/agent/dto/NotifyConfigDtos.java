@@ -6,7 +6,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 用户级推送配置相关 DTO (V3.4)。
+ * 用户级推送配置相关 DTO (V3.3)。
  */
 public class NotifyConfigDtos {
 

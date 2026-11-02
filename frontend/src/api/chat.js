@@ -2,7 +2,16 @@ import { api, unwrap } from './http'
 import { readSseStream, stopChat } from './stream'
 
 // ===== 会话管理 =====
-export const getSessions = () => unwrap(api.get('/api/sessions'))
+/**
+ * 会话列表。
+ * <p>
+ * V3.5 起后端默认只返回用户自己开的对话(user) —— 定时任务 / 工作流自动执行产生的会话
+ * 会被排除, 改由「自动化 → 任务对话」用 source=automation 单独拉取。
+ *
+ * @param {string} [source] user(默认) | schedule | workflow | automation | all
+ */
+export const getSessions = (source) =>
+  unwrap(api.get('/api/sessions', source ? { params: { source } } : undefined))
 export const createSession = (data) => unwrap(api.post('/api/sessions', data))
 export const deleteSession = (id) => api.delete(`/api/sessions/${id}`).then(r => r.data)
 export const renameSession = (id, title) => api.put(`/api/sessions/${id}/title`, { title }).then(r => r.data)

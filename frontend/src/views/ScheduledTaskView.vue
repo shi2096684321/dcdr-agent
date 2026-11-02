@@ -46,7 +46,10 @@
             <el-tag v-else size="small" type="info">已停用</el-tag>
           </div>
           <div class="task-toolbar-right">
-            <el-button type="primary" size="small" :loading="triggering" @click="triggerTask">立即触发</el-button>
+            <el-button type="primary" size="small" :loading="triggering" @click="triggerTask(false)">立即触发</el-button>
+            <!-- 手动触发默认不推送(结果就在本页), 但"能不能收到推送"必须有个当场能验证的入口 -->
+            <el-button v-if="currentTask.notifyEnabled" size="small" :loading="triggering"
+                       @click="triggerTask(true)">执行并推送</el-button>
             <el-button size="small" @click="notifyConfigVisible = true">推送配置</el-button>
             <el-button v-if="currentTask.notifyEnabled" size="small" :loading="testingNotify" @click="testNotify">
               测试推送
@@ -112,8 +115,11 @@
             </div>
           </div>
           <div class="detail-row" v-if="currentTask.notifyEnabled && currentTask.notifyLastError">
-            <div class="detail-label">推送异常</div>
-            <div class="detail-value error">{{ currentTask.notifyLastError }}</div>
+            <!-- skipped 与 failed 语义不同: 前者是"按规则没发"(节流/未开启), 前者红字会让人误以为推送坏了 -->
+            <div class="detail-label">{{ currentTask.notifyLastStatus === 'failed' ? '推送失败原因' : '推送跳过原因' }}</div>
+            <div class="detail-value" :class="currentTask.notifyLastStatus === 'failed' ? 'error' : 'muted'">
+              {{ currentTask.notifyLastError }}
+            </div>
           </div>
         </div>
 
@@ -122,6 +128,14 @@
           <div class="tr-head">
             <span>触发结果</span>
             <el-tag size="small" :type="statusTagType(triggerResult.status)">{{ statusLabel(triggerResult.status) }}</el-tag>
+            <el-tag v-if="triggerResult.notifyStatus" size="small" :type="notifyTagType(triggerResult.notifyStatus)">
+              {{ notifyStatusLabel(triggerResult.notifyStatus) }}
+            </el-tag>
+            <span v-if="triggerResult.durationMs" class="tr-meta">耗时 {{ formatDuration(triggerResult.durationMs) }}</span>
+          </div>
+          <!-- 未推送/推送失败必须写出来: 否则"执行成功但没收到消息"只能靠猜 -->
+          <div v-if="triggerResult.notifyReason" class="tr-note" :class="{ warn: triggerResult.notifyStatus === 'failed' }">
+            {{ triggerResult.notifyReason }}
           </div>
           <pre class="tr-output">{{ triggerResult.output || triggerResult.error || '(无输出)' }}</pre>
         </div>
@@ -289,7 +303,7 @@
       </template>
     </el-dialog>
 
-    <!-- V3.4 个人推送渠道配置: 与任务解耦, 配一次所有任务共用 -->
+    <!-- V3.3 个人推送渠道配置: 与任务解耦, 配一次所有任务共用 -->
     <NotifyConfigDialog v-model="notifyConfigVisible" @saved="loadNotifyConfigs" />
   </div>
 </template>
@@ -341,7 +355,7 @@ const form = reactive({
 
 const modelStore = useModelStore()
 
-// ===== V3.4 用户级推送配置 =====
+// ===== V3.3 用户级推送配置 =====
 const notifyConfigVisible = ref(false)
 const notifyConfigs = ref([])
 
@@ -644,13 +658,25 @@ async function removeTask() {
   }
 }
 
-async function triggerTask() {
+async function triggerTask(notify = false) {
   if (!currentTask.value) return
   triggering.value = true
   triggerResult.value = null
   try {
-    triggerResult.value = await triggerScheduledTask(currentTask.value.id, null)
-    ElMessage.success('触发完成')
+    triggerResult.value = await triggerScheduledTask(currentTask.value.id, null, notify)
+    const r = triggerResult.value
+    if (notify) {
+      // 推送结果当场回显: 这是用户点「执行并推送」唯一想知道的事
+      if (r && r.notifyStatus === 'success') {
+        ElMessage.success('执行完成，已推送到' + notifyChannelLabel(currentTask.value.notifyChannel))
+      } else if (r && r.notifyStatus === 'failed') {
+        ElMessage.error('执行完成，但推送失败：' + (r.notifyReason || '未知原因'))
+      } else {
+        ElMessage.warning('执行完成，但未推送：' + ((r && r.notifyReason) || '未开启结果推送'))
+      }
+    } else {
+      ElMessage.success('触发完成')
+    }
     // 刷新列表以获取最新状态, 并重新拉历史（手动触发也会落一条执行记录）
     await loadTasks()
     await loadRuns()
@@ -667,7 +693,8 @@ async function testNotify() {
   try {
     const r = await testScheduledTaskNotify(currentTask.value.id)
     if (r && r.success) {
-      ElMessage.success('测试推送已发出，请查看企业微信')
+      // 渠道名从任务配置取: 写死"企业微信"的话, 钉钉用户会去企微里找一条永远不会有的消息
+      ElMessage.success('测试推送已发出（' + notifyChannelLabel(currentTask.value.notifyChannel) + '），请查看对应群消息')
     } else {
       // skipped 也走这里: 总开关没开时用户需要知道"不是网络问题, 是配置没开"
       ElMessage.error((r && (r.error || r.reason)) || '推送未成功')
@@ -771,6 +798,8 @@ onMounted(async () => {
 .detail-value.pre { white-space: pre-wrap; word-break: break-word; }
 .detail-value code { background: var(--dcdr-bg-subtle); padding: 2px 6px; border-radius: 4px; font-family: monospace; }
 .detail-value.error { color: var(--dcdr-danger); }
+/* skipped 的原因不是故障: 与 failed 用同一种红色会让人以为推送坏了 */
+.detail-value.muted { color: var(--dcdr-text-3); }
 .cron-hint { color: var(--dcdr-text-3); font-size: 12px; margin-top: 4px; }
 .cron-raw { margin-left: 10px; background: var(--dcdr-bg-subtle); padding: 1px 6px; border-radius: 4px; font-family: var(--dcdr-font-mono); font-size: 11px; color: var(--dcdr-text-3); }
 /* 执行时间的可读配置行 */
@@ -779,6 +808,10 @@ onMounted(async () => {
 
 .trigger-result { margin-top: 16px; background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 12px 14px; }
 .tr-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 500; }
+.tr-meta { color: var(--dcdr-text-3); font-size: 12px; font-weight: 400; }
+/* 未推送/推送失败的原因: 单独一行, 不要塞进正文里被长输出淹没 */
+.tr-note { margin-bottom: 8px; font-size: 12px; color: var(--dcdr-text-3); }
+.tr-note.warn { color: var(--dcdr-danger); }
 .tr-output { background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); border-radius: 4px; padding: 8px; white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 12px; max-height: 240px; overflow-y: auto; margin: 0; }
 
 .empty-detail { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--dcdr-text-3); gap: 12px; }

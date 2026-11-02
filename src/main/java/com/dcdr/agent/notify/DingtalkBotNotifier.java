@@ -64,7 +64,7 @@ public class DingtalkBotNotifier implements Notifier {
 
     @Override
     public NotifyResult send(NotifyMessage message) {
-        // 用户级配置优先 (V3.4), 未配置时回退部署级 agent.notify.dingtalk.*
+        // 用户级配置优先 (V3.3), 未配置时回退部署级 agent.notify.dingtalk.*
         String userUrl = message.getWebhookUrl();
         // 纵深防御: 保存时校验过一次, 发请求前再校验一次; 部署级地址不校验(可能走公司代理)
         if (userUrl != null && !userUrl.isBlank()) {

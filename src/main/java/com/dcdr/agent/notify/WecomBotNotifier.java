@@ -52,7 +52,7 @@ public class WecomBotNotifier implements Notifier {
 
     @Override
     public NotifyResult send(NotifyMessage message) {
-        // 用户级配置优先 (V3.4), 未配置时回退部署级 agent.notify.wecom.webhook-url
+        // 用户级配置优先 (V3.3), 未配置时回退部署级 agent.notify.wecom.webhook-url
         String userUrl = message.getWebhookUrl();
         // 纵深防御: 保存时校验过一次, 发请求前再校验一次, 防绕过写入路径的脏数据。
         // 只校验用户级地址 —— 部署级是运维显式配置的, 可能走公司代理域名, 不该被白名单卡住。

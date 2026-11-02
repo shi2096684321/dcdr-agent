@@ -28,6 +28,10 @@ public class SessionDTO {
     private String agentId;
     @Schema(description = "绑定的工作区 ID (V3.3 F-49; 为空表示未授权任何目录)") 
     private String workspaceId;
+    @Schema(description = "会话来源 (V3.3): user=用户自己开的对话; schedule=定时任务自动执行; workflow=工作流步骤自动执行")
+    private String source;
+    @Schema(description = "来源聚合 ID (V3.3): 定时任务 ID 或工作流 ID; 用户会话为空")
+    private String sourceRef;
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
     @Schema(description = "更新时间")

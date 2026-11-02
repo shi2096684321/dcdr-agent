@@ -30,7 +30,7 @@ export const NAV_ITEMS = [
   { value: 'knowledge', label: '知识库', hint: '文档管理与检索测试（⌘3）', icon: ICONS.knowledge },
   { value: 'expert', label: '专家', hint: '专家 / 技能 / 市场（⌘4）', icon: ICONS.expert },
   { value: 'memory', label: '记忆', hint: '长期记忆（⌘5）', icon: ICONS.memory },
-  { value: 'auto', label: '自动化', hint: '工作流 / DAG / 定时任务（⌘6）', icon: ICONS.auto },
+  { value: 'auto', label: '自动化', hint: '工作流 / DAG / 定时任务 / 任务对话（⌘6）', icon: ICONS.auto },
   { value: 'ops', label: '运维', hint: '监控与成本 / 调用链 / 路由（⌘7）', icon: ICONS.ops }
 ]
 

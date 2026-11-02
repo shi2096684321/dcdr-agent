@@ -36,6 +36,14 @@ public class RedisClusterLock implements ClusterLock {
     private static final RedisScript<Long> RELEASE_SCRIPT = RedisScript.of(
             "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
             Long.class);
+    /**
+     * 比对持有者后再续期 (V3.3)。
+     * <p>与释放同一套判断: 只有 key 里存的还是本实例 ID 时才 PEXPIRE。
+     * 若已被人接管, 返回 0 —— 续期失败必须能被调用方看见, 否则"任务跑了两遍"无从追查。
+     */
+    private static final RedisScript<Long> RENEW_SCRIPT = RedisScript.of(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('pexpire', KEYS[1], ARGV[2]) else return 0 end",
+            Long.class);
     private static final long WARN_INTERVAL_MS = 60_000L;
 
     private final ReactiveStringRedisTemplate redis;
@@ -83,6 +91,25 @@ public class RedisClusterLock implements ClusterLock {
         } catch (Exception e) {
             // 释放失败不阻断: 租约会在 TTL 后自动过期, 只是接管会晚一点
             warnThrottled("释放租约失败(等待 TTL 自动过期)", name, e);
+        }
+    }
+
+    /**
+     * 续租: 只有 key 里仍是本实例 ID 时才 PEXPIRE。
+     * <p>故障策略与 {@link #tryAcquire} 不同: 这里 <b>fail-open</b> 同样成立 —— Redis 抖动时
+     * 续不上, 最坏结果是租约按原 TTL 过期, 不该因此中断正在执行的任务。
+     */
+    @Override
+    public boolean renew(String name, Duration ttl) {
+        String key = PREFIX + name;
+        try {
+            Long renewed = redis.execute(RENEW_SCRIPT, List.of(key),
+                            List.of(instanceId, String.valueOf(ttl.toMillis())))
+                    .blockFirst(Duration.ofSeconds(2));
+            return renewed != null && renewed > 0L;
+        } catch (Exception e) {
+            warnThrottled("续租失败, 等待 TTL 自动过期", name, e);
+            return true;
         }
     }
 

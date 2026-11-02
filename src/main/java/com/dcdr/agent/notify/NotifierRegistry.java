@@ -33,7 +33,7 @@ public class NotifierRegistry {
 
     private final NotifyProperties props;
     private final List<Notifier> notifiers;
-    /** V3.4: 用户级推送配置 (按 userId + 渠道 取解密后的 Webhook) */
+    /** V3.3: 用户级推送配置 (按 userId + 渠道 取解密后的 Webhook) */
     private final UserNotifyConfigService userNotifyConfigService;
 
     /** 渠道 → 实现 */
@@ -87,7 +87,7 @@ public class NotifierRegistry {
         if (notifier == null) {
             return NotifyResult.failed(channel.code(), "渠道暂无实现: " + channel.code());
         }
-        // V3.4: 用户自己配了 Webhook 就优先用它 —— 一套部署下不同用户的任务该进各自的群。
+        // V3.3: 用户自己配了 Webhook 就优先用它 —— 一套部署下不同用户的任务该进各自的群。
         // 用户配置视为对该用户的"授权": 即使部署级总开关关闭也放行, 否则个人配置永远不会生效。
         CredentialSource source = applyUserCredential(message, channel, mine);
         if (source == CredentialSource.DISABLED) {

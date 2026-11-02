@@ -58,8 +58,8 @@ public class ChatController {
     private final SessionManager sessionManager;
     private final ChatMemory memory;
     private final V3Properties v3Properties;
-    private final com.dcdr.agent.repository.LlmCallLogRepository llmCallLogRepository;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    /** 调用链日志落库(与定时任务/工作流共用同一个组件, 避免各自维护一套字段映射) */
+    private final com.dcdr.agent.agent.log.LlmCallLogWriter callLogWriter;
     /** V3.1 F-41: 对话内 RAG 检索范围的归属校验(防止携带他人知识库 ID 越权检索) */
     private final OwnershipGuard ownershipGuard;
 
@@ -99,21 +99,24 @@ public class ChatController {
         // V3.1 F-41: 剔除请求中越权的知识库 ID(对话内 RAG 检索范围)
         sanitizeKnowledgeBaseIds(request, exchange);
         // LLM 调用链: 本轮请求的全部模型调用(路由/各生成轮)+工具步, 结束输出汇总(grep 'llm-trace')
+        // 注意收尾处的 doFinally 把落库切到了 boundedElastic: 链路快照的持久化是同步 JPA 写,
+        // 而 cancel(用户点停止 / 前端断开)时的终止信号可能来自 reactor-http-nio 线程
         final LlmCallTrace trace = LlmCallTrace.begin();
-        registerLogSink(trace, userId, request.getSessionId(), request.getMessage());
+        callLogWriter.bind(trace, userId, request.getSessionId(), request.getMessage(),
+                com.dcdr.agent.agent.session.SessionSource.USER);
 
         // 用户已显式选择 Agent / 无消息 → 跳过路由, 尊重显式选择
         if (shouldSkipRouting(request)) {
             return orchestrator.chat(request, userId, trace)
                     .map(TO_SSE)
-                    .doFinally(sig -> trace.summary(sig.name()));
+                    .doFinally(sig -> Schedulers.boundedElastic().schedule(() -> trace.summary(sig.name())));
         }
 
         return Mono.fromCallable(() -> intentRouter.route(request.getMessage(), userId, request.getSessionId(), trace))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(route -> applyRouteStream(route, request, userId, trace))
                 .map(TO_SSE)
-                .doFinally(sig -> trace.summary(sig.name()))
+                .doFinally(sig -> Schedulers.boundedElastic().schedule(() -> trace.summary(sig.name())))
                 .onErrorResume(e -> {
                     log.error("流式对话处理失败", e);
                     return Flux.just(TO_SSE.apply(ChatChunk.error("对话处理失败: " + e.getMessage(), "CHAT_ERROR")));
@@ -191,13 +194,14 @@ public class ChatController {
         sanitizeKnowledgeBaseIds(request, exchange);
         // LLM 调用链(与流式路径一致): 路由 + 生成调用, 结束输出汇总(grep 'llm-trace')
         final LlmCallTrace trace = LlmCallTrace.begin();
-        registerLogSink(trace, userId, request.getSessionId(), request.getMessage());
+        callLogWriter.bind(trace, userId, request.getSessionId(), request.getMessage(),
+                com.dcdr.agent.agent.session.SessionSource.USER);
 
         if (shouldSkipRouting(request)) {
             return Mono.fromCallable(() -> orchestrator.chatSync(request, userId, trace))
                     .subscribeOn(Schedulers.boundedElastic())
                     .map(Result::success)
-                    .doFinally(sig -> trace.summary(sig.name()));
+                    .doFinally(sig -> Schedulers.boundedElastic().schedule(() -> trace.summary(sig.name())));
         }
         return Mono.fromCallable(() -> {
                     RoutingDtos.RouteResult route = intentRouter.route(request.getMessage(), userId, request.getSessionId(), trace);
@@ -205,7 +209,7 @@ public class ChatController {
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(Result::success)
-                .doFinally(sig -> trace.summary(sig.name()));
+                .doFinally(sig -> Schedulers.boundedElastic().schedule(() -> trace.summary(sig.name())));
     }
 
     /** 应用路由结果到同步对话 */
@@ -314,39 +318,6 @@ public class ChatController {
         if (res.getError() != null) return "[工作流执行失败: " + res.getError() + "]";
         if (res.getFinalOutput() != null && !res.getFinalOutput().isBlank()) return res.getFinalOutput();
         return "[工作流未产生输出]";
-    }
-
-    /**
-     * 注册调用链日志落库回调: 请求结束后(无论正常/取消/出错)把本轮 LLM 调用链快照
-     * 持久化到独立表 llm_call_logs, 供前端"调用链日志"独立页面分页查看(不进对话内容)。
-     */
-    private void registerLogSink(LlmCallTrace trace, String userId, String sessionId, String userMessage) {
-        trace.onSummary(summary -> {
-            try {
-                com.dcdr.agent.entity.LlmCallLogEntity entity = new com.dcdr.agent.entity.LlmCallLogEntity();
-                entity.setId(java.util.UUID.randomUUID().toString());
-                entity.setTurnId(summary.turnId());
-                entity.setUserId(userId);
-                entity.setSessionId(sessionId);
-                entity.setUserMessage(userMessage == null ? "" :
-                        (userMessage.length() > 200 ? userMessage.substring(0, 200) : userMessage));
-                entity.setEndSignal(summary.endSignal());
-                entity.setLlmCalls(summary.llmCalls());
-                entity.setToolSteps(summary.toolSteps());
-                entity.setTotalInTokens(summary.totalIn());
-                entity.setTotalOutTokens(summary.totalOut());
-                entity.setTotalDurationMs(summary.totalMs());
-                entity.setChain(summary.chain());
-                entity.setStepsJson(objectMapper.writeValueAsString(summary.steps()));
-                // 失败信息单独成列(而不是只躺在 steps_json 里): 列表页要按"是否失败"排序/筛选时不必解析 JSON
-                entity.setFailedStep(summary.failedStep());
-                entity.setErrorMessage(summary.errorMessage());
-                entity.setCreatedAt(java.time.LocalDateTime.now());
-                llmCallLogRepository.save(entity);
-            } catch (Exception e) {
-                log.error("保存调用链日志失败: turn={}", summary.turnId(), e);
-            }
-        });
     }
 
     /**

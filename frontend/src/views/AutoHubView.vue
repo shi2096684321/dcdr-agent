@@ -5,6 +5,8 @@
     <WorkflowView v-if="tab === 'workflow'" @open-dag="openDag" />
     <DagEditorView v-else-if="tab === 'dag'" :initial-workflow-id="dagTargetId" />
     <ScheduledTaskView v-else-if="tab === 'schedule'" />
+    <!-- V3.5: 定时任务 / 工作流自动执行产生的会话单独归到这里, 不再混进对话列表 -->
+    <TaskConversationView v-else-if="tab === 'conversation'" />
   </HubShell>
 </template>
 
@@ -14,18 +16,25 @@ import HubShell from '@/components/HubShell.vue'
 import WorkflowView from '@/views/WorkflowView.vue'
 import DagEditorView from '@/views/DagEditorView.vue'
 import ScheduledTaskView from '@/views/ScheduledTaskView.vue'
+import TaskConversationView from '@/views/TaskConversationView.vue'
 
 /**
  * 自动化工作台。
  * <p>
- * 三页的共同点是"按某种方式自动跑起来并留下执行记录": 工作流是显式编排、DAG 是可视化编排、
- * 定时任务是时间触发。以前它们在顶栏占三格(其中 DAG 还只是个"从工作流跳进去"的落点),
- * 现在收敛成一个入口 —— 顺带把跨页状态 dagTargetId 关回容器内。
+ * 四页的共同点是"按某种方式自动跑起来并留下记录": 工作流是显式编排、DAG 是可视化编排、
+ * 定时任务是时间触发、任务对话是前三者跑完之后留下的执行对话。
+ * 以前它们在顶栏占三格(其中 DAG 还只是个"从工作流跳进去"的落点), 现在收敛成一个入口 ——
+ * 顺带把跨页状态 dagTargetId 关回容器内。
  */
 const TABS = [
   { key: 'workflow', label: '工作流', hint: '步骤式 / DAG 工作流的定义、执行、历史与 Webhook' },
   { key: 'dag', label: 'DAG 编排', hint: '拖拽节点 + 连线, 可视化编排多专家协作流程' },
-  { key: 'schedule', label: '定时任务', hint: '按 Cron 定期触发专家执行' }
+  { key: 'schedule', label: '定时任务', hint: '按 Cron 定期触发专家执行' },
+  {
+    key: 'conversation',
+    label: '任务对话',
+    hint: '定时任务与工作流自动执行留下的对话(只读回看); 你自己聊的对话在左侧「对话」里'
+  }
 ]
 
 const tab = ref('workflow')

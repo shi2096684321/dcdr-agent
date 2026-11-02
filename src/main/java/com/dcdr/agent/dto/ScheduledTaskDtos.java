@@ -75,6 +75,16 @@ public class ScheduledTaskDtos {
     public static class TriggerRequest {
         @Schema(description = "可选: 覆盖任务默认的提示词")
         private String inputMessage;
+
+        /**
+         * 本次执行完成后是否推送 (V3.3)。
+         * <p><b>默认 false</b>: 手动触发是为了当场看结果, 再往群里发一条只会刷屏。
+         * 但"不推送"必须是用户能看见的选择, 不能是静默行为 —— 否则点了「立即触发」收不到消息,
+         * 页面上又留着上一次 cron 的推送记录, 根本分不清是没推还是推失败。
+         * 前端用「执行并推送」显式传 true, 后端同步等推送结果, 直接回在触发结果里。
+         */
+        @Schema(description = "本次执行完成后是否推送; 默认 false(手动触发不推送)")
+        private Boolean notify;
     }
 
     /** 消息模板预览结果 (V3.3 F-50) */
@@ -136,5 +146,20 @@ public class ScheduledTaskDtos {
         private String status;
         @Schema(description = "失败原因")
         private String error;
+        @Schema(description = "本次执行耗时(ms)")
+        private long durationMs;
+
+        // ===== V3.3 本次执行的推送情况 =====
+
+        /**
+         * 本次执行的推送结果: success / failed / skipped。
+         * <p>以前这个字段不存在, 于是"没推送"和"推送失败"在接口层面无从区分 ——
+         * 用户只能看到执行成功, 然后去群里等一条永远不会来的消息。
+         */
+        @Schema(description = "本次执行的推送结果: success / failed / skipped")
+        private String notifyStatus;
+        /** 未推送 / 推送失败的原因 (notifyStatus=success 时为空) */
+        @Schema(description = "未推送或推送失败的原因")
+        private String notifyReason;
     }
 }

@@ -134,3 +134,56 @@ COMMENT ON COLUMN user_notify_configs.keyword               IS '钉钉自定义�
 COMMENT ON COLUMN user_notify_configs.enabled               IS '关闭后回退部署级 agent.notify.* 配置';
 
 CREATE INDEX IF NOT EXISTS idx_unc_user ON user_notify_configs (user_id);
+
+
+-- =============================================================================
+-- 会话来源分类 + 调用链来源(并入本脚本, 保持"一版一脚本"; 不再单开文件)
+-- =============================================================================
+-- ==========================================================================
+--  V3.3 会话来源分类 (sessions.source / sessions.source_ref)
+-- --------------------------------------------------------------------------
+--  背景: 定时任务与工作流每执行一次都会建一个会话跑 Agent, 这些会话以前和用户
+--        自己聊的对话混在同一个列表里。加两个字段后:
+--          · 对话侧边栏只查 source='user'
+--          · 「自动化 → 任务对话」查 source IN ('schedule','workflow')
+--          · 自动会话按 (source, source_ref) 收敛保留数量, 不会被分钟级 cron 撑爆
+--
+--  说明: 应用侧 ddl-auto=update 会自动加列, 本脚本用于显式部署 / 手工建库场景。
+--        全部 IF NOT EXISTS, 可重复执行。
+-- ==========================================================================
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'user';
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS source_ref VARCHAR(64);
+
+-- 存量会话(加列前创建的)全部视为用户自己的对话 —— 与列的 DEFAULT 一致,
+-- 显式写一遍是为了让"升级后对话列表不会突然空掉"这件事在脚本里可见。
+UPDATE sessions SET source = 'user' WHERE source IS NULL;
+
+-- 存量里混在对话列表中的自动执行会话: 靠旧版标题前缀(schedule: / workflow:)认出来并改归来源。
+-- 只能认回前缀还在的那部分 —— 首个用户问题到达后标题会被改写成问题内容, 前缀就丢了,
+-- 这类会话升级后仍留在对话列表里, 需要用户手动删除。
+-- source_ref 无法反推任务/工作流 ID(旧版没存), 留空: 「任务对话」里会少一行"来自任务 xxx", 其余照常。
+UPDATE sessions SET source = 'schedule' WHERE source = 'user' AND title LIKE 'schedule:%';
+UPDATE sessions SET source = 'workflow' WHERE source = 'user' AND title LIKE 'workflow:%';
+
+COMMENT ON COLUMN sessions.source IS
+    '会话来源: user=用户自己开的对话; schedule=定时任务自动执行; workflow=工作流步骤自动执行';
+COMMENT ON COLUMN sessions.source_ref IS
+    '来源聚合 ID: 定时任务 ID 或工作流 ID; 自动会话按它收敛保留条数, 用户会话为空';
+
+-- 列表查询按 (user_id, source) 过滤并按 updated_at 倒序; 收敛清理按 (source, source_ref)
+CREATE INDEX IF NOT EXISTS idx_session_user_source ON sessions (user_id, source);
+CREATE INDEX IF NOT EXISTS idx_session_source_ref ON sessions (source, source_ref);
+
+-- ===== 调用链日志补来源列 =====
+-- 为什么要补: 定时任务与工作流 V3.3 起也建会话, 于是"有没有 session_id"再也分不出
+-- 这条日志是用户自己聊的还是系统跑的; 而失败排查时"这条是不是定时任务"是第一个要回答的问题。
+-- 取值与 sessions.source 共用同一套 code, 不另造枚举。
+ALTER TABLE llm_call_logs ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'user';
+
+-- 存量行: V3.3 之前只有用户对话会写这张表, 回填 user 是事实还原, 不是猜测。
+-- 不依赖 ALTER 的 DEFAULT 自动填充 —— 那只在部分数据库/版本上对存量行生效。
+UPDATE llm_call_logs SET source = 'user' WHERE source IS NULL;
+
+-- 列表页按用户 + 来源筛选
+CREATE INDEX IF NOT EXISTS idx_llmcall_user_source ON llm_call_logs (user_id, source, created_at);

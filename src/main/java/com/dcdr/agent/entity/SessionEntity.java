@@ -52,6 +52,16 @@ public class SessionEntity implements OwnedEntity {
     @Column(length = 64)
     private String userId;
 
+    @Schema(description = "会话来源 (V3.3): user=用户自己开的对话; schedule=定时任务自动执行; workflow=工作流步骤自动执行。"
+            + "对话列表默认只查 user, 自动执行产生的会话归到自动化下的「任务对话」")
+    @Column(length = 32, nullable = false, columnDefinition = "varchar(32) default 'user'")
+    private String source = "user";
+
+    @Schema(description = "来源聚合 ID (V3.3): 定时任务 ID 或工作流 ID。"
+            + "自动会话按它分组收敛保留数量 —— 单个任务跑几百次不该留下几百个会话")
+    @Column(length = 64)
+    private String sourceRef;
+
     @Schema(description = "创建时间")
     @Column(nullable = false)
     private LocalDateTime createdAt;

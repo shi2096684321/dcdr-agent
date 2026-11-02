@@ -151,7 +151,7 @@
     </template>
   </el-dialog>
 
-  <!-- V3.4 推送配置 -->
+  <!-- V3.3 推送配置 -->
   <NotifyConfigDialog v-model="notifyConfigVisible" />
 </template>
 
@@ -352,14 +352,14 @@ function onUserCommand(cmd) {
   } else if (cmd === 'password') {
     pwdDialogVisible.value = true
   } else if (cmd === 'notify') {
-    // V3.4: 推送配置与任务解耦, 从用户菜单随时可改
+    // V3.3: 推送配置与任务解耦, 从用户菜单随时可改
     notifyConfigVisible.value = true
   } else if (cmd === 'profile') {
     ElMessage.info(`当前账号: ${authStore.username} (${authStore.user?.role || '-'})`)
   }
 }
 
-// V3.4 推送配置
+// V3.3 推送配置
 const notifyConfigVisible = ref(false)
 
 // 修改密码

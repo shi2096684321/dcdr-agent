@@ -6,10 +6,12 @@ import com.dcdr.agent.agent.governance.CostSource;
 import com.dcdr.agent.agent.governance.CostTracker;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.session.SessionManager;
+import com.dcdr.agent.agent.session.SessionSource;
 import com.dcdr.agent.agent.version.WorkflowVersionDiffer;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.auth.ownership.ResourceType;
 import com.dcdr.agent.common.exception.BusinessException;
+import com.dcdr.agent.common.log.LlmCallTrace;
 import com.dcdr.agent.config.V3Properties;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
@@ -89,10 +91,20 @@ public class WorkflowEngine {
     private final ModelRegistry modelRegistry;
     /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard (口径见 WorkflowOwnershipProvider / WorkflowExecutionOwnershipProvider) */
     private final OwnershipGuard ownershipGuard;
+    /** V3.3: 调用链日志落库(与用户对话、定时任务共用同一套字段映射) */
+    private final com.dcdr.agent.agent.log.LlmCallLogWriter callLogWriter;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /** 变量占位符正则: ${name} 或 ${name.output} */
     private static final Pattern VAR_PATTERN = Pattern.compile("\\$\\{([^}]+)}");
+
+    /**
+     * 每个工作流保留的执行会话条数上限 (V3.3)。
+     * <p>
+     * 工作流一次执行会为每个步骤各建一个会话, 故上限按"步骤数 × 重复执行次数"给 ——
+     * 取 100 大致对应 5 步的工作流能回看最近 20 次执行。
+     */
+    private static final int AUTO_SESSION_KEEP = 100;
 
     /** 并行模式线程池 (固定大小, 避免大工作流并发过多 Agent 调用打爆上游) */
     private final ExecutorService parallelExecutor = Executors.newFixedThreadPool(4);
@@ -1141,25 +1153,37 @@ public class WorkflowEngine {
         };
     }
 
-    /** 调用单步 Agent (创建临时会话, 调用 chatSync, 清理会话); F-34: 记录 token 用量 */
+    /**
+     * 调用单步 Agent (创建执行会话, 调用 chatSync); F-34: 记录 token 用量。
+     * <p>
+     * V3.3: 会话标记来源=workflow + sourceRef=工作流 ID, 执行完<b>不再删除</b> ——
+     * 它归档到「自动化 → 任务对话」供回看; 保留数量按工作流收敛(见 finally)。
+     * 以前用完即删的做法让"这一步到底问了什么"永久丢失, 只剩 StepResult 的最终输出。
+     */
     private WorkflowDtos.StepResult invokeStep(WorkflowDtos.WorkflowStep step, String input, ExecCtx ctx) {
         WorkflowDtos.StepResult r = new WorkflowDtos.StepResult();
         r.setName(step.getName());
         r.setAgentId(step.getAgentId());
         r.setInput(input);
         long start = System.currentTimeMillis();
+        // V3.3: 与定时任务同一个缺口 —— 不传 trace 时编排层自建的快照没有任何监听器, 从不落库。
+        // 工作流一次执行会跑多个步骤, 没有调用链就只能看到"第 3 步失败", 看不到是哪一轮/哪个工具
+        LlmCallTrace trace = LlmCallTrace.begin();
+        String endSignal = "ON_COMPLETE";
         try {
             try {
                 AgentDefinitionEntity agent = agentDefinitionService.loadEntity(step.getAgentId());
                 r.setAgentName(agent.getName());
             } catch (Exception ignored) {}
-            SessionDTO sess = sessionManager.createSession("workflow:" + step.getName(), null, null, ctx.userId);
+            SessionDTO sess = sessionManager.createSession("工作流 · " + step.getName(), null, null, ctx.userId,
+                    SessionSource.WORKFLOW.code(), ctx.entity.getWorkflowId());
+            callLogWriter.bind(trace, ctx.userId, sess.getId(), input, SessionSource.WORKFLOW);
             ChatRequest req = new ChatRequest();
             req.setSessionId(sess.getId());
             req.setMessage(input);
             req.setAgentId(step.getAgentId());
             req.setStream(false);
-            ChatResponse resp = orchestrator.chatSync(req, ctx.userId);
+            ChatResponse resp = orchestrator.chatSync(req, ctx.userId, trace);
             String content = resp.getContent() == null ? "" : resp.getContent();
             r.setOutput(content);
             r.setStatus("success");
@@ -1173,11 +1197,15 @@ public class WorkflowEngine {
                 costTracker.record(ctx.userId, sess.getId(), ctx.entity.getId(), CostSource.WORKFLOW,
                         resp.getModel(), resp.getTokenUsage());
             }
-            try { sessionManager.deleteSession(sess.getId()); } catch (Exception ignored) {}
         } catch (Exception e) {
             r.setStatus("failed");
             r.setError(e.getMessage());
+            endSignal = "ON_ERROR";
             log.error("工作流步骤 {} 执行失败", step.getName(), e);
+        } finally {
+            trace.summary(endSignal);
+            sessionManager.trimAutoSessions(SessionSource.WORKFLOW.code(), ctx.entity.getWorkflowId(),
+                    AUTO_SESSION_KEEP);
         }
         r.setDurationMs(System.currentTimeMillis() - start);
         return r;

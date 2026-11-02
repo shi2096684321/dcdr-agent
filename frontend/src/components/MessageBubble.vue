@@ -124,7 +124,7 @@
         </div>
 
         <!-- 操作: 编辑历史消息 / 重新生成助手回答 -->
-        <div v-if="!streaming" class="msg-actions">
+        <div v-if="!streaming && !readonly" class="msg-actions">
           <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('start-edit', msg)" title="编辑并重新生成">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
             编辑
@@ -190,7 +190,13 @@ const props = defineProps({
   msg: { type: Object, required: true },
   streaming: { type: Boolean, default: false },
   editing: { type: Boolean, default: false },
-  editBuffer: { type: String, default: '' }
+  editBuffer: { type: String, default: '' },
+  /**
+   * 只读: 隐藏「编辑 / 撤回 / 重新生成」与反馈按钮。
+   * 用于「自动化 → 任务对话」这类回看页面 —— 那些会话是系统自动跑出来的,
+   * 对它们"重新生成"或"撤回"没有语义, 留一排点不动的按钮只会让人以为功能坏了。
+   */
+  readonly: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'undo-op', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
@@ -355,7 +361,8 @@ function onBubbleClick(e) {
 // 反馈以 (sessionId, seq) 定位回答: seq 是后端 messages 表的会话内序号, 刷新后依然稳定。
 // 因此流式刚结束时 (seq 尚未回写) 不展示反馈按钮, 避免提交到错误的回答上。
 // 注: 不跟随 streaming 隐藏 —— 评价的是已完成的回答, 与正在生成的回答无关
-const canFeedback = computed(() => props.msg?.role === 'assistant'
+const canFeedback = computed(() => !props.readonly
+  && props.msg?.role === 'assistant'
   && props.msg?.seq != null
   && !props.msg?.error)
 // 反馈状态以父级传入的 msg.feedback 为准 (父级在提交成功后回写), 保证与后端一致

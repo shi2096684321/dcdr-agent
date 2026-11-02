@@ -22,6 +22,7 @@ import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 会话管理器 (对话模式) - 管理会话的创建、切换、删除
@@ -45,6 +46,27 @@ public class SessionManager {
     private final AgentProperties properties;
     /** V3.1 F-48: 读取消息时回填当前用户对该条回答的反馈状态 (点赞/点踩), 并负责会话级联清理 */
     private final FeedbackService feedbackService;
+    /**
+     * V3.3: 级联删除抽到独立 bean。
+     * <p>本类内部方法互调不走 Spring 代理, {@code @Transactional} 不生效 ——
+     * 会话按批收敛时会出现"会话删了、消息还在"的孤儿数据。
+     */
+    private final SessionCleanupService cleanupService;
+
+    /** 会话 ID 前缀, 与 WorkspaceJournal / ToolResultSpillStore 的目录命名沿用同一风格 */
+    private static final String ID_PREFIX = "sess_";
+
+    /**
+     * 生成会话 ID: 毫秒时间戳 + 6 位随机后缀。
+     * <p>
+     * 只用时间戳会撞主键: 工作流 parallel 模式下多个步骤在同一毫秒内并发创建会话,
+     * 后插入的那条直接抛主键冲突, 表现为"并行工作流偶尔有步骤失败"。
+     * 加随机后缀后同一毫秒内重复的概率降到 1/16M, 而 ID 依然保持"可读 + 按时间排序"的性质。
+     */
+    private static String nextSessionId() {
+        return ID_PREFIX + System.currentTimeMillis() + "_"
+                + String.format("%06x", ThreadLocalRandom.current().nextInt(0x1000000));
+    }
 
     /** 创建新会话 */
     @Transactional
@@ -55,7 +77,23 @@ public class SessionManager {
     /** 创建新会话(带 userId, V2.2 数据隔离) */
     @Transactional
     public SessionDTO createSession(String title, String model, String persona, String userId) {
-        String id = "sess_" + System.currentTimeMillis();
+        return createSession(title, model, persona, userId, SessionSource.USER.code(), null);
+    }
+
+    /**
+     * 创建新会话(带来源, V3.3)。
+     * <p>
+     * 定时任务 / 工作流执行时用 {@link SessionSource#SCHEDULE} / {@link SessionSource#WORKFLOW},
+     * 并把任务或工作流 ID 放进 {@code sourceRef} —— 这两件事决定了它会不会出现在对话侧边栏,
+     * 以及保留数量按什么粒度收敛。
+     *
+     * @param source    会话来源 code, 见 {@link SessionSource}
+     * @param sourceRef 来源聚合 ID(定时任务 ID / 工作流 ID); 用户会话为 null
+     */
+    @Transactional
+    public SessionDTO createSession(String title, String model, String persona, String userId,
+                                    String source, String sourceRef) {
+        String id = nextSessionId();
         LocalDateTime now = LocalDateTime.now();
         SessionEntity entity = new SessionEntity();
         entity.setId(id);
@@ -68,13 +106,16 @@ public class SessionManager {
         }
         entity.setSystemPrompt(persona);
         entity.setUserId(userId);
+        entity.setSource(source == null || source.isBlank() ? SessionSource.USER.code() : source);
+        entity.setSourceRef(sourceRef);
         entity.setCreatedAt(now);
         entity.setUpdatedAt(now);
         sessionRepository.save(entity);
 
         // V3.1: 不再把用户角色设定写为独立 system 消息(用户文本不得以系统指令身份生效),
         // 仅存 sessions.system_prompt 字段, 对话时由 AgentOrchestrator 包装后注入(平台包壳)。
-        log.info("创建会话: {} (user={}, title={})", id, userId, entity.getTitle());
+        log.info("创建会话: {} (user={}, source={}, sourceRef={}, title={})",
+                id, userId, entity.getSource(), sourceRef, entity.getTitle());
         return toDTO(entity);
     }
 
@@ -89,35 +130,65 @@ public class SessionManager {
         return sessionRepository.findByIdAndUserId(id, userId).map(SessionManager::toDTO).orElse(null);
     }
 
-    /** 获取所有会话列表 */
-    public List<SessionDTO> listSessions() {
-        return sessionRepository.findAllByOrderByUpdatedAtDesc().stream()
+    /** 获取指定来源的会话列表 (不分用户, 供认证关闭的多用户兼容模式使用) */
+    public List<SessionDTO> listSessions(List<String> sources) {
+        return sessionRepository.findBySourceInOrderByUpdatedAtDesc(sources).stream()
                 .map(SessionManager::toDTO)
                 .toList();
     }
 
     /**
-     * 获取会话列表(V2.2 数据隔离)。
+     * 获取会话列表(V2.2 数据隔离, V3.3 按来源筛选)。
      * <p>
      * V3.1 F-41: 管理员返回全部会话; 普通用户仅自己的。
      * {@code userId == null}(认证关闭)退化为全部, 兼容 V2.1 单用户部署。
+     * <p>
+     * {@code sources} 由 {@link SessionSource#parseFilter} 解析: 对话侧边栏只传
+     * {@code user}, 「任务对话」传 {@code schedule + workflow}。筛选放在服务端而非前端,
+     * 是为了让"自动执行产生的会话"在接口层面就不可能漏进对话列表。
      */
-    public List<SessionDTO> listSessions(String userId, boolean isAdmin) {
-        if (isAdmin || userId == null) return listSessions();
-        return sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId).stream()
+    public List<SessionDTO> listSessions(String userId, boolean isAdmin, List<String> sources) {
+        if (isAdmin || userId == null) return listSessions(sources);
+        return sessionRepository.findByUserIdAndSourceInOrderByUpdatedAtDesc(userId, sources).stream()
                 .map(SessionManager::toDTO)
                 .toList();
     }
 
-    /** 删除会话 */
-    @Transactional
+    /**
+     * 收敛自动会话的保留数量 (V3.3)。
+     * <p>
+     * 定时任务按分钟级跑, 若每次执行的会话都留着, 一天就能攒出上千条 —— 既拖慢列表,
+     * 也让"回看上次执行"变成翻垃圾。这里按 {@code (source, sourceRef)} 只保留最近
+     * {@code keep} 条, 更早的连同消息 / 反馈一起删掉。
+     * <p>
+     * 清理失败只记日志: 它是维护性动作, 不该把一次成功的任务执行变成失败。
+     *
+     * @param source    会话来源 (schedule / workflow)
+     * @param sourceRef 任务 ID 或工作流 ID
+     * @param keep      保留条数
+     */
+    public void trimAutoSessions(String source, String sourceRef, int keep) {
+        if (sourceRef == null || sourceRef.isBlank() || keep <= 0) return;
+        try {
+            List<SessionEntity> all = sessionRepository
+                    .findBySourceAndSourceRefOrderByCreatedAtDesc(source, sourceRef);
+            if (all.size() <= keep) return;
+            for (SessionEntity old : all.subList(keep, all.size())) {
+                deleteSession(old.getId());
+            }
+            log.debug("清理自动会话: source={}, ref={}, 删除 {} 条 (保留最近 {})",
+                    source, sourceRef, all.size() - keep, keep);
+        } catch (Exception e) {
+            log.warn("清理自动会话失败 (source={}, ref={}): {}", source, sourceRef, e.getMessage());
+        }
+    }
+
+    /**
+     * 删除会话。
+     * <p>V3.3: 实现搬到 {@link SessionCleanupService} —— 那里跨 bean 调用, 事务才真正生效。
+     */
     public void deleteSession(String id) {
-        sessionRepository.deleteById(id);
-        messageRepository.deleteBySessionId(id);
-        // V3.1 F-48: 会话删除时一并清理其反馈, 避免反馈表残留孤儿数据
-        feedbackService.deleteBySession(id);
-        memory.clear(id);
-        log.info("删除会话: {}", id);
+        cleanupService.deleteCascade(id);
     }
 
     /** 获取会话历史消息 */
@@ -320,6 +391,10 @@ public class SessionManager {
         dto.setPersona(e.getSystemPrompt());
         dto.setAgentId(e.getAgentId());
         dto.setWorkspaceId(e.getWorkspaceId());
+        // 存量数据 source 可能为 null(加列前的会话), 一律按用户会话兜底, 否则对话列表会漏掉它们
+        dto.setSource(e.getSource() == null || e.getSource().isBlank()
+                ? SessionSource.USER.code() : e.getSource());
+        dto.setSourceRef(e.getSourceRef());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setUpdatedAt(e.getUpdatedAt());
         return dto;

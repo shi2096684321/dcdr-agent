@@ -14,6 +14,9 @@
           <el-option label="仅自己" value="self" />
           <el-option label="全部用户" value="all" />
         </el-select>
+        <el-select v-model="filterSource" size="small" style="width:112px" @change="onFilterChange">
+          <el-option v-for="o in SOURCE_OPTIONS" :key="o.value" :label="o.label" :value="o.value" />
+        </el-select>
         <el-button size="small" @click="loadLogs" :loading="loading">刷新</el-button>
       </div>
     </div>
@@ -47,6 +50,7 @@
       <div class="lt-head">
         <span>时间</span>
         <span>追踪</span>
+        <span>来源</span>
         <span>用户消息</span>
         <span class="ta-r">轮次</span>
         <span class="ta-r">工具</span>
@@ -61,6 +65,10 @@
           <span class="lt-turn">
             <svg class="lt-caret" :class="{ open: expanded.has(log.id) }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></svg>
             #{{ log.turnId }}
+          </span>
+          <!-- 来源徽标: 定时任务与工作流的日志混在同一张表里, 不标出来就只能靠"用户消息长什么样"猜 -->
+          <span class="lt-src" :class="'src-' + (log.source || 'user')" :title="log.sourceLabel || '用户对话'">
+            {{ srcShort(log.source) }}
           </span>
           <span class="lt-msg" :title="log.userMessage">{{ log.userMessage || '—' }}</span>
           <span class="lt-num">{{ log.llmCalls || 0 }}</span>
@@ -293,6 +301,22 @@ function onSizeChange() {
   loadLogs()
 }
 const filterUserId = ref('self')
+/**
+ * 来源筛选与徽标文案的唯一清单。
+ * 后端 /api/llm-calls/logs 用同一套 code(SessionSource), 这里不做二次翻译 ——
+ * 加一个新来源时改这一处, 下拉与徽标会同时生效, 不会出现"筛得到但显示成英文"。
+ */
+const SOURCE_OPTIONS = [
+  { value: 'all', label: '全部来源', short: '全部' },
+  { value: 'user', label: '用户对话', short: '对话' },
+  { value: 'schedule', label: '定时任务', short: '定时' },
+  { value: 'workflow', label: '工作流', short: '流程' },
+]
+const filterSource = ref('all')
+/** 列表列宽只有 52px, 用短标签; 完整名字放在 title 里 */
+function srcShort(src) {
+  return (SOURCE_OPTIONS.find((o) => o.value === (src || 'user')) || SOURCE_OPTIONS[1]).short
+}
 const expanded = ref(new Set())
 
 /**
@@ -733,6 +757,8 @@ async function loadLogs() {
     const params = { page: page.value - 1, size: pageSize.value }
     // 只有"全部用户"需要带参数: 后端仅在 userId=all 时查全部, 其余取值(含不传)一律查自己
     if (authStore.isAdmin && filterUserId.value === 'all') params.userId = filterUserId.value
+    // 不传 = 全部来源: 让"默认看全部"成为服务端行为, 前端少发一个无意义参数
+    if (filterSource.value !== 'all') params.source = filterSource.value
     const data = await getLlmCallLogs(params)
     logs.value = Array.isArray(data) ? data : (data.content || [])
     total.value = Array.isArray(data) ? data.length : (data.totalElements || data.length)
@@ -781,7 +807,7 @@ onMounted(() => {
 .lt-head,
 .lt-row {
   display: grid;
-  grid-template-columns: 116px 104px minmax(0, 1fr) 48px 48px 116px 62px 62px;
+  grid-template-columns: 116px 104px 52px minmax(0, 1fr) 48px 48px 116px 62px 62px;
   gap: 12px; align-items: center; padding: 0 14px;
 }
 .lt-head {
@@ -813,6 +839,17 @@ onMounted(() => {
 .lt-state.is-ok { color: var(--dcdr-success); }
 .lt-state.is-warn { color: var(--dcdr-warning); }
 .lt-state.is-err { color: var(--dcdr-danger); }
+/* 来源徽标: 用描边而非实心, 避免和右侧的"状态"色块抢注意力 —— 它只是分类, 不是结论 */
+.lt-src {
+  display: inline-flex; align-items: center; justify-content: center;
+  height: 18px; padding: 0 6px; border-radius: 4px;
+  font-size: 10.5px; font-family: var(--dcdr-font-mono); letter-spacing: 0.2px;
+  border: 1px solid transparent; overflow: hidden; white-space: nowrap;
+}
+/* 用户对话不标色: 它是绝对多数, 每条都染色等于没有信息量 */
+.lt-src.src-user { color: var(--dcdr-text-3); border-color: var(--dcdr-border); }
+.lt-src.src-schedule { color: var(--dcdr-accent-soft); border-color: var(--dcdr-accent-soft); }
+.lt-src.src-workflow { color: var(--dcdr-warning); border-color: var(--dcdr-warning); }
 
 /* ===== 展开区 ===== */
 .lt-detail {

@@ -35,6 +35,24 @@ public interface ClusterLock {
      */
     boolean tryAcquire(String name, Duration ttl);
 
+    /**
+     * 续租 (V3.3): 把已持有租约的过期时间重新推后 {@code ttl}。
+     * <p>
+     * <b>为什么必须有</b>: 定时任务的实际执行时长不受控 —— 一次带工具循环的抓取任务实测跑到
+     * 405s, 而租约 TTL 只有 300s。锁中途过期后, 其他实例会认为"持有者已死"并接管, 于是同一任务
+     * 被并行执行两遍(重复会话、重复模型费用、重复推送)。TTL 调多大都不解决问题, 只有续租能。
+     * <p>
+     * 实现约定: <b>只在确实持有该锁时</b>才延长(按持有者标识比对, 与释放同一套判断);
+     * 已失去锁时返回 false —— 调用方据此告警, 但不要抛出。
+     * <p>
+     * 默认实现返回 true(单实例无共享状态, 续不续都一样), 仅集群实现需要覆盖。
+     *
+     * @return true=续租成功(或无需续租); false=本实例已不再持有该租约
+     */
+    default boolean renew(String name, Duration ttl) {
+        return true;
+    }
+
     /** 释放执行权(仅当本实例是持有者时才真正释放) */
     void release(String name);
 
