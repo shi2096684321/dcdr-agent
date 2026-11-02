@@ -26,7 +26,7 @@
 
       <!-- 推理过程 -->
       <div v-if="msg.reasoningContent" class="msg-reasoning">
-        <details>
+        <details :open="reasoningOpen">
           <summary>推理过程</summary>
           <div v-html="renderReasoning(msg.reasoningContent)" @click="onBubbleClick"></div>
         </details>
@@ -196,7 +196,18 @@ const props = defineProps({
    * 用于「自动化 → 任务对话」这类回看页面 —— 那些会话是系统自动跑出来的,
    * 对它们"重新生成"或"撤回"没有语义, 留一排点不动的按钮只会让人以为功能坏了。
    */
-  readonly: { type: Boolean, default: false }
+  readonly: { type: Boolean, default: false },
+  /**
+   * 推理过程是否默认展开。
+   * <p>
+   * 首页历史消息保持收起（一屏多条回答时，全展开会把正文挤到看不见），
+   * 只有「自动化 → 任务对话」传 true：那边一条会话往往只有一条最终回答，
+   * 用户点进来就是想看 Agent 想了什么、怎么做的，收起反而要再点一次。
+   * <p>
+   * 用 {@code :open} 直接绑定而不是挂载时 setAttribute: Vue 只在新旧 vnode 的 open
+   * 值不同时才改写 DOM，用户手动收起后（DOM open=false，vnode 仍是 true）不会被重新弹开。
+   */
+  reasoningOpen: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'undo-op', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
@@ -499,7 +510,9 @@ async function withdraw() {
 .msg-reasoning { margin-bottom: 8px; }
 .msg-reasoning details { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 10px 14px; }
 .msg-reasoning summary { cursor: pointer; color: var(--dcdr-text-2); font-size: 12px; font-weight: 500; user-select: none; outline: none; padding: 4px 0; }
-.msg-reasoning details > div { color: var(--dcdr-text-2); font-size: 13px; line-height: 1.7; margin-top: 10px; }
+/* max-height + 内部滚动: 展开态在「任务对话」默认开启, 而那边一条思考常有上万字符,
+   不限高会把正文顶到两屏之外 —— 让人以为"只有思考没有回答"。 */
+.msg-reasoning details > div { color: var(--dcdr-text-2); font-size: 13px; line-height: 1.7; margin-top: 10px; max-height: 420px; overflow-y: auto; }
 .msg-reasoning details > div :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; }
 .msg-reasoning details > div :deep(code) { background: var(--dcdr-surface); padding: 2px 8px; border-radius: 4px; }
 

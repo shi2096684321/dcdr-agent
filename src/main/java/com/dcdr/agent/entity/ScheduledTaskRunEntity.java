@@ -16,6 +16,10 @@ import java.time.LocalDateTime;
  * <p>
  * <b>为什么不复用消息表</b>: {@code runOnce} 执行完会立刻删除临时会话，
  * 消息随会话一起消失，且消息表没有"分享 token / 过期时间"这类语义。
+ * <p>
+ * <b>V3.6 起先落一条 running 行</b>: 原先只在执行结束后 insert，于是执行过程中
+ * 「执行历史」里一行都没有 —— 用户点了定时任务只能干等，分不清"在跑"还是"根本没触发"。
+ * 现在开始执行就插入 {@code status=running}，结束时 update 同一行。
  */
 @Data
 @Entity
@@ -40,7 +44,19 @@ public class ScheduledTaskRunEntity {
     @Column(name = "user_id", length = 64)
     private String userId;
 
-    @Schema(description = "执行状态: success / failed")
+    /**
+     * 本次执行对应的会话 ID。
+     * <p>
+     * <b>为什么记在 run 上</b>: 执行中的任务没有正文可看，唯一能证明"它真的在跑"的地方是
+     * 那次执行的会话 —— 用户消息在调模型之前就已落库，所以任务一启动, 「自动化 → 任务对话」
+     * 里就能看到这条对话。要把用户从"执行中"这一行直接送过去，就必须知道 sessionId；
+     * 而会话表只存了 task_id，一个任务有多条会话，反查不出"正在跑的是哪一条"。
+     */
+    @Schema(description = "本次执行对应的会话 ID（任务对话可直达）")
+    @Column(name = "session_id", length = 64)
+    private String sessionId;
+
+    @Schema(description = "执行状态: running / success / failed")
     @Column(length = 16)
     private String status;
 

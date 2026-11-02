@@ -47,6 +47,10 @@
           </div>
           <div class="task-toolbar-right">
             <el-button type="primary" size="small" :loading="triggering" @click="triggerTask(false)">立即触发</el-button>
+            <!-- 执行中的任务没有正文可看, 唯一能看到"它到底在干什么"的地方是那次执行的会话 -->
+            <el-button size="small" :disabled="!conversationSessionId" @click="openConversation()">
+              任务对话
+            </el-button>
             <!-- 手动触发默认不推送(结果就在本页), 但"能不能收到推送"必须有个当场能验证的入口 -->
             <el-button v-if="currentTask.notifyEnabled" size="small" :loading="triggering"
                        @click="triggerTask(true)">执行并推送</el-button>
@@ -132,6 +136,8 @@
               {{ notifyStatusLabel(triggerResult.notifyStatus) }}
             </el-tag>
             <span v-if="triggerResult.durationMs" class="tr-meta">耗时 {{ formatDuration(triggerResult.durationMs) }}</span>
+            <el-button v-if="triggerResult.sessionId" link type="primary" size="small"
+                       @click="openConversation(triggerResult.sessionId)">查看任务对话</el-button>
           </div>
           <!-- 未推送/推送失败必须写出来: 否则"执行成功但没收到消息"只能靠猜 -->
           <div v-if="triggerResult.notifyReason" class="tr-note" :class="{ warn: triggerResult.notifyStatus === 'failed' }">
@@ -157,8 +163,10 @@
             <div v-for="r in runs" :key="r.id" class="rh-item" @click="openRun(r)">
               <el-tag size="small" :type="statusTagType(r.status)">{{ statusLabel(r.status) }}</el-tag>
               <span class="rh-time">{{ formatTime(r.startedAt) }}</span>
-              <span class="rh-dur">{{ formatDuration(r.durationMs) }}</span>
-              <span class="rh-preview">{{ r.preview || r.error || '(无输出)' }}</span>
+              <span class="rh-dur">{{ r.status === 'running' ? runningElapsed(r) : formatDuration(r.durationMs) }}</span>
+              <span class="rh-preview" :class="{ 'rh-running-text': r.status === 'running' }">{{ runPreview(r) }}</span>
+              <!-- 执行中的记录没有正文, 正文在会话里; 单独给个入口, 不要逼用户先点开空详情 -->
+              <a v-if="r.sessionId" class="rh-run-link" @click.stop="openConversation(r.sessionId)">对话</a>
             </div>
           </div>
         </div>
@@ -290,12 +298,21 @@
         <div class="preview-meta">
           <el-tag size="small" :type="statusTagType(runDetail.status)">{{ statusLabel(runDetail.status) }}</el-tag>
           <span class="rh-time">{{ formatTime(runDetail.startedAt) }}</span>
-          <span class="rh-dur">{{ formatDuration(runDetail.durationMs) }}</span>
+          <span class="rh-dur">
+            {{ runDetail.status === 'running' ? runningElapsed(runDetail) : formatDuration(runDetail.durationMs) }}
+          </span>
           <a v-if="runDetail.shareUrl" :href="runDetail.shareUrl" target="_blank" rel="noopener" class="rh-link">
             分享页
           </a>
         </div>
-        <pre class="preview-pre">{{ runDetail.output || runDetail.error || '(无输出)' }}</pre>
+        <!-- 执行中的记录没有正文: 与其显示一个空白框, 不如直接把人送到会话里 -->
+        <div v-if="runDetail.status === 'running'" class="run-running">
+          <span class="running-dot"></span>
+          <span>Agent 正在执行，结果尚未回写。执行过程可以在「任务对话」里看到。</span>
+          <el-button v-if="runDetail.sessionId" link type="primary" size="small"
+                     @click="openConversation(runDetail.sessionId)">查看任务对话</el-button>
+        </div>
+        <pre v-else class="preview-pre">{{ runDetail.output || runDetail.error || '(无输出)' }}</pre>
       </div>
       <div v-else class="preview-loading">加载中…</div>
       <template #footer>
@@ -309,7 +326,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getScheduledTasks, createScheduledTask, updateScheduledTask, deleteScheduledTask, triggerScheduledTask,
@@ -318,6 +335,12 @@ import {
 } from '@/api'
 import NotifyConfigDialog from '@/components/NotifyConfigDialog.vue'
 import { useModelStore } from '@/stores/model'
+
+/**
+ * 执行中的任务没有正文, 唯一能看到它在干什么的地方是那次执行的会话 ——
+ * 交给容器切到「任务对话」页(本页与它同在自动化工作台里, 不需要跨页跳转)
+ */
+const emit = defineEmits(['open-conversation'])
 
 const loading = ref(false)
 const tasks = ref([])
@@ -339,6 +362,29 @@ const runs = ref([])
 const runsLoading = ref(false)
 const runVisible = ref(false)
 const runDetail = ref(null)
+
+/**
+ * 执行中的本地计时 + 轮询 (V3.3 补丁)。
+ * <p>
+ * 「已运行 X 分 Y 秒」由前端每秒自己算, 不靠后端回写 durationMs —— 否则要么后端每秒写一次库,
+ * 要么界面上的数字 3 秒一跳。轮询只在确实有执行中的记录时进行, 跑完自动停下。
+ */
+const clock = ref(Date.now())
+let clockTimer = null
+let pollTimer = null
+
+const hasRunning = computed(() =>
+  runs.value.some((r) => r.status === 'running')
+  // 其他任务在跑时列表也要跟着翻牌, 但 2 小时还停在 running 的多半是实例中途没了, 不再轮询
+  || tasks.value.some((t) => t.lastStatus === 'running' && !isStale(t.lastRunAt)))
+
+/** 任务对话的目标会话: 优先正在执行的那条; 没有执行中的就取最近一次留下会话的执行 */
+const conversationSessionId = computed(() => {
+  const running = runs.value.find((r) => r.status === 'running' && r.sessionId)
+  if (running) return running.sessionId
+  const latest = runs.value.find((r) => r.sessionId)
+  return latest ? latest.sessionId : ''
+})
 
 const dialogVisible = ref(false)
 const editing = ref(false)
@@ -456,7 +502,48 @@ function statusTagType(s) {
   return 'info'
 }
 function statusLabel(s) {
-  return ({ success: '成功', failed: '失败', running: '运行中' })[s] || s
+  // 统一的叫法是「执行中」: 页面上所有"在跑"的地方(任务卡 / 执行历史 / 详情)用同一个词
+  return ({ success: '成功', failed: '失败', running: '执行中' })[s] || s
+}
+
+/** 执行中记录已运行的时长(本地时钟驱动, 每秒重算) */
+function runningElapsed(r) {
+  return formatDuration(elapsedMs(r))
+}
+
+function elapsedMs(r) {
+  if (!r || !r.startedAt) return 0
+  const start = new Date(r.startedAt).getTime()
+  if (Number.isNaN(start)) return 0
+  return Math.max(0, clock.value - start)
+}
+
+/**
+ * 超过 2 小时还停在 running 的判定。
+ * <p>实例中途被杀 / 重启时记录会永远停在 running（没有心跳列可判活）, 与其让用户一直等,
+ * 不如在前端把它标成"可能已中断" —— 只改展示, 不回写数据, 免得把另一实例正在跑的任务误判成失败。
+ */
+const STALE_MS = 2 * 60 * 60 * 1000
+function isStale(iso) {
+  if (!iso) return false
+  const t = new Date(iso).getTime()
+  return !Number.isNaN(t) && clock.value - t > STALE_MS
+}
+
+/** 执行中没有 preview(正文要等结束才有), 这里给一句"去哪看"的指引 */
+function runPreview(r) {
+  if (r.status !== 'running') return r.preview || r.error || '(无输出)'
+  return elapsedMs(r) > STALE_MS ? '执行中（已超过 2 小时，可能已中断）' : '执行中，点右侧「对话」看实时进展'
+}
+
+/** 跳到「自动化 → 任务对话」并选中这次执行的会话 */
+function openConversation(sessionId) {
+  const sid = sessionId || conversationSessionId.value
+  if (!sid) {
+    ElMessage.warning('这次执行没有留下会话，无法查看任务对话')
+    return
+  }
+  emit('open-conversation', sid)
 }
 // 关联专家可选: 未关联时用默认助手执行
 function agentLabel(t) {
@@ -543,17 +630,21 @@ function parseCronToForm(cron) {
   form.scheduleType = 'custom'
 }
 
-async function loadTasks() {
-  loading.value = true
+/**
+ * @param {boolean} silent 轮询用的静默刷新: 不走 loading 态, 否则执行中每 3 秒闪一次"加载中…"
+ */
+async function loadTasks(silent = false) {
+  if (!silent) loading.value = true
   try {
     tasks.value = await getScheduledTasks()
     if (!currentTaskId.value && tasks.value.length) {
       currentTaskId.value = tasks.value[0].id
     }
   } catch (e) {
-    ElMessage.error(extractMessage(e) || '加载定时任务列表失败')
+    // 静默刷新失败不打扰用户: 下一轮还会再来
+    if (!silent) ElMessage.error(extractMessage(e) || '加载定时任务列表失败')
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -721,17 +812,38 @@ async function openPreview() {
   }
 }
 
-async function loadRuns() {
+async function loadRuns(silent = false) {
   if (!currentTask.value) return
-  runsLoading.value = true
+  if (!silent) runsLoading.value = true
   try {
     runs.value = await getScheduledTaskRuns(currentTask.value.id, 20)
   } catch (e) {
     // 历史是辅助信息，失败不该打断主流程
     console.warn('[ScheduledTaskView] 加载执行历史失败:', e)
-    runs.value = []
+    if (!silent) runs.value = []
   } finally {
-    runsLoading.value = false
+    if (!silent) runsLoading.value = false
+  }
+}
+
+/**
+ * 执行中的静默刷新 (V3.3 补丁)。
+ * <p>
+ * 只做两件必要的事: 让 running 行翻成结果、让任务卡的状态跟着变。顺带把开着的执行详情
+ * 一起刷新 —— 否则用户盯着"执行中"的弹窗, 结果出来了也不会自己出现。
+ */
+async function refreshWhileRunning() {
+  await Promise.all([loadTasks(true), loadRuns(true)])
+  if (runVisible.value && runDetail.value && runDetail.value.status === 'running'
+      && currentTask.value) {
+    try {
+      runDetail.value = await getScheduledTaskRun(currentTask.value.id, runDetail.value.id)
+    } catch (e) {
+      // 记录可能在这期间被保留策略清掉了; 关掉弹窗比留一个空壳更诚实
+      console.warn('[ScheduledTaskView] 刷新执行详情失败:', e)
+      runVisible.value = false
+      runDetail.value = null
+    }
   }
 }
 
@@ -761,6 +873,19 @@ onMounted(async () => {
   loadNotifyConfigs()
   // 模型列表用于"执行模型"下拉; store 内部幂等, 重复调用不会重复请求
   modelStore.loadModels().catch(() => {})
+  // 每秒一次: 驱动执行中记录的"已运行 X 分 Y 秒"(纯本地计算, 不打后端)
+  clockTimer = setInterval(() => { clock.value = Date.now() }, 1000)
+  // 每 3 秒看一眼: 只有在跑的时候才真的发请求, 空闲时这行什么都不做
+  pollTimer = setInterval(() => {
+    if (hasRunning.value) refreshWhileRunning()
+  }, 3000)
+})
+
+onUnmounted(() => {
+  if (clockTimer) clearInterval(clockTimer)
+  if (pollTimer) clearInterval(pollTimer)
+  clockTimer = null
+  pollTimer = null
 })</script>
 
 <style scoped>
@@ -844,4 +969,12 @@ onMounted(async () => {
 .rh-dur { font-size: 12px; color: var(--dcdr-text-3); flex-shrink: 0; min-width: 56px; }
 .rh-preview { flex: 1; min-width: 0; font-size: 12px; color: var(--dcdr-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rh-link { margin-left: auto; font-size: 12px; color: var(--dcdr-accent); text-decoration: none; }
+/* 执行中的那一行: 文案有指引作用, 不能和"无输出"一样灰 */
+.rh-running-text { color: var(--dcdr-warning, var(--dcdr-accent)); }
+.rh-run-link { flex-shrink: 0; font-size: 12px; color: var(--dcdr-accent); cursor: pointer; }
+.rh-run-link:hover { text-decoration: underline; }
+.run-running { display: flex; align-items: center; gap: 8px; padding: 12px 14px; background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border); border-radius: 6px; font-size: 12.5px; color: var(--dcdr-text-2); line-height: 1.6; }
+/* 一个会呼吸的圆点: 比静止图标更能说明"这会儿还在动" */
+.running-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dcdr-accent); flex-shrink: 0; animation: running-pulse 1.2s ease-in-out infinite; }
+@keyframes running-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 </style>

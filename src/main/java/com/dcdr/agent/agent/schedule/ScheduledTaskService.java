@@ -441,6 +441,7 @@ public class ScheduledTaskService {
         d.setFinishedAt(run.getFinishedAt());
         d.setOutput(run.getOutput());
         d.setError(run.getError());
+        d.setSessionId(run.getSessionId());
         d.setShareUrl(buildRunUrl(run));
         return d;
     }
@@ -455,6 +456,7 @@ public class ScheduledTaskService {
         s.setOutputLength(run.getOutput() == null ? 0 : run.getOutput().length());
         s.setError(run.getError());
         s.setPreview(previewOf(run));
+        s.setSessionId(run.getSessionId());
         s.setShareUrl(buildRunUrl(run));
         return s;
     }
@@ -581,6 +583,9 @@ public class ScheduledTaskService {
         // 列表里显示的时间与执行记录的 startedAt 差出 7 分钟, 长任务完全看不出跑了多久
         task.setLastRunAt(startedAt);
         task.setLastStatus("running");
+        // 执行中的记录与它的会话: 会话建成功后才有值, 收尾时用来回填执行记录
+        String sessionId = null;
+        ScheduledTaskRunEntity run = null;
         try {
             // V3.3: 执行会话标记来源=schedule + sourceRef=任务 ID。
             // 会话不再用完即删: 它归档到「自动化 → 任务对话」, 用户可以回看"这次到底问了/答了什么"。
@@ -588,6 +593,12 @@ public class ScheduledTaskService {
             var sess = sessionManager.createSession(
                     "定时任务 · " + task.getName(), null, null, task.getUserId(),
                     SessionSource.SCHEDULE.code(), task.getId());
+            sessionId = sess.getId();
+            // 先落一条 running 记录, 再开始干活: 实测单次执行要 405s, 而原先记录只在结束时才写,
+            // 用户在「执行历史」里看到的是"什么都没有" —— 分不清是在跑、没触发、还是已经挂了。
+            run = startRun(task, startedAt, sessionId);
+            // "执行中"必须立刻落库: 否则任务列表的状态要等执行完才翻牌, 与刚出现的执行记录自相矛盾
+            repository.save(task);
             // 绑在会话创建之后: sessionId 是日志跳回「任务对话」的唯一线索, 早于它就拿不到
             callLogWriter.bind(trace, task.getUserId(), sess.getId(), input, SessionSource.SCHEDULE);
             ChatRequest req = new ChatRequest();
@@ -628,35 +639,72 @@ public class ScheduledTaskService {
         repository.save(task);
         long elapsed = System.currentTimeMillis() - startedAtMs;
         result.setDurationMs(elapsed);
-        // 执行记录总是保存（手动触发也要能回看），只是手动触发默认不推送
-        ScheduledTaskRunEntity run = saveRun(task, result, startedAt, elapsed);
+        // 执行记录总是保存（手动触发也要能回看），只是手动触发默认不推送。
+        // 开始那条 running 记录在这里被改写成结果 —— 不新插一条, 否则执行历史里一次执行会出现两行。
+        run = finishRun(run, task, result, startedAt, elapsed, sessionId);
+        result.setRunId(run == null ? null : run.getId());
+        result.setSessionId(sessionId);
         applyNotify(task, result, elapsed, run, manual, notifyRequested);
         return result;
     }
 
     /**
-     * 保存单次执行记录，并生成免登录分享 token。
+     * 登记一条"执行中"记录 (V3.3 补丁)。
      * <p>
-     * 失败不抛出：记录只是"能让详情链接有地方落"的辅助能力，
-     * 落库失败不该把一次成功的任务执行变成失败。
+     * 只写状态与归属，正文留空 —— 正文要等 Agent 跑完才有。{@code durationMs} 也不写，
+     * 由前端拿 {@code startedAt} 与当前时间自己算"已运行 X 分 Y 秒"，比后端每秒刷一次便宜。
+     * <p>
+     * 失败不抛出：登记只是"让进度可见"的辅助能力，落库失败不该把一次执行变成失败。
+     *
+     * @return 已落库的记录；失败返回 {@code null}（收尾时由 {@link #finishRun} 补一条完整记录）
      */
-    private ScheduledTaskRunEntity saveRun(ScheduledTaskEntity task, ScheduledTaskDtos.TriggerResult result,
-                                           LocalDateTime startedAt, long elapsedMs) {
+    private ScheduledTaskRunEntity startRun(ScheduledTaskEntity task, LocalDateTime startedAt, String sessionId) {
         try {
-            LocalDateTime now = LocalDateTime.now();
             ScheduledTaskRunEntity run = new ScheduledTaskRunEntity();
             run.setId("run_" + UUID.randomUUID().toString().replace("-", ""));
             run.setTaskId(task.getId());
             run.setUserId(task.getUserId());
+            run.setSessionId(sessionId);
+            run.setStatus("running");
+            run.setStartedAt(startedAt);
+            run.setCreatedAt(startedAt);
+            return runRepository.save(run);
+        } catch (Exception e) {
+            log.warn("登记定时任务执行记录失败 (task={}): {}", task.getId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 收尾：把执行记录改写成 success / failed，并补正文与分享 token。
+     * <p>
+     * 失败不抛出：记录只是"能让详情链接有地方落"的辅助能力，
+     * 落库失败不该把一次成功的任务执行变成失败。
+     *
+     * @param run 开始时登记的那条记录；{@code null} 表示当时没登记成功，这里补建一条
+     */
+    private ScheduledTaskRunEntity finishRun(ScheduledTaskRunEntity run, ScheduledTaskEntity task,
+                                             ScheduledTaskDtos.TriggerResult result,
+                                             LocalDateTime startedAt, long elapsedMs, String sessionId) {
+        try {
+            LocalDateTime now = LocalDateTime.now();
+            if (run == null) {
+                // 开始时没登记上(会话都没建成 / 库抖了一下), 收尾补一条完整的 —— 宁可晚到, 不能没有
+                run = new ScheduledTaskRunEntity();
+                run.setId("run_" + UUID.randomUUID().toString().replace("-", ""));
+                run.setTaskId(task.getId());
+                run.setUserId(task.getUserId());
+                run.setSessionId(sessionId);
+                run.setStartedAt(startedAt);
+                run.setCreatedAt(now);
+            }
             run.setStatus(result.getStatus());
             run.setOutput(result.getOutput());
             run.setError(result.getError());
             run.setDurationMs(elapsedMs);
-            run.setStartedAt(startedAt);
             run.setFinishedAt(now);
-            run.setCreatedAt(now);
             int ttlDays = notifyProperties.getShareTtlDays();
-            if (ttlDays > 0) {
+            if (ttlDays > 0 && run.getShareToken() == null) {
                 run.setShareToken(UUID.randomUUID().toString().replace("-", ""));
                 run.setShareExpiresAt(now.plusDays(ttlDays));
             }
@@ -665,7 +713,7 @@ public class ScheduledTaskService {
             return saved;
         } catch (Exception e) {
             log.warn("保存定时任务执行记录失败 (task={}): {}", task.getId(), e.getMessage());
-            return null;
+            return run;
         }
     }
 

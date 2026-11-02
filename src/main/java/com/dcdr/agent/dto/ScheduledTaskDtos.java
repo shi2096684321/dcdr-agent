@@ -108,6 +108,7 @@ public class ScheduledTaskDtos {
     @Schema(description = "执行历史条目（不含完整正文）")
     public static class RunSummary {
         private String id;
+        /** running = 执行中(正文尚未回写)；success / failed = 已结束 */
         private String status;
         private long durationMs;
         private LocalDateTime startedAt;
@@ -119,6 +120,12 @@ public class ScheduledTaskDtos {
         private String error;
         /** 免登录详情页；未配 share-base-url 时为空 */
         private String shareUrl;
+        /**
+         * 本次执行对应的会话 ID。
+         * <p>执行中的记录没有正文，「任务对话」里那条会话就是它的进度页 ——
+         * 前端拿它直接跳过去，用户能看到 Agent 当前问到/答到哪一步。
+         */
+        private String sessionId;
     }
 
     /** 执行历史详情 (V3.3 F-50) */
@@ -134,6 +141,7 @@ public class ScheduledTaskDtos {
         private String output;
         private String error;
         private String shareUrl;
+        private String sessionId;
     }
 
     /** 触发结果 */
@@ -148,6 +156,15 @@ public class ScheduledTaskDtos {
         private String error;
         @Schema(description = "本次执行耗时(ms)")
         private long durationMs;
+
+        // ===== 本次执行的进度入口 =====
+
+        /** 执行记录 ID；手动触发拿到它就能在「执行历史」里对上号 */
+        @Schema(description = "本次执行记录 ID")
+        private String runId;
+        /** 本次执行会话 ID；前端据此提供「查看任务对话」 */
+        @Schema(description = "本次执行会话 ID（任务对话可直达）")
+        private String sessionId;
 
         // ===== V3.3 本次执行的推送情况 =====
 

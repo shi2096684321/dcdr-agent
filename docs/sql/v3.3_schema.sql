@@ -187,3 +187,27 @@ UPDATE llm_call_logs SET source = 'user' WHERE source IS NULL;
 
 -- 列表页按用户 + 来源筛选
 CREATE INDEX IF NOT EXISTS idx_llmcall_user_source ON llm_call_logs (user_id, source, created_at);
+
+-- =============================================================================
+-- 定时任务"执行中"可见（V3.3 补丁）
+--
+-- 设计要点：
+--   1. 执行记录改为"开始即落 running 行，结束 update 同一行"。
+--      原先只在执行结束后 insert，执行过程中「执行历史」里一行都没有 ——
+--      用户点了定时任务只能干等，分不清"在跑"还是"根本没触发"。
+--   2. scheduled_task_runs.session_id：执行中的记录没有正文可看，唯一能证明它在跑的是
+--      那次执行的会话（用户消息在调模型前就已落库）。要把用户从"执行中"这一行
+--      直接送到「任务对话」，必须知道是哪条会话；会话表只有 task_id，
+--      一个任务多条会话，反查不出正在跑的那条。
+--   3. 存量行的 status 只有 success / failed，语义不变，无需回填。
+-- =============================================================================
+
+ALTER TABLE scheduled_task_runs ADD COLUMN IF NOT EXISTS session_id VARCHAR(64);
+
+COMMENT ON COLUMN scheduled_task_runs.session_id IS
+    '本次执行对应的会话 ID（「自动化 → 任务对话」可直达）';
+COMMENT ON COLUMN scheduled_task_runs.status IS
+    '执行状态: running=执行中(记录已落库, 正文尚未回写); success / failed=已结束';
+
+-- 一个任务同时最多只有一条 running 行，按 (task_id, status) 找"当前是否在跑"足够便宜
+CREATE INDEX IF NOT EXISTS idx_run_task_status ON scheduled_task_runs (task_id, status);

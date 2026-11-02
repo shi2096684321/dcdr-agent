@@ -4,9 +4,9 @@
          这个 id 现在只在容器内部传递 —— 以前它要穿过 App.vue 才能到达 DagEditorView -->
     <WorkflowView v-if="tab === 'workflow'" @open-dag="openDag" />
     <DagEditorView v-else-if="tab === 'dag'" :initial-workflow-id="dagTargetId" />
-    <ScheduledTaskView v-else-if="tab === 'schedule'" />
+    <ScheduledTaskView v-else-if="tab === 'schedule'" @open-conversation="openConversation" />
     <!-- V3.5: 定时任务 / 工作流自动执行产生的会话单独归到这里, 不再混进对话列表 -->
-    <TaskConversationView v-else-if="tab === 'conversation'" />
+    <TaskConversationView v-else-if="tab === 'conversation'" :initial-session-id="conversationSessionId" />
   </HubShell>
 </template>
 
@@ -40,9 +40,20 @@ const TABS = [
 const tab = ref('workflow')
 /** 从工作流列表带过来的目标工作流 id; 为空时 DAG 编排页自行展示 */
 const dagTargetId = ref('')
+/**
+ * 从定时任务页「任务对话」带过来的会话 id。
+ * <p>执行中的任务没有正文, 真正的进展在会话里 —— 这条链路让用户一键从
+ * "执行中的执行记录"落到那次执行的对话上, 不用自己去列表里翻。
+ */
+const conversationSessionId = ref('')
 
 function openDag(id) {
   dagTargetId.value = id || ''
   tab.value = 'dag'
+}
+
+function openConversation(sessionId) {
+  conversationSessionId.value = sessionId || ''
+  tab.value = 'conversation'
 }
 </script>

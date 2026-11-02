@@ -62,6 +62,8 @@
             <el-tag size="small" :type="current.source === 'schedule' ? 'warning' : 'info'">
               {{ sourceLabel(current.source) }}
             </el-tag>
+            <!-- 最后一条是 user 消息 = Agent 还没回, 就是"执行中"最直接的证据 -->
+            <el-tag v-if="executing" size="small" type="warning" effect="plain">执行中</el-tag>
             <span v-if="ownerLabel(current)" class="owner">{{ ownerLabel(current) }}</span>
             <span class="created">{{ formatDate(current.createdAt) }}</span>
           </div>
@@ -77,11 +79,29 @@
             :key="m.id"
             :msg="m"
             readonly
+            reasoning-open
             @preview-image="openImage"
             @preview-code="openCode"
           />
-          <div v-if="!msgLoading && !messages.length" class="msg-empty">
-            这次执行没有留下消息内容（可能执行前就失败了）
+          <!--
+            执行中的占位: 与首页"等待首个内容块"时的思考动画一致。
+            定时任务一次跑几分钟, 在此之前这里只有一条 user 消息, 看起来像"没反应";
+            后端把 reasoning 与正文一起在结束时才落库(整轮累积, 中途写入会写成半截),
+            所以过程中能给的只有这个状态, 真正的内容要等消息回来 —— 5 秒轮询会自动补上。
+          -->
+          <div v-if="executing" class="tc-thinking">
+            <div class="tc-think-avatar"><img :src="logoUrl" alt="DCDR" /></div>
+            <div class="tc-think-body">
+              <div class="tc-think-role">DCDR</div>
+              <div class="msg-thinking">
+                <span class="think-dots"><i></i><i></i><i></i></span>
+                <span class="think-label">执行中，正在思考…</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="!msgLoading && !messages.length && !executing" class="msg-empty">
+            这次执行没有留下消息内容（可能还在执行开头，或执行前就失败了）<br />
+            若任务正在执行，页面每 5 秒自动刷新一次
           </div>
         </div>
       </template>
@@ -106,8 +126,9 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import CodePreviewModal from '@/components/CodePreviewModal.vue'
@@ -133,6 +154,15 @@ const FILTERS = [
   { key: 'workflow', label: '工作流' }
 ]
 
+/**
+ * 从定时任务页「执行中」那条记录跳过来时要选中的会话。
+ * <p>定时任务执行中正文还没回写, 执行记录页只能显示一个状态 —— 所以那个页面的"看进展"
+ * 必须落到这里。传的是会话 id 而不是任务 id: 一个任务有多条会话, 只有 id 能唯一定位。
+ */
+const props = defineProps({
+  initialSessionId: { type: String, default: '' }
+})
+
 const sessions = ref([])
 const loading = ref(false)
 const filter = ref('all')
@@ -149,6 +179,8 @@ const legacyBackend = ref(false)
 const currentId = ref('')
 const messages = ref([])
 const msgLoading = ref(false)
+/** 执行中自动刷新的定时器句柄(5 秒一次; 没有进行中的会话时它只是空转一次判断) */
+let waitTimer = null
 
 const previewImageUrl = ref(null)
 const codePreview = ref({ visible: false, code: '', lang: '' })
@@ -158,6 +190,16 @@ const taskNames = ref({})
 const workflowNames = ref({})
 
 const current = computed(() => sessions.value.find((s) => s.id === currentId.value) || null)
+
+/**
+ * 会话是否仍在执行中。
+ * <p>后端把 user 消息在调模型之前就落库、assistant 消息要等 Agent 跑完才落库,
+ * 所以"最后一条是 user"就是"这一轮还没有回复"—— 不需要额外的状态字段。
+ */
+const executing = computed(() => {
+  const last = messages.value[messages.value.length - 1]
+  return !!last && last.role === 'user'
+})
 
 const visibleSessions = computed(() =>
   filter.value === 'all' ? sessions.value : sessions.value.filter((s) => s.source === filter.value)
@@ -203,8 +245,14 @@ async function load() {
       currentId.value = ''
       messages.value = []
     }
-    if (!currentId.value && sessions.value.length) {
-      select(sessions.value[0].id)
+    // 优先选中外部指定的会话(从"执行中"的记录跳过来); 它还没出现在列表里时退回默认那条
+    const preferred = props.initialSessionId
+      && sessions.value.some((s) => s.id === props.initialSessionId)
+      ? props.initialSessionId : ''
+    if (preferred) {
+      if (preferred !== currentId.value) await select(preferred)
+    } else if (!currentId.value && sessions.value.length) {
+      await select(sessions.value[0].id)
     }
   } catch (e) {
     ElMessage.error('加载任务对话失败：' + (e?.message || '网络异常'))
@@ -230,16 +278,22 @@ async function select(id) {
   await loadMessages(id)
 }
 
-async function loadMessages(id) {
+/**
+ * @param {boolean} silent 执行中的自动轮询: 不显示 loading, 否则每 5 秒整块消息区闪一下
+ */
+async function loadMessages(id, silent = false) {
   if (!id) return
-  msgLoading.value = true
+  if (!silent) msgLoading.value = true
   try {
     messages.value = (await getMessages(id)) || []
   } catch (e) {
-    ElMessage.error('加载对话内容失败：' + (e?.message || '网络异常'))
-    messages.value = []
+    // 轮询失败不弹错也不清空: 网络抖一下就清屏, 用户会以为对话丢了
+    if (!silent) {
+      ElMessage.error('加载对话内容失败：' + (e?.message || '网络异常'))
+      messages.value = []
+    }
   } finally {
-    msgLoading.value = false
+    if (!silent) msgLoading.value = false
   }
 }
 
@@ -279,6 +333,29 @@ function openCode(payload) {
 onMounted(async () => {
   loadNames()
   await load()
+  // 执行中的会话只有 user 消息(assistant 要等 Agent 跑完才落库): 在这种状态下每 5 秒静默拉一次,
+  // 让用户停在会话里就能看到回复自己出现, 不用反复点「重新加载」。
+  waitTimer = setInterval(() => {
+    if (!currentId.value || msgLoading.value) return
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === 'user') loadMessages(currentId.value, true)
+  }, 5000)
+})
+
+/** 外部指定了要看的会话(从执行记录跳过来)时立刻切过去 */
+watch(() => props.initialSessionId, async (sid) => {
+  if (!sid) return
+  if (!sessions.value.some((s) => s.id === sid)) {
+    // 会话刚建、列表还是旧的: 先刷新列表, 再选中
+    await load()
+    return
+  }
+  if (sid !== currentId.value) await select(sid)
+})
+
+onUnmounted(() => {
+  if (waitTimer) clearInterval(waitTimer)
+  waitTimer = null
 })
 </script>
 
@@ -369,6 +446,29 @@ onMounted(async () => {
 
 .tc-messages { flex: 1; overflow-y: auto; padding: 16px 20px 40px; min-height: 0; }
 .msg-empty { text-align: center; color: var(--dcdr-text-3); font-size: 13px; padding: 40px 0; }
+
+/* 执行中占位: 尺寸与 MessageBubble 的气泡布局对齐(40px 头像 / 14px 间距 / 900px 居中),
+   这样它和上面已落库的消息在同一条视觉轴上, 不会读成"另一个组件" */
+.tc-thinking { display: flex; gap: 14px; margin-bottom: 28px; max-width: 900px; margin-left: auto; margin-right: auto; width: 100%; }
+.tc-think-avatar { width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0; overflow: hidden; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1); }
+.tc-think-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.tc-think-body { flex: 1; min-width: 0; }
+.tc-think-role { font-size: 13px; color: var(--dcdr-text-3); margin-bottom: 6px; font-weight: 500; }
+/* 三个圆点依次弹跳 + 文字渐变扫光: 与首页等待首个内容块时的动画完全一致 */
+.msg-thinking { display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 12px; background: var(--dcdr-accent-wash); border: 1px solid var(--dcdr-accent-wash); }
+.think-dots { display: inline-flex; gap: 4px; }
+.think-dots i { width: 7px; height: 7px; border-radius: 50%; background: linear-gradient(135deg, var(--dcdr-accent) 0%, var(--dcdr-accent-2) 100%); animation: thinkBounce 1.2s ease-in-out infinite; }
+.think-dots i:nth-child(2) { animation-delay: 0.15s; }
+.think-dots i:nth-child(3) { animation-delay: 0.3s; }
+@keyframes thinkBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+.think-label { font-size: 13px; background: linear-gradient(90deg, #9aa7c2 0%, var(--dcdr-accent) 50%, #9aa7c2 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: thinkShimmer 2s linear infinite; }
+@keyframes thinkShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 .tc-blank { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 40px; }
 .tc-blank-title { font-size: 16px; font-weight: 600; color: var(--dcdr-text-1); }
