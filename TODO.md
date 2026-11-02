@@ -1569,3 +1569,225 @@ history 结构重写，补了 assistant(tool_calls) 分隔 —— 原来用纯 t
 **验证**：`mvn test` 685 条 0 失败（新增 `WebSearchBudgetTest` 7 条，重点锁住"只数本次请求内"这条——
 算错方向会表现为"第一个问题正常、第二个问题完全搜不了"）。
 **未做**：真实对话验证，阈值 8 / 30 是否合适需实测再调。
+
+### 定时任务"执行中"可见（2026-11-02）
+
+**现象**：任务到点触发后，用户完全看不到它在跑 —— 点开「执行历史」一行都没有，
+只能等 7 分钟后结果突然出现；`scheduled_tasks.last_status` 虽然写了 `running`，
+但一次执行除了"在跑"什么都答不了（第几轮、卡在哪、是不是根本没触发）。
+
+**根因（四处断点）**：
+1. `ScheduledTaskService.runOnce()` 只在**方法末尾** `saveRun`，执行中 `scheduled_task_runs` 里没有行；
+2. `last_status=running` 之前只在内存里 set，`repository.save` 也拖到最后，列表状态要等结束才翻牌；
+3. 手动触发是同步阻塞 HTTP，前端只有一个 loading 转圈（axios 无 timeout，实测 405s 全程无反馈）；
+4. 前端 `loadRuns()` 只在选中任务/点刷新时调，运行期间零轮询。
+
+**这次只做"看得见"，不做分阶段进度**：执行开始即插一条 `status=running` 的记录，
+结束 update 同一行（不是新插一条，否则一次执行会出现两行）；`scheduled_task_runs.session_id`
+指向本次执行的会话，「执行历史」里执行中那一行可直接跳到「任务对话」看 Agent 正在做什么。
+
+**关键设计决策**：
+- **不再让后端算"已运行时长"**：`durationMs` 只在结束时回写，执行中的时长由前端拿 `startedAt`
+  本地每秒算。否则要么后端每秒写库，要么界面数字几秒一跳。
+- **进度靠会话，不靠新表**：`user` 消息在调模型之前就已落库（`prepareForChat`），
+  所以任务一启动，那次会话里就有内容可看。再建一张"执行步骤表"属于重复建设 ——
+  真要分阶段（工具/轮次）时，`ChatChunk` 的 `tool_call` / `llm_trace` 已经够用，届时节流写进 run 即可。
+- **"执行中"没有心跳列，用 2 小时阈值兜底**：实例被杀会留下永久 running 的记录。
+  心跳需要一个额外的定时写库线程，还可能把另一实例正在跑的任务误判成中断 ——
+  代价大于收益，改成前端只做展示层提示"可能已中断"，不回写数据。
+- **手动触发保持同步**：改成"立刻返回 runId + 轮询"能解决"点完干等"，但会破坏
+  `POST /trigger` 的返回契约（前端结果面板依赖同步返回的 output / notifyStatus）。
+  这次的需求只是"定时任务能看到在跑"，不动它；真要异步化，单独一次改动。
+
+**影响面**：`ScheduledTaskRunEntity`（+session_id）、`ScheduledTaskDtos`（RunSummary/RunDetail/TriggerResult
+各加 sessionId，TriggerResult 另加 runId）、`ScheduledTaskService`（saveRun → startRun/finishRun）、
+`ScheduledTaskView.vue`（执行中行/计时/轮询/对话入口）、`AutoHubView.vue`（open-conversation）、
+`TaskConversationView.vue`（initialSessionId + 执行中自动刷新）。SQL 追加在 `docs/sql/v3.3_schema.sql` 末尾。
+
+**验证**：后端 `mvn -o compile` 通过；前端 `npm run build` 通过。
+**未做**：真实触发验证（需要起后端 + 数据库），以及"实例崩溃后 running 记录"的实际表现。
+
+### 工具结果上限上调（2026-11-02）
+
+**起因**：用户反馈"tool token 上限感觉偏小"。查下来原配置单条 6000 字符 / 窗口 6000 token，
+约为主流产品区间（10k~25k token）的三分之一，多轮检索第 2 轮就被压到 `window-floor-length`（800 字符），
+表现是"模型越搜越傻"——而日志一切正常（压缩成功、无报错）。
+
+**主流基准**：
+| 产品 | 参数 | 值 |
+|---|---|---|
+| Claude Code | `MAX_MCP_OUTPUT_TOKENS` | 25,000（硬上限）/ 10,000（告警）/ 50,000 字符落盘 |
+| Codex CLI | `tool_output_token_limit` | 16,000 |
+| Gemini CLI | `truncateToolOutputThreshold` / distillation | 40,000 字符 / 10,000 token |
+
+**本次改动**（`application.yml` + `AgentProperties.ResultConfig` 默认值同步）：
+`max-length` 6000→20000、`max-token-budget` 0→10000、`window-token-budget` 6000→30000、
+`window-floor-length` 800→2000、`summary.threshold` 20000→24000，`spill.threshold` 保持 32768。
+
+**关键约束（本次差点踩的坑）**：压缩链是「① 落盘 → ② 摘要 → ③ 硬截断」逐档严格大于判断，
+必须满足 `max-length < summary.threshold < spill.threshold`。最初打算把 `spill` 下调到 16000、
+`summary` 提到 32000 —— 这两个改法都会让中间档变成空集：spill 低于 max-length 则硬截断永不执行，
+summary 高于 spill 则摘要档被落盘短路。已在 yml 段落顶部写明该不等式，改任一项都要一并校验。
+
+**为什么不把 spill 下调到 16k**：落盘会让模型多一次 `tool_result_read` 往返。把 16k 这种
+"一次就能读完"的结果推去分页，省下的 token 会以额外轮次的成本还回去——Codex 的实测
+（2,848 次计费运行）也显示压小工具输出上限后部分配置成本反而上升 24.7%。
+
+**联动关系**：`max-token-budget` 才是中文场景的实际主导约束（1 字符 ≈ 1 token），
+`max-length` 对英文/代码（1 token ≈ 3~4 字符）起互补作用，两者同时生效取更紧者。
+
+**验证**：`mvn -o compile` 通过；`ToolResultGovernanceTest` / `MicrocompactTest` 通过（测试均显式 set 值，不依赖默认值）。
+**未验证**：真实长文档检索下的实际压缩比与成本变化，需线上日志观察
+`工具结果已压缩: ... originalTokens -> keptTokens` 的比值。
+
+### 任务对话的"思考过程"展示（2026-11-02）
+
+**需求**：任务对话里要像首页对话那样能看见 Agent 的思考回复。
+
+**先查了数据再动手**（这一步很关键，否则容易白改）：直连本地 PG 查最近一条 schedule 会话，
+`seq=19` 的 assistant 有 `reasoning_content` 9163 字符，说明**数据是完整落库的**；
+中间轮次 `rlen=0` 是正常现象 —— reasoning 整轮累积、只在最后一次响应写入。
+`InMemoryChatMemory.load()` 也带 reasoningContent，`getMessages` 用的是全量 `load` 而非 `loadWindow`，不会被 20 条窗口截断。
+
+**真正的差异在展示层**：
+- 首页流式态（ChatView）是 `<details open>` —— 默认展开
+- 历史气泡（MessageBubble）是 `<details>` —— 默认收起，要点一下才看见
+
+**改动**：
+1. `MessageBubble` 新增 `reasoningOpen` prop（默认 false），`<details :open="reasoningOpen">`。
+   首页历史消息行为不变（一屏多条回答全展开会把正文挤没）；只有任务对话传 `reasoning-open`。
+   用 `:open` 绑定而非挂载时 setAttribute：Vue 只在新旧 vnode 的 open 值不同时改写 DOM，
+   用户手动收起后不会被重新弹开。
+2. `MessageBubble` 的推理展开区加 `max-height: 420px; overflow-y: auto`：
+   任务对话里思考常有上万字符，不限高会把正文顶到两屏之外，反而像"只有思考没有回答"。
+3. `TaskConversationView`：执行中显示三点跳动的"执行中，正在思考…"占位（复刻首页
+   `.msg-thinking` 动画），尺寸对齐 MessageBubble 的 40px 头像 / 14px 间距 / 900px 居中。
+
+**能力边界（没做的部分）**：做不到"边执行边看思考流"。reasoning 是整轮累积、结束时才随
+assistant 消息落库（中途写入只会是半截），所以执行过程中只能给状态动画，内容要等那次执行结束。
+要真实时，得把 `ChatChunk.reasoning` 增量写到 run 表或独立事件表，属于另一次改造。
+
+**验证**：`npm run build` 通过；数据侧已用 SQL 确认。视觉未在浏览器实测（需登录会话）。
+
+### 联网抓取统计口径修复（2026-11-02）
+
+**起因**：调用链里 `web[3条]` 看不出成败。查下去发现不只是文案问题 ——
+
+1. `WebStat.extract()` 的 `results` 填的是 `ok + failed`（处理篇数），
+   于是"试了 3 个 URL 全失败"和"3 个全成功"在 steps_json 里都是 3，标签都是 `web[3条]`；
+2. `WebHealthService.emptyRate()` 用 `results == 0` 判"什么都没拿到"，而它自己的注释写的是
+   "搜索没搜到 **与抓取全失败都算**" —— 全失败时 results=3 永远命中不了，抓取侧空结果率被系统性低估。
+
+**改动**：
+- `WebStat.extract()`：`results` 改为 `ok`（成功篇数）。失败篇数仍在 `extractFailed`，信息不丢。
+- `LlmCallTrace.webTag()`：抓取分支显示 `web[成功/总数]`（`web[2/3]`）；两者皆 0 时退回 `web[0条]`，避免 `web[0/0]`。
+- `LlmCallTrace.recordWeb()` 日志行：抓取显示"共处理 N 篇"，成败交给后面的 `抓取2/3`，不用 results 以免重复。
+- 前端 `LlmCallLogView`：字段名 `results` 由"保留条数"改"可用条数"（搜索=保留数、抓取=成功数，中性词才两个都对）。
+- 新增测试 `webExtractAllFailedReportsZeroResults`，并给原有用例补 `results == 2` 断言。
+
+**影响面核查**：`results()` 的消费方只有三处 —— `emptyRate`（本次要修的）、
+`avgKeepRatio`（有 `rawCount > 0` 过滤，抓取不参与）、`buildWeakSamples`（有 `rawCount >= WEAK_RAW_MIN` 过滤）。
+`step.rawCount` 只在 `>= 0` 时写入，所以前端 `rawCount != null` 对抓取为 false，不会出现"上游 -1 条"。
+
+**上线后会看到的变化**：健康度的"空结果率"会**上升**。这不是变差，是终于开始统计抓取失败了。
+历史数据 `results` 仍是旧口径（ok+failed），趋势图上会有一个台阶 —— 按当前选择不回填；
+若要消除，可用 `steps_json` 里本就存在的 `extractOk` 回填。
+
+**验证**：`mvn -o compile` 通过；`LlmCallTraceTest` 12 项全过；`npm run build` 通过。
+
+### 联网检索"搜了不读"与循环停止信号（2026-11-02）
+
+**起因**：用户观察"web_search 很多但抓取很少，感觉很多搜索白做了"，并追问
+loop 里是否该有"能否到达输出条件"的判断。
+
+**先用真实调用链定量**（llm_call_logs，2026-11-02 21:18 那次 turn）：
+
+| 指标 | 数值 |
+|---|---|
+| 搜索次数 | 5（长沙/深圳/广州各一次，深圳补时效一次，兴盛优选一次） |
+| 返回结果 | 72 条（15×4+12） |
+| 去重 URL | 69 条 → **重叠仅 10%，每次搜的确实是新站点** |
+| 读到正文 | 15 篇 |
+| 只拿到标题 | **61 条** |
+
+关键结论：**不是重复劳动，"新增来源为 0"在这条链上一次都不会触发**。
+问题在"搜回来的没被读"，具体三个断点：
+
+1. **`rebuildCompact` 丢掉 `summary`**（主因）。同一份结果有两处构建：
+   `WebSearchTool.buildCompactContent` 用 summary → snippet；`AgentOrchestrator.rebuildCompact`
+   只用 content → snippet，并在第 1207 行**覆盖**了前者的输出。
+   实测 61 条无 content 的来源：summary 平均 **734 字符**，snippet 平均 **111 字符**，
+   即每次搜索损失 61×623 ≈ 3.8 万字符可用信息。模型只看到一句话摘要 → 判断"信息不足"→ 换词再搜。
+2. **抓取预算是先到先得**。`take = min(3, 剩余预算)`，一轮 3 次搜索时前两次各吃 3 篇耗尽 6 篇，
+   第三次 `take=0`。证据：广州那次搜索 15 条结果 `extractOk` 为空（一条正文都没抓）。
+3. **缺少"这一轮有没有推进"的信号**。已有的闸全是量化度量（次数 8 / 来源 30 / 轮次 10），
+   没有"新增为 0"这个证据型信号。`WebSearchBudget` 类注释承认过该信号"更准但需跨轮状态"。
+
+**改动**：
+- `AgentOrchestrator.rebuildCompact`：新增 `bestBody()`，优先级 `content → summary → snippet`；
+  改为**滚动分配**总额度（`COMPACT_TOTAL_CHARS=12000`，单条上限 1000、下限 120），
+  按"剩余额度/剩余条数"逐条摊。原先固定每条 1000 会让 15 条撑到 1.5 万字符后被压缩器
+  整体硬截断，后面的来源整段消失。过滤条件补上 `summary`（原先只看 content/snippet 会误删"只有摘要"的条目）。
+  方法改包级 static（同 `cleanMarkdownContent` 的先例），便于单测。
+- `WebSearchBudget.extractTake(budgetLeft, remainingSearches, topN)`：给后面每次搜索预留 1 篇保底，
+  剩下的才给当前这次，当前至少 1 篇。3 次 × 6 篇预算 → **3/2/1**（原为 3/3/0），总量不变。
+- `AgentOrchestrator` 零新增闸：`prevRoundDistinct` 用 `int[1]` holder 与 `collectedSources` 放一起
+  （它是该累积列表的派生量，分开存会不同步导致误拦），executesTools 末尾刷新快照。
+  判定 `noNewSource = searchesThisRound >= 1 && distinctSources <= prev`，
+  **本轮第一次必须放行**：此刻 distinctSources 还等于上轮快照，必然判"无新增"，
+  不豁免等于把联网能力整个关掉。
+
+**为什么不做"信息充分性判断"**：那是模型的主观认知，代码要判只能再调一次 LLM（成本 + 延迟 + 判断本身不稳），
+主流产品（Claude Code / Codex）也没这么做，走的是"预算 + 重复检测 + 交给模型"。
+代码能可靠拿到的客观信号只有"这次有没有新 URL"。
+
+**预期效果**：单次搜索喂给模型的可用信息从约 111 字符/条提到 600~800 字符/条；
+一轮 3 次搜索每次都有正文；重复搜索会在"上一轮零新增"时提前收口而不是等 8 次上限。
+
+**验证**：`mvn -o compile` 通过；`WebSearchBudgetTest` 11 项、`RebuildCompactTest` 9 项（新增）、
+连同 `ToolResultGovernanceTest` / `LlmCallTraceTest` / `CleanMarkdownContentTest` / `ToolCallLoopDetectorTest`
+共 **66 项全过**。未做真实联网端到端验证（需重启后端 + 触发一次任务）。
+
+**已知取舍**：总字符数从约 2.2 万降到 1.2 万（旧版靠"前 16 条各 1000 + 后 61 条各 111"堆出来的量），
+但每条都有实质内容 —— 旧版后半段实际是废的。若线上发现长文任务信息仍不够，先调 `COMPACT_TOTAL_CHARS`
+而不是 `extract-budget`（后者加的是网络请求，前者只是 token）。
+
+### 推送消息"看起来很小"（2026-11-02）
+
+**现象**：定时任务推送到钉钉群的消息内容很少，看着像任务没产出什么。
+
+**先查真实数据**（`scheduled_task_runs` 最近 3 次成功记录，任务「每日岗位推荐」）：
+output 分别 284 / 610 / 405 字符，内容是一张 **9 列的 Markdown 表格**。两个问题叠加：
+
+1. **概览被腰斩**：全渠道共用 `agent.notify.summary-chars: 300`，
+   610 字符的表格截到 300 字只剩表头 + 半行数据。
+2. **表格在 IM 里不渲染**：企微与钉钉群机器人的 markdown **都不支持表格**，
+   竖线表格被当普通文字发出去 —— 用户看到的是一堆 `| 公司 | 岗位 |` 和 `|---|---|`，
+   既占篇幅又读不出信息，视觉上就是"内容特别少"。
+
+**根因分析**：`300` 这个值是按企微口径定的（4096 **字节** ≈ 1365 汉字），
+但钉钉上限是 18000 **字符**，两者差一个数量级。共用一个值只能取交集，
+于是钉钉那条上限几乎闲置 —— 属于"按最紧的渠道约束所有渠道"。
+
+**改动**：
+- `NotifyProperties`：新增渠道级 `wecom.summary-chars=900`、`dingtalk.summary-chars=3000`；
+  全局 `summary-chars` 降级为兜底（渠道级为 0 时才用）。
+- `NotifyTemplate`：新增 `summaryLimitOf(channel)`；`variablesOf` 增加渠道参数（保留单参重载，测试仍可用）。
+  渲染结果加 `tidy()` —— 收敛连续空行，避免 `{{runLink}}` 为空时消息尾部空一大块。
+- `NotifyRender.forIm()`：推送前把 Markdown 表格转成 IM 可渲染的列表。
+  第一列加粗作标题行，其余列按 `列名：值` 每 3 组换行；裸 URL 压成 `[链接](url)`；
+  空单元格跳过；表格外文字原样保留。只认「表头 + 分隔行 + 至少一条数据」，不误伤普通竖线文本。
+- 模板：标题由固定的"定时任务执行完成"改为 `{{taskName}} · {{statusText}}`，任务名放到标题上。
+- `application.yml` / 模板 README 同步说明；新增 `NotifyImRenderTest`（7 项，用例取自线上真实表格）。
+
+**关键顺序**：必须先 `forIm` 再 `summarize`。反过来先截 300/3000 字会把表格切在中间，
+转换出来是一份缺半截字段的列表，比不转更糟。
+
+**效果**（用线上那条 3 行 9 列的岗位表格实测，钉钉渠道）：
+改前 300 字 ≈ 表头 + 第一行前半；改后 **679 字符**，3 条岗位的 8 个字段全部可读。
+
+**验证**：`mvn -o compile` 通过；`NotifyTemplateTest` 20 项 + `NotifyImRenderTest` 7 项全过。
+未做真实推送验证（需要 webhook，且会打扰群成员）。
+
+**没做**：未配 `share-base-url` 时消息里没有"查看完整结果"入口，超过概览长度的内容无处可看。
+这属于部署配置（`AGENT_NOTIFY_SHARE_BASE_URL`），不是代码问题。
