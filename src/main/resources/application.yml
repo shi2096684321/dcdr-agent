@@ -843,12 +843,12 @@ agent-tools:
     #
     # 仍默认留空 = 只统计次数、不估钱: 单价会随合同/调价变化, 由使用方按账单填一次,
     # 而不是把某个时点的报价写死进代码。
-    #   pricing:
-    #     "deepseek:web_search": 0.005
-    #     "deepseek:web_extract": 0.005
-    #     "searxng:web_search": 0
-    #     "searxng:web_extract": 0
-    pricing: {}
+    pricing:
+      "deepseek:web_search": 0.005
+      "deepseek:web_extract": 0.005
+      "searxng:web_search": 0
+      "searxng:web_extract": 0
+
     # 单轮内「串联抓取」的总篇数预算(本轮多次搜索共享)。每次搜索最多抓 3 篇, 故:
     #   3 = 只够一次搜索拿到正文(最快、信息最少)
     #   6 = 前两次搜索都能拿到正文, 之后降级为摘要(默认, 兼顾延迟与信息)
