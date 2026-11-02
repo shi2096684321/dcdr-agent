@@ -74,4 +74,32 @@ public final class WebSearchBudget {
                 .distinct()
                 .count();
     }
+
+    /**
+     * 本轮第 N 次搜索可以抓取几篇正文。
+     *
+     * <h2>为什么不能简单地 {@code min(topN, budgetLeft)}</h2>
+     * 那样是<b>先到先得</b>: 一轮 3 次搜索、预算 6 篇时, 前两次各吃 3 篇就把额度耗尽,
+     * 第三次 take=0 —— 它的 15 条结果一条正文都抓不到, 只剩标题摘要。
+     * 而模型一轮并发多个关键词时, 后面几个词往往才是主题最准的(前面的词常是宽度过大的泛搜),
+     * 结果是最该读的那批页面反而只有标题。实测 2026-11-02 21:18 那次 turn:
+     * 广州那次搜索 15 条结果 extractOk 为空(一条都没抓), 模型随即又换词重搜。
+     *
+     * <h2>算法</h2>
+     * 给"后面还没执行的搜索"各预留 1 篇保底, 剩下的才给当前这次; 当前这次至少 1 篇。
+     * 3 次搜索 + 6 篇预算 → 3 / 2 / 1, 总量不变而每次都有正文。
+     *
+     * @param budgetLeft        本轮剩余可抓篇数
+     * @param remainingSearches 本轮**尚未执行**的搜索次数(不含当前这次)
+     * @param topN              单次抓取上限
+     * @return 本次可抓篇数, 0 表示不抓(只剩摘要)
+     */
+    public static int extractTake(int budgetLeft, int remainingSearches, int topN) {
+        if (budgetLeft <= 0 || topN <= 0) {
+            return 0;
+        }
+        int reserved = Math.max(0, remainingSearches);
+        int available = budgetLeft - reserved;
+        return Math.max(1, Math.min(topN, available));
+    }
 }

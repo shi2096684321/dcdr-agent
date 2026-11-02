@@ -193,33 +193,53 @@ agent:
 
   # ===== V3.1 F-47 工具结果体积治理 =====
   # 工具结果在「产出处」压缩一次(ToolResultCompressor), 回灌模型 / 下发前端 / 落库三处共用同一份文本。
-  # max-length 默认与 V3.0 的 TOOL_RESULT_MAX_LEN 一致 → 升级后"上限"行为不变;
-  # 本项修复的是 V3.0 的两个漏点(前端下发与 assistant 正文拼接未截断)与"只保头部"的缺陷。
+  #
+  # 三档阈值必须满足 max-length < summary.threshold < spill.threshold, 否则中间档永远走不到:
+  # 压缩链是「① 落盘 → ② LLM 摘要 → ③ 硬截断」(ToolResultCompressor#compress), 逐档严格大于才触发,
+  # 且 ① 命中后 ② 会被跳过、③ 始终在最后兜底。若 spill 低于 max-length, 硬截断即失效;
+  # 若 summary 高于 spill, 摘要档被落盘短路。改任一项时请一并校验这个不等式。
+  #
+  # 取值基准(2026-11 对齐主流产品):
+  #   Claude Code  MAX_MCP_OUTPUT_TOKENS 25000(硬上限)/10000(告警)/50000 字符落盘
+  #   Codex CLI    tool_output_token_limit 16000
+  #   Gemini CLI   truncateToolOutputThreshold 40000 字符 / distillation 10000 token
+  # 即单条结果窗口普遍落在 10k~25k token。原先单条 6000 字符 + 窗口 6000 token 约为该区间的
+  # 三分之一, 多轮检索第 2 轮就被压到 800 字符 —— 这正是"感觉偏小"的来源。
   tools:
     result:
-      # 单条工具结果字符上限(超出后保留头 70% + 尾 30%; 尾部常含结论/总计行/表格末尾)
-      max-length: 6000
-      # 单条 token 预算(0 = 不限); 比 max-length 更紧时生效。中文场景 1 字符 ≈ 1 token,
-      # 6000 字符理论上可吃掉 6000 token, 需要更严时可设 3000 左右
-      max-token-budget: 0
+      # 单条工具结果字符上限(超出后保留头 70% + 尾 30%; 尾部常含结论/总计行/表格末尾)。
+      # 20000 对英文/代码(1 token ≈ 3~4 字符)约合 5k~6k token, 与 token 预算互补:
+      # 中文由 max-token-budget 主导, 稀疏文本由本项防长度失控。
+      max-length: 20000
+      # 单条 token 预算(0 = 不限); 与 max-length 同时生效, 取更紧的那个。
+      # 10000 取自 Gemini distillation 与 Codex 16k 之间: 中文 1 字符 ≈ 1 token, 实际约 10000 中文字。
+      # 需要全文时走 spill + tool_result_read 分页, 而不是把整篇塞进 history 反复计费。
+      max-token-budget: 10000
       # 尾部保留比例(0~0.5); 0 = 退回 V3.0 的纯头截断
       keep-tail-ratio: 0.3
       # 落库到 messages.sources 时单个来源正文上限(防 web_extract 整页正文把单行撑大)
       source-content-max-length: 4000
-      # 回灌窗口内工具结果的 token 总量预算(0 = 不限): 单条已限长, 但多轮工具调用的合计仍可能超窗口
-      window-token-budget: 6000
-      # 窗口预算触顶后, 本轮单条结果的字符上限
-      window-floor-length: 800
+      # 回灌窗口内工具结果的 token 总量预算(0 = 不限): 单条已限长, 但多轮工具调用的合计仍可能超窗口。
+      # 30000 ≈ 128k 窗口的 23%, 留给系统提示 / 历史对话 / 输出余量; 按单条满额 10000 计约 3 条后收紧。
+      # 注意: 触顶后收紧的是**本轮新结果**, 旧结果由 microcompact 先回收, 所以别指望本项单独控总量。
+      window-token-budget: 30000
+      # 窗口预算触顶后, 本轮单条结果的字符上限。2000(原 800)≈ 2000 token:
+      # 800 时中文只剩标题和一两个句子, 与"预算紧张"不是一回事, 而是信息直接断供。
+      window-floor-length: 2000
       summary:
         # LLM 摘要降级: 一次真实模型调用(有费用与延迟), 不需要可关掉 → 该档直接退化为硬截断
         enabled: true
-        # 超过该字符数(且未达落盘阈值)时做摘要; 建议为 max-length 的 3 倍左右
-        threshold: 20000
+        # 超过该字符数(且未达落盘阈值)时做摘要。必须落在 (max-length, spill.threshold) 开区间内:
+        # 24000 让 20000~24000 直接硬截断(只丢尾部比例), 24000~32768 才花一次模型调用换摘要。
+        # 原先 20000 = max-length 时摘要档会被"刚好通过"的结果挤成空集。
+        threshold: 24000
         # 摘要用模型(留空 = 系统默认对话模型; 建议用低成本模型)
         model: ""
       spill:
         enabled: true
-        # 超过该字符数则全文落盘, 回灌只给"路径 + 规模 + 前 N 行", 模型用 tool_result_read 分页取全文
+        # 超过该字符数则全文落盘, 回灌只给"路径 + 规模 + 前 N 行", 模型用 tool_result_read 分页取全文。
+        # 维持 32768 不下调: 落盘意味着模型要多一次 tool_result_read 往返, 把 16k 这种
+        # "一次就能读完"的结果推去分页, 省下的 token 会以额外轮次的成本还回去。
         threshold: 32768
         dir: ./data/tool-results
         head-lines: 30

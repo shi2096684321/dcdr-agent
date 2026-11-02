@@ -475,7 +475,8 @@ const STEP_LABELS = {
   chars: '注入字数', memoryIds: '召回记忆',
   ragSource: '检索来源',
   // 联网步骤(kind=web): 与 rag 共用 query/costMs, 其余是它特有的
-  rawCount: '上游条数', results: '保留条数',
+  // results 对搜索是"清洗后保留条数", 对抓取是"成功篇数"(不含失败) —— 用中性词避免只对一半准确
+  rawCount: '上游条数', results: '可用条数',
   extractOk: '抓取成功', extractFailed: '抓取失败',
   contentChars: '正文字数', thinPages: '薄页数', emptyReason: '空结果原因'
 }

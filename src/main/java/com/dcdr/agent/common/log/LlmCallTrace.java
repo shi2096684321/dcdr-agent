@@ -297,6 +297,8 @@ public final class LlmCallTrace {
         if (stat.rawCount() >= 0) {
             step.put("rawCount", stat.rawCount());
         }
+        // 可用条数: 搜索为清洗后保留数, 抓取为成功篇数(见 WebStat#extract)。
+        // 健康度侧用 results == 0 判"这次什么都没拿到", 抓取全失败必须落到 0 才能被统计到
         step.put("results", stat.results());
         // 抓取明细只在真的触发过抓取时写, 否则全是 0 的字段会让详情页多出一串无意义的 chip
         if (stat.extractOk() + stat.extractFailed() > 0) {
@@ -315,7 +317,9 @@ public final class LlmCallTrace {
         log.info("[llm-trace] turn={} WEB {} query='{}' {} {} {}{}", turnId, stat.tool(), stat.query(),
                 stat.rawCount() >= 0
                         ? stat.rawCount() + "→" + stat.results() + "条"
-                        : stat.results() + "条",
+                        // 抓取: 这里给"共处理几篇", 成败由后面的「抓取2/3」表达。
+                        // 不能用 results(现在是成功篇数), 否则与后者重复且丢掉"一共试了几篇"
+                        : (stat.extractOk() + stat.extractFailed()) + "篇",
                 stat.extractOk() + stat.extractFailed() > 0
                         ? "抓取" + stat.extractOk() + "/" + (stat.extractOk() + stat.extractFailed())
                                 + " " + stat.contentChars() + "字" + (stat.thinPages() > 0 ? "(薄页" + stat.thinPages() + ")" : "")
@@ -324,12 +328,21 @@ public final class LlmCallTrace {
                 stat.emptyReason() == null ? "" : " [" + stat.emptyReason().label() + "]");
     }
 
-    /** 链路标签: 搜索显示「原始→保留」, 抓取只显示篇数 */
+    /**
+     * 链路标签。
+     * <p>搜索显示「原始→保留」({@code web[15→15]}); 抓取显示「成功/总数」({@code web[2/3]})。
+     * <p>抓取不能只显示成功篇数, 也不能只显示总数: 前者看不出"试了几个", 后者无法区分
+     * "3 个全失败"和"3 个全成功" —— 这两件事在排查时的处置完全相反(换 URL 还是查反爬)。
+     */
     private static String webTag(WebStat stat) {
         if (stat.rawCount() >= 0) {
             return "web[" + stat.rawCount() + "→" + stat.results() + "]";
         }
-        return "web[" + stat.results() + "条]";
+        int total = stat.extractOk() + stat.extractFailed();
+        // 未真正执行(未启用 / URL 为空)时两者都是 0, 退回单一数字, 避免出现无意义的 web[0/0]
+        return total > 0
+                ? "web[" + stat.extractOk() + "/" + total + "]"
+                : "web[" + stat.results() + "条]";
     }
 
     /**

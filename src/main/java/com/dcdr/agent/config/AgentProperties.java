@@ -159,21 +159,28 @@ public class AgentProperties {
         private ResultConfig result = new ResultConfig();
     }
 
-    /** 工具结果体积治理(F-47): 回灌模型 / 下发前端 / 落库三处共用的压缩口径 */
+    /**
+     * 工具结果体积治理(F-47): 回灌模型 / 下发前端 / 落库三处共用的压缩口径。
+     *
+     * <p>下面的默认值与 {@code application.yml} 的 {@code agent.tools.result} 保持一致,
+     * 口径来源见该段注释(对齐 Claude Code / Codex / Gemini CLI 的单条 10k~25k token 区间)。
+     * 三档阈值须满足 {@code max-length < summary.threshold < spill.threshold},
+     * 否则压缩链(落盘 → 摘要 → 硬截断)的中间档永远不触发。
+     */
     @Data
     public static class ResultConfig {
-        /** 单条工具结果字符上限(默认 6000, 与 V3.0 的 TOOL_RESULT_MAX_LEN 一致) */
-        private int maxLength = 6000;
-        /** 单条 token 预算(0 = 不限); 比 max-length 更紧时生效 */
-        private int maxTokenBudget = 0;
+        /** 单条工具结果字符上限(超出保留头 70% + 尾 30%) */
+        private int maxLength = 20000;
+        /** 单条 token 预算(0 = 不限); 与 max-length 同时生效取更紧者。中文 1 字符 ≈ 1 token */
+        private int maxTokenBudget = 10000;
         /** 超限时保留尾部的比例(0~0.5); 0 = 退回纯头截断 */
         private double keepTailRatio = 0.3;
         /** 落库到 messages.sources 时单个来源正文的字符上限 */
         private int sourceContentMaxLength = 4000;
         /** 回灌窗口内工具结果的 token 总量预算(0 = 不限) */
-        private int windowTokenBudget = 0;
+        private int windowTokenBudget = 30000;
         /** 窗口预算触顶后, 本轮单条结果的字符上限 */
-        private int windowFloorLength = 800;
+        private int windowFloorLength = 2000;
         private SummaryConfig summary = new SummaryConfig();
         private SpillConfig spill = new SpillConfig();
         private MicrocompactConfig microcompact = new MicrocompactConfig();
@@ -203,8 +210,8 @@ public class AgentProperties {
     public static class SummaryConfig {
         /** 默认关闭: 摘要是一次真实模型调用, 会产生费用与延迟, 由 yml 显式开启 */
         private boolean enabled = false;
-        /** 超过该字符数(且未达落盘阈值)时触发摘要; 建议为 max-length 的 3 倍左右 */
-        private int threshold = 20000;
+        /** 超过该字符数(且未达落盘阈值)时触发摘要; 须大于 max-length 且低于 spill.threshold */
+        private int threshold = 24000;
         /** 摘要用模型(留空 = 系统默认对话模型) */
         private String model;
     }

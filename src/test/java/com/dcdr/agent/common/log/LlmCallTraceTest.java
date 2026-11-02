@@ -160,10 +160,25 @@ class LlmCallTraceTest {
         Map<String, Object> step = webStep(trace);
         assertEquals("web_extract", step.get("tool"));
         assertFalse(step.containsKey("rawCount"), "web_extract 无上游概念, 不该出现该字段");
+        // results 记成功篇数(2), 不是处理篇数(3): 混入失败会让"全失败"看起来像"拿到了东西"
+        assertEquals(2, step.get("results"));
         assertEquals(2, step.get("extractOk"));
         assertEquals(1, step.get("extractFailed"));
         assertEquals(9000, step.get("contentChars"));
         assertEquals(0, step.get("thinPages"));
+    }
+
+    @Test
+    @DisplayName("抓取全部失败: results 必须为 0, 否则健康度的空结果率统计不到 (旧实现填 ok+failed 会漏成 3)")
+    void webExtractAllFailedReportsZeroResults() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordWeb(WebStat.extract("local", "https://example.com/gone", 0, 3, 0, 0), 1800);
+
+        Map<String, Object> step = webStep(trace);
+        assertEquals(0, step.get("results"), "全失败要落到 0 —— emptyRate 正是用 results==0 判'什么都没拿到'");
+        assertEquals(0, step.get("extractOk"));
+        assertEquals(3, step.get("extractFailed"), "失败篇数不能丢, 否则看不出试了几个");
+        assertEquals("no_results", step.get("emptyReason"));
     }
 
     @Test

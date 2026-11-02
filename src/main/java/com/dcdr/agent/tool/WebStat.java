@@ -30,7 +30,8 @@ package com.dcdr.agent.tool;
  * @param provider    实际执行该次调用的源 id(成本核算按源定价, 见字段注释)
  * @param query       搜索词; 抓取时为请求的 URL(截断到 200 字, 只为排查时认得出是哪一次)
  * @param rawCount    上游原始返回条数; {@code -1} 表示该工具不适用
- * @param results     最终进入 sources 的条数(清洗 / 抓取之后)
+ * @param results     最终可用条数: 搜索为清洗后进入 sources 的条数; 抓取为<b>成功</b>抓到的篇数(不含失败,
+ *                    失败篇数见 {@code extractFailed} —— 两者都算会让"全失败"看起来像"拿到了东西")
  * @param extractOk   串联抓取成功篇数; 未触发抓取为 0
  * @param extractFailed 串联抓取失败篇数; 未触发抓取为 0
  * @param contentChars 成功抓到的正文总字符数(未抓取为 0)
@@ -122,10 +123,24 @@ public record WebStat(
         return new WebStat(tool, provider, clipQuery(query), -1, 0, 0, 0, 0, 0, reason);
     }
 
-    /** 抓取阶段的统计(模型直接调用 {@code web_extract} 时使用) */
+    /**
+     * 抓取阶段的统计(模型直接调用 {@code web_extract} 时使用)。
+     *
+     * <p><b>{@code results} 填的是成功篇数, 不是处理篇数</b>。原先填 {@code ok + failed},
+     * 后果有两个:
+     * <ul>
+     *   <li>"试了 3 个 URL 全失败"与"3 个全成功"在 steps_json 里完全一样(都是 3),
+     *       链路上显示成 {@code web[3条]}, 读起来像"拿到了 3 条";</li>
+     *   <li>健康度的 {@code emptyRate} 用 {@code results == 0} 判"这次什么都没拿到",
+     *       抓取全失败永远命中不了 —— 而那个方法的注释写的正是"抓取全失败都算",
+     *       等于抓取侧的空结果率被系统性低估。</li>
+     * </ul>
+     * 失败篇数完整保留在 {@code extractFailed} 里, 要看"一共处理了几篇"两者相加即可,
+     * 信息没有丢失, 只是不再混在 {@code results} 这一个字段里。
+     */
     public static WebStat extract(String provider, String url, int ok, int failed,
                                   int contentChars, int thinPages) {
-        return new WebStat("web_extract", provider, clipQuery(url), -1, ok + failed,
+        return new WebStat("web_extract", provider, clipQuery(url), -1, ok,
                 ok, failed, contentChars, thinPages, ok == 0 ? Empty.NO_RESULTS : null);
     }
 

@@ -124,6 +124,24 @@ public class AgentOrchestrator {
     private static final int EXTRACT_TOP_N = 3;
 
     /**
+     * 一次搜索回灌给模型的<b>总</b>字符预算(所有来源合计)。
+     * <p>
+     * 必须自己控总量, 不能指望下游 {@code ToolResultCompressor} 兜底: 压缩器是"头 70% + 尾 30%"的硬截断,
+     * 一旦超限, 后面的来源会被整段砍掉 —— 表现为模型"只看到前几条, 后面几十条完全不知道存在"。
+     * 滚动分配到每一条则保证每条都留下可判断的内容, 只是详略不同。
+     * <p>
+     * 取值与 {@code agent-tools.result.max-token-budget}(10000)呼应: 中文约 1 字符 ≈ 1 token,
+     * 留出标题/URL/序号等固定开销后约合 1.2 万 token, 压缩器仍有余量做头尾保留而不至于丢掉整条。
+     */
+    private static final int COMPACT_TOTAL_CHARS = 12000;
+
+    /** 单条来源的字符上限: 抓到 3000 字正文时也只喂前 1000 字, 提炼要点没有边际收益 */
+    private static final int COMPACT_ITEM_CAP = 1000;
+
+    /** 滚动分配时的单条下限: 低于这个长度连"是不是相关"都判断不了, 不如不给 */
+    private static final int COMPACT_ITEM_FLOOR = 120;
+
+    /**
      * 循环拦截时回灌给模型的提示。
      * <p>语气刻意强硬: 这条消息的唯一目的是让模型<b>停止</b>, 温和的"建议换个关键词"会被当成
      * 又一个可选动作, 变成第 6 次调用。同时给出"没有信息就如实说"的出口, 否则它可能改写别的工具继续试。
@@ -143,6 +161,19 @@ public class AgentOrchestrator {
     private static final String SEARCH_SATURATION_MESSAGE = """
             [信息已饱和] 当前已获得足够多的不同来源，继续搜索只会重复同一批站点。本次调用被跳过（未执行）。
             请基于已有来源作答，并在正文中标注 [[n]] 引用。
+            """;
+
+    /**
+     * 上一轮搜索没有带来任何新 URL 时回灌的提示。
+     * <p>
+     * 这是比"搜索次数上限"更准的停止信号: 次数用完才停是<b>猜</b>, 新增为 0 才是<b>证据</b> ——
+     * 说明这批关键词已经收敛到同一批站点, 换词只会拿到同样的页面。
+     * {@code WebSearchBudget} 的类注释里记着这个信号"更准但需要跨轮状态"所以当年绕开了;
+     * 实际上跨轮累积的 {@code collectedSources} 就是那个状态, 只需额外记住"上一轮结束时的去重数"。
+     */
+    private static final String SEARCH_NO_NEW_SOURCE_MESSAGE = """
+            [未检索到新信息] 上一轮搜索没有返回任何此前未出现过的站点。本次调用被跳过（未执行）。
+            请基于已获得的结果作答；确实缺少关键信息时，直接说明"未检索到 XXX"，不要继续换关键词试探。
             """;
 
     private static final String LOOP_STOP_MESSAGE = """
@@ -412,6 +443,10 @@ public class AgentOrchestrator {
                         final List<String> toolResults = new ArrayList<>();
                         // 本轮联网搜索/知识库检索等工具产生的来源(引用), 供 done 块下发与落库
                         final List<Map<String, Object>> collectedSources = new ArrayList<>();
+                        // 上一轮搜索结束时的去重来源数: 用于判断"这一轮搜索有没有带来新 URL"。
+                        // 与 collectedSources 放在一起而不是另建上下文对象 —— 它是这个累积列表的派生量,
+                        // 分开放只会让两者不同步(而不同步的后果是误判"没有新信息"把搜索全拦掉)
+                        final int[] prevRoundDistinct = new int[1];
                         // 强制检索(RAG 显式模式)命中的来源并入: 随 done 块下发前端渲染引用卡片, 并随助手消息落库
                         if (ctx.forcedKbSources() != null && !ctx.forcedKbSources().isEmpty()) {
                             collectedSources.addAll(ctx.forcedKbSources());
@@ -517,7 +552,7 @@ public class AgentOrchestrator {
                                             int allowance = toolResultCompressor.allowanceForRound(history);
                                             return executeTools(currentRound, accumulated.toString(),
                                                     reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
-                                                    allowance, history, t);
+                                                    allowance, history, t, prevRoundDistinct);
                                         })
                                         .subscribeOn(Schedulers.boundedElastic()),
                                         t, currentRound, resultsById);
@@ -963,7 +998,8 @@ public class AgentOrchestrator {
                                         Map<String, String> outResultsById,
                                         String userId, String sessId, int resultMaxChars,
                                         List<com.dcdr.agent.agent.memory.Message> history,
-                                        com.dcdr.agent.common.log.LlmCallTrace t) {
+                                        com.dcdr.agent.common.log.LlmCallTrace t,
+                                        int[] prevRoundDistinctSources) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
@@ -999,17 +1035,26 @@ public class AgentOrchestrator {
                 outResultsById.put(tc.getId(), LOOP_STOP_MESSAGE);
                 continue;
             }
-            // 联网搜索的双重预算(只拦 web_search, 抓取由 extractBudgetPerRound 单独管)
+            // 联网搜索的三重预算(只拦 web_search, 抓取由 extractBudgetPerRound 单独管)
             if (WebSearchTool.NAME.equals(tc.getTool())) {
                 boolean overCount = searchesDone >= maxSearchPerTurn;
                 // 饱和判定: 本轮第一次搜索总是放行 —— 否则模型连"补一次"的机会都没有
                 boolean saturated = distinctSources >= sourceSaturation && searchesThisRound >= 1;
-                if (overCount || saturated) {
-                    log.warn("联网搜索预算已用尽, 跳过本次搜索: 已搜 {}/{} 次, 去重来源 {} 条, 原因={}",
+                // 零新增判定: 上一轮搜索一条新 URL 都没带回来, 说明这批关键词已收敛到同一批站点。
+                // 与 saturated 的区别: 那个看"累计拿到多少条"(30 条对不同任务意义完全不同),
+                // 这个看"这一次有没有推进", 与任务规模无关, 所以更准。
+                // 同样本轮第一次放行: 此刻 distinctSources 还等于上一轮结束时的快照, 必然判"无新增",
+                // 不豁免的话每一轮的第二条起就再也搜不了 —— 那是把整个联网能力关掉, 不是收敛。
+                boolean noNewSource = searchesThisRound >= 1
+                        && distinctSources <= prevRoundDistinctSources[0];
+                if (overCount || saturated || noNewSource) {
+                    String reason = overCount ? "次数上限"
+                            : (noNewSource ? "上一轮无新增来源" : "信息来源已饱和");
+                    log.warn("联网搜索预算已用尽, 跳过本次搜索: 已搜 {}/{} 次, 去重来源 {} 条(上轮 {}), 原因={}",
                             searchesDone, maxSearchPerTurn, distinctSources,
-                            overCount ? "次数上限" : "信息来源已饱和");
+                            prevRoundDistinctSources[0], reason);
                     outResultsById.put(tc.getId(), overCount ? SEARCH_COUNT_LIMIT_MESSAGE
-                            : SEARCH_SATURATION_MESSAGE);
+                            : (noNewSource ? SEARCH_NO_NEW_SOURCE_MESSAGE : SEARCH_SATURATION_MESSAGE));
                     continue;
                 }
                 searchesDone++;
@@ -1054,6 +1099,14 @@ public class AgentOrchestrator {
             int callCount = 0;
             // 本轮剩余可抓取的正文篇数(跨本轮多次 web_search 共享), 见 extractBudgetPerRound
             int extractBudget = Math.max(0, extractBudgetPerRound);
+            // 本轮共发起几次搜索 + 当前是第几次: 用于给"后面的搜索"预留抓取额度。
+            // 预算若按先到先得发放, 前两次搜索就能把 6 篇吃光, 第三次一条正文都抓不到 ——
+            // 而模型一轮并行发多个关键词时, 后面那几个词往往才是主题最准的(见 1195 行注释)
+            int searchCallsThisRound = 0;
+            for (ChatChunk tc : effectiveCalls) {
+                if (WebSearchTool.NAME.equals(tc.getTool())) searchCallsThisRound++;
+            }
+            int searchSeenThisRound = 0;
             for (ChatChunk tc : effectiveCalls) {
                 String name = tc.getTool();
                 // 单次工具执行的起点: 联网统计要用它算"这一步总共花了多久"(含串联抓取)
@@ -1166,9 +1219,17 @@ public class AgentOrchestrator {
                         // 每轮有一个**总篇数预算**, 由本轮内所有搜索共享(见 extractBudgetPerRound)。
                         // 为什么不按"第几次搜索"一刀切: 模型一轮并行发多个不同 query 时,
                         // 后面的 query 可能才是主题最相关的, 只让第一次抓正文会让它们退化成纯摘要。
-                        // 用预算则前两次搜索都能拿到完整正文, 从第三次起才降级 —— 信息损失小得多,
                         // 同时仍挡住"4 次搜索 × 3 篇 = 12 次网页请求"这种放大(实测单轮 43.9s)。
-                        int take = Math.min(EXTRACT_TOP_N, extractBudget);
+                        //
+                        // 分配方式: 给后面每次搜索预留 1 篇保底, 剩下的才给当前这次(算法见 WebSearchBudget)。
+                        // 原实现是 take = min(3, 剩余预算) 的**先到先得**, 一轮 3 次搜索时前两次各吃
+                        // 3 篇把 6 篇耗尽, 第三次 take=0 —— 一次的搜索结果全是标题, 白搜。
+                        // 实测(2026-11-02 21:18 那次 turn): 广州那次搜索 15 条结果 extractOk 为空,
+                        // 即 15 条一条正文都没抓。改成 3/2/1 后同样 6 篇预算, 每次都有正文。
+                        searchSeenThisRound++;
+                        int remainingSearches = Math.max(0, searchCallsThisRound - searchSeenThisRound);
+                        int take = com.dcdr.agent.agent.loop.WebSearchBudget
+                                .extractTake(extractBudget, remainingSearches, EXTRACT_TOP_N);
                         if (take > 0) {
                             ext = enrichWithExtract(srcs, userQuery, take);
                             // 按**实际**抓取篇数扣预算: 候选不足时(只有 1 篇像文章)不该白扣 3 篇
@@ -1227,6 +1288,11 @@ public class AgentOrchestrator {
                 // system 约束后多余调用本不该发生; 若仍多发, 说明用户确需多张, 全部执行不丢弃
                 log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
             }
+            // 刷新"上轮去重来源数"快照, 供下一轮的零新增判定使用。
+            // 放在这里而不是 finally: chunks 是同步执行填充的(下面的 return 只是把它包成 Flux),
+            // 走到这一行时本轮所有工具都已执行完, 取到的就是本轮终值
+            prevRoundDistinctSources[0] = (int) com.dcdr.agent.agent.loop.WebSearchBudget
+                    .distinctSources(collectedSources);
             return Flux.fromIterable(chunks);
             } finally {
                 // 清除 ThreadLocal, 防止线程池线程复用导致知识库 ID 泄漏到下一轮无关对话
@@ -1636,8 +1702,12 @@ public class AgentOrchestrator {
         return s.startsWith("http://") || s.startsWith("https://");
     }
 
-    /** 把补全后的 sources 拼成喂给模型的精简内容(每个来源带更完整的正文摘要) */
-    private static String rebuildCompact(List<Map<String, Object>> srcs) {
+    /**
+     * 把补全后的 sources 拼成喂给模型的精简内容(每个来源带更完整的正文摘要)。
+     * <p>包级可见而非 private: 与 {@link #cleanMarkdownContent(String)} 同理, 它是纯静态无 IO 的
+     * 后处理函数, 放在同包的测试类里可直接断言, 不必构造这个依赖二十多项的编排类。
+     */
+    static String rebuildCompact(List<Map<String, Object>> srcs) {
         if (srcs == null || srcs.isEmpty()) return "（联网搜索未返回可用结果）";
         // 剔除聚合/首页类 URL(如 Google News 首页变体): 它们无法提取正文, 塞给模型只会产生导航噪音
         List<Map<String, Object>> usable = srcs.stream()
@@ -1647,14 +1717,18 @@ public class AgentOrchestrator {
                     String url = u.toString();
                     String path = safePath(url);
                     if (isAggregateHomepage(url, path)) return false;
-                    // 剔除 content 与 snippet 均为空的低价值来源(title+url 无信息量,
-                    // 只占 [[n]] 序号、撑大 sources 落库、前端渲染空卡片), 视为结构化噪音
+                    // 剔除 content / summary / snippet 三者皆空的低价值来源(title+url 无信息量,
+                    // 只占 [[n]] 序号、撑大 sources 落库、前端渲染空卡片), 视为结构化噪音。
+                    // 必须把 summary 也算进来: 它的优先级高于 snippet, 只看 snippet 会把
+                    // "有长摘要但没有 snippet"的来源当噪音删掉(DeepSeek 路径偶有这种条目)
                     Object c = s.get("content");
                     Object sn = s.get("snippet");
+                    Object sm = s.get("summary");
                     boolean hasContent = c != null && !c.toString().isBlank()
                             && !"undefined".equalsIgnoreCase(c.toString().trim());
                     boolean hasSnippet = sn != null && !sn.toString().isBlank();
-                    return hasContent || hasSnippet;
+                    boolean hasSummary = sm != null && !sm.toString().isBlank();
+                    return hasContent || hasSnippet || hasSummary;
                 })
                 .toList();
         if (usable.isEmpty()) {
@@ -1666,22 +1740,47 @@ public class AgentOrchestrator {
           .append(" 条资料（部分已抓取完整正文），请在回答中通过 [[n]] 标注引用来源（n 为下方序号）即可，"
                   + "不要在结尾另列来源清单（界面已在回答下方统一展示来源卡片）：\n\n");
         int i = 1;
+        // 滚动分配: 每条先按"剩余额度 / 剩余条数"平分, 富余会让给后面的条目。
+        // 为什么不用固定值(如每条 1000): 15 条 × 1000 = 15000 字符会撑爆预算被整体硬截断,
+        // 后面的来源直接消失; 平分能让 15 条都有内容, 只是详略随剩余额度变化。
+        int remaining = COMPACT_TOTAL_CHARS;
         for (Map<String, Object> s : usable) {
             sb.append("[[").append(i).append("]] ").append(s.get("title"));
             Object url = s.get("url");
             if (url != null && !url.toString().isBlank()) sb.append("  (").append(url).append(")");
-            Object content = s.get("content");
-            boolean hasContent = content != null && !content.toString().isBlank()
-                    && !"undefined".equalsIgnoreCase(content.toString().trim());
-            String body = hasContent
-                    ? clip(content.toString(), 1000)          // 完整正文截断, 比搜索摘要更充分
-                    : (s.get("snippet") != null ? s.get("snippet").toString() : "");
+            int quota = Math.min(COMPACT_ITEM_CAP,
+                    Math.max(COMPACT_ITEM_FLOOR, remaining / Math.max(1, usable.size() - i + 1)));
+            String body = bestBody(s, quota);
             if (!body.isBlank()) sb.append("\n    ").append(body);
             else sb.append("\n    （该来源未能提取到正文，仅作链接参考）");
             sb.append("\n");
+            remaining -= body.length();
             i++;
         }
         return sb.toString();
+    }
+
+    /**
+     * 按可信度挑一条来源的正文: 抓取全文 &gt; 搜索摘要 &gt; snippet。
+     * <p>
+     * <b>这里曾漏掉 summary</b>: 早期只认 {@code content} 与 {@code snippet}, 而 DeepSeek 搜索路径
+     * 的每条结果都带 600~800 字符的 {@code summary}(snippet 只有约 110 字符)。
+     * 后果是没被抓取的那十几条"只有标题+一句话", 模型据此判断"信息不足"继续换词搜索 ——
+     * 调用链上表现为搜了五六次、每次都 15 条, 却反复搜同一个主题。
+     * 字节级证据: 61 条无 content 的来源 summary 平均 734 字符, 实际只喂了 111 字符。
+     * <p>
+     * 与 {@code WebSearchTool.buildCompactContent} 的口径保持一致(那里是 summary → snippet),
+     * 两处顺序不同会导致同一份搜索结果在"无抓取"和"有抓取"两条路径上信息量差一个数量级。
+     */
+    static String bestBody(Map<String, Object> s, int quota) {
+        for (String key : new String[]{"content", "summary", "snippet"}) {
+            Object v = s.get(key);
+            if (v == null) continue;
+            String text = v.toString().trim();
+            if (text.isEmpty() || "undefined".equalsIgnoreCase(text)) continue;
+            return clip(text, quota);
+        }
+        return "";
     }
 
     private static String safePath(String url) {

@@ -89,6 +89,51 @@ class WebSearchBudgetTest {
         assertEquals(0, WebSearchBudget.distinctSources(List.of()));
     }
 
+    // ===== 抓取篇数分配 =====
+
+    @Test
+    @DisplayName("一轮 3 次搜索共享 6 篇预算: 依次 3/2/1, 每次都有正文")
+    void extractTakeKeepsLastSearchAlive() {
+        int budget = 6;
+        int topN = 3;
+        int searchCalls = 3;
+
+        int t1 = WebSearchBudget.extractTake(budget, searchCalls - 1, topN);
+        assertEquals(3, t1, "第 1 次: 后面还有 2 次, 预留 2 篇后仍有 4 篇可用");
+        budget -= t1;
+
+        int t2 = WebSearchBudget.extractTake(budget, searchCalls - 2, topN);
+        assertEquals(2, t2, "第 2 次: 后面还有 1 次, 只能用 2 篇");
+        budget -= t2;
+
+        int t3 = WebSearchBudget.extractTake(budget, 0, topN);
+        assertEquals(1, t3, "第 3 次: 旧实现这里是 0(预算被前两次吃光), 也是搜了没读的根因");
+        budget -= t3;
+
+        assertEquals(0, budget, "三次合计正好用完 6 篇, 总量没有放大");
+    }
+
+    @Test
+    @DisplayName("单次搜索: 直接给满 topN, 不受保底逻辑影响")
+    void extractTakeSingleSearch() {
+        assertEquals(3, WebSearchBudget.extractTake(6, 0, 3));
+    }
+
+    @Test
+    @DisplayName("预算为 0 时不抓")
+    void extractTakeNoBudget() {
+        assertEquals(0, WebSearchBudget.extractTake(0, 0, 3));
+        assertEquals(0, WebSearchBudget.extractTake(0, 3, 3));
+    }
+
+    @Test
+    @DisplayName("搜索次数多于预算: 仍保证每次至少 1 篇")
+    void extractTakeMoreSearchesThanBudget() {
+        // 4 次搜索只有 3 篇预算: 每次至少 1 篇, 允许超支 1 篇(比"有人一篇都拿不到"更可接受)
+        assertEquals(1, WebSearchBudget.extractTake(3, 3, 3));
+        assertEquals(1, WebSearchBudget.extractTake(1, 2, 3));
+    }
+
     // ===== 辅助 =====
 
     private static Message user() {
