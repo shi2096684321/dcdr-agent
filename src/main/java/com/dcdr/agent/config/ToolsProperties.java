@@ -135,6 +135,90 @@ public class ToolsProperties {
         /** 是否启用自建联网搜索(关闭时两个工具不注册, 模型不可见) */
         private boolean enabled = true;
 
+        /**
+         * 按源的调用单价(元/次), key 形如 {@code deepseek:web_search} / {@code deepseek:web_extract}。
+         *
+         * <p><b>为什么必须按源分别配</b>: DeepSeek 按次计费, 自建 SearXNG 只有服务器成本(单价 0)。
+         * 混成一个均价算出来的钱是错的 —— 而错的钱比没有钱更危险, 它会让人做出错误的取舍
+         * ("联网太贵了, 关掉吧"), 实际可能只是定价配错了。
+         *
+         * <p>**默认全 0, 不猜价格**: 单价随合同/账单变化, 猜一个数写进默认值, 上线后没人会去核对。
+         * 留空时页面只显示次数、费用显示"未配置单价", 逼着使用者按自己的账单填一次。
+         */
+        private java.util.Map<String, java.math.BigDecimal> pricing = new java.util.LinkedHashMap<>();
+
+        /**
+         * 搜索源策略(V3.3): {@code searxng} / {@code deepseek}。
+         * <p>由 {@code WebProviderFactory} 在<b>启动时</b>解析, 配置写错会直接启动失败 ——
+         * 联网工具是"配错了也照常跑、只是搜不到东西"的典型, 运行时才发现代价太大。
+         * <p>两个源都注册了同名工具, 因此<b>不能同时启用</b>, 只在这一处二选一。
+         */
+        private String provider = "searxng";
+
+        /**
+         * 抓取源策略: {@code auto} / {@code local} / {@code deepseek}。
+         * <p>{@code auto} = 跟随 {@link #provider}: 搜索走 deepseek 时抓取也走 deepseek,
+         * 否则走本地 crux。之所以不把两个开关合并, 是因为"搜索质量差"和
+         * "正文提取差"是两个独立问题, 需要分开定位(DeepSeek 的 Fetch 是黑盒, 提取不出
+         * 也没法调; 本地 crux 能按站点打补丁)。
+         */
+        private String fetchProvider = "auto";
+
+        /**
+         * 抓取主源拿不到正文时, 是否回落本地 crux。
+         * <p>DeepSeek Fetch 的 403(安全策略拦截) / 404(提不出可用 Markdown) 都是
+         * <b>不可调</b>的失败, 而本地链路对中文站、GBK 编码、结构化重建做了大量适配,
+         * 兜一层能实打实提高抓取成功率。代价是一次失败会多花一个往返。
+         */
+        private boolean fetchFallback = true;
+
+        /**
+         * 兜底的耗时预算(毫秒): 主源耗时超过它就不再换源重试。
+         * <p>
+         * <b>为什么需要这道闸</b>: 两个抓取源的超时都是 {@code timeout-seconds}(15s), 兜底一次
+         * 意味着最坏 30s/篇; 配上"单轮 6 篇"的抓取预算, 最坏 180s —— 用户看到的就是卡死。
+         * 而兜底真正有价值的场景是<b>快速失败</b>(403 安全拦截 / 404 提不出正文, 通常 <1s),
+         * 那时换本地 crux 往往能拿到; 主源已经耗满 15s 的情况, 换源大概率再等 15s 还是超时。
+         * <p>默认 5s 约为单次超时的三分之一。
+         */
+        private int fetchFallbackBudgetMs = 5000;
+
+        /**
+         * 单轮对话里「串联抓取」的总篇数预算(跨同一轮内的多次搜索共享)。
+         * <p>
+         * <b>为什么需要这个预算</b>: 模型会在一轮里并行发出多个 query 不同的 web_search。
+         * 若每个都抓 top-3, 4 次搜索就是 12 次网页请求 —— 实测单轮 43.9s、9 万入参 token,
+         * 界面上表现为"联网卡死"。但也不能简单规定"只抓第一次": 那会让后续搜索只剩摘要,
+         * 而它们可能才是主题最相关的那几个。
+         * <p>
+         * <b>取值口径</b>: 单次搜索抓 3 篇({@code EXTRACT_TOP_N}), 故 6 = 允许<b>两次</b>搜索
+         * 拿到完整正文, 之后的搜索退化为摘要。3 = 只够一次(信息最省、最快);
+         * 9 或 12 = 允许三到四次, 慢但更全。按"延迟优先还是信息优先"调这一个数字即可。
+         * <p>设为 0 表示不做任何串联抓取(只返回搜索摘要)。
+         */
+        private int extractBudgetPerRound = 6;
+
+        /**
+         * 单次请求内允许发起的 {@code web_search} 次数上限。
+         *
+         * <p><b>为什么必须有这道闸</b>: 之前只有 {@code MAX_TOOL_ROUNDS=10} 兜底, 而模型会在一轮里
+         * 并行发 3~4 个不同关键词的搜索 —— 关键词不同, 循环检测(相同签名)一个都不命中,
+         * 于是能一路搜到第 10 轮。实测一次对话 40 次搜索、0.2 元, 而回答只用了其中几条。
+         *
+         * <p>取 8 的理由: 正常"搜一次 → 不够 → 换词再搜"最多 2~3 次就该收敛; 8 次给了充足余量,
+         * 又不至于一路烧到上限。调小更快但更容易漏信息, 按自己的场景取 4~10。
+         */
+        private int maxSearchPerTurn = 8;
+
+        /**
+         * 去重来源数达到该值后, 不再允许新的搜索(除非本轮还没搜过)。
+         *
+         * <p>只看次数不够: 8 次搜索如果每次都拿到新东西, 那是有价值的; 反过来 3 次搜索
+         * 已经把同一批站点翻来覆去搜了三遍, 第 4 次就是纯浪费。数量是"信息是否已经够多"的
+         * 最直接代理指标 —— 它不完美(可能有 30 条都不相关), 但比只数次数准确得多。
+         */
+        private int sourceSaturation = 30;
+
         /** SearXNG 服务地址(compose 内为 http://searxng:8080, 宿主本机跑 jar 用 http://localhost:8888) */
         private String searxngUrl = "http://localhost:8888";
 
@@ -166,5 +250,54 @@ public class ToolsProperties {
         private String userAgent =
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                         + "(KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+
+        /** DeepSeek 自研搜索/抓取接入配置 */
+        private DeepseekConfig deepseek = new DeepseekConfig();
+
+        /**
+         * DeepSeek Search / Fetch 接入配置(V3.3)。
+         * <p>
+         * 两个接口是纯 JSON API, 与模型接口同一个 Base URL、同一套 Bearer 鉴权,
+         * 因此默认复用 {@code DEEPSEEK_API_KEY}。若想用独立的 key 做成本核算,
+         * 单独设 {@code DEEPSEEK_SEARCH_API_KEY} 即可覆盖。
+         * <p>
+         * <b>计费口径</b>: 每 1000 次<b>成功</b>请求 5 元(Search 返回非空结果、Fetch 返回正文
+         * 且 HTTP 200 才算); 空结果、超时、失败不计费。{@code count} 不影响单价,
+         * 所以把条数调大不会更贵 —— 但会撑大上下文, 上限仍由 {@code maxResultsLimit} 约束。
+         */
+        @Data
+        public static class DeepseekConfig {
+
+            /** 服务基址(不含 /v1) */
+            private String baseUrl = "https://api.deepseek.com";
+
+            /** API Key; 为空时该策略不可用, 工厂会回退到 searxng 并告警 */
+            private String apiKey = "";
+
+            /**
+             * 是否让 Search 直接返回正文({@code need_content})。
+             * <p><b>默认关</b>: 开着会让单次响应体积大增, 而编排层对 {@code web_search}
+             * 本来就会串联 {@code web_extract} 补正文, 属于重复抓取。
+             * 只有在"想用一次调用换掉一轮工具交互"时才建议打开。
+             */
+            private boolean needContent = false;
+
+            /**
+             * 相关性阈值: 丢弃 {@code rerank_score} 低于该值的结果。
+             * <p>官方口径 ≥1.5 为优质结果; 默认 0 表示<b>不过滤</b> ——
+             * 阈值属于"效果调优"而非"正确性", 部署方按自己的内容域实测后再收紧,
+             * 默认就卡 1.5 会把长尾但正确的来源静默丢掉。
+             */
+            private double minRerankScore = 0;
+
+            /**
+             * 权威性阈值: 丢弃 {@code authority} 低于该值的结果。
+             * <p>取值 0~4, -1 表示未知; 默认 -1 = 不过滤(未知也不丢)。
+             */
+            private int minAuthority = -1;
+
+            /** 本地化 IP, 用于优先返回该地区的搜索结果; 空串表示不指定 */
+            private String localization = "";
+        }
     }
 }

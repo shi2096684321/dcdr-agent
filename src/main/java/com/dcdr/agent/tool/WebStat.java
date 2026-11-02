@@ -1,7 +1,7 @@
 package com.dcdr.agent.tool;
 
 /**
- * 一次联网搜索 / 网页抓取的<b>执行质量统计</b>(V3.4)。
+ * 一次联网搜索 / 网页抓取的<b>执行质量统计</b>(V3.3)。
  *
  * <p><b>为什么需要它</b>: 联网工具此前只留下 {@code recordTool} 那一条通用记录(工具名 + 耗时 +
  * 结果前 500 字), 于是"最近效果是不是变差了"这类问题<b>一个数字都答不出来</b> ——
@@ -27,6 +27,7 @@ package com.dcdr.agent.tool;
  * "上游返回几条"的概念。用 -1 而非 0 表示"不适用", 避免库侧把它统计成"一次零结果"。
  *
  * @param tool        工具名({@code web_search} / {@code web_extract})
+ * @param provider    实际执行该次调用的源 id(成本核算按源定价, 见字段注释)
  * @param query       搜索词; 抓取时为请求的 URL(截断到 200 字, 只为排查时认得出是哪一次)
  * @param rawCount    上游原始返回条数; {@code -1} 表示该工具不适用
  * @param results     最终进入 sources 的条数(清洗 / 抓取之后)
@@ -38,6 +39,13 @@ package com.dcdr.agent.tool;
  */
 public record WebStat(
         String tool,
+        /**
+         * 实际执行这次调用的源 id: {@code deepseek} / {@code searxng} / {@code local} …
+         * <p><b>为什么必须单独记</b>: 成本核算按"调用次数 × 该源单价"算, 而 deepseek 按次计费、
+         * 自建 searxng 零单价。只记"调了 1000 次 web_search"无法回答"这个月花了多少钱" ——
+         * 从配置反推也不行: 用户中途换了源, 历史数据就全错了。
+         */
+        String provider,
         String query,
         int rawCount,
         int results,
@@ -95,14 +103,14 @@ public record WebStat(
      * @param rawCount 上游原始返回条数(清洗前)
      * @param results  清洗后保留条数
      */
-    public static WebStat search(String query, int rawCount, int results) {
-        return new WebStat("web_search", clipQuery(query), rawCount, results,
+    public static WebStat search(String provider, String query, int rawCount, int results) {
+        return new WebStat("web_search", provider, clipQuery(query), rawCount, results,
                 0, 0, 0, 0, results == 0 ? emptyOf(rawCount) : null);
     }
 
     /** 搜索阶段就失败(未启用 / 请求异常)时的统计 */
-    public static WebStat searchFailed(String query, Empty reason) {
-        return unavailable("web_search", query, reason);
+    public static WebStat searchFailed(String provider, String query, Empty reason) {
+        return unavailable("web_search", provider, query, reason);
     }
 
     /**
@@ -110,13 +118,14 @@ public record WebStat(
      * <p>这类情况返回的是一句提示文本, 既无 sources 也无损耗数据 —— 若不单独上报,
      * 库侧只能看到"这条调用没有 web 步骤", 与"根本没调用工具"无法区分。
      */
-    public static WebStat unavailable(String tool, String query, Empty reason) {
-        return new WebStat(tool, clipQuery(query), -1, 0, 0, 0, 0, 0, reason);
+    public static WebStat unavailable(String tool, String provider, String query, Empty reason) {
+        return new WebStat(tool, provider, clipQuery(query), -1, 0, 0, 0, 0, 0, reason);
     }
 
     /** 抓取阶段的统计(模型直接调用 {@code web_extract} 时使用) */
-    public static WebStat extract(String url, int ok, int failed, int contentChars, int thinPages) {
-        return new WebStat("web_extract", clipQuery(url), -1, ok + failed,
+    public static WebStat extract(String provider, String url, int ok, int failed,
+                                  int contentChars, int thinPages) {
+        return new WebStat("web_extract", provider, clipQuery(url), -1, ok + failed,
                 ok, failed, contentChars, thinPages, ok == 0 ? Empty.NO_RESULTS : null);
     }
 
@@ -129,7 +138,7 @@ public record WebStat(
      * @param contentChars 成功抓取的正文总字符数
      */
     public WebStat withExtract(int results, int ok, int failed, int contentChars, int thinPages) {
-        return new WebStat(tool, query, rawCount, results, ok, failed, contentChars, thinPages, emptyReason);
+        return new WebStat(tool, provider, query, rawCount, results, ok, failed, contentChars, thinPages, emptyReason);
     }
 
     /** 由原始条数推断空结果成因: 上游一条都没给 vs 全被清洗掉 */

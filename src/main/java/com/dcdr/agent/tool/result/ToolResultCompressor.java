@@ -173,6 +173,80 @@ public class ToolResultCompressor {
 
     // ===== 内部 =====
 
+    /** 清理后回灌给模型的占位文本: 明确告诉它内容去哪了、怎么再拿 */
+    private static final String CLEARED_PLACEHOLDER =
+            "[旧工具结果已清理以释放上下文，内容不再回灌。需要时重新调用该工具即可。]";
+
+    /**
+     * 可安全清理的只读工具 —— 结果<b>可重新获取</b>, 清掉不丢信息。
+     * <p>刻意用白名单而不是黑名单: 黑名单漏了"生图 / 文件写入 / 沙箱执行"这类带副作用的工具时,
+     * 清掉的是一份不可复现的结果(再跑一次可能是另一张图、另一份文件内容)。白名单漏了新工具,
+     * 只是少清几条, 不会出错。
+     */
+    private static final java.util.Set<String> RECLAIMABLE_TOOLS = java.util.Set.of(
+            "web_search", "web_extract", "knowledge_base_search",
+            "workspace_list", "workspace_read", "workspace_search",
+            "tool_result_read", "skill_load",
+            "weather", "time", "calculator");
+
+    /**
+     * 清理较早的只读工具结果, 释放回灌窗口。
+     *
+     * <p><b>为什么必须在每轮算额度之前调用</b>: {@link #allowanceForRound} 是按
+     * "历史工具结果的 token 总量"来决定本轮收紧到多少的。只清不算是白清, 只算不清是越用越紧 ——
+     * 两者顺序错了, 这个机制就等于没有。
+     *
+     * @return 实际清理的条数(0 表示没动)
+     */
+    public int microcompact(List<Message> history) {
+        AgentProperties.MicrocompactConfig cfg = cfg().getMicrocompact();
+        if (!cfg.isEnabled() || history == null || history.isEmpty()) {
+            return 0;
+        }
+        List<Message> toolMessages = new java.util.ArrayList<>();
+        for (Message m : history) {
+            if ("tool".equals(m.getRole()) && m.getName() != null
+                    && RECLAIMABLE_TOOLS.contains(m.getName())) {
+                toolMessages.add(m);
+            }
+        }
+        // 最近一整轮的 tool 消息无条件保留:
+        // 它们刚被 add 进 history, 而落库是异步派发的(fire-and-forget)。此时改 content,
+        // 落库可能写进占位文本 —— 表现是"调用链详情里工具结果是 [旧工具结果已清理]"。
+        // 尾部连续 tool 消息就是最近一轮的全部结果, 数出来即可, 不需要额外的轮次标记。
+        int keep = Math.max(cfg.getKeepRecent(), tailToolCount(history));
+        int clearCount = toolMessages.size() - keep;
+        if (clearCount <= 0) {
+            return 0;
+        }
+        int cleared = 0;
+        for (int i = 0; i < clearCount; i++) {
+            Message m = toolMessages.get(i);
+            if (CLEARED_PLACEHOLDER.equals(m.getContent())) {
+                continue;   // 已清过, 不重复计数
+            }
+            m.setContent(CLEARED_PLACEHOLDER);
+            cleared++;
+        }
+        if (cleared > 0) {
+            log.info("旧工具结果微压缩: 清理 {} 条(保留最近 {} 条), 释放回灌上下文",
+                    cleared, cfg.getKeepRecent());
+        }
+        return cleared;
+    }
+
+    /** 尾部连续 tool 消息的条数(= 最近一轮的工具结果数) */
+    private static int tailToolCount(List<Message> history) {
+        int count = 0;
+        for (int i = history.size() - 1; i >= 0; i--) {
+            if (!"tool".equals(history.get(i).getRole())) {
+                break;
+            }
+            count++;
+        }
+        return count;
+    }
+
     private AgentProperties.ResultConfig cfg() {
         return properties.getTools().getResult();
     }

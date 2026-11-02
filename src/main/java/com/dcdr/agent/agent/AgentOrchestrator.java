@@ -39,7 +39,7 @@ import com.dcdr.agent.workspace.WorkspaceContextHolder;
 import com.dcdr.agent.workspace.WorkspacePromptProvider;
 import com.dcdr.agent.tool.ToolInventory;
 import com.dcdr.agent.tool.ToolRegistry;
-import com.dcdr.agent.tool.websearch.SearxngWebSearchTool;
+import com.dcdr.agent.tool.websearch.WebSearchTool;
 import com.dcdr.agent.tool.websearch.WebExtractTool;
 import com.dcdr.agent.tool.ToolInfo;
 import com.dcdr.agent.tool.Tool;
@@ -122,6 +122,55 @@ public class AgentOrchestrator {
 
     /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
     private static final int EXTRACT_TOP_N = 3;
+
+    /**
+     * 循环拦截时回灌给模型的提示。
+     * <p>语气刻意强硬: 这条消息的唯一目的是让模型<b>停止</b>, 温和的"建议换个关键词"会被当成
+     * 又一个可选动作, 变成第 6 次调用。同时给出"没有信息就如实说"的出口, 否则它可能改写别的工具继续试。
+     */
+    /**
+     * 搜索次数到顶时回灌的提示。
+     * <p>刻意不说"换个关键词再试" —— 那会诱导模型继续想办法绕过限制; 而是给一个明确的出口:
+     * 缺什么就说缺什么, 让用户知道哪部分信息没拿到。
+     */
+    private static final String SEARCH_COUNT_LIMIT_MESSAGE = """
+            [搜索次数已达上限] 本次对话已发起足够多次搜索，为避免重复劳动，本次调用被跳过（未执行）。
+            立即基于已获得的结果作答。若确实缺少关键信息，在回答里明确说明"未检索到 XXX"，
+            不要继续换关键词搜索，也不要改用其他工具反复试探。
+            """;
+
+    /** 已有足够多的来源时回灌的提示(信息饱和, 再搜只会重复同一批站点) */
+    private static final String SEARCH_SATURATION_MESSAGE = """
+            [信息已饱和] 当前已获得足够多的不同来源，继续搜索只会重复同一批站点。本次调用被跳过（未执行）。
+            请基于已有来源作答，并在正文中标注 [[n]] 引用。
+            """;
+
+    private static final String LOOP_STOP_MESSAGE = """
+            [工具调用被系统拦截] 同一个工具已连续 %d 次以上使用完全相同的参数调用，本次调用未执行。
+            立即停止调用工具。基于已经拿到的结果回答用户；若确实没有可用信息，如实说明"未能获取到需要的内容"，
+            不要再用相同参数重试，也不要改写成别的工具继续试探。
+            """.formatted(com.dcdr.agent.agent.loop.ToolCallLoopDetector.CONSECUTIVE_THRESHOLD);
+
+    /**
+     * 单轮内「串联抓取」的总篇数预算, 由本轮所有 web_search 共享(见 {@code ToolsProperties.WebToolsConfig})。
+     * <p><b>为什么用 {@code @Value} 而不是往构造器里加参数</b>: 本类构造器已有 25 个参数,
+     * 为一个可调数值再加一个会让所有装配点都跟着改; 项目内 {@code ScheduledTaskService#lockTtlSeconds}
+     * 同样是这个写法。配置口径与 {@code agent-tools.web.extract-budget-per-round} 保持一致。
+     */
+    @org.springframework.beans.factory.annotation.Value("${agent-tools.web.extract-budget-per-round:6}")
+    private int extractBudgetPerRound = 6;
+
+    /**
+     * 单次请求内允许发起的 web_search 次数上限(见 {@code ToolsProperties.WebToolsConfig})。
+     * <p>这道闸补的是"打到 MAX_TOOL_ROUNDS 为止"的空窗: 模型一轮并行发几个不同关键词的搜索时,
+     * 循环检测(相同签名)一个都不命中, 于是能一路搜 10 轮。
+     */
+    @org.springframework.beans.factory.annotation.Value("${agent-tools.web.max-search-per-turn:8}")
+    private int maxSearchPerTurn = 8;
+
+    /** 去重来源数达到该值后不再允许新的搜索(本轮第一次除外) */
+    @org.springframework.beans.factory.annotation.Value("${agent-tools.web.source-saturation:30}")
+    private int sourceSaturation = 30;
 
     /** V3.1 长期记忆注入的 system 消息名(兼作去重键, 与 runtime:* 口径一致) */
     private static final String MEMORY_SYSTEM_NAME = "memory:long-term";
@@ -461,9 +510,15 @@ public class AgentOrchestrator {
                                 Map<String, String> resultsById = new LinkedHashMap<>();
                                 // 下一轮执行本轮新工具(多步 agentic); tracedTool 对整批工具执行计时
                                 Flux<ChatChunk> nextTool = tracedTool(Flux
-                                        .defer(() -> executeTools(currentRound, accumulated.toString(),
-                                                reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
-                                                toolResultCompressor.allowanceForRound(history), t))
+                                        .defer(() -> {
+                                            // 先释放上下文, 再算本轮额度 —— 顺序反了等于没做:
+                                            // 只清不算是白清, 只算不清是越用越紧(见 microcompact 注释)
+                                            toolResultCompressor.microcompact(history);
+                                            int allowance = toolResultCompressor.allowanceForRound(history);
+                                            return executeTools(currentRound, accumulated.toString(),
+                                                    reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
+                                                    allowance, history, t);
+                                        })
                                         .subscribeOn(Schedulers.boundedElastic()),
                                         t, currentRound, resultsById);
                                 // 关键时序: 先执行工具拿到真实结果, 再构造 tool 消息回灌 history 并发起下一轮生成。
@@ -742,7 +797,7 @@ public class AgentOrchestrator {
     /**
      * 把联网工具上报的执行统计与「串联抓取」的结果合并后写入调用链。
      *
-     * <p><b>为什么合并点在编排层</b>: {@code SearxngWebSearchTool} 只负责搜索, 正文抓取发生在
+     * <p><b>为什么合并点在编排层</b>: {@code WebSearchTool} 只负责搜索, 正文抓取发生在
      * {@link #enrichWithExtract} —— 工具自己无从知道抓了几篇、抓到多少字。若让工具去猜或让编排层
      * 另起一条记录, 要么数字不准、要么调用链里同一次联网出现两个互不相干的步骤。
      *
@@ -774,7 +829,7 @@ public class AgentOrchestrator {
             }
         }
         com.dcdr.agent.tool.WebStat merged = stat;
-        if (SearxngWebSearchTool.NAME.equals(name)) {
+        if (WebSearchTool.NAME.equals(name)) {
             // 搜索侧的 stat 产生于抓取之前, 这里补上抓取结果与正文总量
             merged = stat.withExtract(srcs == null ? 0 : srcs.size(),
                     ext.ok(), ext.failed(), contentChars, thinPages);
@@ -873,7 +928,25 @@ public class AgentOrchestrator {
         return tool != null && tool.untrustedOutput() ? ToolOutputBoundary.wrap(toolName, text) : text;
     }
 
-    /** 注册表里是否存在声明了不可信输出的工具(用于决定要不要注入边界声明, 避免无谓的常驻 token) */
+    /**
+     * 取"本轮工具调用之前"的历史。
+     * <p>调用 {@code executeTools} 时, 本轮的 {@code assistant(tool_calls)} 消息<b>已经</b>
+     * 先进了 history(它不依赖执行结果)。循环检测要的是"前几轮调过什么", 若把这一条也算进去,
+     * 同一批调用会被数两次, 阈值 4 实际变成 2 —— 正常的两轮检索就会被误拦。
+     */
+    private static List<com.dcdr.agent.agent.memory.Message> historyBeforeCurrentRound(
+            List<com.dcdr.agent.agent.memory.Message> history) {
+        if (history == null || history.isEmpty()) {
+            return List.of();
+        }
+        var last = history.get(history.size() - 1);
+        if (last.getToolCalls() != null && !last.getToolCalls().isEmpty()) {
+            return history.subList(0, history.size() - 1);
+        }
+        return history;
+    }
+
+    /** 注册表里是否存在声明了不可信输出工具(用于决定要不要注入边界声明, 避免无谓的常驻 token) */
     private boolean hasUntrustedTool() {
         return toolRegistry.getAllTools().stream().anyMatch(Tool::untrustedOutput);
     }
@@ -889,19 +962,59 @@ public class AgentOrchestrator {
                                         String userQuery, List<String> knowledgeBaseIds,
                                         Map<String, String> outResultsById,
                                         String userId, String sessId, int resultMaxChars,
+                                        List<com.dcdr.agent.agent.memory.Message> history,
                                         com.dcdr.agent.common.log.LlmCallTrace t) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
 
-        // LLM 工具调用去重拦截: 同一轮中参数完全相同的调用只执行第一个，其余拦截
-        // 以 "工具名 + 参数JSON" 作为唯一指纹（避免 web_search 等被模型重复发起相同查询）
+        // 工具调用拦截, 两道闸:
+        //   ① 跨轮循环: 连续 >4 次"同签名"(工具名 + 归一化参数)判定为卡住, 直接拦下并劝停。
+        //      此前只有下面那道同轮去重, 模型在第 2/3/N 轮反复发同一个检索时打不断,
+        //      只能等 MAX_TOOL_ROUNDS=10 兜底, 用户看到的是一条条重复的工具卡片;
+        //   ② 同轮重复: 一批调用里参数完全相同的只执行第一个(模型并行发同样请求时兜底)。
         List<ChatChunk> originalCalls = toolCalls;
         final List<ChatChunk> effectiveCalls = new ArrayList<>(originalCalls.size());
         Set<String> seenFingerprints = new HashSet<>();
+        Set<String> looped = com.dcdr.agent.agent.loop.ToolCallLoopDetector
+                .detectRepeats(historyBeforeCurrentRound(history), originalCalls);
+
+        // 联网搜索预算: 次数 + 信息饱和度两个维度。
+        // 零新增状态 —— 已搜次数从 history 里数(本请求内), 已获来源从跨轮累积的 collectedSources 取。
+        int searchesDone = com.dcdr.agent.agent.loop.WebSearchBudget.searchesSinceLastUser(
+                historyBeforeCurrentRound(history), WebSearchTool.NAME);
+        long distinctSources = com.dcdr.agent.agent.loop.WebSearchBudget
+                .distinctSources(collectedSources);
+        int searchesThisRound = 0;
+
         for (ChatChunk tc : originalCalls) {
-            String fingerprint = tc.getTool() + (tc.getArgs() != null && !tc.getArgs().isBlank()
-                    ? tc.getArgs() : "{}");
+            // 参数先做 JSON 归一化(字段排序)再比对: {"query":"a","maxResults":8} 与
+            // { "maxResults": 8, "query": "a" } 是同一个调用, 按原字符串比会漏判
+            String fingerprint = com.dcdr.agent.agent.loop.ToolCallLoopDetector
+                    .signature(tc.getTool(), tc.getArgs());
+            if (looped.contains(tc.getId())) {
+                log.warn("[ToolCallLoop] 检测到循环, 已拦截: 工具={}, 签名={}", tc.getTool(), fingerprint);
+                // 回灌一条"停止"提示: 被拦截的调用也必须有配对的 tool 消息, 否则模型会当成
+                // "这次调用丢了"继续重试 —— 那正是我们要打断的行为
+                outResultsById.put(tc.getId(), LOOP_STOP_MESSAGE);
+                continue;
+            }
+            // 联网搜索的双重预算(只拦 web_search, 抓取由 extractBudgetPerRound 单独管)
+            if (WebSearchTool.NAME.equals(tc.getTool())) {
+                boolean overCount = searchesDone >= maxSearchPerTurn;
+                // 饱和判定: 本轮第一次搜索总是放行 —— 否则模型连"补一次"的机会都没有
+                boolean saturated = distinctSources >= sourceSaturation && searchesThisRound >= 1;
+                if (overCount || saturated) {
+                    log.warn("联网搜索预算已用尽, 跳过本次搜索: 已搜 {}/{} 次, 去重来源 {} 条, 原因={}",
+                            searchesDone, maxSearchPerTurn, distinctSources,
+                            overCount ? "次数上限" : "信息来源已饱和");
+                    outResultsById.put(tc.getId(), overCount ? SEARCH_COUNT_LIMIT_MESSAGE
+                            : SEARCH_SATURATION_MESSAGE);
+                    continue;
+                }
+                searchesDone++;
+                searchesThisRound++;
+            }
             if (seenFingerprints.add(fingerprint)) {
                 effectiveCalls.add(tc);
             } else {
@@ -939,6 +1052,8 @@ public class AgentOrchestrator {
             try {
             List<ChatChunk> chunks = new ArrayList<>();
             int callCount = 0;
+            // 本轮剩余可抓取的正文篇数(跨本轮多次 web_search 共享), 见 extractBudgetPerRound
+            int extractBudget = Math.max(0, extractBudgetPerRound);
             for (ChatChunk tc : effectiveCalls) {
                 String name = tc.getTool();
                 // 单次工具执行的起点: 联网统计要用它算"这一步总共花了多久"(含串联抓取)
@@ -1044,11 +1159,24 @@ public class AgentOrchestrator {
                 } else {
                     List<Map<String, Object>> srcs = toolInfo.getSources();
                     ExtractStat ext = new ExtractStat(0, 0, 0);
-                    if (SearxngWebSearchTool.NAME.equals(name)) {
+                    if (WebSearchTool.NAME.equals(name)) {
                         // —— 智能流水线 STEP 1: 搜索与抓取 ——
                         chunks.add(ChatChunk.status("🔍 正在实时检索多个资讯源，并抓取相关页面…"));
                         // —— 串联提取: 对 top-N 具体文章链接抓取完整正文, 提升检索完整性 ——
-                        ext = enrichWithExtract(srcs, userQuery);
+                        // 每轮有一个**总篇数预算**, 由本轮内所有搜索共享(见 extractBudgetPerRound)。
+                        // 为什么不按"第几次搜索"一刀切: 模型一轮并行发多个不同 query 时,
+                        // 后面的 query 可能才是主题最相关的, 只让第一次抓正文会让它们退化成纯摘要。
+                        // 用预算则前两次搜索都能拿到完整正文, 从第三次起才降级 —— 信息损失小得多,
+                        // 同时仍挡住"4 次搜索 × 3 篇 = 12 次网页请求"这种放大(实测单轮 43.9s)。
+                        int take = Math.min(EXTRACT_TOP_N, extractBudget);
+                        if (take > 0) {
+                            ext = enrichWithExtract(srcs, userQuery, take);
+                            // 按**实际**抓取篇数扣预算: 候选不足时(只有 1 篇像文章)不该白扣 3 篇
+                            extractBudget -= Math.max(ext.ok() + ext.failed(), 0);
+                        } else {
+                            log.info("本轮抓取预算已用尽({}篇), 本次搜索仅保留摘要, query={}",
+                                    extractBudgetPerRound, tc.getArgs());
+                        }
                         // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)
                         result = rebuildCompact(srcs);
                     }
@@ -1075,7 +1203,7 @@ public class AgentOrchestrator {
                             }
                         }
                         collectedSources.addAll(srcs);   // 累计联网搜索等来源, 供落库与前端引用
-                        if (SearxngWebSearchTool.NAME.equals(name)) {
+                        if (WebSearchTool.NAME.equals(name)) {
                             // —— 智能流水线 STEP 2 + STEP 3 ——
                             StringBuilder step2 = new StringBuilder("🧹 已抓取 ").append(srcs.size())
                                     .append(" 个页面，其中 ");
@@ -1327,8 +1455,11 @@ public class AgentOrchestrator {
      * 串联提取: 对搜索结果里 top-N 个「具体文章链接」(含路径、非站点首页)调用 web_extract
      * 抓取完整正文, 写回对应 source 的 {@code content}(全文) 与 {@code snippet}(截断展示),
      * 使最终喂给模型的检索内容更接近 deepseek 的「抓取页面 → 提取正文」完整度。
+     *
+     * @param maxArticles 本次最多抓几篇; 由调用方按「本轮剩余抓取预算」传入,
+     *                    单次仍不超过 {@link #EXTRACT_TOP_N}。预算为 0 时调用方根本不会进来
      */
-    private ExtractStat enrichWithExtract(List<Map<String, Object>> srcs, String userQuery) {
+    private ExtractStat enrichWithExtract(List<Map<String, Object>> srcs, String userQuery, int maxArticles) {
         if (srcs == null || srcs.isEmpty()) return new ExtractStat(0, 0, 0);
         // 候选评分: 优先选择「具体文章链接」而非站点首页/栏目聚合页。
         // 评分维度: 含文章特征路径(news/article/story/blog/post…) > 含日期/数字 id > 仅含子路径 > 仅域名根。
@@ -1338,13 +1469,16 @@ public class AgentOrchestrator {
             Object u = s.get("url");
             if (u == null) continue;
             String url = u.toString().trim();
-            if (isSpecificArticleUrl(url) && seen.add(url)) candidates.add(s);
+            // V3.3: 搜索源可能已经带回了正文(DeepSeek 的 need_content), 再抓一次纯属重复付费 + 重复等待
+            if (isSpecificArticleUrl(url) && seen.add(url) && !hasUsableContent(s)) {
+                candidates.add(s);
+            }
         }
         // 按文章可能性打分降序, 优先抓取最像单篇文章的链接
         List<Map<String, Object>> articles = candidates.stream()
                 .sorted((a, b) -> Integer.compare(
                         articleScore(b.get("url")), articleScore(a.get("url"))))
-                .limit(EXTRACT_TOP_N)
+                .limit(Math.min(maxArticles, EXTRACT_TOP_N))
                 .toList();
         log.info("[enrichWithExtract] 候选具体文章数={}, 优先抓取序(打分)={}",
                 candidates.size(), articles.stream()
@@ -1398,6 +1532,18 @@ public class AgentOrchestrator {
             }
         }
         return new ExtractStat(articles.size(), ok, failed);
+    }
+
+    /**
+     * 该来源是否已经带回可用正文(有则跳过串联抓取)。
+     * <p>必须排除字符串 {@code "undefined"} —— 历史上有过抽取失败却把它序列化进 content 的情况,
+     * 若当成"已有正文", 编排层就会跳过抓取, 模型最终拿到的是一句 {@code undefined}。
+     */
+    private static boolean hasUsableContent(Map<String, Object> source) {
+        Object content = source.get("content");
+        if (content == null) return false;
+        String text = content.toString().trim();
+        return !text.isBlank() && !"undefined".equalsIgnoreCase(text);
     }
 
     /** 判断 URL 是否为具体文章(而非站点首页/聚合页): 含路径段且非仅域名根, 且不是已知的聚合首页 */
@@ -2313,7 +2459,7 @@ public class AgentOrchestrator {
         }
 
         // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索
-        if (request != null && request.isWebSearch() && toolRegistry.getTool(SearxngWebSearchTool.NAME) != null) {
+        if (request != null && request.isWebSearch() && toolRegistry.getTool(WebSearchTool.NAME) != null) {
             injectIfAbsent(result, runtimePromptProvider.webSearch());
         }
 

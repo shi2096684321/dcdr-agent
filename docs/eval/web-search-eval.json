@@ -1,0 +1,221 @@
+{
+  "title": "联网搜索排序评测集",
+  "topK": 10,
+  "description": "用于对比不同搜索源(searxng / deepseek)的排序质量, 以及改动后的回归。金标用『域名+路径片段』而非精确 URL: 精确 URL 会随站点改版失效, 让评测在没人动代码的情况下自己变红。命中判定为『返回的 URL 包含任一 expectedUrlContains 子串』。",
+  "note": "这是回归基线, 不是排行榜: 第一次跑出来的数值即为基线, 之后只看『比上次好还是差』。阈值为空表示尚未建立基线, 运行器只打印不断言。",
+  "thresholds": {
+    "recallAtK": 0.0,
+    "mrr": 0.0,
+    "hitRateAtK": 0.0
+  },
+  "cases": [
+    {
+      "id": "fact-spring-boot-release",
+      "type": "fact",
+      "query": "Spring Boot 3.5 发布日期 新特性",
+      "expectedUrlContains": [
+        "spring.io/blog",
+        "spring.io/projects/spring-boot"
+      ],
+      "note": "官方发布说明才作数, 技术博客的转述不算"
+    },
+    {
+      "id": "official-java-text-block",
+      "type": "official",
+      "query": "Java 17 文本块 text block 语法 官方文档",
+      "expectedUrlContains": [
+        "docs.oracle.com",
+        "openjdk.org"
+      ],
+      "note": "语言规范/官方教程; 避开第三方教程站"
+    },
+    {
+      "id": "tech-python-asyncio-cancel",
+      "type": "tech",
+      "query": "Python asyncio 取消 task 正确处理 CancelledError",
+      "expectedUrlContains": [
+        "docs.python.org",
+        "stackoverflow.com"
+      ],
+      "note": "标准库文档是唯一权威来源 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    },
+    {
+      "id": "official-postgres-partition",
+      "type": "official",
+      "query": "PostgreSQL 分区表 限制 分区键 唯一约束",
+      "expectedUrlContains": [
+        "postgresql.org/docs"
+      ],
+      "note": "分区表限制这类问题, 只有官方文档说得准"
+    },
+    {
+      "id": "tech-k8s-pod-pending",
+      "type": "tech",
+      "query": "Kubernetes Pod 一直 Pending 状态 排查 原因",
+      "expectedUrlContains": [
+        "kubernetes.io/docs",
+        "kubernetes.io/zh-cn/docs",
+        "stackoverflow.com"
+      ],
+      "note": "有中文官方文档, 应在结果里 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    },
+    {
+      "id": "official-http-429",
+      "type": "official",
+      "query": "HTTP 429 Too Many Requests 状态码 含义 Retry-After",
+      "expectedUrlContains": [
+        "developer.mozilla.org",
+        "rfc-editor.org"
+      ],
+      "note": "MDN 或 RFC 两者任一"
+    },
+    {
+      "id": "tech-mysql-deadlock",
+      "type": "tech",
+      "query": "MySQL 死锁 InnoDB 如何排查 最近一次死锁",
+      "expectedUrlContains": [
+        "dev.mysql.com/doc",
+        "stackoverflow.com"
+      ],
+      "note": "SHOW ENGINE INNODB STATUS 的官方说明 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    },
+    {
+      "id": "official-redis-persistence",
+      "type": "official",
+      "query": "Redis RDB 与 AOF 持久化 区别 如何选择",
+      "expectedUrlContains": [
+        "redis.io/docs",
+        "redis.io/topics"
+      ],
+      "note": "官方 persistence 文档"
+    },
+    {
+      "id": "tech-webflux-blocking",
+      "type": "tech",
+      "query": "Spring WebFlux 在响应式链路里 block 会怎样 事件循环阻塞",
+      "expectedUrlContains": [
+        "docs.spring.io",
+        "projectreactor.io",
+        "stackoverflow.com"
+      ],
+      "note": "这是本项目踩过的坑, 值得单独盯 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    },
+    {
+      "id": "official-typescript-satisfies",
+      "type": "official",
+      "query": "TypeScript satisfies 运算符 作用 与 as 的区别",
+      "expectedUrlContains": [
+        "typescriptlang.org"
+      ],
+      "note": "5.0 引入的语法, 官方 handbook 有专章"
+    },
+    {
+      "id": "tech-docker-wsl2-memory",
+      "type": "tech",
+      "query": "Docker Desktop WSL2 内存占用 限制 .wslconfig",
+      "expectedUrlContains": [
+        "docs.docker.com",
+        "learn.microsoft.com",
+        "stackoverflow.com"
+      ],
+      "note": "跨两个官方文档, 任一命中即可 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    },
+    {
+      "id": "zh-wechat-miniprogram-request",
+      "type": "zh-longtail",
+      "query": "微信小程序 wx.request 超时时间 默认值 设置",
+      "expectedUrlContains": [
+        "developers.weixin.qq.com"
+      ],
+      "note": "中文长尾: 只有官方文档能给准确默认值"
+    },
+    {
+      "id": "zh-tax-deduction",
+      "type": "zh-longtail",
+      "query": "个人所得税 专项附加扣除 标准 最新",
+      "expectedUrlContains": [
+        "chinatax.gov.cn",
+        "gov.cn"
+      ],
+      "note": "政策类必须落在官方域名, 自媒体解读不算"
+    },
+    {
+      "id": "news-llm-release",
+      "type": "news",
+      "query": "2026年10月 国内大模型 发布 进展",
+      "expectedUrlContains": [
+        "jiqizhixin.com",
+        "36kr.com",
+        "ithome.com",
+        "leiphone.com",
+        "tmtpost.com",
+        "xinhua.org",
+        "people.com.cn"
+      ],
+      "note": "时效性强, 允许行业媒体与央媒; 这条主要看时效性而不是权威性 (放宽到行业媒体)"
+    },
+    {
+      "id": "news-fed-rate",
+      "type": "news",
+      "query": "美联储 2026年10月 利率决议 结果",
+      "expectedUrlContains": [
+        "federalreserve.gov",
+        "reuters.com",
+        "cnbc.com",
+        "bloomberg.com"
+      ],
+      "note": "一手来源优先, 通讯社次之 (放宽到行业媒体)"
+    },
+    {
+      "id": "news-nvidia-earnings",
+      "type": "news",
+      "query": "英伟达 最新一季 财报 营收 数据中心",
+      "expectedUrlContains": [
+        "nvidia.com",
+        "investor.nvidia.com"
+      ],
+      "note": "财报以官方为准"
+    },
+    {
+      "id": "entity-apple-m4",
+      "type": "entity",
+      "query": "Apple M4 芯片 性能 参数 官方",
+      "expectedUrlContains": [
+        "apple.com"
+      ],
+      "note": "实体消歧: 应命中苹果官网, 而不是同名其他公司"
+    },
+    {
+      "id": "entity-jaguar-animal",
+      "type": "entity",
+      "query": "美洲豹 豹猫 区别 栖息地",
+      "expectedUrlContains": [
+        "wikipedia.org",
+        "nationalgeographic"
+      ],
+      "note": "消歧反向验证: 不应被汽车品牌 Jaguar 占满结果"
+    },
+    {
+      "id": "fact-charge-standard",
+      "type": "fact",
+      "query": "电动汽车 充电接口 国家标准 GB/T 20234",
+      "expectedUrlContains": [
+        "gov.cn",
+        "openstd.samr.gov.cn",
+        "sac.gov.cn"
+      ],
+      "note": "标准编号是强特征, 能找到标准正文或权威解读"
+    },
+    {
+      "id": "tech-jvm-gc-log",
+      "type": "tech",
+      "query": "JVM G1 GC 日志 怎么开启 参数 分析",
+      "expectedUrlContains": [
+        "docs.oracle.com",
+        "openjdk.org",
+        "stackoverflow.com"
+      ],
+      "note": "GC 参数以官方文档为准 (排错类放宽到 StackOverflow: 高票答案在实践上同样正确)"
+    }
+  ]
+}

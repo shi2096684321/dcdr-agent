@@ -18,3 +18,18 @@ import { api, unwrap } from './http'
  */
 export const getWebHealth = (params = {}) =>
   unwrap(api.get('/api/web-health/overview', { params: { days: 30, ...params } }))
+
+/**
+ * 联网用量与成本
+ *
+ * 与健康度是两件事: 健康度看**效果**(空结果率/抓取成功率), 这里看**量**。
+ * 按 provider 拆分是必须的 —— DeepSeek 按次计费、自建 SearXNG 只有服务器成本,
+ * 混成一个总数算出来的钱是错的。
+ *
+ * estimatedCost 为 null 表示未配置 `agent-tools.web.pricing`, 此时界面应显示"未配置单价",
+ * 而不是 0 元 —— 假数字比没数字更危险。
+ *
+ * @param {{days?: number}} params days = 统计窗口天数 (1~180, 默认 30)
+ */
+export const getWebUsage = (params = {}) =>
+  unwrap(api.get('/api/web-health/usage', { params: { days: 30, ...params } }))

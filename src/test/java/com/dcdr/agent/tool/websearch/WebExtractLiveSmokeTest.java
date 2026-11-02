@@ -45,7 +45,16 @@ class WebExtractLiveSmokeTest {
                 "未开启冒烟测试(设置 WEB_EXTRACT_SMOKE_TEST=true 后执行)");
 
         String url = System.getProperty("web.smoke.url", DEFAULT_URL);
-        WebExtractTool tool = new WebExtractTool(new ToolsProperties());
+        // V3.3: 工具改成了门面, 抓取策略由工厂装配。冒烟测试强制走本地抓取,
+        // 免得这条用例依赖 DeepSeek 的额度; 但走的是真实装配链, 所以"装不上"也会在这里暴露
+        ToolsProperties properties = new ToolsProperties();
+        properties.getWeb().setFetchProvider(LocalHtmlFetchProvider.ID);
+        WebProviderFactory factory = new WebProviderFactory(properties,
+                List.of(new SearxngSearchProvider(properties),
+                        new DeepseekSearchProvider(properties, new DeepseekApiClient(properties))),
+                List.of(new LocalHtmlFetchProvider(properties),
+                        new DeepseekFetchProvider(properties, new DeepseekApiClient(properties))));
+        WebExtractTool tool = new WebExtractTool(properties, factory);
 
         long start = System.nanoTime();
         var info = tool.executeWithInfo(Map.of("urls", List.of(url)));

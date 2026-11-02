@@ -287,6 +287,9 @@ public final class LlmCallTrace {
         step.put("kind", "web");
         step.put("seq", webCount);
         step.put("tool", stat.tool());
+        // 记 provider: 成本核算按"次数 × 该源单价", 只有工具名分不出是收费的 deepseek 还是自建 searxng。
+        // 历史数据没有这个字段, 统计侧按 none(不计费)兜底
+        step.put("provider", stat.provider());
         step.put("query", stat.query());
         step.put("costMs", costMs);
         // 原始条数: -1 表示该工具不适用(web_extract 直接抓 URL, 没有"上游返回几条"的概念)。

@@ -6,6 +6,7 @@
     <!-- 与 App.vue 原先的守卫一致: 页签已按角色过滤, 这里再兜一层, 避免非管理员落到 403 -->
     <RetrievalHealthView v-else-if="tab === 'retrieval-health' && authStore.isAdmin" />
     <WebHealthView v-else-if="tab === 'web-health' && authStore.isAdmin" />
+    <WebSearchEvalView v-else-if="tab === 'web-search-eval' && authStore.isAdmin" />
   </HubShell>
 </template>
 
@@ -17,6 +18,7 @@ import LlmCallLogView from '@/views/LlmCallLogView.vue'
 import RoutingView from '@/views/RoutingView.vue'
 import RetrievalHealthView from '@/views/RetrievalHealthView.vue'
 import WebHealthView from '@/views/WebHealthView.vue'
+import WebSearchEvalView from '@/views/WebSearchEvalView.vue'
 import { useAuthStore } from '@/stores/auth'
 
 /**
@@ -34,7 +36,10 @@ const TABS = [
   { key: 'routing', label: '智能路由', hint: '路由判断结果, 用于分析准确率与调优置信度阈值' },
   // 零命中样本含用户原始提问, 属运维数据 → 仅管理员(后端亦校验)
   { key: 'retrieval-health', label: '检索健康', hint: 'RAG 检索质量的可观测性', adminOnly: true },
-  { key: 'web-health', label: '联网健康', hint: '联网搜索/抓取质量的可观测性(空结果率 / 清洗存活率 / 抓取成功率)', adminOnly: true }
+  { key: 'web-health', label: '联网健康', hint: '联网搜索/抓取质量的可观测性(空结果率 / 清洗存活率 / 抓取成功率)', adminOnly: true },
+  // 与「联网健康」互补而不是重复: 那个看真实流量是否漂移, 这个用固定试卷看排序质量是否退化。
+  // 换搜索源后结果条数可能完全一样、只是相关性掉了 —— 那种退化只有这个能发现。
+  { key: 'web-search-eval', label: '联网评测', hint: '固定 20 条 query 的排序质量(HitRate / MRR), 改完代码跑一次看变没变', adminOnly: true }
 ]
 
 const authStore = useAuthStore()

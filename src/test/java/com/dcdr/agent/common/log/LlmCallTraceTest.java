@@ -116,7 +116,7 @@ class LlmCallTraceTest {
     @DisplayName("联网搜索步骤: rawCount 与 results 必须并存 —— 缺一个就分不清是谁的问题")
     void webSearchStepKeepsRawAndKept() {
         LlmCallTrace trace = LlmCallTrace.begin();
-        trace.recordWeb(WebStat.search("最新的 Java 版本", 20, 8), 1830);
+        trace.recordWeb(WebStat.search("searxng", "最新的 Java 版本", 20, 8), 1830);
 
         Map<String, Object> step = webStep(trace);
         assertEquals("web_search", step.get("tool"));
@@ -132,7 +132,7 @@ class LlmCallTraceTest {
     void webSearchAllFilteredCarriesReason() {
         LlmCallTrace trace = LlmCallTrace.begin();
         // 上游给了 20 条, 清洗后 0 条 —— 这是我们自己的规则太严, 与上游限流是两回事
-        trace.recordWeb(WebStat.search("某话题", 20, 0), 900);
+        trace.recordWeb(WebStat.search("searxng", "某话题", 20, 0), 900);
 
         Map<String, Object> step = webStep(trace);
         assertEquals(0, step.get("results"));
@@ -145,7 +145,7 @@ class LlmCallTraceTest {
     @DisplayName("联网搜索上游无返回: 成因是 no_results, 排查方向指向 SearXNG 而非清洗规则")
     void webSearchNoResultsCarriesReason() {
         LlmCallTrace trace = LlmCallTrace.begin();
-        trace.recordWeb(WebStat.search("某个极冷门的词", 0, 0), 1200);
+        trace.recordWeb(WebStat.search("searxng", "某个极冷门的词", 0, 0), 1200);
 
         Map<String, Object> step = webStep(trace);
         assertEquals("no_results", step.get("emptyReason"));
@@ -155,7 +155,7 @@ class LlmCallTraceTest {
     @DisplayName("网页抓取步骤: 不写 rawCount(该工具没有“上游返回几条”的概念, 写 0 会污染空结果率)")
     void webExtractStepOmitsRawCount() {
         LlmCallTrace trace = LlmCallTrace.begin();
-        trace.recordWeb(WebStat.extract("https://example.com/a", 2, 1, 9000, 0), 2500);
+        trace.recordWeb(WebStat.extract("local", "https://example.com/a", 2, 1, 9000, 0), 2500);
 
         Map<String, Object> step = webStep(trace);
         assertEquals("web_extract", step.get("tool"));
@@ -170,7 +170,7 @@ class LlmCallTraceTest {
     @DisplayName("搜索后补抓取: 抓取明细回填到同一条步骤, 而不是另起一条")
     void webSearchStepMergesExtractResult() {
         LlmCallTrace trace = LlmCallTrace.begin();
-        WebStat merged = WebStat.search("q", 20, 8).withExtract(8, 3, 1, 12000, 1);
+        WebStat merged = WebStat.search("searxng", "q", 20, 8).withExtract(8, 3, 1, 12000, 1);
         trace.recordWeb(merged, 5000);
 
         java.util.List<Map<String, Object>> all = trace.snapshot().stream()

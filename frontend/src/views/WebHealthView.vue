@@ -84,6 +84,57 @@
           <span class="card-hint">空结果率突增的那天, 通常就是问题的起点</span>
         </template>
         <div v-if="!data?.trend?.length" class="wh-empty">当前窗口内没有联网记录</div>
+        <!-- 联网用量与成本: 与健康度是两件事(量 vs 效果), 单独一块, 不混进上面的 KPI -->
+        <div v-if="usage" class="ub-block">
+          <div class="ub-head">
+            <span class="ub-title">联网用量与成本</span>
+            <span class="ub-sub">
+              近 {{ usage.days }} 天 · DeepSeek 按「成功请求」计费（失败/未启用不计），自建 SearXNG 零单价
+            </span>
+            <el-tag v-if="!usage.pricingConfigured" size="small" type="warning">未配置单价</el-tag>
+            <el-tag v-if="usage.truncated" size="small" type="info">样本已截断</el-tag>
+          </div>
+          <div class="ub-cards">
+            <div class="stat-card">
+              <div class="s-value">{{ usage.searchCalls }}</div>
+              <div class="s-label">
+                搜索次数<span class="s-sub">web_search · 计费 {{ usage.billableSearchCalls }}</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="s-value">{{ usage.extractCalls }}</div>
+              <div class="s-label">
+                抓取次数<span class="s-sub">web_extract · 计费 {{ usage.billableExtractCalls }}</span>
+              </div>
+            </div>
+            <div class="stat-card">
+              <div class="s-value">{{ usage.estimatedCost == null ? '—' : '¥ ' + usage.estimatedCost }}</div>
+              <div class="s-label">
+                估算费用
+                <span v-if="usage.estimatedCost == null" class="s-sub">未配置单价，只统计次数</span>
+              </div>
+            </div>
+          </div>
+          <table v-if="usage.providers.length" class="ub-table">
+            <thead>
+              <tr><th>源</th><th class="ta-r">搜索 总数（计费）</th><th class="ta-r">抓取 总数（计费）</th>
+                <th class="ta-r">单价 ¥/次（搜索 / 抓取）</th><th class="ta-r">费用</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="p in usage.providers" :key="p.provider">
+                <td><code>{{ p.provider }}</code></td>
+                <td class="ta-r">{{ p.searchCalls }}（{{ p.billableSearch }}）</td>
+                <td class="ta-r">{{ p.extractCalls }}（{{ p.billableExtract }}）</td>
+                <td class="ta-r">{{ priceOf(p.searchPrice) }} / {{ priceOf(p.extractPrice) }}</td>
+                <td class="ta-r">{{ p.cost == null ? '—' : '¥ ' + p.cost }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="ub-empty">
+            窗口内还没有联网调用记录。历史数据没有 provider 字段的记为 none 且不计费。
+          </div>
+        </div>
+
         <div v-else ref="trendRef" class="wh-chart"></div>
       </el-card>
 
@@ -170,7 +221,7 @@
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getWebHealth, extractMessage } from '@/api'
+import { getWebHealth, getWebUsage, extractMessage } from '@/api'
 
 // ECharts 按需引入: 只注册用到的图表与组件, 避免整包进入产物
 import * as echarts from 'echarts/core'
@@ -195,13 +246,25 @@ const C = {
 const days = ref(30)
 const loading = ref(false)
 const data = ref(null)
+/** 联网用量与成本(次数 + 按源估算费用); 与 data 分开, 一块挂了不影响另一块 */
+const usage = ref(null)
 const trendRef = ref(null)
 let chart = null
+
+function priceOf(v) {
+  return v == null ? '未配' : Number(v).toString()
+}
 
 async function load() {
   loading.value = true
   try {
-    data.value = await getWebHealth({ days: days.value })
+    // 并行拉: 两个接口都扫同一批日志, 串行会白白多等一轮
+    const [health, use] = await Promise.all([
+      getWebHealth({ days: days.value }),
+      getWebUsage({ days: days.value })
+    ])
+    data.value = health
+    usage.value = use
     await nextTick()
     renderChart()
   } catch (e) {
@@ -332,6 +395,19 @@ watch(days, () => {
 .wh-card { border-radius: 10px; }
 .card-title { font-weight: 600; color: var(--dcdr-text-1); }
 .card-hint { margin-left: 12px; font-size: 12px; color: var(--dcdr-text-3); }
+.ub-block { margin: 6px 0 18px; padding: 14px 16px; border: 1px solid var(--dcdr-border);
+  border-radius: 8px; background: var(--dcdr-bg-subtle); }
+.ub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.ub-title { font-size: 12.5px; font-weight: 600; color: var(--dcdr-text-1); }
+.ub-sub { font-size: 11px; color: var(--dcdr-text-3); }
+.ub-cards { display: flex; gap: 10px; margin-bottom: 12px; }
+.ub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.ub-table th, .ub-table td { padding: 6px 10px; border-bottom: 1px solid var(--dcdr-border); text-align: left; }
+.ub-table th { font-size: 10.5px; font-weight: 500; color: var(--dcdr-text-3); }
+.ub-table td { color: var(--dcdr-text-1); font-family: var(--dcdr-font-mono); }
+.ub-table .ta-r { text-align: right; }
+.ub-empty { font-size: 11.5px; color: var(--dcdr-text-3); padding: 4px 0; }
+
 .wh-chart { height: 300px; }
 .wh-empty { text-align: center; color: var(--dcdr-text-3); padding: 40px 0; }
 .cell-warn { color: var(--dcdr-danger); font-weight: 500; }

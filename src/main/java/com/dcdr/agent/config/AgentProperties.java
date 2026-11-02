@@ -176,6 +176,26 @@ public class AgentProperties {
         private int windowFloorLength = 800;
         private SummaryConfig summary = new SummaryConfig();
         private SpillConfig spill = new SpillConfig();
+        private MicrocompactConfig microcompact = new MicrocompactConfig();
+    }
+
+    /**
+     * 旧工具结果微压缩(F-47.6)。
+     *
+     * <p><b>补的是什么缺口</b>: {@code window-token-budget} 只在"历史工具结果总量超预算"时
+     * <b>收紧本轮新结果</b>, 但<b>从不释放旧结果</b>。于是多轮工具循环里一旦历史占满 6000 token,
+     * 之后每一轮的新结果都被压到 {@code window-floor-length}(800 字符) —— 模型看到的信息
+     * 会随着轮次推进越来越少, 而日志上一切正常(压缩成功、没有报错)。
+     *
+     * <p>清理只针对<b>可重新获取</b>的只读工具(检索 / 读取 / 列表)。带副作用的工具
+     * (生图、文件写入、沙箱执行)一律不动: 它们的结果重放也不可复现, 清掉就真丢了。
+     */
+    @Data
+    public static class MicrocompactConfig {
+        /** 默认开启: 这是纯收益的一次性释放, 不产生模型调用, 也不改变任何业务数据 */
+        private boolean enabled = true;
+        /** 保留最近多少条工具结果不清; 更早的清成一行占位文本 */
+        private int keepRecent = 6;
     }
 
     /** LLM 摘要降级(F-47.4): 超阈值时先摘要再回灌, 失败回退硬截断 */
@@ -191,8 +211,7 @@ public class AgentProperties {
 
     /** 超长结果落盘 + 分页读取(F-47.5) */
     @Data
-    public static class SpillConfig {
-        private boolean enabled = true;
+    public static class SpillConfig {        private boolean enabled = true;
         /** 超过该字符数则全文落盘, 回灌只给"路径 + 规模 + 前 N 行" */
         private int threshold = 32768;
         /** 落盘根目录(相对工作目录; 建议置于 bind mount 的 data 下, 容器重建不丢) */

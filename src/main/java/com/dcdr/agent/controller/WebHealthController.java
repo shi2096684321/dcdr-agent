@@ -34,6 +34,7 @@ import org.springframework.web.server.ServerWebExchange;
 public class WebHealthController {
 
     private final WebHealthService webHealthService;
+    private final com.dcdr.agent.agent.governance.WebUsageService webUsageService;
 
     @Operation(summary = "联网健康度总览",
             description = "时间窗口内的联网执行质量: 调用次数、**空结果率**(最该盯的指标)、"
@@ -50,5 +51,21 @@ public class WebHealthController {
         }
         // 管理员视角 = 全局(userId 传 null), 不区分单个用户
         return Result.success(webHealthService.overview(null, days));
+    }
+
+    @Operation(summary = "联网用量与成本",
+            description = "时间窗口内的搜索/抓取**次数**与**按源估算的费用**: 按 provider 拆分"
+                    + "(DeepSeek 按次计费、自建 SearXNG 零单价), 并给出按天趋势。"
+                    + "未配置 `agent-tools.web.pricing` 时 estimatedCost 为 null(界面显示「未配置单价」), "
+                    + "不会返回一个猜出来的数字。管理员专属。")
+    @GetMapping("/usage")
+    public Result<com.dcdr.agent.agent.governance.WebUsageService.UsageSummary> usage(
+            @Parameter(description = "统计窗口天数 (1~180)")
+            @RequestParam(defaultValue = "30") int days,
+            ServerWebExchange exchange) {
+        if (!SecurityContext.isAdmin(exchange)) {
+            return Result.error(403, "仅管理员可查看联网用量");
+        }
+        return Result.success(webUsageService.summary(days));
     }
 }
