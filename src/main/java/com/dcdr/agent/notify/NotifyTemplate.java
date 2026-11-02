@@ -60,9 +60,9 @@ public class NotifyTemplate {
      */
     public String render(NotifyChannel channel, NotifyMessage msg, int maxSize, Unit unit, String suffix) {
         String template = loadTemplate(channel, msg.isFailed());
-        Map<String, String> vars = variablesOf(msg);
+        Map<String, String> vars = variablesOf(msg, channel);
         String rendered = apply(template, vars);
-        if (unit.size(rendered) <= maxSize) return rendered;
+        if (unit.size(rendered) <= maxSize) return tidy(rendered);
 
         // 超限时只截"长变量"，保证标题、时间、耗时这些元信息留在前面不被切掉。
         // 要截哪个变量取决于模板实际用了谁：用 {{summary}} 的模板去截 {{content}} 没有意义。
@@ -75,10 +75,19 @@ public class NotifyTemplate {
             int keep = unit.size(longValue) - over;
             vars.put(longVar, unit.fit(longValue, Math.max(0, keep), ""));
             String out = apply(template, vars) + suffix;
-            if (unit.size(out) <= maxSize) return out;
+            if (unit.size(out) <= maxSize) return tidy(out);
         }
         // 兜底：模板本身或截断后仍超限，整体截断
-        return unit.fit(rendered, maxSize, suffix);
+        return tidy(unit.fit(rendered, maxSize, suffix));
+    }
+
+    /**
+     * 收敛空白：连续空行压成一个，去掉首尾空白。
+     * <p>模板里的可选变量（典型是 {@code {{runLink}}}，未配 share-base-url 时为空）
+     * 会在消息末尾留下两三行空白，群里看就是"内容说完了还空一大块"。
+     */
+    private static String tidy(String text) {
+        return text.replaceAll("\n{3,}", "\n\n").strip();
     }
 
     // ===== 模板加载 =====
@@ -126,18 +135,42 @@ public class NotifyTemplate {
     // ===== 变量与替换 =====
 
     Map<String, String> variablesOf(NotifyMessage msg) {
+        return variablesOf(msg, null);
+    }
+
+    /**
+     * @param channel 用于取该渠道的概览字数；{@code null} 时回退全局配置
+     */
+    Map<String, String> variablesOf(NotifyMessage msg, NotifyChannel channel) {
         Map<String, String> vars = new HashMap<>(16);
-        String content = NotifyRender.orDefault(msg.getContent(), "(无输出)");
+        // 先做 IM 适配再截断: 表格转列表会让文本变长, 反过来先截会把表格切在中间,
+        // 转出来的列表缺半截字段, 还不如不转
+        String content = NotifyRender.forIm(NotifyRender.orDefault(msg.getContent(), "(无输出)"));
         vars.put(VAR_TASK_NAME, NotifyRender.orDefault(msg.getTaskName(), "(未命名任务)"));
         vars.put(VAR_STATUS, NotifyRender.orDefault(msg.getStatus(), "success"));
         vars.put(VAR_STATUS_TEXT, msg.isFailed() ? "执行失败" : "执行完成");
         vars.put(VAR_TIME, NotifyRender.formatTime(msg.getRunAt()));
         vars.put(VAR_DURATION, NotifyRender.formatDuration(msg.getDurationMs()));
         vars.put(VAR_CONTENT, content);
-        vars.put(VAR_SUMMARY, NotifyRender.summarize(content, props.getSummaryChars()));
+        vars.put(VAR_SUMMARY, NotifyRender.summarize(content, summaryLimitOf(channel)));
         vars.put(VAR_ERROR, NotifyRender.orDefault(msg.getError(), "(无错误详情)"));
         vars.put(VAR_RUN_LINK, buildRunLink(msg.getRunUrl()));
         return vars;
+    }
+
+    /**
+     * 概览字数：渠道级配置 &gt; 0 时优先，否则用全局。
+     * <p>两个渠道能装的内容差一个数量级（企微 4096 字节 ≈ 1365 汉字，钉钉 18000 字符），
+     * 共用一个值只能取交集 —— 结果就是钉钉那条上限几乎闲置，消息里只显示开头一小段。
+     */
+    private int summaryLimitOf(NotifyChannel channel) {
+        int channelSpecific = 0;
+        if (channel == NotifyChannel.WECOM_BOT) {
+            channelSpecific = props.getWecom().getSummaryChars();
+        } else if (channel == NotifyChannel.DINGTALK_BOT) {
+            channelSpecific = props.getDingtalk().getSummaryChars();
+        }
+        return channelSpecific > 0 ? channelSpecific : props.getSummaryChars();
     }
 
     /** 详情链接整行（含 markdown 语法）；没有地址时返回空串，模板里那一行自然消失 */

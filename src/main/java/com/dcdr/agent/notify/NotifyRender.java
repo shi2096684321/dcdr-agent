@@ -89,6 +89,119 @@ final class NotifyRender {
         return (s == null || s.isBlank()) ? def : s;
     }
 
+    // ===== IM 展示适配：Markdown 表格 → 列表 =====
+
+    /** 表格行：以 {@code |} 开头（GFM 允许省略首尾竖线，但 Agent 产出基本都带） */
+    private static final java.util.regex.Pattern TABLE_ROW = java.util.regex.Pattern.compile("^\\s*\\|.*$");
+
+    /** 表头分隔行：只由 {@code - | : 空格} 组成且至少一个 {@code -} */
+    private static final java.util.regex.Pattern TABLE_SEP = java.util.regex.Pattern.compile("^[\\s|:\\-]*-[\\s|:\\-]*$");
+
+    private static final java.util.regex.Pattern URL_ONLY = java.util.regex.Pattern.compile("^https?://\\S+$");
+
+    /** 每行最多拼几个"列名：值"，超过就换行 —— 一列一行的横排会把单行撑到几百字符 */
+    private static final int PAIRS_PER_LINE = 3;
+
+    private static final String PAIR_SEP = "｜";
+
+    /**
+     * 把正文转成 IM 里能看的样子（目前就是处理 Markdown 表格）。
+     * <p>
+     * <b>为什么必须转</b>：企微群机器人与钉钉群机器人的 markdown <b>都不支持表格</b>，
+     * {@code | 公司 | 岗位 |} 这类内容会被原样当普通文字发出去，
+     * 用户看到的就是一堆竖线加下划线分隔行 —— 既占篇幅又没有可读性，
+     * 而 300 字概览截断后往往只剩表头和半行数据，看起来"内容特别少"。
+     * <p>
+     * 转换规则：表头保留为字段名，每个数据行变成「序号 + 第一列加粗」的标题行，
+     * 其余列按 {@code 列名：值} 每 {@value #PAIRS_PER_LINE} 组换一行；
+     * 纯 URL 的单元格压成 {@code [链接](url)}，省下的字符够多放两条数据。
+     * <p>
+     * 非表格内容原样保留，所以"结论 + 表格"这种混排也能正确处理。
+     */
+    static String forIm(String text) {
+        if (text == null || text.isEmpty()) return "";
+        String[] lines = text.split("\n", -1);
+        StringBuilder out = new StringBuilder(text.length() + 128);
+        int i = 0;
+        while (i < lines.length) {
+            if (TABLE_ROW.matcher(lines[i]).matches()) {
+                int end = i;
+                while (end < lines.length && TABLE_ROW.matcher(lines[end]).matches()) end++;
+                // 至少 3 行（表头 + 分隔 + 至少一条数据）才当表格，避免误伤普通的竖线文本
+                if (end - i >= 3 && TABLE_SEP.matcher(lines[i + 1].trim()).matches()) {
+                    appendTable(out, lines, i, end);
+                    i = end;
+                    continue;
+                }
+            }
+            out.append(lines[i]).append('\n');
+            i++;
+        }
+        return out.toString().stripTrailing();
+    }
+
+    private static void appendTable(StringBuilder out, String[] lines, int from, int to) {
+        java.util.List<String> header = cells(lines[from]);
+        int seq = 0;
+        for (int r = from + 2; r < to; r++) {
+            java.util.List<String> row = cells(lines[r]);
+            if (row.stream().allMatch(String::isBlank)) continue;
+            seq++;
+            String head = cellAt(row, 0);
+            out.append("**").append(seq).append(". ").append(head.isEmpty() ? "(空)" : head).append("**\n");
+            StringBuilder line = new StringBuilder();
+            int pairsOnLine = 0;
+            int cols = Math.max(header.size(), row.size());
+            for (int c = 1; c < cols; c++) {
+                String value = cellAt(row, c);
+                if (value.isEmpty()) continue;
+                String name = c < header.size() ? header.get(c) : ("列" + (c + 1));
+                if (pairsOnLine > 0) line.append(PAIR_SEP);
+                line.append(name).append("：").append(cellValue(value));
+                if (++pairsOnLine >= PAIRS_PER_LINE) {
+                    out.append(line).append('\n');
+                    line.setLength(0);
+                    pairsOnLine = 0;
+                }
+            }
+            if (line.length() > 0) out.append(line).append('\n');
+            out.append('\n');
+        }
+    }
+
+    /** 拆单元格：去掉首尾竖线后按 {@code |} 切；{@code \|} 视为单元格内的字面竖线 */
+    private static java.util.List<String> cells(String line) {
+        String s = line.trim();
+        if (s.startsWith("|")) s = s.substring(1);
+        if (s.endsWith("|")) s = s.substring(0, s.length() - 1);
+        java.util.List<String> out = new java.util.ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length() && s.charAt(i + 1) == '|') {
+                cur.append('|');
+                i++;
+            } else if (c == '|') {
+                out.add(cur.toString().strip());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
+        }
+        out.add(cur.toString().strip());
+        return out;
+    }
+
+    private static String cellAt(java.util.List<String> row, int idx) {
+        return idx < row.size() ? row.get(idx) : "";
+    }
+
+    /** 单元格值的展示形态：裸 URL 压成链接，其余原样 */
+    private static String cellValue(String value) {
+        if (URL_ONLY.matcher(value).matches()) return "[链接](" + value + ")";
+        return value;
+    }
+
     /**
      * 把推送异常转成"能展示也能入库"的简短原因。
      * <p>

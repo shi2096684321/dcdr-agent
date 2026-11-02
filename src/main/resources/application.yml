@@ -720,7 +720,9 @@ agent:
     # 消息模板目录 (相对工作目录); 结构 <dir>/<渠道code>/<success|failed>.md
     # 文件不存在时用代码内置的默认模板, 所以该目录可以不存在; 每次推送重新读, 改完立即生效
     templates-dir: ${AGENT_NOTIFY_TEMPLATES_DIR:./config/notify/templates}
-    # 概览字数: 抓取类任务的正文可能上万字, {{summary}} 只取前 N 字(在句末断开), 详情走链接
+    # 概览字数(全局兜底): 抓取类任务的正文可能上万字, {{summary}} 只取前 N 字(在句末断开), 详情走链接
+    # 渠道级 summary-chars 配了大于 0 的值时以渠道级为准 —— 企微按字节、钉钉按字符, 两个上限差 10 倍,
+    # 共用一个值只能取交集, 结果就是钉钉那条上限几乎闲置, 消息里只显示开头一小段
     summary-chars: 300
     # 详情页外部基址, 如 https://agent.example.com
     # 留空则不生成"查看完整结果"链接, 只推概览(相对路径在 IM 里点不开)
@@ -734,6 +736,9 @@ agent:
       webhook-url: ${AGENT_NOTIFY_WECOM_WEBHOOK:}
       # markdown 最大字节数 (企业微信硬限 4096 字节; 中文 3 字节/字, 约合 1300 汉字)
       max-bytes: 4096
+      # 概览字数 (0 = 用全局 summary-chars): 4096 字节 ≈ 1365 汉字, 扣掉标题/时间/链接约 80 字,
+      # 900 是留了安全边界后的实用值; 再往上会频繁走到"超限截断", 末尾链接容易被切掉
+      summary-chars: 900
     dingtalk:
       # 群设置 -> 智能群助手 -> 添加机器人 -> 自定义, 创建后复制 Webhook 地址
       webhook-url: ${AGENT_NOTIFY_DINGTALK_WEBHOOK:}
@@ -744,6 +749,9 @@ agent:
       keyword: ${AGENT_NOTIFY_DINGTALK_KEYWORD:}
       # markdown 最大字符数 (钉钉约 20000 字符上限, 按字符计长, 与企微的字节口径不同)
       max-chars: 18000
+      # 概览字数 (0 = 用全局 summary-chars): 18000 字符上限下 3000 字只占六分之一,
+      # 足够放"今日重点 + 几条要点", 又不会把群消息刷成三屏以上的长文
+      summary-chars: 3000
 
 # 工具配置
 agent-tools:

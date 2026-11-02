@@ -1,9 +1,10 @@
-## 定时任务执行失败
-> 任务：{{taskName}}
+## {{taskName}} · {{statusText}}
+
 > 时间：{{time}}
 > 耗时：{{duration}}
 
-**错误信息**
+**失败原因**
+
 <font color="warning">{{error}}</font>
 
 {{runLink}}

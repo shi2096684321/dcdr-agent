@@ -182,6 +182,9 @@ class NotifyTemplateTest {
         NotifyProperties props = new NotifyProperties();
         props.setTemplatesDir(tempDir.toString());
         props.setSummaryChars(chars);
+        // 渠道级配置优先级高于全局，这里要一并抬高，否则会被默认的 900 / 3000 卡住
+        props.getWecom().setSummaryChars(chars);
+        props.getDingtalk().setSummaryChars(chars);
         return new NotifyTemplate(props);
     }
 
@@ -242,6 +245,38 @@ class NotifyTemplateTest {
         String without = template.render(NotifyChannel.WECOM_BOT, successMsg("正文"),
                 4096, NotifyTemplate.Unit.BYTES, SUFFIX);
         assertFalse(without.contains("查看完整结果"), "没配 base-url 时不应出现链接文案");
+    }
+
+    @Test
+    @DisplayName("概览长度按渠道分别取值: 钉钉能放 3000 字, 企微只有 900")
+    void summaryLimitIsPerChannel() {
+        String content = "字".repeat(8000);
+
+        String ding = template.render(NotifyChannel.DINGTALK_BOT, successMsg(content),
+                18_000, NotifyTemplate.Unit.CHARS, SUFFIX);
+        // 旧的全局 300 字会让这里只有约 350 字 —— 钉钉 18000 字符上限几乎闲置
+        assertTrue(ding.length() > 2_500, "钉钉概览仍然过短: " + ding.length());
+
+        String wecom = template.render(NotifyChannel.WECOM_BOT, successMsg(content),
+                4096, NotifyTemplate.Unit.BYTES, SUFFIX);
+        // 4096 字节 ÷ 3 ≈ 1365 汉字, 超过这个数会走到截断分支、把末尾链接切掉
+        assertTrue(wecom.getBytes(StandardCharsets.UTF_8).length <= 4096, "超出企微字节上限");
+        assertTrue(wecom.length() < 1_300, "企微概览过长, 会挤掉链接: " + wecom.length());
+    }
+
+    @Test
+    @DisplayName("渠道级为 0 时回退全局 summary-chars")
+    void summaryFallsBackToGlobal() {
+        NotifyProperties props = new NotifyProperties();
+        props.setTemplatesDir(tempDir.toString());
+        props.setSummaryChars(150);
+        props.getWecom().setSummaryChars(0);
+        props.getDingtalk().setSummaryChars(0);
+        NotifyTemplate t = new NotifyTemplate(props);
+
+        String out = t.render(NotifyChannel.DINGTALK_BOT, successMsg("字".repeat(8000)),
+                18_000, NotifyTemplate.Unit.CHARS, SUFFIX);
+        assertTrue(out.length() < 400, "没有回退到全局配置: " + out.length());
     }
 
     // ===== 工具 =====
