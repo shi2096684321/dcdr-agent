@@ -1791,3 +1791,269 @@ output 分别 284 / 610 / 405 字符，内容是一张 **9 列的 Markdown 表�
 
 **没做**：未配 `share-base-url` 时消息里没有"查看完整结果"入口，超过概览长度的内容无处可看。
 这属于部署配置（`AGENT_NOTIFY_SHARE_BASE_URL`），不是代码问题。
+
+### 联网用量"单价未配置"修复（2026-11-03）
+
+**现象**：`agent-tools.web.pricing` 已在 application.yml 配好（deepseek 搜索/抓取 0.005、searxng 0），
+但联网健康页的单价列仍是「未配 / 未配」、费用「—」、估算费用 ¥0.00。
+
+**排查路径**（先拿真实响应，不要对着代码猜）：
+1. 先排除"改了没重启"：运行进程 `classpath` 指向 `target/classes`，其中 yml 的复制时间
+   23:34:31 早于进程启动 23:34:36，配置确实在启动前就位。
+2. 用 `.env` 里的 `JWT_SECRET` 本地签一个 admin token，直连
+   `GET /api/web-health/usage?days=30`：返回 `pricingConfigured: true`，
+   但每个 provider 的 `searchPrice` / `cost` 全是 null —— **配了，但没查着**。
+3. 写绑定探针（`YamlPropertySourceLoader` + `Binder`）打印 Map 的实际 key：
+   `[deepseekweb_search, deepseekweb_extract, searxngweb_search, searxngweb_extract]`。
+
+**根因**：Spring Boot 绑定 `Map` 的 key 时按 `ConfigurationPropertyName` 归一化，会把冒号这类
+非字母数字字符**剔掉**。yml 里写 `"deepseek:web_search"`，内存里是 `deepseekweb_search`；
+而 `WebUsageService.price()` 按字面拼 `provider + ":" + tool` 查表，永远 miss。
+
+**为什么原有测试没拦住**：`WebUsageServiceTest` 全部用 `put("deepseek:web_search", …)` 手工
+构造 map —— 那是"理想形状"，与真实绑定结果不同。测试通过只证明拼接逻辑自洽，
+没有证明"配置真的能进来"。这类"测试用假数据绕过了框架行为"的坑，只有端到端探一次才发现。
+
+**修复**：
+- `price()` 两侧归一化后比较（只保留 ASCII 字母数字并转小写），同时兼容
+  `deepseek:web_search` / `deepseek-web_search` / `deepseekweb_search` 三种写法。
+- 新增 `pricingMatched`：配了单价但没有任何来源命中时置 false，前端提示「单价未匹配到来源」。
+  否则界面给出的是一个"算出来的 ¥0.00"，比"未配置"更误导 —— 那等于把本次问题换个形式藏起来。
+  只有 `none`（历史数据无 provider）时不提示：那是数据缺失，不是配置错误。
+- 测试补两例：①照真实绑定形状（去冒号）构造 map；②key 与来源名对不上时 `pricingMatched=false`。
+
+**验证**：`WebUsageServiceTest` 10 项通过；全量 715 项通过；`npm run build` 通过。
+**待验证**：重启后端后页面应显示 `0.005 / 0.005`，估算费用约 ¥0.09（窗口内 13 次搜索 + 5 次抓取）。
+
+## V3.3 修复：DNS 故障被误判成"关键词已收敛"，整次检索提前收口
+
+**现象**：14:30–14:38 日志里每批任务都出现
+
+```
+联网搜索预算已用尽, 跳过本次搜索: 已搜 1/8 次, 去重来源 0 条(上轮 0), 原因=上一轮无新增来源
+```
+
+`api.deepseek.com` 解析失败的那十几分钟里，搜索全挂 → 来源数不涨 → 我 11-02 加的「零新增来源」闸
+把它当成"模型在重复搜索"，第二轮起直接收口。网络一抖，整次联网检索就结束了，不只是少一次搜索。
+
+**排查时发现闸本身还有两个 bug**（比 DNS 更值得修）：
+
+1. **"上一轮"其实是"本轮开始时的快照"**。`distinctSources` 在 `executeTools` 开头算一次就用到底，
+   而 `prevRoundDistinctSources[0]` 是上一轮结束时的值 —— 两者指向同一个累积列表，**永远是同一个数**，
+   `distinctSources <= prev` 恒真。于是只要上一轮正常结束，**本轮从第二条搜索起必然被拦**：
+   一轮并行 3 个关键词实际只跑 1 个，日志却写着"上一轮无新增来源"。这也解释了 11-02 之后
+   每次对话的搜索次数为什么都卡在"轮数"这个量级。
+2. **搜索失败与"搜到了但没有新站点"共用同一个信号**。前者是外部故障，正确反应是换词重试；
+   后者才是收敛证据。混在一起 → 一次 DNS 抖动等于判定收敛。
+
+**修复**：
+- 原先只传一个 `int[]`，改成一个跨轮状态对象 `WebRoundState`：`distinctSources`（每执行完一次搜索
+  就回写真实值）+ `noGainStreak`（连续几次"执行成功却没带回新来源"）。
+- `WebSearchBudget.nextNoGainStreak`：搜索失败**既不累加也不清零**（等价于"这一次没发生"）；
+  有新增则清零，无新增才 +1。收敛阈值 `NO_GAIN_THRESHOLD=2` —— 单次撞上同批转载站点很常见，
+  连着两次才说明换词也没用。
+- 收敛判定不再豁免"本轮第一次搜索"：阈值现在基于真实执行结果，攒够就该停；`max-search-per-turn`
+  与 `MAX_TOOL_ROUNDS` 仍是兜底。
+- 回灌文案与日志改成"连续 N 次搜索都没有返回新站点"，不再谎称"上一轮"。
+
+**验证**：`WebSearchBudgetTest` 15 项（新增 4 项：失败不计入、失败不清零、有新增清零、单次不收敛）、
+`RebuildCompactTest` 9 项，共 24 项通过。未跑全量（按约定只跑相关类）。
+**待验证**：重启后端后，同一个多关键词任务应能在一轮里真的并发多个搜索；DNS 故障期间日志应出现
+"连续无新增 0 次"的放行记录而不是收口。
+
+## V3.3 新增：联网可达性熔断（网络/DNS 挂掉时不再把搜索额度打光）
+
+**起因**：11-03 14:53:11–14:53:50 的 40 秒里，8 次搜索全挂在 DNS 上（`Failed to resolve
+'api.deepseek.com' ... after 2 queries`），每次等满 Netty 的 5 秒查询超时，最后模型拿空结果作答。
+这是"上一条修复"的镜像问题：**收敛判定刻意不把失败算作证据**（否则一次抖动静默整次检索），
+于是网络真挂时它也不拦，模型就会一路重试到额度用尽。
+
+**做法**：把"还搜得出去吗"单独拆成一个计数，与"还搜得出新东西吗"分开：
+
+| 计数 | 判什么 | 涨的条件 | 归零条件 |
+|---|---|---|---|
+| `noGainStreak` | 收敛度 | 有执行、有来源、但无新站点 | 带回新站点 |
+| `failureStreak` | 可达性 | `emptyReason=ERROR/DISABLED` | 任何一次拿到响应（含 0 条、全被过滤） |
+
+- 阈值 `FAILURE_THRESHOLD=3`：单次失败可能只是偶发超时；3 次已是 15 秒，实测再拖就是 8 次/40 秒。
+- 熔断后**本回合不再放行任何联网工具**：搜索与抓取共用一个计数、同一条提示 —— 同一个域名
+  解析失败时，抓取只会再等一次超时，不能让它换个工具继续耗。
+- 回灌文案专门叮嘱"不许拿记忆里的旧数据冒充检索结果"：联网失败时模型最容易拿训练数据顶上，
+  而用户会以为那是刚搜到的。
+- 与 `ToolCallLoopDetector` 的分工：那个拦"参数完全相同的重复调用"，这个拦"每次参数都不同、
+  但全都失败"——后者签名判不出来。
+
+**验证**：`WebSearchBudgetTest` 18 项（新增 3 项：3 次才熔断、0 条结果清零、两个计数互不干扰）。
+**待验证**：重启后若断网跑一次任务，日志应出现 3 次 `联网搜索失败` 后紧跟
+`联网搜索已跳过: ... 连续失败 3 次, 原因=联网连续请求失败`，且模型答复里明说联网不可用。
+
+## 开发机网络：DNS 换公共解析 + 两块网卡统一（非代码改动）
+
+- 根因：以太网唯一 DNS 是路由器 `192.168.8.1`，平均 116ms、最长 1682ms；同一台机器换
+  `223.5.5.5` 是 9ms/max 29ms。路由器内置 DNS 转发慢一个量级，碰上正好卡死就撞上 Netty 5 秒超时。
+- 已改：以太网(ifIndex 12) 与 WLAN(ifIndex 3) 都设成 `223.5.5.5, 119.29.29.29`。
+  **两块网卡用同一份 DNS** 是刻意的 —— 用户经常在宽带和 WiFi 之间切，值一致时切换不会
+  改变解析路径，Netty 缓存的"DNS 服务器列表"也不会过期。
+- WLAN 原先配着 `192.168.137.1`（Windows ICS 的默认网关），已断开时无害，一旦连上会以
+  metric 55 注入死 DNS，所以一并改掉。
+- 回滚：`Set-DnsClientServerAddress -InterfaceIndex <12|3> -ResetServerAddresses`。
+- 已知边界：设的是静态 DNS，DHCP 不覆盖；接公司内网需要内网 DNS 时要先回滚。新增网卡
+  （如手机 USB 共享）仍会走 DHCP DNS。
+
+## V3.3 新增：调用链里搜索与抓取拆成两条步骤（各自保留内容）
+
+**起因**：排查时"调用链日志里只看到搜索，没有找到抓取"。抓取其实一直在跑，但它是**搜索步骤的内部子过程**：
+`enrichWithExtract` 抓完后由 `recordWebStat` 把 `extractOk/extractFailed/contentChars/thinPages`
+合并进搜索那条 `WebStat`，所以链路上只有一条 `tool=web_search` 的卡片，抓取只剩几个数字；
+反过来，搜索搜到的 15 条结果也一条都没留下（`steps_json` 里只有条数）。
+
+**做法**：
+- `AgentOrchestrator#recordWebStat` 拆成两次记录：搜索一条（`items` = 每条结果的标题/URL/摘要，摘要截断 200 字）、
+  抓取一条（`pages` = 每篇 URL/标题/成败/字数/正文全文，失败带 `reason`）。
+- 抓取步骤打 `phase=enrich`：它是搜索的内部子过程，不是模型发起的一次调用。
+- 抓取耗时单独计（`extractMs`），搜索步骤扣掉它 —— 否则同一次联网被记两份耗时，前端瀑布条与 p95 都失真。
+- 搜索结果快照必须在 `enrichWithExtract` **之前**取：抓取成功会把 `snippet` 覆盖成正文开头，
+  抓完再取就丢了"模型最初看到的那条摘要"。
+- 文件日志新增 `===== SEARCH CONTENT BEGIN/END =====` 与 `===== FETCH CONTENT BEGIN/END =====`
+  （一次 `log.info` 输出多行，避免 15 条逐条打把请求的其他日志冲散）。原先 `enrichWithExtract`
+  里那段截断 2000 字的正文打印已删除，正文统一由 `FETCH CONTENT` 打全文，不会重复。
+
+**关键取舍**：
+- **正文不截断**（用户要求"抓取到什么就记录什么"）。`steps_json` 单次请求可能涨到几百 KB（PG TEXT 无上限）。
+  代价是健康度聚合 `findForHealthAggregation` 要 load 更多数据 → 列表接口已剔除 `items`/`pages`，
+  详情页正文默认折叠。
+- **健康度口径保持连续**：`webCalls/emptyRate/avgKeepRatio/p95/trend/weakSamples` 只算顶层步骤
+  （排除 `phase=enrich`），`extractSuccessRate/thinRate/avgContentChars/thinSamples` 算全部 ——
+  新数据抓取数字在 enrich 步骤上、老数据在搜索步骤的合并字段上，两种形态混存不会重复计数。
+- `WebStat.withExtract` 保留但不再是编排层的路径（测试仍覆盖），注释已标注"别用它替代两条独立步骤"。
+
+**验证**：`LlmCallTraceTest` 13 项（新增"搜索/抓取分开且各带内容"）、`WebHealthServiceTest` 11 项
+（新增"enrich 不计入调用数"、"新旧混存不重复计数"）、`WebExtractFixtureTest` 8 项，共 29 项通过；
+`mvn -o compile`、`npm run build` 通过。未跑全量（按约定只跑相关类）。
+**待验证**：重启后跑一次带联网的对话，日志应出现成对的 `SEARCH CONTENT` / `FETCH CONTENT` 块，
+调用链面板时间轴上应看到 `搜索 → 抓取` 两条独立卡片（抓取卡片展开有每篇正文）。
+
+## V3.3 新增：抓取正文按 query 挑段 + 摘要不再被丢弃
+
+**起因**：用户问"一轮多个 web_search 各抓一次是不是浪费"。排查发现预算早就限住了
+（`extract-budget-per-round: 6`，按 3/2/1 预留），实测那轮 12 篇 URL 零重复，真正的问题在别处：
+
+1. **抓到正文后取的是开头 N 字**。`COMPACT_TOTAL_CHARS=12000` ÷ 15 条 = 每条 800 字，
+   而招聘/门户页开头常是 300 字无标点拼接的导航块（`首页职位公司校园意外险下载APP 我要招聘…`），
+   `cleanMarkdownContent` 清不掉（没有分隔符）。
+2. **summary 被抓取顶掉**。DeepSeek 每条带 600~800 字符的 `summary`（专为模型阅读提炼），
+   但 `bestBody` 的优先级是 `content > summary > snippet`，一旦抓到正文，618 字的高密度摘要
+   就被"300 字导航 + 500 字正文"替换 —— 抓取反而让模型看到的输入变差。
+
+**做法**：
+- 新增 `pickRelevantSpan(text, query, quota)`：固定长度滑窗（step=quota/8）+ query 词命中密度打分，
+  选最相关的窗口；命中按**词长加权**（命中"开发工程师"比"职位"更值钱），这就是导航块不会胜出的原因；
+  尾窗单独算（薪资/联系方式/结论常在尾部）；起点回退到最近句号（40 字内），前缀加 `…` 标明是节选。
+- `queryTerms`：按非字母数字汉字切分 + 中文长串补 2-gram（没有分词器时唯一能切进正文的办法），
+  单字词丢弃（"的""是"会让所有窗口得分趋同）。
+- `bestBody(s, quota, query)`：content 挑段拿 3/4 配额，summary 拿剩下的 1/4 作补充；
+  摘要若只是正文前 20 字的复述则跳过（判重）。
+- `rebuildCompact(srcs, query)` 重载，单参版本委托（query=null 时退回取开头，行为与改造前一致）。
+  调用点传模型的 search query，缺失回落 userQuery。
+- `enrichWithExtract` 里的 `snippet` 也改成挑段后前 600 字（它用于来源卡片与降级路径）。
+
+**关键取舍**：
+- **content 仍存全文**，挑段只发生在拼提示词的最后一刻。上一轮要求的"抓取到什么就记录什么"
+  （调用链 `pages` 里的正文全文）不受影响。
+- 没做 rerank 模型/embedding：Perplexity 是"切 span + cross-encoder rerank"，成本高一个量级；
+  这里用词命中密度，纯字符串匹配，对"跳过导航块"这个具体问题已经够用。
+- **性能优化（并发抓取 / 先搜完再统一按排名抓）没做**：本轮只解决质量。顺带记一下方向：
+  现在 `for (ChatChunk tc : effectiveCalls)` 是串行，一轮 3 次搜索 + 3 次抓取 ≈ 36s；
+  改成"先全部搜 → 合并去重 → 全局排序 → 并发抓 top-N"约 29s，且排序更准（主键应该是各搜索内
+  的排名，而不是 URL 特征打分）。`outResultsById` 本来就是 Map、消息在循环后才组装，实现成本不高。
+
+**验证**：用日志里 yupao 那条真实正文（1270 字）对比过——旧行为开头是导航，新行为直接从
+"…工程相关专业前端开发经验…"（职位要求）开始。`RebuildCompactTest` 12 项（新增"跳过导航块"
+"摘要作补充""query 缺失回退开头""摘要复述不重复拼"）、`WebExtractFixtureTest` 8、
+`LlmCallTraceTest` 13、`WebHealthServiceTest` 11，共 44 项通过；`mvn -o compile` 通过。
+
+## V3.3 新增：串联抓取降为「每次 1 篇兜底」，其余交给模型按需抓（混合方案）
+
+**背景**：用户问"抓取不应该是交给模型的吗，为什么是串联抓取"。查证发现 `web_extract` 本来就是
+注册给模型的独立工具，但**模型一次都没主动调过**（16:32 那次 turn 的 9 条联网步骤全是
+`search` + `extract(phase=enrich)` 成对出现）—— 因为 `prompts/runtime-web-search.md` 里只教了
+web_search 怎么用，一个字没提 web_extract，而搜索结果的每条又都带 600~800 字 summary，
+模型没有抓的动机。
+
+**做法（C 方案：混合）**：
+- `EXTRACT_TOP_N` 3 → **1**：每次搜索只兜底抓打分最高的那 1 篇，保证至少有一份正文；
+  其余条目交给模型自己判断。`extract-budget-per-round` 仍为 6（= 最多六次搜索都有正文兜底）。
+- `runtime-web-search.md` 第 2 条重写：明确"一次调用返回结果 + 自动抓 1 篇正文，其余只有摘要"，
+  并给出 web_extract 的触发条件（摘要缺关键细节：具体数字/岗位要求/条款原文/结论）、
+  限制（一次 1~2 个、已有正文的不重复抓）。第 3 条同步修正"第 3 个及以后搜不到正文"的过时说法。
+- `RuntimePromptProvider.webSearch()` 的 fallback 同步（原 fallback 还写着 web_search 有 topic 参数，
+  与实际 schema 不符，一并修掉）。
+- `rebuildCompact` 抬头加一句"若某条摘要缺少关键细节，可对该条 URL 调用 web_extract"。
+- `ToolsProperties.extractBudgetPerRound` 与 `application.yml` 的取值口径注释同步（原来按"每次 3 篇"写）。
+
+**关键取舍**：
+- 没完全交给模型（B 方案）：每轮多一轮 LLM 往返是 2~4 秒，且模型很可能该抓不抓，
+  把质量押在提示词说服力上不划算。留 1 篇兜底 = 最坏情况也不比"只给摘要"差。
+- 模型主动抓取会作为独立的 `tool_call` 出现在"已调用 N 个工具"面板里，
+  顺带解决了上一轮"聊天界面看不到抓取"的问题（不再需要单独做可视化）。
+- 串联抓取与模型抓取可能命中同一 URL：串联抓过的条目在回灌文本里直接显示正文，
+  模型能从长度区分；提示词也写明"已有完整正文的条目不要再抓"。
+
+**预期**：每轮抓取篇数从固定 6 降为 ≤ 搜索次数（一般 1~3），联网延迟明显下降；
+模型开始调用 web_extract 后，调用链与工具面板都会出现独立的抓取步骤。
+
+**验证**：`RebuildCompactTest` 12、`WebSearchBudgetTest` 18、`RuntimePromptProviderTest` 14 全过；
+`mvn -o compile` 通过。**待实测**：跑一次带联网的对话，看调用链里是否出现 `phase` 为空的
+`web_extract` 步骤（= 模型主动抓的），以及抓取总数是否下降。
+
+## V3.3 修复：搜索结果的排序责任归位（DeepSeek 保序 / SearXNG 自排 / 抓取不再按 URL 特征重排）
+
+**起因**：用户问"search 的排名是官方排好的，还是需要我们内部排"。
+
+**查证结论**：
+- **DeepSeek**：官方文档把 `rerank_score` 定义为"排序分数(0~3，综合相关性/权威性/时效性)"，
+  第三方对 1000 条结果的实测是 "Results were consistently sorted by that score" ——
+  数组顺序即降序，我们只做阈值过滤 + URL 去重，**保序是对的**（`mapResults` 里加了注释固化这个结论）。
+- **SearXNG**：多引擎结果的聚合，顺序是引擎之间的混合次序，不代表相关性。之前完全没排，
+  清洗又按 limit 截断 —— 等于"随机截前 N 条"。现在 `sortByEngineScore` 按它的 `score` 降序
+  就地重排（必须在 `cleanWithReport` 之前，否则好结果先被截掉）；稳定排序，缺 score 的视为 0 分保序。
+
+**修掉的真 bug**：`enrichWithExtract` 的候选此前按 `articleScore`(URL 特征) 降序取前 N 篇。
+这个分数只看 URL 里有没有 `/job/`、数字 id、日期，**与相关性无关** ——
+官方排第 1 的详情页若路径是 `/careers/backend-engineer`(0 分)，会被排到第 8 位
+`/zhaogong/341962660.html`(41 分)之后。"抓最相关的那篇"变成"抓最像文章的那篇"，
+`EXTRACT_TOP_N=1` 之后等于"抓错一篇 = 整次搜索没有正文兜底"。
+
+**做法**：
+- 新增 `pickExtractCandidates(srcs, max)`：按传入顺序遍历（顺序即相关性），
+  用 `articleScore <= UNFETCHABLE_SCORE(-100)` 剔除聚合首页/静态资源/非法 URL（可行性过滤），
+  再过滤非具体文章页、已带正文、重复 URL，取前 N。
+- `articleScore` 的职责从"排序"降级为"可行性判断"，注释已改写。
+- `SearxngSearchProvider` 抽出 `sortByEngineScore`（包级，可单测），在 parse 里清洗前调用。
+
+**验证**：新增 `ExtractCandidateTest` 6 项（保序/前 N 保序/跳过聚合页/跳过已有正文/去重/空入参）、
+`SearxngEngineRankTest` 4 项（降序/无 score 保序/缺分排后/空入参）；
+连同 `RebuildCompactTest` 12、`WebSearchBudgetTest` 18、`SearchResultCleanerTest` 26，
+共 68 项通过；`mvn -o compile` 通过。
+
+## V3.3 新增：受控搜索分页 + 继续搜索前的缺口检查
+
+**背景**：分页应由模型按信息缺口决定，但页数、次数和费用要由系统限制。停止搜索也不能靠
+无条件告诉模型“当前资料已经足够”——结果为空或不相关时，这句话会诱导它拿不足的资料硬答。
+
+**做法**：
+- `WebSearchProvider` 新增 `supportsPagination()` 与带 `page` 的默认入口；SearXNG 映射为 `pageno`。
+  DeepSeek 官方 Search API 没有 page/offset，**不向模型暴露 page**，仍通过 maxResults 调条数。
+- `WebSearchTool` 按 provider 能力动态生成 schema；page 仅允许 1~2。page=3 直接拒绝，
+  不静默钳成 2（否则模型以为查了第三页，实际重复第二页）；不支持分页的源收到 page>1 也明确拒绝。
+  每次翻页仍是一次 web_search，计入编排层现有 max-search-per-turn，不另开绕过通道。
+- `runtime-web-search.md` 与 fallback 同步：只有第一页相关但信息不全、且用户需要更全时才查第二页；
+  第一页不相关应换 query。继续搜索前必须指出“哪个关键问题未覆盖 / 已有来源为何答不了 /
+  下一次用什么不同关键词”，无法指出缺口就立即作答。保留次数/饱和度/收敛度/可达性四道硬闸。
+
+**关键取舍**：没有做成所有 provider 都有 page 的统一假抽象；模型看到的 schema 必须与上游真实能力一致。
+分页只解决“第一页相关但数量不够”，不替代换词，也不自动并发翻页。
+
+**验证**：新增 `WebSearchToolPaginationTest` 4 项（schema 能力、页码透传、第三页拒绝、
+不支持源拒绝）；连同 RuntimePromptProviderTest 14、WebSearchBudgetTest 18、SearxngEngineRankTest 4，
+共 40 项通过；`mvn -o compile` 通过。前端、数据库无改动。

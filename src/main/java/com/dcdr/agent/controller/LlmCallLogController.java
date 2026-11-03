@@ -135,15 +135,24 @@ public class LlmCallLogController {
         return v;
     }
 
-    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 单条可达数十 KB, 仅详情接口返回 */    private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
+    /** 步骤中的三个重字段: 完整 System Prompt / 完整消息列表 / 实际请求体 —— 单条可达数十 KB, 仅详情接口返回 */
+    private static final String STEP_SYSTEM_PROMPT = "systemPrompt";
     private static final String STEP_MESSAGES = "messages";
     private static final String STEP_WIRE_REQUEST = "wireRequest";
+    /**
+     * 联网步骤的内容明细: 搜索结果条目 / 抓取正文。
+     * <p>抓取正文单篇可达数千字、一次搜索可抓数篇, 与上面三个重字段是一个量级, 故同样只在详情返回。
+     * 列表卡片要的"搜到几条 / 抓了几篇 / 多少字"都是标量字段(results / extractOk / contentChars),
+     * 不受影响。
+     */
+    private static final String STEP_WEB_ITEMS = "items";
+    private static final String STEP_WEB_PAGES = "pages";
 
     /**
      * 解析步骤 JSON。
      * <p>
      * 快照落库时<b>不截断</b>(调用链的意义是完整复盘), 因此体积控制在读取侧做:
-     * 列表分页剔除上面三个"完整原文"重字段(单条可达数十 KB); 需要看全量原文时走详情接口。
+     * 列表分页剔除上面这些"完整原文"重字段(单条可达数十 KB); 需要看全量原文时走详情接口。
      * <p>
      * 注意 {@code outputPreview} / {@code outputChars}(本轮模型输出) **列表也保留**:
      * 预览已截断至 500 字符, 与三个重字段不是一个量级; 若一并剔除, 列表里就只剩 token/耗时数字,
@@ -160,6 +169,8 @@ public class LlmCallLogController {
                 step.remove(STEP_SYSTEM_PROMPT);
                 step.remove(STEP_MESSAGES);
                 step.remove(STEP_WIRE_REQUEST);
+                step.remove(STEP_WEB_ITEMS);
+                step.remove(STEP_WEB_PAGES);
             }
             return steps;
         } catch (Exception e) {

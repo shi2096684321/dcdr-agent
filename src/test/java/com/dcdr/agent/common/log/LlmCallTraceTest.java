@@ -182,20 +182,63 @@ class LlmCallTraceTest {
     }
 
     @Test
-    @DisplayName("搜索后补抓取: 抓取明细回填到同一条步骤, 而不是另起一条")
+    @DisplayName("合并统计(工具层能力): withExtract 把抓取数字补到同一条步骤, 只产出一条 web 步骤")
     void webSearchStepMergesExtractResult() {
+        // 注意: 编排层已不再走这条路 —— 搜索与抓取现在是两条独立步骤(见下一个用例)。
+        // 这个用例锁的是 WebStat.withExtract 本身的行为, 供"确实只需要一条合并统计"的场景使用。
         LlmCallTrace trace = LlmCallTrace.begin();
         WebStat merged = WebStat.search("searxng", "q", 20, 8).withExtract(8, 3, 1, 12000, 1);
         trace.recordWeb(merged, 5000);
 
         java.util.List<Map<String, Object>> all = trace.snapshot().stream()
                 .filter(s -> "web".equals(s.get("kind"))).toList();
-        assertEquals(1, all.size(), "一次联网只该有一条 web 步骤, 否则耗时会被重复计算");
+        assertEquals(1, all.size(), "withExtract 只回填字段, 不新增步骤");
         Map<String, Object> step = all.get(0);
         assertEquals(3, step.get("extractOk"));
         assertEquals(1, step.get("extractFailed"));
         assertEquals(1, step.get("thinPages"), "薄页数: 抓取成功率虚高的唯一证据");
         assertEquals(12000, step.get("contentChars"));
+    }
+
+    @Test
+    @DisplayName("内容明细: 搜索记 items, 抓取记 pages 并标 phase=enrich —— 两者必须分开成两条步骤")
+    void webSearchAndExtractKeepSeparateContent() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+
+        // ① 搜索: 记它搜到的条目(标题/URL/摘要), 不再混入抓取数字
+        trace.recordWeb(WebStat.search("searxng", "长沙 Java 招聘", 15, 15), 3000,
+                LlmCallTrace.WebContent.ofItems(List.of(
+                        Map.of("index", 1, "title", "某招聘页", "url", "https://a.com/job/1",
+                                "snippet", "岗位职责……"))));
+        // ② 抓取: 独立一条, 记抓了哪几篇、正文是什么
+        trace.recordWeb(WebStat.extract("deepseek", "长沙 Java 招聘", 1, 1, 3200, 0), 12000,
+                LlmCallTrace.WebContent.ofEnrichPages(List.of(
+                        Map.of("index", 1, "title", "某招聘页", "url", "https://a.com/job/1",
+                                "ok", true, "chars", 3200, "content", "岗位职责全文……"),
+                        Map.of("index", 2, "title", "某站点", "url", "https://b.com/x",
+                                "ok", false, "chars", 0, "reason", "返回正文为空"))));
+
+        List<Map<String, Object>> webSteps = trace.snapshot().stream()
+                .filter(s -> "web".equals(s.get("kind"))).toList();
+        assertEquals(2, webSteps.size(), "搜索与抓取各一条 —— 合并就看不到'抓了哪几篇、正文是什么'");
+
+        Map<String, Object> search = webSteps.get(0);
+        assertEquals("web_search", search.get("tool"));
+        assertFalse(search.containsKey("pages"), "搜索步骤不该混入抓取明细");
+        assertEquals(1, ((List<?>) search.get("items")).size());
+        assertFalse(search.containsKey("extractOk"), "拆开后搜索步骤不再背抓取数字");
+
+        Map<String, Object> extract = webSteps.get(1);
+        assertEquals("web_extract", extract.get("tool"));
+        assertEquals("enrich", extract.get("phase"), "健康度靠 phase 把串联抓取排除在'联网调用数'之外");
+        assertFalse(extract.containsKey("items"), "抓取步骤不该混入搜索条目");
+        List<?> pages = (List<?>) extract.get("pages");
+        assertEquals(2, pages.size());
+        Map<?, ?> okPage = (Map<?, ?>) pages.get(0);
+        assertEquals("岗位职责全文……", okPage.get("content"), "正文原样保留: 抓取到什么就记什么");
+        Map<?, ?> failedPage = (Map<?, ?>) pages.get(1);
+        assertEquals(false, failedPage.get("ok"));
+        assertEquals("返回正文为空", failedPage.get("reason"), "失败也要留原因, 否则不知道是反爬还是空壳页");
     }
 
     @Test

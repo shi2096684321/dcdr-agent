@@ -140,6 +140,44 @@ class WebUsageServiceTest {
     }
 
     @Test
+    @DisplayName("单价 key 用 Spring 绑定后的形状(冒号被剔除)同样能命中")
+    void pricingKeySurvivesSpringNormalization() {
+        // 真实环境里 yml 写 "deepseek:web_search", Spring 绑进 Map 后是 "deepseekweb_search"。
+        // 这里直接照绑定结果构造 —— 上一版测试全用带冒号的 key, 恰好绕过了真实形状,
+        // 于是线上"配了单价却显示未配置"一直没被测出来。
+        properties.getWeb().getPricing().put("deepseekweb_search", new BigDecimal("0.005"));
+        properties.getWeb().getPricing().put("deepseekweb_extract", new BigDecimal("0.005"));
+        given(log("""
+                [{"kind":"web","tool":"web_search","provider":"deepseek"},
+                 {"kind":"web","tool":"web_extract","provider":"deepseek+local"}]
+                """));
+
+        WebUsageService.UsageSummary s = service.summary(30);
+
+        assertEquals(0, new BigDecimal("0.005").compareTo(byProvider(s, "deepseek").searchPrice()),
+                "去冒号的 key 也要能查到单价");
+        assertEquals(0, new BigDecimal("0.005").compareTo(byProvider(s, "deepseek+local").extractPrice()),
+                "组合源按主源查, 同样要走归一化");
+        assertEquals(0, new BigDecimal("0.010").compareTo(s.estimatedCost()));
+        assertTrue(s.pricingMatched());
+    }
+
+    @Test
+    @DisplayName("配了单价但 key 与来源名对不上: 标记未匹配, 不给 ¥0 的假结论")
+    void unmatchedPricingIsFlagged() {
+        properties.getWeb().getPricing().put("qwen:web_search", new BigDecimal("0.02"));
+        given(log("""
+                [{"kind":"web","tool":"web_search","provider":"deepseek"}]
+                """));
+
+        WebUsageService.UsageSummary s = service.summary(30);
+
+        assertTrue(s.pricingConfigured(), "表里有值就算配了");
+        assertFalse(s.pricingMatched(), "没有任何来源命中, 界面要提示 key 对不上");
+        assertNull(byProvider(s, "deepseek").searchPrice());
+    }
+
+    @Test
     @DisplayName("按「成功请求」计费: 请求异常与未启用不算钱, 但「请求成功 0 条」照常算")
     void failedRequestsAreNotBilled() {
         properties.getWeb().getPricing().put("deepseek:web_search", new BigDecimal("0.005"));

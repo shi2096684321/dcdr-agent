@@ -120,7 +120,8 @@ public class WebHealthService {
                         intOf(step.get("thinPages")),
                         str(step.get("emptyReason")),
                         str(step.get("emptyReasonLabel")),
-                        longOf(step.get("costMs"))));
+                        longOf(step.get("costMs")),
+                        str(step.get("phase"))));
             }
         }
         return new Window(steps, logs.size(), truncated);
@@ -147,6 +148,10 @@ public class WebHealthService {
     private WebHealthDtos.HealthOverview assemble(Window current, Window previous,
                                                   LocalDateTime from, LocalDateTime to, int window) {
         List<WebStep> steps = current.steps();
+        // 顶层步骤 = 模型发起的调用(搜索 / 显式抓取)。串联抓取(phase=enrich)依附于某次搜索,
+        // 必须排除在"联网调用次数"之外 —— 否则一次"搜索 + 抓取"被算成两次调用,
+        // 空结果率与 p95 的分母同时被稀释, 与历史数据(那时合并成一条)直接不可比。
+        List<WebStep> topSteps = topLevel(steps);
 
         WebHealthDtos.HealthOverview vo = new WebHealthDtos.HealthOverview();
         vo.setFrom(from);
@@ -156,22 +161,29 @@ public class WebHealthService {
         vo.setTruncated(current.truncated());
         vo.setScanLimit(SCAN_LIMIT);
 
-        vo.setWebCalls(steps.size());
-        vo.setSearchCalls(steps.stream().filter(s -> "web_search".equals(s.tool())).count());
-        vo.setExtractCalls(steps.stream().filter(s -> "web_extract".equals(s.tool())).count());
-        vo.setEmptyRate(emptyRate(steps));
-        vo.setAvgKeepRatio(avgKeepRatio(steps));
+        vo.setWebCalls(topSteps.size());
+        vo.setSearchCalls(topSteps.stream().filter(s -> "web_search".equals(s.tool())).count());
+        vo.setExtractCalls(topSteps.stream().filter(s -> "web_extract".equals(s.tool())).count());
+        vo.setEmptyRate(emptyRate(topSteps));
+        vo.setAvgKeepRatio(avgKeepRatio(topSteps));
+        // 抓取类指标用**全部**步骤: 拆步骤后抓取数字在 enrich 步骤上, 而历史数据里它们在搜索
+        // 步骤的合并字段上 —— 新数据搜索步骤这部分恒为 0, 两种形态混在一起也不会重复计数
         vo.setExtractSuccessRate(extractSuccessRate(steps));
         vo.setThinRate(thinRate(steps));
         vo.setAvgContentChars(avgContentChars(steps));
-        vo.setP95CostMs(p95CostMs(steps));
+        vo.setP95CostMs(p95CostMs(topSteps));
 
-        vo.setTrend(buildTrend(steps));
-        vo.setByReason(buildByReason(steps));
-        vo.setWeakSamples(buildWeakSamples(steps));
+        vo.setTrend(buildTrend(topSteps, steps));
+        vo.setByReason(buildByReason(topSteps));
+        vo.setWeakSamples(buildWeakSamples(topSteps));
         vo.setThinSamples(buildThinSamples(steps));
         vo.setPrev(previous.steps().isEmpty() ? null : buildPrev(previous.steps()));
         return vo;
+    }
+
+    /** 顶层调用(排除编排层串联抓取) —— "联网调用次数 / 空结果率 / 耗时" 的统一口径 */
+    private static List<WebStep> topLevel(List<WebStep> steps) {
+        return steps.stream().filter(s -> !s.isEnrich()).toList();
     }
 
     /** 空结果占比: results=0 即"这次什么都没拿到"(搜索没搜到 与 抓取全失败 都算) */
@@ -241,22 +253,33 @@ public class WebHealthService {
         return costs.get(Math.max(0, Math.min(idx, costs.size() - 1)));
     }
 
-    private static List<WebHealthDtos.DailyPoint> buildTrend(List<WebStep> steps) {
-        Map<LocalDate, List<WebStep>> byDay = new TreeMap<>();
-        for (WebStep s : steps) {
-            byDay.computeIfAbsent(s.createdAt().toLocalDate(), k -> new ArrayList<>()).add(s);
+    /**
+     * 按天聚合。
+     *
+     * @param topSteps 顶层调用(算调用数 / 空结果率 / 清洗存活率)
+     * @param allSteps 全部步骤, 含串联抓取(算抓取成功率) —— 新数据的抓取数字在 enrich 步骤上
+     */
+    private static List<WebHealthDtos.DailyPoint> buildTrend(List<WebStep> topSteps, List<WebStep> allSteps) {
+        Map<LocalDate, List<WebStep>> topByDay = new TreeMap<>();
+        for (WebStep s : topSteps) {
+            topByDay.computeIfAbsent(s.createdAt().toLocalDate(), k -> new ArrayList<>()).add(s);
+        }
+        Map<LocalDate, List<WebStep>> allByDay = new TreeMap<>();
+        for (WebStep s : allSteps) {
+            allByDay.computeIfAbsent(s.createdAt().toLocalDate(), k -> new ArrayList<>()).add(s);
         }
 
-        List<WebHealthDtos.DailyPoint> points = new ArrayList<>(byDay.size());
-        for (Map.Entry<LocalDate, List<WebStep>> e : byDay.entrySet()) {
-            List<WebStep> daySteps = e.getValue();
+        List<WebHealthDtos.DailyPoint> points = new ArrayList<>(topByDay.size());
+        for (Map.Entry<LocalDate, List<WebStep>> e : topByDay.entrySet()) {
+            List<WebStep> dayTop = e.getValue();
+            List<WebStep> dayAll = allByDay.getOrDefault(e.getKey(), dayTop);
             WebHealthDtos.DailyPoint p = new WebHealthDtos.DailyPoint();
             p.setDate(e.getKey().format(DateTimeFormatter.ISO_LOCAL_DATE));
-            p.setWebCalls(daySteps.size());
-            p.setEmptyCalls(daySteps.stream().filter(s -> s.results() == 0).count());
-            p.setEmptyRate(emptyRate(daySteps));
-            p.setAvgKeepRatio(avgKeepRatio(daySteps));
-            p.setExtractSuccessRate(extractSuccessRate(daySteps));
+            p.setWebCalls(dayTop.size());
+            p.setEmptyCalls(dayTop.stream().filter(s -> s.results() == 0).count());
+            p.setEmptyRate(emptyRate(dayTop));
+            p.setAvgKeepRatio(avgKeepRatio(dayTop));
+            p.setExtractSuccessRate(extractSuccessRate(dayAll));
             points.add(p);
         }
         return points;
@@ -335,9 +358,11 @@ public class WebHealthService {
 
     private static WebHealthDtos.PrevPeriod buildPrev(List<WebStep> steps) {
         WebHealthDtos.PrevPeriod prev = new WebHealthDtos.PrevPeriod();
-        prev.setWebCalls(steps.size());
-        prev.setEmptyRate(emptyRate(steps));
-        prev.setAvgKeepRatio(avgKeepRatio(steps));
+        // 与当期同口径: 调用次数只算顶层, 抓取成功率算全部(见 assemble 的说明)
+        List<WebStep> top = topLevel(steps);
+        prev.setWebCalls(top.size());
+        prev.setEmptyRate(emptyRate(top));
+        prev.setAvgKeepRatio(avgKeepRatio(top));
         prev.setExtractSuccessRate(extractSuccessRate(steps));
         return prev;
     }
@@ -363,6 +388,12 @@ public class WebHealthService {
     }
 
     /** 一条联网步骤的扁平视图(便于聚合时反复使用) */
+    /**
+     * 一条联网步骤的统计。
+     *
+     * @param phase 阶段标记: {@code enrich} = 编排层为某次搜索串联抓取(依附于那条搜索步骤);
+     *              {@code null} = 模型发起的顶层调用
+     */
     private record WebStep(String logId,
                            LocalDateTime createdAt,
                            String userId,
@@ -376,7 +407,13 @@ public class WebHealthService {
                            int thinPages,
                            String emptyReason,
                            String emptyReasonLabel,
-                           long costMs) {
+                           long costMs,
+                           String phase) {
+
+        /** 是否为编排层串联抓取 —— 计入"抓取"类指标, 不计入"联网调用次数" */
+        boolean isEnrich() {
+            return "enrich".equals(phase);
+        }
     }
 
     /** 一个时间窗口的取数结果 */

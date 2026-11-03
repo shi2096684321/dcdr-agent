@@ -54,23 +54,39 @@ public class SearxngSearchProvider implements WebSearchProvider {
     }
 
     @Override
+    public boolean supportsPagination() {
+        return true;
+    }
+
+    @Override
     public SearchOutcome search(String query, String originalQuestion, int limit) throws Exception {
+        return search(query, originalQuestion, limit, 1);
+    }
+
+    @Override
+    public SearchOutcome search(String query, String originalQuestion, int limit, int page) throws Exception {
         // originalQuestion 刻意不使用: SearXNG 是元搜索, 没有"理解意图"这一层,
         // 传进去只能拼进 query 反而稀释关键词。它是给 DeepSeek 的 ori_question 预留的形参
         String body = webClient.get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/search")
-                        .queryParam("q", query)
-                        .queryParam("format", "json")
-                        .queryParam("language", config.getLanguage())
-                        .queryParam("safesearch", 0)
-                        .build())
+                .uri(uriBuilder -> {
+                    var builder = uriBuilder
+                            .path("/search")
+                            .queryParam("q", query)
+                            .queryParam("format", "json")
+                            .queryParam("language", config.getLanguage())
+                            .queryParam("safesearch", 0);
+                    // 第一页省略 pageno, 保持原有请求不变; 第二页才显式带上。
+                    if (page > 1) {
+                        builder.queryParam("pageno", page);
+                    }
+                    return builder.build();
+                })
                 .retrieve()
                 .bodyToMono(String.class)
                 .block();
         SearchResultCleaner.CleanResult clean = parse(body, limit);
-        log.info("SearXNG 检索: query='{}', 原始 {} 条 → 保留 {} 条(过滤 {} / 去重 {})",
-                query, clean.raw(), clean.items().size(), clean.filtered(), clean.duplicated());
+        log.info("SearXNG 检索: query='{}', page={}, 原始 {} 条 → 保留 {} 条(过滤 {} / 去重 {})",
+                query, page, clean.raw(), clean.items().size(), clean.filtered(), clean.duplicated());
         return new SearchOutcome(clean.raw(), clean.filtered(), clean.duplicated(), clean.items());
     }
 
@@ -92,7 +108,29 @@ public class SearxngSearchProvider implements WebSearchProvider {
         }
         List<JsonNode> raw = new ArrayList<>(results.size());
         results.forEach(raw::add);
+        sortByEngineScore(raw);
         return SearchResultCleaner.cleanWithReport(raw, limit);
+    }
+
+    /**
+     * 按 SearXNG 的 {@code score}(引擎加权分) 降序就地重排原始结果(在清洗与截断之前)。
+     *
+     * <p><b>为什么 SearXNG 需要我们自己排、DeepSeek 不需要</b>: DeepSeek 返回的是自研索引 +
+     * 统一 rerank 的产物, 数组顺序即 {@code rerank_score} 降序; 而 SearXNG 是多家引擎结果的
+     * <b>聚合</b>, 顺序是引擎之间的混合次序 —— 实测同一查询里 Google 的第 1 条可能排在第 7 位,
+     * 前面塞着一堆抓不到正文的聚合页。
+     *
+     * <p>排序必须发生在 {@link SearchResultCleaner#cleanWithReport} <b>之前</b>: 清洗会按 limit
+     * 截断, 顺序不对就会"先把后面的好结果截掉"。
+     *
+     * <p>用稳定排序: 没给 {@code score} 的引擎结果视为 0 分, 保持它们的原有相对顺序, 不会更糟。
+     */
+    static void sortByEngineScore(List<JsonNode> results) {
+        if (results == null || results.size() < 2) {
+            return;
+        }
+        results.sort((a, b) -> Double.compare(
+                b.path("score").asDouble(0), a.path("score").asDouble(0)));
     }
 
     private String stripTrailingSlash(String url) {

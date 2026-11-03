@@ -36,6 +36,9 @@ public class WebSearchTool extends AbstractTool {
     /** 工具名: 与原先 MCP(tavily-search) 的 alias 保持一致, 编排层零改动 */
     public static final String NAME = "web_search";
 
+    /** 同一 query 最多允许前两页; 更深的页通常相关性更低, 应改用更聚焦的 query */
+    static final int MAX_PAGE = 2;
+
     private final ToolsProperties.WebToolsConfig config;
     private final WebProviderFactory providerFactory;
 
@@ -78,13 +81,18 @@ public class WebSearchTool extends AbstractTool {
 
     @Override
     public JsonObjectSchema getParameters() {
-        return JsonObjectSchema.builder()
+        var schema = JsonObjectSchema.builder()
                 .addProperty("query", JsonStringSchema.builder()
                         .description("搜索查询词，推荐使用完整自然语言表述").build())
                 .addProperty("maxResults", JsonIntegerSchema.builder()
                         .description("期望返回的结果条数，默认 8，范围 3~" + config.getMaxResultsLimit()).build())
-                .required(List.of("query"))
-                .build();
+                .required(List.of("query"));
+        if (providerFactory.searchProvider().supportsPagination()) {
+            schema.addProperty("page", JsonIntegerSchema.builder()
+                    .description("结果页码，默认 1，仅支持 1~2。只有第一页相关但信息不全时才使用第 2 页；"
+                            + "第一页不相关时应更换 query，不要翻页").build());
+        }
+        return schema.build();
     }
 
     @Override
@@ -116,12 +124,24 @@ public class WebSearchTool extends AbstractTool {
             return ToolInfo.text("请提供搜索关键词");
         }
         int limit = resolveLimit(params);
+        int page = resolvePage(params);
         WebSearchProvider provider = providerFactory.searchProvider();
+        if (page < 1 || page > MAX_PAGE) {
+            // 不把 page=3 静默钳成 2: 那会让模型以为查了第三页, 实际却重复第二页,
+            // 随后又因"没有新信息"继续翻页。直接拒绝并给出换 query 的出口。
+            return ToolInfo.text("页码仅支持 1~" + MAX_PAGE + "。不要继续翻页；"
+                    + "若现有结果不相关，请更换更具体的 query，或基于已有资料作答。");
+        }
+        if (page > 1 && !provider.supportsPagination()) {
+            // 正常不会走到: schema 已按 provider 能力隐藏 page。保留运行时校验,
+            // 防止手写工具调用或上游模型不遵守 schema 时静默退回第一页。
+            return ToolInfo.text("当前搜索源不支持分页。请调整 maxResults 或更换 query，不要重复请求同一页。");
+        }
         try {
             // originalQuestion 传 null: 工具是无状态的(Tool#execute 只有 Map),
             // 拿不到会话里的用户原话。DeepSeek 的 ori_question 因此暂时不启用 ——
             // 它只影响意图理解, 不影响检索正确性; 若将来确有需要, 应在编排层透传而非在工具里查库
-            SearchOutcome outcome = provider.search(query, null, limit);
+            SearchOutcome outcome = provider.search(query, null, limit, page);
             List<Map<String, Object>> sources = outcome.sources();
             if (outcome.isEmpty()) {
                 // 区分两种"空": 上游一条没给 vs 给了但全被规则/阈值过滤掉 ——
@@ -158,6 +178,22 @@ public class WebSearchTool extends AbstractTool {
         }
         // 上限只由配置决定: 再叠一个硬编码常量会让 agent-tools.web.max-results-limit 静默失效
         return Math.max(3, Math.min(config.getMaxResultsLimit(), n));
+    }
+
+    /** 解析可选页码; 缺省与非数字按第一页处理, 数值越界由 executeWithInfo 明确拒绝 */
+    private int resolvePage(Map<String, Object> params) {
+        Object raw = params.get("page");
+        if (raw instanceof Number num) {
+            return num.intValue();
+        }
+        if (raw instanceof String s) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+                return 1;
+            }
+        }
+        return 1;
     }
 
     /**

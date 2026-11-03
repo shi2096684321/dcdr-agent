@@ -120,8 +120,30 @@ public class AgentOrchestrator {
     private final WorkspacePromptProvider workspacePromptProvider;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    /** 串联提取时, 对每个搜索结果抓取完整正文的最大文章数(控制延迟与 token) */
-    private static final int EXTRACT_TOP_N = 3;
+    /**
+     * 串联提取时, 对每个搜索结果抓取完整正文的最大文章数。
+     *
+     * <p><b>V3.3 从 3 降到 1</b>: 之前每次搜索最多抓 3 篇、一轮 6 篇, 而模型全程不知道
+     * {@code web_extract} 这个工具存在(system prompt 只教了 web_search), 于是"抓哪几篇"完全由
+     * 编排层按 URL 特征猜, 连"今天天气"这类摘要就够的问题也照样抓满 —— 时间花在串行的
+     * 网页请求上, 模型却没有决策权。
+     *
+     * <p>现在改为: 每次搜索只兜底抓 <b>1 篇</b>(打分最高的那篇, 保证至少有一份正文),
+     * 其余交给模型自己判断 —— 提示词里已补充 web_extract 的触发条件(见
+     * {@code RuntimePromptProvider#webSearch}), 结果抬头也会提示"摘要不够可对 URL 抓正文"。
+     * 模型主动抓取会作为独立工具调用出现在"已调用 N 个工具"里, 不再是隐形的串联步骤。
+     */
+    private static final int EXTRACT_TOP_N = 1;
+
+    /**
+     * 调用链里每条搜索结果的摘要保留长度。
+     * <p>与抓取正文不同: 摘要只用来回答"这条结果讲什么", 15 条 × 全文会让 steps_json
+     * 无谓地涨一个数量级, 而人也不会去读第 15 条的完整摘要。
+     */
+    private static final int SEARCH_SNIPPET_MAX = 200;
+
+    /** 抓取失败原因的保留长度(工具返回的失败文案本来就不长, 这里只是兜住异常堆栈式长文本) */
+    private static final int FETCH_FAIL_REASON_MAX = 200;
 
     /**
      * 一次搜索回灌给模型的<b>总</b>字符预算(所有来源合计)。
@@ -135,7 +157,11 @@ public class AgentOrchestrator {
      */
     private static final int COMPACT_TOTAL_CHARS = 12000;
 
-    /** 单条来源的字符上限: 抓到 3000 字正文时也只喂前 1000 字, 提炼要点没有边际收益 */
+    /**
+     * 单条来源的字符上限: 抓到 3000 字正文也只喂 1000 字, 提炼要点没有边际收益。
+     * <p>取哪 1000 字由 {@link #pickRelevantSpan} 按 query 命中密度决定, 不是取开头 ——
+     * 招聘/门户页开头常是 300 字导航块。
+     */
     private static final int COMPACT_ITEM_CAP = 1000;
 
     /** 滚动分配时的单条下限: 低于这个长度连"是不是相关"都判断不了, 不如不给 */
@@ -164,17 +190,36 @@ public class AgentOrchestrator {
             """;
 
     /**
-     * 上一轮搜索没有带来任何新 URL 时回灌的提示。
+     * 连续若干次搜索都没有带来任何新 URL 时回灌的提示。
      * <p>
      * 这是比"搜索次数上限"更准的停止信号: 次数用完才停是<b>猜</b>, 新增为 0 才是<b>证据</b> ——
      * 说明这批关键词已经收敛到同一批站点, 换词只会拿到同样的页面。
-     * {@code WebSearchBudget} 的类注释里记着这个信号"更准但需要跨轮状态"所以当年绕开了;
-     * 实际上跨轮累积的 {@code collectedSources} 就是那个状态, 只需额外记住"上一轮结束时的去重数"。
+     * <p>
+     * <b>只看"执行成功但没带新站点"的搜索</b>: 请求异常 / 联网未启用 / 上游 0 条都不计入
+     * (见 {@code WebSearchBudget#nextNoGainStreak})。否则网络抖一下就会被判成"关键词收敛",
+     * 整次检索提前结束 —— 2026-11-03 那批 DNS 解析失败正是这样被误判的。
      */
     private static final String SEARCH_NO_NEW_SOURCE_MESSAGE = """
-            [未检索到新信息] 上一轮搜索没有返回任何此前未出现过的站点。本次调用被跳过（未执行）。
+            [未检索到新信息] 已连续 %d 次搜索都没有返回此前未出现过的站点。本次调用被跳过（未执行）。
             请基于已获得的结果作答；确实缺少关键信息时，直接说明"未检索到 XXX"，不要继续换关键词试探。
-            """;
+            """.formatted(com.dcdr.agent.agent.loop.WebSearchBudget.NO_GAIN_THRESHOLD);
+
+    /**
+     * 连续多次搜索都发不出去(网络 / DNS / 上游不可达)时回灌的提示 —— 熔断。
+     *
+     * <p><b>为什么必须有这一条</b>: 没有它的时候, 联网真的挂了, 模型会一路换关键词重试,
+     * 直到把 {@code max-search-per-turn} 打光。实测 2026-11-03 那次 DNS 故障: 14:53:11–14:53:50
+     * 的 40 秒里连挂 8 次(每次等满 Netty 的 5 秒查询超时), 最后拿空结果作答 ——
+     * 用户看到的是一段像模像样但没有出处的回答, 而不是"联网用不了"。
+     *
+     * <p><b>为什么文案要专门叮嘱不许编</b>: 联网失败时模型最容易拿训练数据顶上,
+     * 而用户以为那是刚搜到的。这里明确要求它把"没搜到"这件事说出来。
+     */
+    private static final String SEARCH_UNAVAILABLE_MESSAGE = """
+            [联网暂不可用] 已连续 %d 次联网搜索请求失败（网络异常或服务不可达），本次调用未执行，本回合内不再尝试。
+            请基于已经获得的信息作答；如果没有可用信息，请如实告诉用户"联网检索当前不可用，暂时拿不到实时信息"，
+            不要换关键词继续试探，也不要把记忆里的旧数据当成检索结果。
+            """.formatted(com.dcdr.agent.agent.loop.WebSearchBudget.FAILURE_THRESHOLD);
 
     private static final String LOOP_STOP_MESSAGE = """
             [工具调用被系统拦截] 同一个工具已连续 %d 次以上使用完全相同的参数调用，本次调用未执行。
@@ -443,10 +488,10 @@ public class AgentOrchestrator {
                         final List<String> toolResults = new ArrayList<>();
                         // 本轮联网搜索/知识库检索等工具产生的来源(引用), 供 done 块下发与落库
                         final List<Map<String, Object>> collectedSources = new ArrayList<>();
-                        // 上一轮搜索结束时的去重来源数: 用于判断"这一轮搜索有没有带来新 URL"。
-                        // 与 collectedSources 放在一起而不是另建上下文对象 —— 它是这个累积列表的派生量,
-                        // 分开放只会让两者不同步(而不同步的后果是误判"没有新信息"把搜索全拦掉)
-                        final int[] prevRoundDistinct = new int[1];
+                        // 跨轮联网状态: 去重来源数 + 连续无新增次数, 供下一轮判断"还要不要搜"。
+                        // 与 collectedSources 放在一起而不是另建全局缓存 —— 它是这个累积列表的派生量,
+                        // 分开放只会让两者不同步(而不同步的后果正是误判"没有新信息"把搜索全拦掉)
+                        final WebRoundState webState = new WebRoundState();
                         // 强制检索(RAG 显式模式)命中的来源并入: 随 done 块下发前端渲染引用卡片, 并随助手消息落库
                         if (ctx.forcedKbSources() != null && !ctx.forcedKbSources().isEmpty()) {
                             collectedSources.addAll(ctx.forcedKbSources());
@@ -552,7 +597,7 @@ public class AgentOrchestrator {
                                             int allowance = toolResultCompressor.allowanceForRound(history);
                                             return executeTools(currentRound, accumulated.toString(),
                                                     reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
-                                                    allowance, history, t, prevRoundDistinct);
+                                                    allowance, history, t, webState);
                                         })
                                         .subscribeOn(Schedulers.boundedElastic()),
                                         t, currentRound, resultsById);
@@ -830,46 +875,107 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 把联网工具上报的执行统计与「串联抓取」的结果合并后写入调用链。
+     * 把联网工具的执行统计与内容明细写入调用链 —— <b>搜索与抓取各记一条独立步骤</b>。
      *
-     * <p><b>为什么合并点在编排层</b>: {@code WebSearchTool} 只负责搜索, 正文抓取发生在
-     * {@link #enrichWithExtract} —— 工具自己无从知道抓了几篇、抓到多少字。若让工具去猜或让编排层
-     * 另起一条记录, 要么数字不准、要么调用链里同一次联网出现两个互不相干的步骤。
+     * <p><b>为什么不再合并成一条</b>: 抓取此前只用 {@code extractOk/contentChars} 几个数字挂在
+     * 搜索步骤上, 于是调用链里只看得见"搜索", 看不见"抓了哪几篇、正文是什么"; 反过来, 搜索搜到的
+     * 那 15 条结果也一条都没留下。而排查"这次回答为什么没依据"时, 这两件事恰恰必须分开看:
+     * 是搜索没搜到(换关键词), 还是抓取被拦截(换源 / 查反爬) —— 处置方向完全相反。
      *
-     * @param stat  工具上报的统计; {@code null} 表示非联网工具, 直接返回
-     * @param srcs  已补全正文的来源卡片(此时 {@code content=undefined} 已被清理)
-     * @param ext   串联抓取的成功/失败计数
-     * @param start 单次工具执行的起点(纳秒)
+     * <p><b>为什么抓取步骤要带 {@code phase=enrich}</b>: 它是搜索的内部子过程, 不是模型发起的
+     * 一次独立调用。健康度统计靠这个标记区分, 否则一次搜索会被算成两次联网调用。
+     *
+     * @param stat        工具上报的统计; {@code null} 表示非联网工具, 直接返回
+     * @param srcs        最终来源卡片(此时 {@code content=undefined} 已被清理)
+     * @param ext         串联抓取的统计与逐篇明细
+     * @param start       单次工具执行的起点(纳秒)
+     * @param extractMs   其中抓取阶段的耗时; 搜索步骤要扣掉它, 否则同一次联网被记两份耗时
+     * @param query       搜索词; 抓取步骤用它标注"这次抓取是为哪次搜索做的"
+     * @param searchItems 抓取<em>之前</em>的搜索结果快照(标题 / URL / 摘要)
      */
     private static void recordWebStat(com.dcdr.agent.common.log.LlmCallTrace t, String name,
                                       com.dcdr.agent.tool.WebStat stat,
                                       List<Map<String, Object>> srcs,
-                                      ExtractStat ext, long start) {
+                                      ExtractStat ext, long start, long extractMs,
+                                      String query, List<Map<String, Object>> searchItems) {
         if (stat == null) {
             return;
         }
-        int contentChars = 0;
-        int thinPages = 0;
-        if (srcs != null) {
-            for (Map<String, Object> s : srcs) {
-                Object c = s.get("content");
-                if (c == null) {
-                    continue;   // 仅用搜索摘要的条目没有正文, 不算"薄页"(它本来就没抓)
-                }
-                int len = c.toString().length();
-                contentChars += len;
-                if (len < com.dcdr.agent.tool.WebStat.THIN_CONTENT_CHARS) {
-                    thinPages++;
-                }
-            }
-        }
-        com.dcdr.agent.tool.WebStat merged = stat;
+        long totalMs = (System.nanoTime() - start) / 1_000_000;
         if (WebSearchTool.NAME.equals(name)) {
-            // 搜索侧的 stat 产生于抓取之前, 这里补上抓取结果与正文总量
-            merged = stat.withExtract(srcs == null ? 0 : srcs.size(),
-                    ext.ok(), ext.failed(), contentChars, thinPages);
+            // ① 搜索: 只记搜索自己的东西(原始/保留条数 + 每条标题/URL/摘要), 不再混入抓取数字
+            t.recordWeb(stat, Math.max(0, totalMs - extractMs),
+                    com.dcdr.agent.common.log.LlmCallTrace.WebContent.ofItems(searchItems));
+            // ② 抓取: 独立一步, 记抓了哪几篇、每篇正文是什么
+            if (ext != null && ext.total() > 0) {
+                com.dcdr.agent.tool.WebStat extractStat = com.dcdr.agent.tool.WebStat.extract(
+                        ext.provider(), query, ext.ok(), ext.failed(), ext.contentChars(), ext.thinPages());
+                t.recordWeb(extractStat, extractMs,
+                        com.dcdr.agent.common.log.LlmCallTrace.WebContent.ofEnrichPages(ext.pages()));
+            }
+            return;
         }
-        t.recordWeb(merged, (System.nanoTime() - start) / 1_000_000);
+        // 模型直接调用 web_extract: 统计由工具自己上报, 正文来自 sources
+        t.recordWeb(stat, totalMs,
+                com.dcdr.agent.common.log.LlmCallTrace.WebContent.ofPages(pagesOfSources(srcs)));
+    }
+
+    /**
+     * 搜索结果的条目快照(抓取前的形态)。
+     * <p>必须在 {@link #enrichWithExtract} 之前调用: 它抓到正文后会把 snippet 覆盖成正文开头,
+     * 抓完再取就丢掉了"模型最初看到的那条摘要"。
+     */
+    private static List<Map<String, Object>> snapshotSearchItems(List<Map<String, Object>> srcs) {
+        if (srcs == null || srcs.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> items = new ArrayList<>(srcs.size());
+        int index = 0;
+        for (Map<String, Object> s : srcs) {
+            index++;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("index", index);
+            item.put("title", s.get("title"));
+            item.put("url", s.get("url"));
+            // 摘要固定截断: 15 条 × 全文会把 steps_json 撑大一个数量级, 而排查只需要"这条讲什么"
+            Object snippet = s.get("snippet");
+            if (snippet != null) {
+                item.put("snippet", clip(snippet.toString(), SEARCH_SNIPPET_MAX));
+            }
+            items.add(item);
+        }
+        return items;
+    }
+
+    /**
+     * 从来源卡片重建抓取页面明细(模型直接调 {@code web_extract} 时用)。
+     * <p>这条链路上正文已经由工具放进 {@code sources[0].content}, 不需要额外信息。
+     */
+    private static List<Map<String, Object>> pagesOfSources(List<Map<String, Object>> srcs) {
+        if (srcs == null || srcs.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> pages = new ArrayList<>(srcs.size());
+        for (Map<String, Object> s : srcs) {
+            Map<String, Object> page = new LinkedHashMap<>();
+            page.put("index", s.get("index"));
+            page.put("url", s.get("url"));
+            page.put("title", s.get("title"));
+            page.put("ok", true);
+            Object content = s.get("content");
+            page.put("chars", content == null ? 0 : content.toString().length());
+            if (content != null) {
+                page.put("content", content);
+            }
+            pages.add(page);
+        }
+        return pages;
+    }
+
+    /** 取字符串参数; 缺失返回 null(不返回空串, 便于调用方区分"没有"和"空") */
+    private static String strParam(Map<String, Object> params, String key) {
+        Object v = params == null ? null : params.get(key);
+        return v == null ? null : v.toString();
     }
 
     /**
@@ -987,6 +1093,55 @@ public class AgentOrchestrator {
     }
 
     /**
+     * 跨轮联网状态: 同一个请求的多次工具轮之间携带的两个派生量。
+     *
+     * <p><b>为什么不是一个 int</b>: 原先只传"上一轮结束时的去重来源数", 于是"这一轮有没有带回来
+     * 新来源"只能拿<b>本轮开始时的快照</b>去和它比 —— 可两者本来就是同一个数(中间没人往
+     * {@code collectedSources} 里加东西), 判定恒为"无新增": <b>每轮从第二条搜索起必然被拦</b>,
+     * 一轮并行 3 个关键词实际只跑 1 个, 日志里却写着"上一轮无新增来源"。
+     *
+     * <p>现在改成每执行完一次搜索就把真实去重数回写({@link #recordWebProgress}),
+     * 并维护"连续几次搜索没带回新来源"这个真正的收敛证据。
+     */
+    static final class WebRoundState {
+        /** 截至当前的去重来源数; 每执行完一次搜索刷新, 不在轮开始时算一次用到底 */
+        int distinctSources;
+        /** 连续"执行成功但没带回新来源"的搜索次数; 搜索失败不计入(那不是收敛, 是外部故障) */
+        int noGainStreak;
+        /** 连续"根本没发出去"的搜索次数(请求异常 / 联网未启用); 达到阈值熔断, 本回合不再搜 */
+        int failureStreak;
+    }
+
+    /**
+     * 记一次联网工具(搜索 / 抓取)的推进量与可达性 —— 必须在本次调用<b>执行完并已并入 collectedSources 之后</b>调用。
+     *
+     * <p>三类计数各管一件事: {@code noGainStreak} 判"还搜得出新东西吗"(只对搜索有意义 ——
+     * 抓取不产出新 URL, 算进去会被误判成收敛), {@code failureStreak} 判"还连得出去吗"
+     * (搜索与抓取共用一个计数: 同一个域名正在解析失败时, 两者失败的是同一件事)。
+     *
+     * @param srcs     本次调用拿到的来源; 空表示这次一条可用结果都没有
+     * @param stat     本次调用的执行统计; {@code emptyReason=ERROR/DISABLED} 视为"没发出去"
+     * @param isSearch 是否为 {@code web_search}; false 表示 {@code web_extract}
+     */
+    private static void recordWebProgress(WebRoundState st, List<Map<String, Object>> collectedSources,
+                                          List<Map<String, Object>> srcs,
+                                          com.dcdr.agent.tool.WebStat stat, boolean isSearch) {
+        int before = st.distinctSources;
+        st.distinctSources = (int) com.dcdr.agent.agent.loop.WebSearchBudget
+                .distinctSources(collectedSources);
+        boolean produced = srcs != null && !srcs.isEmpty();
+        if (isSearch) {
+            st.noGainStreak = com.dcdr.agent.agent.loop.WebSearchBudget
+                    .nextNoGainStreak(st.noGainStreak, produced, before, st.distinctSources);
+        }
+        com.dcdr.agent.tool.WebStat.Empty why = stat == null ? null : stat.emptyReason();
+        boolean hardFailure = why == com.dcdr.agent.tool.WebStat.Empty.ERROR
+                || why == com.dcdr.agent.tool.WebStat.Empty.DISABLED;
+        st.failureStreak = com.dcdr.agent.agent.loop.WebSearchBudget
+                .nextFailureStreak(st.failureStreak, hardFailure);
+    }
+
+    /**
      * 执行对话内的工具调用: 经通用 ToolRegistry 分发到对应 Tool.execute。
      * 文生图(image_generation)结果额外渲染为 image 分块并回填 outUrls;
      * 其它工具结果渲染为 tool_result 分块。
@@ -999,7 +1154,7 @@ public class AgentOrchestrator {
                                         String userId, String sessId, int resultMaxChars,
                                         List<com.dcdr.agent.agent.memory.Message> history,
                                         com.dcdr.agent.common.log.LlmCallTrace t,
-                                        int[] prevRoundDistinctSources) {
+                                        WebRoundState webState) {
         if (toolCalls.isEmpty()) {
             return Flux.empty();
         }
@@ -1015,11 +1170,12 @@ public class AgentOrchestrator {
         Set<String> looped = com.dcdr.agent.agent.loop.ToolCallLoopDetector
                 .detectRepeats(historyBeforeCurrentRound(history), originalCalls);
 
-        // 联网搜索预算: 次数 + 信息饱和度两个维度。
-        // 零新增状态 —— 已搜次数从 history 里数(本请求内), 已获来源从跨轮累积的 collectedSources 取。
+        // 联网搜索预算: 次数 + 信息饱和度 + 收敛度 + 可达性。
+        // 已搜次数从 history 里数(本请求内); 去重来源数、连续无新增、连续失败在 webState 里跨轮累积。
+        // 来源数在这里以累积列表为准重算一次: 上一轮若走了早退分支没回写, 用旧值判饱和/收敛就会错。
         int searchesDone = com.dcdr.agent.agent.loop.WebSearchBudget.searchesSinceLastUser(
                 historyBeforeCurrentRound(history), WebSearchTool.NAME);
-        long distinctSources = com.dcdr.agent.agent.loop.WebSearchBudget
+        webState.distinctSources = (int) com.dcdr.agent.agent.loop.WebSearchBudget
                 .distinctSources(collectedSources);
         int searchesThisRound = 0;
 
@@ -1035,25 +1191,44 @@ public class AgentOrchestrator {
                 outResultsById.put(tc.getId(), LOOP_STOP_MESSAGE);
                 continue;
             }
-            // 联网搜索的三重预算(只拦 web_search, 抓取由 extractBudgetPerRound 单独管)
+            // 联网已熔断时抓取同样没有意义: 同一个域名正在解析失败, 抓一次只会再等满一次超时。
+            // 与搜索共用一个失败计数(见 recordWebProgress) —— 谁把链路试死的都算
+            if (com.dcdr.agent.tool.websearch.WebExtractTool.NAME.equals(tc.getTool())
+                    && com.dcdr.agent.agent.loop.WebSearchBudget.webUnavailable(webState.failureStreak)) {
+                log.warn("联网不可用, 跳过抓取: 连续失败 {} 次, args={}",
+                        webState.failureStreak, tc.getArgs());
+                outResultsById.put(tc.getId(), SEARCH_UNAVAILABLE_MESSAGE);
+                continue;
+            }
+            // 联网搜索的四道闸(次数 / 可达性 / 饱和度 / 收敛度; 只拦 web_search)。
+            // 抓取不在这里限: 模型主动调 web_extract 由上面的熔断兜底;
+            // extractBudgetPerRound 只约束"搜索后自动串联的那 1 篇", 与模型自己发起的抓取无关
             if (WebSearchTool.NAME.equals(tc.getTool())) {
                 boolean overCount = searchesDone >= maxSearchPerTurn;
                 // 饱和判定: 本轮第一次搜索总是放行 —— 否则模型连"补一次"的机会都没有
-                boolean saturated = distinctSources >= sourceSaturation && searchesThisRound >= 1;
-                // 零新增判定: 上一轮搜索一条新 URL 都没带回来, 说明这批关键词已收敛到同一批站点。
+                boolean saturated = webState.distinctSources >= sourceSaturation && searchesThisRound >= 1;
+                // 收敛判定: 连续 NO_GAIN_THRESHOLD 次"确实执行了、却一条新站点都没带回来"。
                 // 与 saturated 的区别: 那个看"累计拿到多少条"(30 条对不同任务意义完全不同),
                 // 这个看"这一次有没有推进", 与任务规模无关, 所以更准。
-                // 同样本轮第一次放行: 此刻 distinctSources 还等于上一轮结束时的快照, 必然判"无新增",
-                // 不豁免的话每一轮的第二条起就再也搜不了 —— 那是把整个联网能力关掉, 不是收敛。
-                boolean noNewSource = searchesThisRound >= 1
-                        && distinctSources <= prevRoundDistinctSources[0];
-                if (overCount || saturated || noNewSource) {
+                // 不再豁免"本轮第一次": 阈值现在靠的是真实执行结果(见 recordWebProgress),
+                // 不是轮初快照。攒够了就说明再搜也没用, 第一轮第一件事去搜也一样要拦。
+                boolean noNewSource = com.dcdr.agent.agent.loop.WebSearchBudget
+                        .noGainConverged(webState.noGainStreak);
+                // 可达性熔断: 连续 FAILURE_THRESHOLD 次"根本没发出去"(DNS 解析不了 / 连不上 / 上游 5xx
+                // / 联网未启用)。这条与收敛判定分开, 因为对模型的说法完全不同 —— 收敛是"别换词了,
+                // 用现有资料答", 不可用是"联网挂了, 直说拿不到实时信息, 别拿旧记忆冒充检索结果"。
+                // 不放行"本轮第一次": 熔断看的是跨轮累计, 攒够了就不该再试, 否则又会把额度打光
+                boolean unavailable = com.dcdr.agent.agent.loop.WebSearchBudget
+                        .webUnavailable(webState.failureStreak);
+                if (overCount || unavailable || saturated || noNewSource) {
                     String reason = overCount ? "次数上限"
-                            : (noNewSource ? "上一轮无新增来源" : "信息来源已饱和");
-                    log.warn("联网搜索预算已用尽, 跳过本次搜索: 已搜 {}/{} 次, 去重来源 {} 条(上轮 {}), 原因={}",
-                            searchesDone, maxSearchPerTurn, distinctSources,
-                            prevRoundDistinctSources[0], reason);
+                            : unavailable ? "联网连续请求失败"
+                            : (noNewSource ? "连续无新增来源" : "信息来源已饱和");
+                    log.warn("联网搜索已跳过: 已搜 {}/{} 次, 去重来源 {} 条, 连续无新增 {} 次, 连续失败 {} 次, 原因={}",
+                            searchesDone, maxSearchPerTurn, webState.distinctSources,
+                            webState.noGainStreak, webState.failureStreak, reason);
                     outResultsById.put(tc.getId(), overCount ? SEARCH_COUNT_LIMIT_MESSAGE
+                            : unavailable ? SEARCH_UNAVAILABLE_MESSAGE
                             : (noNewSource ? SEARCH_NO_NEW_SOURCE_MESSAGE : SEARCH_SATURATION_MESSAGE));
                     continue;
                 }
@@ -1211,35 +1386,46 @@ public class AgentOrchestrator {
                     }
                 } else {
                     List<Map<String, Object>> srcs = toolInfo.getSources();
-                    ExtractStat ext = new ExtractStat(0, 0, 0);
+                    ExtractStat ext = ExtractStat.EMPTY;
+                    // 必须在串联抓取**之前**快照搜索结果: enrichWithExtract 抓到正文后会把 source 的
+                    // snippet 换成正文开头, 抓完再取就永远看不到"模型最初看到的那条搜索摘要"了
+                    List<Map<String, Object>> searchItems = null;
+                    // 抓取单独计时: 搜索与抓取现在各记一条步骤, 若两条都记整次工具耗时, 同一次
+                    // 联网会被算成两份耗时, 前端瀑布条的占比与健康度的 p95 都会失真
+                    long extractMs = 0;
                     if (WebSearchTool.NAME.equals(name)) {
+                        searchItems = snapshotSearchItems(srcs);
                         // —— 智能流水线 STEP 1: 搜索与抓取 ——
                         chunks.add(ChatChunk.status("🔍 正在实时检索多个资讯源，并抓取相关页面…"));
-                        // —— 串联提取: 对 top-N 具体文章链接抓取完整正文, 提升检索完整性 ——
-                        // 每轮有一个**总篇数预算**, 由本轮内所有搜索共享(见 extractBudgetPerRound)。
-                        // 为什么不按"第几次搜索"一刀切: 模型一轮并行发多个不同 query 时,
-                        // 后面的 query 可能才是主题最相关的, 只让第一次抓正文会让它们退化成纯摘要。
-                        // 同时仍挡住"4 次搜索 × 3 篇 = 12 次网页请求"这种放大(实测单轮 43.9s)。
+                        // —— 串联提取: 每次搜索兜底抓 1 篇最像文章的链接, 其余交给模型按需抓 ——
+                        // 每轮有一个**总篇数预算**, 由本轮内所有搜索共享(见 extractBudgetPerRound),
+                        // 挡住"4 次搜索 × N 篇"的网页请求放大(实测单轮 43.9s)。
                         //
                         // 分配方式: 给后面每次搜索预留 1 篇保底, 剩下的才给当前这次(算法见 WebSearchBudget)。
                         // 原实现是 take = min(3, 剩余预算) 的**先到先得**, 一轮 3 次搜索时前两次各吃
                         // 3 篇把 6 篇耗尽, 第三次 take=0 —— 一次的搜索结果全是标题, 白搜。
-                        // 实测(2026-11-02 21:18 那次 turn): 广州那次搜索 15 条结果 extractOk 为空,
-                        // 即 15 条一条正文都没抓。改成 3/2/1 后同样 6 篇预算, 每次都有正文。
+                        // 实测(2026-11-02 21:18 那次 turn): 广州那次搜索 15 条结果 extractOk 为空。
+                        // 现在 EXTRACT_TOP_N=1: 每次搜索只抓评分最高的那篇做正文兜底, 其余条目留给模型
+                        // 判断要不要 web_extract —— 见 EXTRACT_TOP_N 的注释。
                         searchSeenThisRound++;
                         int remainingSearches = Math.max(0, searchCallsThisRound - searchSeenThisRound);
                         int take = com.dcdr.agent.agent.loop.WebSearchBudget
                                 .extractTake(extractBudget, remainingSearches, EXTRACT_TOP_N);
                         if (take > 0) {
+                            long extractStart = System.nanoTime();
                             ext = enrichWithExtract(srcs, userQuery, take);
+                            extractMs = (System.nanoTime() - extractStart) / 1_000_000;
                             // 按**实际**抓取篇数扣预算: 候选不足时(只有 1 篇像文章)不该白扣 3 篇
                             extractBudget -= Math.max(ext.ok() + ext.failed(), 0);
                         } else {
                             log.info("本轮抓取预算已用尽({}篇), 本次搜索仅保留摘要, query={}",
                                     extractBudgetPerRound, tc.getArgs());
                         }
-                        // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)
-                        result = rebuildCompact(srcs);
+                        // 用补全后的 sources 重建喂给模型的精简内容(含更完整正文)。
+                        // 带上搜索词: 抓到的正文常以导航块开头, rebuildCompact 按词命中密度挑段
+                        Object searchQuery = params.get("query");
+                        result = rebuildCompact(srcs,
+                                searchQuery != null ? searchQuery.toString() : userQuery);
                     }
                     // V3.1 F-47 单一收口点: 工具结果在此压缩一次, 后续各消费点共用同一份文本 ——
                     //   ① history 的 tool 消息(回灌模型) ② ChatChunk.result(下发前端工具面板)
@@ -1278,20 +1464,28 @@ public class AgentOrchestrator {
                             chunks.add(ChatChunk.status(step2.toString()));
                         }
                     }
-                    // 联网工具的执行质量统计(空结果成因 / 清洗损耗 / 抓取成功率 / 正文长度)。
+                    // 联网工具的执行质量统计(空结果成因 / 清洗损耗 / 抓取成功率 / 正文长度) +
+                    // 内容明细(搜索条目 / 抓取正文)。搜索与抓取在这里拆成两条独立步骤。
                     // 放在"清理 undefined → 累计来源"之后: 此时 sources 里的正文才是最终形态,
                     // 统计出的 contentChars 与模型真正看到的内容一致
-                    recordWebStat(t, name, toolInfo.getWebStat(), srcs, ext, toolStart);
+                    recordWebStat(t, name, toolInfo.getWebStat(), srcs, ext, toolStart, extractMs,
+                            strParam(params, "query"), searchItems);
+                    // 联网"这次有没有推进"的记账: 只对搜索生效, 且必须在本次调用真正执行完
+                    // (来源已并入 collectedSources)之后 —— 下一轮/下一次搜索的收敛判定看的就是它
+                    if (WebSearchTool.NAME.equals(name)
+                            || com.dcdr.agent.tool.websearch.WebExtractTool.NAME.equals(name)) {
+                        recordWebProgress(webState, collectedSources, srcs, toolInfo.getWebStat(),
+                                WebSearchTool.NAME.equals(name));
+                    }
                 }
             }
             if (callCount > 1) {
                 // system 约束后多余调用本不该发生; 若仍多发, 说明用户确需多张, 全部执行不丢弃
                 log.info("本轮检测到 {} 个 image_generation 调用, 全部执行(不丢弃)", callCount);
             }
-            // 刷新"上轮去重来源数"快照, 供下一轮的零新增判定使用。
-            // 放在这里而不是 finally: chunks 是同步执行填充的(下面的 return 只是把它包成 Flux),
-            // 走到这一行时本轮所有工具都已执行完, 取到的就是本轮终值
-            prevRoundDistinctSources[0] = (int) com.dcdr.agent.agent.loop.WebSearchBudget
+            // 补一次终值刷新: 兜住本轮"没有 web_search 但来源变了"的情况(如纯 web_extract 轮,
+            // 抓取结果会并入 collectedSources)。有搜索的轮次里每次执行后都已回写过, 这里只是同值覆盖
+            webState.distinctSources = (int) com.dcdr.agent.agent.loop.WebSearchBudget
                     .distinctSources(collectedSources);
             return Flux.fromIterable(chunks);
             } finally {
@@ -1306,8 +1500,24 @@ public class AgentOrchestrator {
         }));
     }
 
-    /** 串联提取统计: 候选文章数 / 成功抓取完整正文数 / 失败数 */
-    private record ExtractStat(int candidates, int ok, int failed) {}
+    /**
+     * 串联提取的结果: 候选数 / 成功数 / 失败数 + 逐篇明细。
+     *
+     * <p>明细里的 {@code pages} 会被写进调用链步骤, 每篇含 URL / 标题 / 成败 / 字数 / 正文全文 ——
+     * 用户明确要"抓取到什么就记录什么", 所以正文不做额外截断(进模型前已按
+     * {@code tools.web.max-content-length} 截过一次, 那份就是模型真正看到的正文)。
+     */
+    private record ExtractStat(int candidates, int ok, int failed, String provider,
+                               int contentChars, int thinPages, List<Map<String, Object>> pages) {
+
+        /** 未触发抓取时的空结果(不可变, 无需每次 new) */
+        static final ExtractStat EMPTY = new ExtractStat(0, 0, 0, null, 0, 0, List.of());
+
+        /** 实际处理篇数(成功 + 失败) —— 判断"这次到底抓没抓"的唯一口径 */
+        int total() {
+            return ok + failed;
+        }
+    }
 
     // ===== 通用正文清洗（基于 Markdown 结构特征，非关键词硬匹配） =====
 
@@ -1517,6 +1727,65 @@ public class AgentOrchestrator {
         return sb.toString();
     }
 
+    /** {@link #articleScore} 低于该值即"抓了也拿不到正文": 聚合首页(-1000)/静态资源(-500)/非法(-1) */
+    private static final int UNFETCHABLE_SCORE = -100;
+
+    /**
+     * 从搜索结果里挑出"接下来要抓正文"的候选, 按<b>搜索源给的排名顺序</b>取前 N 个。
+     *
+     * <h2>为什么不按 URL 特征打分排序</h2>
+     * 这曾经是个真 bug: 候选此前按 {@link #articleScore} 降序排, 而这个分数只看 URL 里有没有
+     * {@code /job/}、数字 id、日期这些特征, <b>与相关性无关</b>。官方排第 1 的详情页若路径是
+     * {@code /careers/backend-engineer}(0 分), 会被排到第 8 位 {@code /zhaogong/341962660.html}
+     * (41 分)之后 —— "抓最相关的那篇"变成了"抓最像文章的那篇"。
+     * {@link #EXTRACT_TOP_N}=1 之后这个偏差被放大成"抓错一篇 = 整次搜索没有正文兜底"。
+     *
+     * <p>排序信号上游已经给了, 且比 URL 特征可靠得多:
+     * <ul>
+     *   <li><b>DeepSeek</b>: 返回顺序即 {@code rerank_score}(0~3, 综合相关性/权威性/时效性)
+     *       降序, 我们只做阈值过滤, 保序不动;</li>
+     *   <li><b>SearXNG</b>: 多引擎聚合, 顺序本身不代表相关性, 已在
+     *       {@code SearxngSearchProvider} 里按它的 {@code score} 降序重排。</li>
+     * </ul>
+     * 所以这里只按传入顺序遍历, {@link #articleScore} 降级为<b>可行性过滤</b>:
+     * 聚合首页/静态资源抓了也没正文, 直接跳过, 不参与排序。
+     *
+     * @param srcs 已由搜索源排好序的来源列表(顺序即相关性)
+     * @param max  最多挑几篇
+     */
+    static List<Map<String, Object>> pickExtractCandidates(List<Map<String, Object>> srcs, int max) {
+        if (srcs == null || srcs.isEmpty() || max <= 0) {
+            return List.of();
+        }
+        List<Map<String, Object>> picked = new ArrayList<>(Math.min(max, srcs.size()));
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Map<String, Object> s : srcs) {
+            Object u = s.get("url");
+            if (u == null) {
+                continue;
+            }
+            String url = u.toString().trim();
+            if (articleScore(url) <= UNFETCHABLE_SCORE) {
+                continue;
+            }
+            if (!isSpecificArticleUrl(url)) {
+                continue;
+            }
+            if (!seen.add(url)) {
+                continue;
+            }
+            // 搜索源已经带回了正文(DeepSeek 的 need_content), 再抓一次是重复付费 + 重复等待
+            if (hasUsableContent(s)) {
+                continue;
+            }
+            picked.add(s);
+            if (picked.size() >= max) {
+                break;
+            }
+        }
+        return picked;
+    }
+
     /**
      * 串联提取: 对搜索结果里 top-N 个「具体文章链接」(含路径、非站点首页)调用 web_extract
      * 抓取完整正文, 写回对应 source 的 {@code content}(全文) 与 {@code snippet}(截断展示),
@@ -1526,34 +1795,19 @@ public class AgentOrchestrator {
      *                    单次仍不超过 {@link #EXTRACT_TOP_N}。预算为 0 时调用方根本不会进来
      */
     private ExtractStat enrichWithExtract(List<Map<String, Object>> srcs, String userQuery, int maxArticles) {
-        if (srcs == null || srcs.isEmpty()) return new ExtractStat(0, 0, 0);
-        // 候选评分: 优先选择「具体文章链接」而非站点首页/栏目聚合页。
-        // 评分维度: 含文章特征路径(news/article/story/blog/post…) > 含日期/数字 id > 仅含子路径 > 仅域名根。
-        List<Map<String, Object>> candidates = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (Map<String, Object> s : srcs) {
-            Object u = s.get("url");
-            if (u == null) continue;
-            String url = u.toString().trim();
-            // V3.3: 搜索源可能已经带回了正文(DeepSeek 的 need_content), 再抓一次纯属重复付费 + 重复等待
-            if (isSpecificArticleUrl(url) && seen.add(url) && !hasUsableContent(s)) {
-                candidates.add(s);
-            }
-        }
-        // 按文章可能性打分降序, 优先抓取最像单篇文章的链接
-        List<Map<String, Object>> articles = candidates.stream()
-                .sorted((a, b) -> Integer.compare(
-                        articleScore(b.get("url")), articleScore(a.get("url"))))
-                .limit(Math.min(maxArticles, EXTRACT_TOP_N))
-                .toList();
-        log.info("[enrichWithExtract] 候选具体文章数={}, 优先抓取序(打分)={}",
-                candidates.size(), articles.stream()
-                        .map(s -> articleScore(s.get("url")) + ":" + s.get("url")).toList());
+        if (srcs == null || srcs.isEmpty()) return ExtractStat.EMPTY;
+        List<Map<String, Object>> articles = pickExtractCandidates(srcs, Math.min(maxArticles, EXTRACT_TOP_N));
+        log.info("[enrichWithExtract] 抓取序(按搜索源排名)={}", articles.stream()
+                .map(s -> articleScore(s.get("url")) + ":" + s.get("url")).toList());
         if (articles.isEmpty()) {
             log.warn("[enrichWithExtract] 无可用具体文章候选(搜索结果可能全为聚合/首页链接), 跳过 extract。原始URL示例={}",
                     srcs.stream().limit(5).map(s -> String.valueOf(s.get("url"))).toList());
         }
-        int ok = 0, failed = 0;
+        int ok = 0, failed = 0, contentChars = 0, thinPages = 0;
+        // 抓取源 id: 成本按源定价, 而抓取源与搜索源可能不同(搜索 searxng + 抓取 deepseek), 必须如实记
+        String provider = null;
+        // 逐篇明细: 调用链里"抓取"这一步的内容就是它(哪几篇、正文是什么、谁没抓到)
+        List<Map<String, Object>> pages = new ArrayList<>(articles.size());
         for (Map<String, Object> s : articles) {
             // 兜底: 搜索阶段可能已自带 content="undefined"(Tavily 部分版本),
             // 若有则移除, 避免该字符串透传到落库字段; 后续 extract 失败时会走 snippet 降级。
@@ -1562,6 +1816,8 @@ public class AgentOrchestrator {
                 s.remove("content");
             }
             String url = s.get("url").toString().trim();
+            // 处理序号: 成功和失败都占号, 便于对照"第 2 篇为什么没抓到"
+            int index = ok + failed + 1;
             try {
                 Map<String, Object> params = new LinkedHashMap<>();
                 params.put("urls", java.util.Collections.singletonList(url));
@@ -1570,6 +1826,9 @@ public class AgentOrchestrator {
                     params.put("query", userQuery);
                 }
                 ToolInfo ext = toolRegistry.executeInfo(WebExtractTool.NAME, params);
+                if (provider == null && ext.getWebStat() != null) {
+                    provider = ext.getWebStat().provider();
+                }
                 List<Map<String, Object>> exSrcs = ext.getSources();
                 if (exSrcs != null && !exSrcs.isEmpty()) {
                     Object full = exSrcs.get(0).get("content");
@@ -1580,24 +1839,76 @@ public class AgentOrchestrator {
                         text = cleanMarkdownContent(text); // 通用结构清洗（去导航/页脚/HTML 等噪音）
                         s.put("content", text);
                         // snippet 展示正文前若干字(比搜索摘要更完整)
-                        s.put("snippet", clip(text, 600));
+                        // snippet 是来源卡片与降级路径的展示文本, 同样取最相关的一段:
+                        // 取开头 600 字在招聘/门户页上有一半是导航条
+                        s.put("snippet", clip(pickRelevantSpan(text, userQuery, 600), 600));
                         ok++;
-                        // 仅打印最终实际使用到的正文(清洗后、截断2000), 去掉中间过程日志
-                        log.info("===== WEB EXTRACT CONTENT BEGIN [{}] =====\nURL: {}\n原文长度: {}\n---\n{}\n===== WEB EXTRACT CONTENT END [{}] =====",
-                                ok, url, text.length(), clip(text, 2000), ok);
+                        contentChars += text.length();
+                        if (text.length() < com.dcdr.agent.tool.WebStat.THIN_CONTENT_CHARS) {
+                            thinPages++;
+                        }
+                        // 正文不截断: 用户要的是"抓取到什么就记录什么", 且这份正文本来就是
+                        // 按 max-content-length 截过、模型真正看到的那一份
+                        pages.add(fetchPage(index, url, titleOf(ext, s), true, text.length(), null, text));
                         continue;
                     } else {
+                        String preview = ext.getContent() != null ? clip(ext.getContent(), 300) : "null";
                         log.warn("[enrichWithExtract] web_extract 返回 content 为空, URL={}, 返回文本预览={}",
-                                url, ext.getContent() != null ? clip(ext.getContent(), 300) : "null");
+                                url, preview);
+                        failed++;
+                        pages.add(fetchPage(index, url, titleOf(ext, s), false, 0,
+                                clip("返回正文为空: " + preview, FETCH_FAIL_REASON_MAX), null));
+                        continue;
                     }
                 }
                 failed++;
+                pages.add(fetchPage(index, url, titleOf(ext, s), false, 0,
+                        "工具未返回页面内容", null));
             } catch (Exception e) {
                 failed++;
+                pages.add(fetchPage(index, url, String.valueOf(s.get("title")), false, 0,
+                        clip(String.valueOf(e.getMessage()), FETCH_FAIL_REASON_MAX), null));
                 log.warn("web_extract 抓取失败(忽略, 保留搜索摘要): {}", url, e);
             }
         }
-        return new ExtractStat(articles.size(), ok, failed);
+        return new ExtractStat(articles.size(), ok, failed, provider, contentChars, thinPages, pages);
+    }
+
+    /** 抓取页标题优先用工具返回的(已清洗), 缺失才回退搜索结果的标题 */
+    private static String titleOf(ToolInfo ext, Map<String, Object> src) {
+        if (ext.getSources() != null && !ext.getSources().isEmpty()) {
+            Object t = ext.getSources().get(0).get("title");
+            if (t != null && !t.toString().isBlank()) {
+                return t.toString();
+            }
+        }
+        Object fallback = src.get("title");
+        return fallback == null ? "" : fallback.toString();
+    }
+
+    /**
+     * 一条抓取明细(写进调用链的 {@code pages})。
+     *
+     * @param ok      true = 拿到可用正文; false = 失败(此时 {@code reason} 必填, {@code content} 为空)
+     * @param chars   正文字符数; 失败为 0
+     * @param reason  失败原因(工具报错 / 正文为空 / 抛异常); 成功为 null
+     * @param content 正文全文; 失败为 null
+     */
+    private static Map<String, Object> fetchPage(int index, String url, String title, boolean ok,
+                                                 int chars, String reason, String content) {
+        Map<String, Object> page = new LinkedHashMap<>();
+        page.put("index", index);
+        page.put("url", url);
+        page.put("title", title);
+        page.put("ok", ok);
+        page.put("chars", chars);
+        if (reason != null) {
+            page.put("reason", reason);
+        }
+        if (content != null) {
+            page.put("content", content);
+        }
+        return page;
     }
 
     /**
@@ -1652,7 +1963,14 @@ public class AgentOrchestrator {
 
     /**
      * 文章可能性打分: 越大越像是「单篇具体文章」(而非站点首页/栏目聚合页)。
-     * 用于在多个候选里优先抓取正文价值更高的链接。
+     *
+     * <p><b>它现在只做可行性判断, 不再参与排序</b> —— 见 {@link #pickExtractCandidates}。
+     * 曾经的用法是"按这个分数降序取前 N 篇抓正文", 但分数只看 URL 长什么样, 与相关性无关:
+     * 官方 rerank 第 1 的详情页若路径不含 {@code /job/}、没有数字 id(得 0 分), 会被排到
+     * 一个列表页(得 40 分)之后。排序信号应该用搜索源给的排名。
+     *
+     * <p>保留的用途:{@code <= }{@link #UNFETCHABLE_SCORE} 视为"抓了也没正文"(聚合首页 -1000 /
+     * 静态资源 -500 / 非法 URL -1), 直接跳过; 正分目前仅用于日志中标注抓的是哪一篇。
      */
     private static int articleScore(Object urlObj) {
         if (urlObj == null) return -1;
@@ -1708,6 +2026,15 @@ public class AgentOrchestrator {
      * 后处理函数, 放在同包的测试类里可直接断言, 不必构造这个依赖二十多项的编排类。
      */
     static String rebuildCompact(List<Map<String, Object>> srcs) {
+        return rebuildCompact(srcs, null);
+    }
+
+    /**
+     * 同上, 但带上搜索词 —— 用于从抓到的大段正文里挑最相关的片段。
+     * <p>{@code query} 为空时行为与单参版本完全一致(取开头), 所以调用方拿不到搜索词时
+     * 不必特殊处理。
+     */
+    static String rebuildCompact(List<Map<String, Object>> srcs, String query) {
         if (srcs == null || srcs.isEmpty()) return "（联网搜索未返回可用结果）";
         // 剔除聚合/首页类 URL(如 Google News 首页变体): 它们无法提取正文, 塞给模型只会产生导航噪音
         List<Map<String, Object>> usable = srcs.stream()
@@ -1737,7 +2064,9 @@ public class AgentOrchestrator {
         }
         StringBuilder sb = new StringBuilder();
         sb.append("以下是联网检索到的 ").append(usable.size())
-          .append(" 条资料（部分已抓取完整正文），请在回答中通过 [[n]] 标注引用来源（n 为下方序号）即可，"
+          .append(" 条资料（部分已抓取完整正文，其余仅有摘要；若某条摘要缺少回答所需的关键细节，"
+                  + "可对该条 URL 调用 web_extract 抓取完整正文），"
+                  + "请在回答中通过 [[n]] 标注引用来源（n 为下方序号）即可，"
                   + "不要在结尾另列来源清单（界面已在回答下方统一展示来源卡片）：\n\n");
         int i = 1;
         // 滚动分配: 每条先按"剩余额度 / 剩余条数"平分, 富余会让给后面的条目。
@@ -1750,7 +2079,7 @@ public class AgentOrchestrator {
             if (url != null && !url.toString().isBlank()) sb.append("  (").append(url).append(")");
             int quota = Math.min(COMPACT_ITEM_CAP,
                     Math.max(COMPACT_ITEM_FLOOR, remaining / Math.max(1, usable.size() - i + 1)));
-            String body = bestBody(s, quota);
+            String body = bestBody(s, quota, query);
             if (!body.isBlank()) sb.append("\n    ").append(body);
             else sb.append("\n    （该来源未能提取到正文，仅作链接参考）");
             sb.append("\n");
@@ -1759,6 +2088,15 @@ public class AgentOrchestrator {
         }
         return sb.toString();
     }
+
+    /** 正文与搜索摘要并存时, 摘要的固定前缀(长度计入配额) */
+    private static final String SUMMARY_TAG = "\n    （搜索摘要）";
+
+    /** 判断"摘要是不是正文复述"时取的前缀长度: 20 字足以区分复述与不同来源的提炼 */
+    private static final int SUMMARY_PROBE_CHARS = 20;
+
+    /** 可检索词的最小长度: 单字词区分度太低 */
+    private static final int TERM_MIN_CHARS = 2;
 
     /**
      * 按可信度挑一条来源的正文: 抓取全文 &gt; 搜索摘要 &gt; snippet。
@@ -1769,18 +2107,188 @@ public class AgentOrchestrator {
      * 调用链上表现为搜了五六次、每次都 15 条, 却反复搜同一个主题。
      * 字节级证据: 61 条无 content 的来源 summary 平均 734 字符, 实际只喂了 111 字符。
      * <p>
-     * 与 {@code WebSearchTool.buildCompactContent} 的口径保持一致(那里是 summary → snippet),
-     * 两处顺序不同会导致同一份搜索结果在"无抓取"和"有抓取"两条路径上信息量差一个数量级。
+     * <b>V3.3 补的第二处</b>: 抓到正文后原本取开头 quota 字, 而招聘/电商/门户页开头常是
+     * "首页 职位 公司 校园 意外险 下载APP…"这种无标点连续拼接的导航块。实测一条 yupao 招聘页
+     * (1270 字)前 300 字全是导航与筛选项, 真正内容在 300 字之后 —— 配额只有 800 字时,
+     * 等于拿"300 字噪音 + 500 字正文"换掉了 618 字的高密度 summary, 抓取反而让输入变差。
+     * 现在改为按 query 词命中密度挑段({@link #pickRelevantSpan}), summary 也不再被静默丢弃。
+     * <p>
+     * 与 {@code WebSearchTool.buildCompactContent} 的口径保持一致(那里是 summary → snippet):
+     * 那个方法跑在抓取之前, 此时还没有 {@code content}, 不需要挑段。
+     *
+     * @param query 搜索词, 用于挑段; 为 {@code null} 时退回"取开头"(与改造前行为一致)
      */
     static String bestBody(Map<String, Object> s, int quota) {
-        for (String key : new String[]{"content", "summary", "snippet"}) {
-            Object v = s.get(key);
-            if (v == null) continue;
-            String text = v.toString().trim();
-            if (text.isEmpty() || "undefined".equalsIgnoreCase(text)) continue;
-            return clip(text, quota);
+        return bestBody(s, quota, null);
+    }
+
+    static String bestBody(Map<String, Object> s, int quota, String query) {
+        String content = usableText(s.get("content"));
+        String summary = usableText(s.get("summary"));
+        String snippet = usableText(s.get("snippet"));
+
+        // 没抓到正文: summary 是唯一的高密度信息(已按 query 提炼过, 不需要再挑段), 给满额
+        if (content.isEmpty()) {
+            return clip(summary.isEmpty() ? snippet : summary, quota);
         }
-        return "";
+        if (summary.isEmpty()) {
+            return pickRelevantSpan(content, query, quota);
+        }
+        // 正文与摘要并存: 正文挑最相关的部分拿大头, 摘要留一小块 ——
+        // 摘要的价值不在字数, 而在正文里没有的那部分(搜索引擎按 query 提炼, 可能覆盖
+        // 正文被截断之外的信息)
+        int contentQuota = Math.min(quota, Math.max(200, quota * 3 / 4));
+        String body = pickRelevantSpan(content, query, contentQuota);
+        int rest = quota - body.length() - SUMMARY_TAG.length();
+        if (rest < 60) {
+            return body;   // 剩余额度只够半句摘要, 拼进来不如不拼
+        }
+        // 摘要就是正文的复述时, 再拼一遍纯属浪费 token
+        String probe = summary.length() <= SUMMARY_PROBE_CHARS
+                ? summary : summary.substring(0, SUMMARY_PROBE_CHARS);
+        if (body.contains(probe)) {
+            return body;
+        }
+        return body + SUMMARY_TAG + clip(summary, rest);
+    }
+
+    /**
+     * 从正文里挑与 query 最相关的一段, 而不是取开头 quota 字。
+     *
+     * <h2>为什么不能取开头</h2>
+     * 抓到的是清洗后的纯文本, 但 {@code cleanMarkdownContent} 清不掉"首页 职位 公司 校园
+     * 意外险 下载APP 我要招聘…"这类<b>无标点连续拼接</b>的导航块 —— 没有分隔符, 正则无从判断
+     * 边界在哪。实测 yupao 招聘页前 300 字全在这里。
+     *
+     * <h2>为什么按词命中密度而不是段落</h2>
+     * 换行常被压平(见 {@link #clip}, 它把 {@code \s+} 收成一个空格), 按段切分拿到的是覆盖
+     * 全文的一整段, 等于没切。固定长度滑窗 + 词命中密度不依赖任何结构假设。
+     *
+     * <h2>命中怎么加权</h2>
+     * 按词长加权: 命中"开发工程师"(5 字) 比命中"职位"(2 字) 更能说明这段相关 ——
+     * 导航块里每个短词各出现一两次, 而真正的正文段会密集命中 query 里的多个长词。
+     *
+     * @param text  正文全文
+     * @param query 搜索词; 为空或无有效词时退回"取开头"
+     * @param quota 本次最多喂多少字符
+     */
+    static String pickRelevantSpan(String text, String query, int quota) {
+        if (text == null || text.isBlank() || quota <= 0) {
+            return "";
+        }
+        String body = text.trim();
+        if (body.length() <= quota) {
+            return body;
+        }
+        List<String> terms = queryTerms(query);
+        if (terms.isEmpty()) {
+            return clip(body, quota);
+        }
+
+        int step = Math.max(1, quota / 8);
+        int bestStart = 0;
+        double bestScore = 0;
+        for (int start = 0; start + quota <= body.length(); start += step) {
+            double score = spanScore(body, start, start + quota, terms);
+            if (score > bestScore) {
+                bestScore = score;
+                bestStart = start;
+            }
+        }
+        // 尾窗必须单独算: 按步进走不到正文末尾, 而联系方式/薪资/结论常压在尾部
+        int tailStart = body.length() - quota;
+        double tailScore = spanScore(body, tailStart, body.length(), terms);
+        if (tailScore > bestScore) {
+            bestScore = tailScore;
+            bestStart = tailStart;
+        }
+        if (bestScore <= 0) {
+            // query 与正文用词完全对不上(同义改写/纯符号): 开头至少是标题与导语所在,
+            // 比随便挑一段可信
+            return clip(body, quota);
+        }
+        int aligned = alignToSentence(body, bestStart);
+        String span = body.substring(aligned);
+        if (aligned > 0) {
+            // 明确告诉模型"这是节选", 否则它会把省略号后那句当成全文开头
+            span = "…" + span;
+        }
+        log.debug("[pickRelevantSpan] query='{}' 原文={}字 起点={} 得分={}", query, body.length(), aligned,
+                String.format("%.4f", bestScore));
+        return clip(span, quota);
+    }
+
+    /** 滑窗内 query 词的加权命中密度(命中词长之和 / 窗口字数), 长词命中更值钱 */
+    private static double spanScore(String body, int start, int end, List<String> terms) {
+        int weighted = 0;
+        for (String t : terms) {
+            int from = start;
+            int idx;
+            while ((idx = body.indexOf(t, from)) >= 0) {
+                if (idx + t.length() > end) {
+                    break;   // indexOf 的命中位置单调递增, 越过窗口就再也不会落回来
+                }
+                weighted += t.length();
+                from = idx + t.length();
+            }
+        }
+        return weighted / (double) Math.max(1, end - start);
+    }
+
+    /**
+     * 把挑中的起点回退到最近的句子边界, 避免模型看到"…工程师 1.1-1.7万"这种半句开头。
+     * <p>只在 40 字内回退: 再远就不是同一句了, 强行对齐会把窗口整个挪走。
+     */
+    private static int alignToSentence(String body, int start) {
+        if (start <= 0) {
+            return 0;
+        }
+        int floor = Math.max(0, start - 40);
+        for (int i = start; i >= floor; i--) {
+            char c = body.charAt(i);
+            if (c == '。' || c == '！' || c == '？' || c == '；' || c == '\n' || c == '!') {
+                return i + 1;
+            }
+        }
+        return start;
+    }
+
+    /**
+     * 从 query 里切出用于打分的词。
+     * <p>没有分词器, 只能按分隔符切 + 中文长串补 2-gram: 跨词边界的 2-gram("沙J")几乎不会
+     * 在正文里出现, 不会把错误窗口抬高; 而真正有用的短词("Java""长沙")能被切出来。
+     * 单字词一律丢弃 —— "的""是"命中率极高却毫无区分度, 会让每个窗口得分趋同。
+     */
+    private static List<String> queryTerms(String query) {
+        if (query == null || query.isBlank()) {
+            return List.of();
+        }
+        java.util.Set<String> terms = new java.util.LinkedHashSet<>();
+        for (String t : query.toLowerCase().split("[^\\p{IsHan}a-z0-9]+")) {
+            if (t.length() < TERM_MIN_CHARS) {
+                continue;
+            }
+            terms.add(t);
+            if (t.length() >= 4 && isAllHan(t)) {
+                for (int i = 0; i + 2 <= t.length(); i++) {
+                    terms.add(t.substring(i, i + 2));
+                }
+            }
+        }
+        return new ArrayList<>(terms);
+    }
+
+    private static boolean isAllHan(String s) {
+        return s.chars().allMatch(c -> Character.UnicodeScript.of(c) == Character.UnicodeScript.HAN);
+    }
+
+    /** 取可用的文本字段; {@code undefined} 是部分 Tavily 版本返回的字面量, 必须当缺失处理 */
+    private static String usableText(Object v) {
+        if (v == null) {
+            return "";
+        }
+        String t = v.toString().trim();
+        return t.isEmpty() || "undefined".equalsIgnoreCase(t) ? "" : t;
     }
 
     private static String safePath(String url) {

@@ -28,7 +28,7 @@ package com.dcdr.agent.tool;
  *
  * @param tool        工具名({@code web_search} / {@code web_extract})
  * @param provider    实际执行该次调用的源 id(成本核算按源定价, 见字段注释)
- * @param query       搜索词; 抓取时为请求的 URL(截断到 200 字, 只为排查时认得出是哪一次)
+ * @param query       检索词; 抓取时为<b>触发它的搜索词</b>或首个 URL(截断到 200 字, 只为排查时认得出是哪一次)
  * @param rawCount    上游原始返回条数; {@code -1} 表示该工具不适用
  * @param results     最终可用条数: 搜索为清洗后进入 sources 的条数; 抓取为<b>成功</b>抓到的篇数(不含失败,
  *                    失败篇数见 {@code extractFailed} —— 两者都算会让"全失败"看起来像"拿到了东西")
@@ -146,8 +146,11 @@ public record WebStat(
 
     /**
      * 补上串联抓取的数据(搜索成功后由编排层回填)。
-     * <p>搜索工具本身不发起抓取 —— 抓取发生在 {@code AgentOrchestrator#enrichWithExtract},
-     * 所以这部分统计只能事后合并, 不能由工具自己填。
+     *
+     * <p><b>注意: 编排层已不再用它与搜索合并</b> —— 搜索与抓取在调用链上是两条独立步骤
+     * (见 {@code AgentOrchestrator#recordWebStat}), 否则抓取只会以几个数字挂在搜索步骤上,
+     * 看不到"抓了哪几篇、正文是什么"。此方法保留给"确实只需要一条合并统计"的场景
+     * (如工具层的自检 / 测试), 不要在新代码里用它替代两条独立步骤。
      *
      * @param results      补全正文后进入 sources 的条数(与搜索阶段一致, 保持调用方传值)
      * @param contentChars 成功抓取的正文总字符数

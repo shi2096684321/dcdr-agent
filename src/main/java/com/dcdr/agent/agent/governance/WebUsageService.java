@@ -128,13 +128,20 @@ public class WebUsageService {
             }
         }
 
+        // 配了单价 ≠ 认得出来源。key 写错(比如 provider 拼成 deepseek-web)时,
+        // map 非空但一条都匹配不上, 界面会显示 ¥0.00 —— 一个"算出来的零", 比显示"未配置"更误导。
+        // 单独给一个标记, 让这种状态自己暴露出来。
+        boolean pricingMatched = providers.stream()
+                .filter(p -> !"none".equals(p.provider()))
+                .anyMatch(p -> p.cost() != null);
+
         List<DayUsage> daily = new ArrayList<>();
         byDay.entrySet().stream().sorted(Map.Entry.comparingByKey())
                 .forEach(e -> daily.add(new DayUsage(e.getKey(), e.getValue()[0], e.getValue()[1])));
 
         return new UsageSummary(window, truncated, searchTotal, extractTotal,
                 billableSearch, billableExtract,
-                pricingConfigured ? totalCost : null, pricingConfigured, providers, daily);
+                pricingConfigured ? totalCost : null, pricingConfigured, pricingMatched, providers, daily);
     }
 
     private ProviderUsage buildProviderUsage(String provider, long search, long extract,
@@ -160,6 +167,15 @@ public class WebUsageService {
      * 查单价: 先查 {@code provider:tool}, 再退化到 {@code provider}(按源统一价)。
      * <p>组合源(如兜底链 {@code deepseek+local})按<b>主源</b>计价: 兜底成功时也可能真的调了主源,
      * 主源是有单价的那个, 按它算只会高估不会低估 —— 成本估算宁可保守。
+     *
+     * <h2>为什么不能直接 {@code pricing.get("deepseek:web_search")}</h2>
+     * Spring Boot 绑定 {@code Map} 的 key 时按 {@code ConfigurationPropertyName} 归一化,
+     * 会把非字母数字字符(这里是冒号)<b>剔掉</b>: yml 里写 {@code "deepseek:web_search"},
+     * 绑进内存是 {@code deepseekweb_search}。按字面拼 key 查于是永远 miss,
+     * 表现就是"单价明明配了, 页面还是显示未配置"(2026-11-03 实测:
+     * 接口返回 {@code pricingConfigured=true} 但每个源的 {@code searchPrice} 都是 null)。
+     * <p>所以两边都归一化后再比, 同时兼容 {@code deepseek:web_search} /
+     * {@code deepseek-web_search} / {@code deepseekweb_search} 三种写法。
      */
     private BigDecimal price(String provider, String tool) {
         Map<String, BigDecimal> pricing = toolsProperties.getWeb().getPricing();
@@ -167,8 +183,37 @@ public class WebUsageService {
             return null;
         }
         String billing = provider.contains("+") ? provider.split("\\+")[0] : provider;
-        BigDecimal direct = pricing.get(billing + ":" + tool);
-        return direct != null ? direct : pricing.get(billing);
+        BigDecimal direct = lookup(pricing, billing + ":" + tool);
+        return direct != null ? direct : lookup(pricing, billing);
+    }
+
+    /** 归一化后查表: 只保留字母数字并转小写, 与 Spring 的 key 归一化保持同一口径 */
+    private static BigDecimal lookup(Map<String, BigDecimal> pricing, String wanted) {
+        String key = normalize(wanted);
+        if (key.isEmpty()) {
+            return null;
+        }
+        for (Map.Entry<String, BigDecimal> entry : pricing.entrySet()) {
+            if (key.equals(normalize(entry.getKey()))) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private static String normalize(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            // 只认 ASCII: provider / 工具名都是 ascii, 放中文进来反而会让归一化结果不可预期
+            if (c < 128 && Character.isLetterOrDigit(c)) {
+                sb.append(Character.toLowerCase(c));
+            }
+        }
+        return sb.toString();
     }
 
     private static List<Map<String, Object>> parseSteps(String json) {
@@ -190,12 +235,17 @@ public class WebUsageService {
     // ===================== 输出 =====================
 
     /**
-     * @param estimatedCost 为 null 表示未配置单价(界面应显示"未配置单价"而不是 0 元)
+     * @param estimatedCost     为 null 表示未配置单价(界面应显示"未配置单价"而不是 0 元)
+     * @param pricingConfigured pricing 表是否非空(配了就算配了, 与当前有没有调用无关)
+     * @param pricingMatched    是否至少有一个来源命中了单价。{@code pricingConfigured && !pricingMatched}
+     *                          且窗口内确有调用时, 说明 key 与来源名对不上 —— 界面要提示,
+     *                          否则展示的 ¥0.00 会被当成"联网不要钱"
      */
     public record UsageSummary(int days, boolean truncated,
                                long searchCalls, long extractCalls,
                                long billableSearchCalls, long billableExtractCalls,
                                BigDecimal estimatedCost, boolean pricingConfigured,
+                               boolean pricingMatched,
                                List<ProviderUsage> providers, List<DayUsage> daily) {
     }
 

@@ -111,6 +111,11 @@ public class DeepseekSearchProvider implements WebSearchProvider {
         List<Map<String, Object>> sources = new ArrayList<>();
         Set<String> seen = new HashSet<>();
 
+        // 注意: 这里<b>刻意不排序</b>。官方文档把 rerank_score 定义为"排序分数(0~3, 综合相关性/
+        // 权威性/时效性)", 返回数组已按它降序排列(第三方对 1000 条结果的实测: "Results were
+        // consistently sorted by that score")。我们只按阈值丢弃低分项, 保留下来的相对顺序不变 ——
+        // 下游 pickExtractCandidates 正是靠这个顺序挑"最该抓正文的那篇"。
+        // 反过来, SearXNG 是多引擎聚合、顺序不可信, 排序责任在 SearxngSearchProvider。
         for (JsonNode node : results) {
             if (sources.size() >= limit) {
                 break;

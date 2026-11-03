@@ -92,6 +92,7 @@
               近 {{ usage.days }} 天 · DeepSeek 按「成功请求」计费（失败/未启用不计），自建 SearXNG 零单价
             </span>
             <el-tag v-if="!usage.pricingConfigured" size="small" type="warning">未配置单价</el-tag>
+            <el-tag v-else-if="pricingUnmatched" size="small" type="warning">单价未匹配到来源</el-tag>
             <el-tag v-if="usage.truncated" size="small" type="info">样本已截断</el-tag>
           </div>
           <div class="ub-cards">
@@ -111,7 +112,8 @@
               <div class="s-value">{{ usage.estimatedCost == null ? '—' : '¥ ' + usage.estimatedCost }}</div>
               <div class="s-label">
                 估算费用
-                <span v-if="usage.estimatedCost == null" class="s-sub">未配置单价，只统计次数</span>
+                <span v-if="pricingUnmatched" class="s-sub">单价 key 与来源名对不上，检查配置</span>
+                <span v-else-if="usage.estimatedCost == null" class="s-sub">未配置单价，只统计次数</span>
               </div>
             </div>
           </div>
@@ -254,6 +256,18 @@ let chart = null
 function priceOf(v) {
   return v == null ? '未配' : Number(v).toString()
 }
+
+/**
+ * 配了单价但没有任何来源命中 —— 通常是 key 与 provider 名对不上
+ * (比如把 deepseek 写成 deepseek-pro)。
+ * 这种状态后端只能给出 ¥0.00, 必须显式提示, 否则会被当成"联网不要钱"。
+ * 只有 none(历史数据无 provider)时不提示: 那是数据缺失, 不是配置错误。
+ */
+const pricingUnmatched = computed(() => {
+  const u = usage.value
+  if (!u || !u.pricingConfigured || u.pricingMatched) return false
+  return (u.providers || []).some(p => p.provider !== 'none')
+})
 
 async function load() {
   loading.value = true

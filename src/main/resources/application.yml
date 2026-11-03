@@ -836,6 +836,11 @@ agent-tools:
     fetch-fallback-budget-ms: 5000
     # 按源的调用单价(元/次), 用于「联网用量与成本」的估算。key = {provider}:{tool}
     #
+    # key 的冒号只是书写形式: Spring 绑定 Map 时按 ConfigurationPropertyName 归一化, 会把非字母
+    # 数字字符剔掉, 内存里实际是 "deepseekweb_search"。取值侧(WebUsageService.price)按同一规则
+    # 归一化后比较, 所以 "deepseek:web_search" / "deepseek-web_search" 都能命中 ——
+    # 曾经这里直接按字面拼 key 查, 结果配置了单价页面仍显示"未配置", 排查过一次。
+    #
     # DeepSeek 官方口径: Search 与 Fetch 均为 **5 元 / 1000 次成功请求**, 即 0.005 元/次。
     # 注意是"成功请求": 请求异常(error)与未启用(disabled)不计费, 统计侧已按此折算;
     # 而"请求成功但结果 0 条"(no_results / all_filtered)照常计费 —— 那是最贵的失败:
@@ -849,11 +854,10 @@ agent-tools:
       "searxng:web_search": 0
       "searxng:web_extract": 0
 
-    # 单轮内「串联抓取」的总篇数预算(本轮多次搜索共享)。每次搜索最多抓 3 篇, 故:
-    #   3 = 只够一次搜索拿到正文(最快、信息最少)
-    #   6 = 前两次搜索都能拿到正文, 之后降级为摘要(默认, 兼顾延迟与信息)
-    #   9/12 = 允许三到四次(更全但更慢; 4 次×3 篇=12 次网页请求实测单轮 40s+)
-    #   0 = 不做串联抓取, 只返回搜索摘要
+    # 单轮内「串联抓取」的总篇数预算(本轮多次搜索共享)。每次搜索只抓 1 篇做正文兜底, 故:
+    #   0 = 不做串联抓取, 全部交给模型按需调 web_extract
+    #   2~3 = 只有前两三次搜索有正文, 其余退化为摘要(最快)
+    #   6 = 默认, 六次搜索都能拿到一篇正文; 超出部分模型可自行 web_extract 补抓
     extract-budget-per-round: ${AGENT_TOOLS_WEB_EXTRACT_BUDGET:6}
     # 单次请求内最多发起几次 web_search。
     # 模型会在一轮里并行发 3~4 个**不同关键词**的搜索, 循环检测按"相同签名"判重, 关键词不同就拦不住,

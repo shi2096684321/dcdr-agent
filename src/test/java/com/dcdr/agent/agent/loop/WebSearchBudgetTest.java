@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 联网搜索预算度量的口径测试。
@@ -87,6 +89,85 @@ class WebSearchBudgetTest {
     void distinctSourcesHandlesEmpty() {
         assertEquals(0, WebSearchBudget.distinctSources(null));
         assertEquals(0, WebSearchBudget.distinctSources(List.of()));
+    }
+
+    // ===== 收敛判定(连续无新增) =====
+
+    @Test
+    @DisplayName("搜索失败不计入连续无新增: 一次 DNS 故障不该被当成「关键词已收敛」")
+    void failedSearchDoesNotCountAsConvergence() {
+        int streak = WebSearchBudget.nextNoGainStreak(0, false, 5, 5);
+        assertEquals(0, streak, "没拿到来源是外部故障, 不是收敛证据");
+
+        assertFalse(WebSearchBudget.noGainConverged(streak),
+                "否则一次网络抖动就会把整次联网检索收口");
+    }
+
+    @Test
+    @DisplayName("失败也不清零: 已有的一次无新增仍保留, 但换词重试照样允许")
+    void failureKeepsExistingStreak() {
+        // 已有 1 次"真的搜了但没新站点"
+        int streak = WebSearchBudget.nextNoGainStreak(1, false, 5, 5);
+        assertEquals(1, streak, "失败当作「这一次没发生」, 不清零也不累加");
+        assertFalse(WebSearchBudget.noGainConverged(streak), "还不到阈值, 允许换词再试");
+
+        // 再来一次确实执行了但仍无新站点 → 收敛
+        streak = WebSearchBudget.nextNoGainStreak(streak, true, 5, 5);
+        assertEquals(2, streak);
+        assertTrue(WebSearchBudget.noGainConverged(streak));
+    }
+
+    @Test
+    @DisplayName("带回新站点即清零: 收敛计数必须是「连续」而不是「累计」")
+    void newSourceResetsStreak() {
+        assertEquals(0, WebSearchBudget.nextNoGainStreak(2, true, 5, 9),
+                "本轮真的推进了, 之前的无新增记录作废");
+    }
+
+    @Test
+    @DisplayName("第一次无新增还不算收敛: 单次撞上同批转载站点很常见")
+    void singleNoGainIsNotConverged() {
+        int streak = WebSearchBudget.nextNoGainStreak(0, true, 5, 5);
+        assertEquals(1, streak);
+        assertFalse(WebSearchBudget.noGainConverged(streak));
+    }
+
+    // ===== 可达性熔断 =====
+
+    @Test
+    @DisplayName("连续 3 次请求失败才熔断: 单次超时不值得直接放弃")
+    void breakerTripsAfterThreeFailures() {
+        int s = WebSearchBudget.nextFailureStreak(0, true);
+        assertEquals(1, s);
+        assertFalse(WebSearchBudget.webUnavailable(s), "一次失败可能只是偶发超时");
+
+        s = WebSearchBudget.nextFailureStreak(s, true);
+        assertEquals(2, s);
+        assertFalse(WebSearchBudget.webUnavailable(s));
+
+        s = WebSearchBudget.nextFailureStreak(s, true);
+        assertEquals(3, s);
+        assertTrue(WebSearchBudget.webUnavailable(s), "3 次已等掉 15 秒, 该收手了");
+    }
+
+    @Test
+    @DisplayName("上游返回 0 条不算失败: 链路是通的, 只是这次没内容")
+    void emptyResultsResetFailureStreak() {
+        int s = WebSearchBudget.nextFailureStreak(2, false);
+        assertEquals(0, s,
+                "NO_RESULTS / ALL_FILTERED 说明请求发出去也收到了响应, 网络是好的");
+        assertFalse(WebSearchBudget.webUnavailable(s));
+    }
+
+    @Test
+    @DisplayName("熔断与收敛互不干扰: 失败不清零收敛计数, 也不累加")
+    void failureAndNoGainAreIndependent() {
+        // 网络挂了 → failureStreak 涨, noGainStreak 不动(那不算收敛证据)
+        assertEquals(0, WebSearchBudget.nextNoGainStreak(0, false, 3, 3),
+                "请求异常不该被当成「关键词已收敛」");
+        // 搜到了但没有新站点 → noGainStreak 涨, failureStreak 清零(链路正常)
+        assertEquals(0, WebSearchBudget.nextFailureStreak(2, false));
+        assertEquals(1, WebSearchBudget.nextNoGainStreak(0, true, 3, 3));
     }
 
     // ===== 抓取篇数分配 =====

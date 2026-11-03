@@ -29,8 +29,8 @@ class RebuildCompactTest {
     private static final String ARTICLE_URL = "https://example.com/job/1986021465.shtml";
 
     @Test
-    @DisplayName("抓取到正文(content)时优先用 content")
-    void prefersContentOverSummary() {
+    @DisplayName("抓取到正文时正文优先, 但 search 摘要作为补充保留")
+    void prefersContentButKeepsSummary() {
         Map<String, Object> s = src(ARTICLE_URL, "岗位标题");
         s.put("content", "抓取到的完整正文");
         s.put("summary", "搜索摘要");
@@ -38,8 +38,54 @@ class RebuildCompactTest {
 
         String out = AgentOrchestrator.rebuildCompact(List.of(s));
 
-        assertTrue(out.contains("抓取到的完整正文"), "content 是抓来的真正文, 优先级最高");
-        assertFalse(out.contains("搜索摘要"), "有 content 时不该再拼接摘要");
+        assertTrue(out.contains("抓取到的完整正文"), "content 是抓来的真正文, 优先占大头");
+        // 早期版本在抓到正文后把 summary 整条丢掉, 于是 600~800 字的提炼摘要被
+        // 800 字的"正文前段"(常含导航)顶掉。摘要的价值是正文里没有的那部分信息
+        assertTrue(out.contains("搜索摘要"), "摘要不该被静默丢弃");
+        assertFalse(out.contains("搜索片段"), "snippet 只是摘要缺失时的兜底, 两者都在时不该出现");
+    }
+
+    @Test
+    @DisplayName("正文开头是导航块时, 按 query 挑出真正相关的那段")
+    void skipsNavigationBlockAndPicksRelevantSpan() {
+        // 真实样本: yupao 招聘页 1270 字正文, 前 300 字全是无标点拼接的导航与筛选项。
+        // cleanMarkdownContent 清不掉它(没有分隔符), 取开头等于喂给模型半屏噪音
+        String nav = "首页职位公司校园意外险下载APP我要招聘我要找工作".repeat(10) + "筛选项NOISE";
+        String real = "前端开发工程师 1.1-1.7万/月 职位详情：熟练掌握 Java 与 Vue，"
+                + "三年以上 Web 开发经验，统招本科学历。福利：双休、五险一金、年终奖。";
+        Map<String, Object> s = src(ARTICLE_URL, "前端开发工程师");
+        s.put("content", nav + real.repeat(30));
+
+        String out = AgentOrchestrator.rebuildCompact(List.of(s), "长沙 Java 开发工程师 社招");
+
+        assertTrue(out.contains("1.1-1.7万"), "应挑中岗位正文, 实际输出: " + out);
+        assertFalse(out.contains("筛选项NOISE"),
+                "导航块不该出现在回灌内容里(它占了配额却不含信息), 实际输出: " + out);
+    }
+
+    @Test
+    @DisplayName("query 为空时退回取开头, 与改造前行为一致")
+    void fallsBackToHeadWhenQueryMissing() {
+        Map<String, Object> s = src(ARTICLE_URL, "标题");
+        String body = "开头内容。" + "后面的内容。".repeat(200);
+        s.put("content", body);
+
+        String out = AgentOrchestrator.rebuildCompact(List.of(s));
+
+        assertTrue(out.contains("开头内容"), "没有 query 时无从判断相关性, 只能取开头");
+    }
+
+    @Test
+    @DisplayName("摘要只是正文的复述时不重复拼接")
+    void doesNotDuplicateSummaryThatMirrorsContent() {
+        String body = "前端开发工程师 1.1-1.7万/月 职位详情：熟练掌握 Java 与 Vue。" + "补充说明。".repeat(20);
+        Map<String, Object> s = src(ARTICLE_URL, "标题");
+        s.put("content", body);
+        s.put("summary", "前端开发工程师 1.1-1.7万/月 职位详情");   // 正文前 20 字的复述
+
+        String out = AgentOrchestrator.rebuildCompact(List.of(s), "开发工程师");
+
+        assertFalse(out.contains("（搜索摘要）"), "复述内容再拼一遍只会浪费配额");
     }
 
     @Test

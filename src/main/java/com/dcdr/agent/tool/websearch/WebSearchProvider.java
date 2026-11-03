@@ -41,4 +41,23 @@ public interface WebSearchProvider {
      * @throws Exception 网络/协议错误, 由门面统一处理
      */
     SearchOutcome search(String query, String originalQuestion, int limit) throws Exception;
+
+    /**
+     * 是否支持用页码继续取同一 query 的后续结果。
+     * <p>DeepSeek Search 没有 page/offset 参数，只能通过 count 调整条数；SearXNG 支持 pageno。
+     * 门面据此决定是否向模型暴露 {@code page}，不能给不支持的源发一个会被静默忽略的参数。
+     */
+    default boolean supportsPagination() {
+        return false;
+    }
+
+    /**
+     * 分页检索入口。不支持分页的源只需实现三参数版本；页码合法性由门面统一校验。
+     */
+    default SearchOutcome search(String query, String originalQuestion, int limit, int page) throws Exception {
+        if (page <= 1) {
+            return search(query, originalQuestion, limit);
+        }
+        throw new UnsupportedOperationException(id() + " 不支持分页搜索");
+    }
 }

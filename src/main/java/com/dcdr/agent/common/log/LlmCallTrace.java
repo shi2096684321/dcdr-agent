@@ -252,6 +252,40 @@ public final class LlmCallTrace {
     }
 
     /**
+     * 一次联网调用的「内容」—— 搜索到的条目 / 抓到的正文。
+     *
+     * <p><b>为什么不塞进 {@link WebStat}</b>: WebStat 是"可聚合的质量数字"(条数 / 成功率 /
+     * 字数), 健康度统计按字段逐个解析; 而这里是"可读的证据", 单篇正文可达数千字, 只有排查
+     * 某一次具体请求时才看。两者体积差一个数量级, 混在同一个对象里会让健康度聚合不得不
+     * 把整段正文读进内存再丢掉。
+     *
+     * @param phase 阶段标记: {@link #PHASE_ENRICH} = 编排层为某次搜索串联抓取; {@code null} = 顶层调用
+     *              (模型自己发起的 web_search / web_extract)。健康度聚合靠它把"抓取"排除在
+     *              "搜索调用数"之外, 否则一次搜索会被算成两次
+     * @param items 搜索结果条目({@code index/title/url/snippet}); 非搜索为 null
+     * @param pages 抓取页面({@code index/url/title/ok/chars/reason/content}); 非抓取为 null
+     */
+    public record WebContent(String phase,
+                             List<java.util.Map<String, Object>> items,
+                             List<java.util.Map<String, Object>> pages) {
+
+        /** 编排层串联抓取(为某次搜索补正文), 依附于那条搜索步骤而非独立调用 */
+        public static final String PHASE_ENRICH = "enrich";
+
+        public static WebContent ofItems(List<java.util.Map<String, Object>> items) {
+            return new WebContent(null, items, null);
+        }
+
+        public static WebContent ofEnrichPages(List<java.util.Map<String, Object>> pages) {
+            return new WebContent(PHASE_ENRICH, null, pages);
+        }
+
+        public static WebContent ofPages(List<java.util.Map<String, Object>> pages) {
+            return new WebContent(null, null, pages);
+        }
+    }
+
+    /**
      * 记录一次联网搜索 / 网页抓取(含执行质量明细)。
      *
      * <p><b>为什么需要这一步</b>: 联网工具此前只留下 {@code recordTool} 那一条通用记录 ——
@@ -277,6 +311,22 @@ public final class LlmCallTrace {
      * @param costMs 本次工具执行耗时(含串联抓取)
      */
     public synchronized void recordWeb(WebStat stat, long costMs) {
+        recordWeb(stat, costMs, null);
+    }
+
+    /**
+     * 记录一次联网调用, 并保留下"这次到底拿到了什么"。
+     *
+     * <p><b>为什么要和 {@link #recordWeb(WebStat, long)} 分开传内容</b>: 搜索与抓取此前被合并成
+     * 一条步骤 —— 抓取只以 {@code extractOk/contentChars} 几个数字挂在搜索步骤上, 于是调用链里
+     * 只看得见"搜索", 看不见"抓了哪几篇、正文是什么"。拆成两条步骤后, 搜索记它搜到的条目,
+     * 抓取记它抓到的正文, 各自独立可查。
+     *
+     * @param stat    质量统计(条数 / 成功率 / 字数), 为 null 时直接忽略
+     * @param costMs  本次工具执行耗时
+     * @param content 内容明细; 为 null 表示不记录内容(只有数字)
+     */
+    public synchronized void recordWeb(WebStat stat, long costMs, WebContent content) {
         if (stat == null) {
             return;
         }
@@ -312,6 +362,19 @@ public final class LlmCallTrace {
             step.put("emptyReason", stat.emptyReason().value());
             step.put("emptyReasonLabel", stat.emptyReason().label());
         }
+        // 内容明细: 搜索条目 / 抓取正文。字段名 items / pages 刻意分开 —— 一次调用要么是搜索、
+        // 要么是抓取, 前端按 tool 二选一渲染, 不需要再判断条目长什么样
+        if (content != null) {
+            if (content.phase() != null) {
+                step.put("phase", content.phase());
+            }
+            if (content.items() != null && !content.items().isEmpty()) {
+                step.put("items", content.items());
+            }
+            if (content.pages() != null && !content.pages().isEmpty()) {
+                step.put("pages", content.pages());
+            }
+        }
         steps.add(step);
         emit(step);
         log.info("[llm-trace] turn={} WEB {} query='{}' {} {} {}{}", turnId, stat.tool(), stat.query(),
@@ -326,6 +389,60 @@ public final class LlmCallTrace {
                         : "",
                 fmtMs(costMs),
                 stat.emptyReason() == null ? "" : " [" + stat.emptyReason().label() + "]");
+        logWebContent(stat, content);
+    }
+
+    /**
+     * 把「这次到底拿到了什么」打进文件日志。
+     *
+     * <p><b>为什么不只是落 steps_json 就够了</b>: DB 里那份要过接口才能看到(还得先打开详情抽屉),
+     * 而排查时最常见的动作恰恰是 grep 日志文件 —— "这条结果讲了什么""这篇到底抓下来没有、
+     * 抓成了什么样"必须能在日志里直接看到, 不该逼人去翻数据库。
+     *
+     * <p><b>为什么用一次 log.info 输出多行, 而不是每条一行</b>: 一次搜索 8~15 条, 逐条打会把
+     * 同一次请求的其他日志全部冲散, 前后文被切碎后反而看不出因果。这里保留一个整体块,
+     * 结构上等价于既有的 {@code ==== WEB EXTRACT CONTENT BEGIN/END ====}。
+     */
+    private void logWebContent(WebStat stat, WebContent content) {
+        if (content == null) {
+            return;
+        }
+        if (content.items() != null && !content.items().isEmpty()) {
+            StringBuilder sb = new StringBuilder(256 + content.items().size() * 260);
+            sb.append("[llm-trace] turn=").append(turnId).append(" ===== SEARCH CONTENT BEGIN query='")
+                    .append(stat.query()).append("' 共 ").append(content.items().size()).append(" 条 =====\n");
+            for (java.util.Map<String, Object> it : content.items()) {
+                sb.append("  [").append(it.get("index")).append("] ").append(it.get("title"))
+                        .append(" — ").append(it.get("url")).append('\n');
+                Object snippet = it.get("snippet");
+                if (snippet != null && !snippet.toString().isBlank()) {
+                    sb.append("      ").append(snippet).append('\n');
+                }
+            }
+            sb.append("[llm-trace] turn=").append(turnId).append(" ===== SEARCH CONTENT END =====");
+            log.info(sb.toString());
+        }
+        if (content.pages() != null && !content.pages().isEmpty()) {
+            StringBuilder sb = new StringBuilder(512);
+            sb.append("[llm-trace] turn=").append(turnId).append(" ===== FETCH CONTENT BEGIN query='")
+                    .append(stat.query()).append("' 共 ").append(content.pages().size()).append(" 篇 =====\n");
+            for (java.util.Map<String, Object> p : content.pages()) {
+                sb.append("  [").append(p.get("index")).append("] ").append(p.get("title"))
+                        .append(" — ").append(p.get("url"));
+                if (Boolean.FALSE.equals(p.get("ok"))) {
+                    sb.append("  抓取失败: ").append(p.get("reason") == null ? "未知原因" : p.get("reason"));
+                } else {
+                    sb.append("  ").append(p.get("chars")).append(" 字");
+                }
+                sb.append('\n');
+                Object text = p.get("content");
+                if (text != null && !text.toString().isBlank()) {
+                    sb.append(text).append('\n');
+                }
+            }
+            sb.append("[llm-trace] turn=").append(turnId).append(" ===== FETCH CONTENT END =====");
+            log.info(sb.toString());
+        }
     }
 
     /**

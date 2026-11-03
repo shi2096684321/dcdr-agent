@@ -230,6 +230,39 @@
                       <pre v-if="c.resultPreview" class="cd-pre">{{ c.resultPreview }}</pre>
                     </div>
 
+                    <!-- 联网内容明细: 搜索条目 / 抓取页面(两块互斥, 一次调用要么搜要么抓) -->
+                    <div v-if="sv.items.length" class="cd-web">
+                      <div class="cd-web-head">搜索结果 · {{ sv.items.length }} 条</div>
+                      <div v-for="(it, ii) in sv.items" :key="'si' + ii" class="cd-web-item">
+                        <div class="cd-web-item-head">
+                          <span class="cd-web-idx">[{{ it.index }}]</span>
+                          <span class="cd-web-title">{{ it.title || '(无标题)' }}</span>
+                        </div>
+                        <a v-if="it.url" class="cd-web-url" :href="it.url" target="_blank" rel="noreferrer">{{ it.url }}</a>
+                        <p v-if="it.snippet" class="cd-web-text">{{ it.snippet }}</p>
+                      </div>
+                    </div>
+
+                    <div v-if="sv.pages.length" class="cd-web">
+                      <div class="cd-web-head">抓取页面 · {{ sv.pages.length }} 篇</div>
+                      <div v-for="(pg, pi) in sv.pages" :key="'wp' + pi" class="cd-web-item">
+                        <div class="cd-web-item-head">
+                          <span class="cd-web-idx">[{{ pg.index }}]</span>
+                          <span class="cd-web-title">{{ pg.title || '(无标题)' }}</span>
+                          <span class="cd-web-tag" :class="pg.ok ? 'is-ok' : 'is-bad'">
+                            {{ pg.ok ? fmtTokens(pg.chars) + ' 字' : '抓取失败' }}
+                          </span>
+                        </div>
+                        <a v-if="pg.url" class="cd-web-url" :href="pg.url" target="_blank" rel="noreferrer">{{ pg.url }}</a>
+                        <p v-if="!pg.ok" class="cd-web-fail">{{ pg.reason || '未知原因' }}</p>
+                        <!-- 正文默认折叠: 单篇可达数千字, 六篇全展开会把整条链路顶到屏幕外 -->
+                        <details v-if="pg.content" class="cd-raw">
+                          <summary>正文全文 · {{ fmtTokens(pg.chars) }} 字</summary>
+                          <pre class="cd-pre">{{ pg.content }}</pre>
+                        </details>
+                      </div>
+                    </div>
+
                     <div v-if="sv.output" class="cd-out">
                       <div class="cd-out-head">
                         本轮模型输出
@@ -478,7 +511,9 @@ const STEP_LABELS = {
   // results 对搜索是"清洗后保留条数", 对抓取是"成功篇数"(不含失败) —— 用中性词避免只对一半准确
   rawCount: '上游条数', results: '可用条数',
   extractOk: '抓取成功', extractFailed: '抓取失败',
-  contentChars: '正文字数', thinPages: '薄页数', emptyReason: '空结果原因'
+  contentChars: '正文字数', thinPages: '薄页数', emptyReason: '空结果原因',
+  // 内容明细: 搜索条目 / 抓取正文(卡片里单独渲染, 不进折叠区)
+  items: '搜索条目', pages: '抓取页面', phase: '阶段'
 }
 
 
@@ -507,7 +542,8 @@ const STEP_HEAD_FIELDS = {
   tool: ['kind', 'seq', 'tools', 'costMs', 'interrupted', 'calls'],
   rag: ['kind', 'seq', 'query', 'kbCount', 'hits', 'costMs', 'topScore', 'ragSource', 'ragSourceLabel'],
   web: ['kind', 'seq', 'tool', 'query', 'rawCount', 'results', 'extractOk', 'extractFailed',
-    'contentChars', 'thinPages', 'emptyReason', 'emptyReasonLabel', 'costMs'],
+    'contentChars', 'thinPages', 'emptyReason', 'emptyReasonLabel', 'costMs', 'phase',
+    'items', 'pages'],
   memory: ['kind', 'seq', 'query', 'hits', 'chars', 'costMs'],
   prompt: ['kind', 'seq', 'systemPromptFingerprint', 'systemPromptChars'],
   citation: ['kind', 'seq', 'citedCount', 'availableCount', 'outOfRange'],
@@ -551,6 +587,8 @@ function buildStepCard(s, no) {
     error: '',
     cost: Number(s.costMs) || 0,
     calls: Array.isArray(s.calls) ? s.calls : [],
+    items: Array.isArray(s.items) ? s.items : [],
+    pages: Array.isArray(s.pages) ? s.pages : [],
     output: s.outputPreview || '',
     outputChars: Number(s.outputChars) || 0,
     systemPrompt: s.systemPrompt || '',
@@ -596,40 +634,42 @@ function buildStepCard(s, no) {
       if (s.chars != null) card.chips.push({ text: `注入 ${fmtTokens(s.chars)} 字` })
       card.quote = s.query || ''
       break
-    case 'web':
-      // 联网步骤的价值全在"拿到了什么"上: 只显示一条"已完成"等于没显示。
-      // chips 顺序刻意按排查时的关注度排: 结果条数 → 上游给了几条 → 抓取 → 正文量 → 空原因
-      card.title = s.tool === 'web_extract' ? '网页抓取' : '联网搜索'
-      card.chips.push({
-        text: `结果 ${s.results ?? 0} 条`,
-        tone: (s.results || 0) > 0 ? '' : 'warn'
-      })
-      if (s.rawCount != null) {
-        // 原始条数与保留条数并排才看得出"是上游没给, 还是被清洗规则扔了"
-        card.chips.push({ text: `上游 ${s.rawCount} 条` })
-        if (s.rawCount > 0) {
-          card.chips.push({ text: `存活 ${Math.round((s.results || 0) / s.rawCount * 100)}%` })
-        }
-      }
-      if (s.extractOk != null || s.extractFailed != null) {
+    case 'web': {
+      // 搜索与抓取是两条独立步骤: 标题与筹码按 tool 分开, 内容分别渲染在「搜索结果」与
+      // 「抓取页面」两块 —— "搜到了什么"和"抓到了什么"混在一起时, 排查根本分不清是哪一环出的问题
+      const isExtract = s.tool === 'web_extract'
+      card.title = isExtract ? '网页抓取' : '联网搜索'
+      if (isExtract) {
+        const ok = s.extractOk || 0
         const failed = s.extractFailed || 0
         card.chips.push({
-          text: `抓取 ${s.extractOk || 0}/${(s.extractOk || 0) + failed}`,
-          tone: failed > 0 ? 'warn' : ''
+          text: `成功 ${ok}/${ok + failed} 篇`,
+          tone: failed > 0 ? 'warn' : (ok ? '' : 'bad')
         })
-      }
-      if (s.contentChars != null) {
-        card.chips.push({ text: `正文 ${fmtTokens(s.contentChars)} 字` })
-      }
-      if (s.thinPages > 0) {
+        if (s.contentChars != null) card.chips.push({ text: `正文 ${fmtTokens(s.contentChars)} 字` })
         // 薄页 = 抓到了但只有一两句话(登录页/验证码页), 成功率看着正常却对回答零贡献
-        card.chips.push({ text: `薄页 ${s.thinPages}`, tone: 'warn' })
+        if (s.thinPages > 0) card.chips.push({ text: `薄页 ${s.thinPages}`, tone: 'warn' })
+        if (card.pages.length) card.chips.push({ text: `${card.pages.length} 篇明细` })
+      } else {
+        card.chips.push({
+          text: `结果 ${s.results ?? 0} 条`,
+          tone: (s.results || 0) > 0 ? '' : 'warn'
+        })
+        if (s.rawCount != null) {
+          // 原始条数与保留条数并排才看得出"是上游没给, 还是被清洗规则扔了"
+          card.chips.push({ text: `上游 ${s.rawCount} 条` })
+          if (s.rawCount > 0) {
+            card.chips.push({ text: `存活 ${Math.round((s.results || 0) / s.rawCount * 100)}%` })
+          }
+        }
+        if (card.items.length) card.chips.push({ text: `${card.items.length} 条明细` })
       }
       if (s.emptyReasonLabel) {
         card.chips.push({ text: s.emptyReasonLabel, tone: 'bad' })
       }
       card.quote = s.query || ''
       break
+    }
     case 'prompt':
       card.title = 'System Prompt 指纹'
       if (s.systemPromptFingerprint) card.chips.push({ text: s.systemPromptFingerprint, mono: true })
@@ -712,7 +752,8 @@ function endClass(s) {
 function stepLabel(s) {
   if (s.kind === 'rag') return 'RAG'
   if (s.kind === 'memory') return '记忆'
-  if (s.kind === 'web') return '联网'
+  // 联网拆成两条步骤后, 徽标要跟着分: 都叫"联网"的话在时间轴上还是分不出哪条是搜索、哪条是抓取
+  if (s.kind === 'web') return s.tool === 'web_extract' ? '抓取' : '搜索'
   if (s.kind === 'route') return '路由'
   if (s.kind === 'prompt') return '提示词'
   if (s.kind === 'citation') return '引用'
@@ -1067,6 +1108,22 @@ onMounted(() => {
 
 .cd-tool { margin-top: 10px; }
 .cd-tool-head { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }
+
+/* 联网内容明细(搜索条目 / 抓取页面): 每条一段, 标题与 URL 一行、摘要/正文另起 ——
+   排查时是"扫一遍标题找可疑项", 挤成一坨反而看不出哪条是哪条 */
+.cd-web { margin-top: 10px; }
+.cd-web-head { font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }
+.cd-web-item { padding: 7px 9px; margin-bottom: 5px; border: 1px solid var(--dcdr-border); border-radius: 6px; background: var(--dcdr-surface); }
+.cd-web-item-head { display: flex; align-items: baseline; gap: 6px; }
+.cd-web-idx { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); flex: none; }
+.cd-web-title { font-size: 12px; color: var(--dcdr-text-1); line-height: 1.5; word-break: break-word; }
+.cd-web-tag { flex: none; margin-left: auto; font-family: var(--dcdr-font-mono); font-size: 9.5px; padding: 1px 5px; border-radius: 3px; }
+.cd-web-tag.is-ok { color: var(--dcdr-success); background: color-mix(in srgb, var(--dcdr-success) 14%, transparent); }
+.cd-web-tag.is-bad { color: var(--dcdr-danger); background: color-mix(in srgb, var(--dcdr-danger) 14%, transparent); }
+.cd-web-url { display: block; margin-top: 2px; font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-accent-soft); text-decoration: none; word-break: break-all; }
+.cd-web-url:hover { text-decoration: underline; }
+.cd-web-text { margin: 4px 0 0; font-size: 11.5px; line-height: 1.65; color: var(--dcdr-text-2); word-break: break-word; }
+.cd-web-fail { margin: 4px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--dcdr-danger); word-break: break-word; }
 
 .cd-out { margin-top: 10px; }
 .cd-out-head { display: flex; align-items: baseline; gap: 8px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }

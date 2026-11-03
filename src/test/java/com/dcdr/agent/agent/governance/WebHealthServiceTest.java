@@ -192,6 +192,45 @@ class WebHealthServiceTest {
         assertNotNull(vo.getAvgKeepRatio());
     }
 
+    @Test
+    @DisplayName("拆分后的串联抓取步骤: 不计入联网调用数, 但抓取数字必须统计到")
+    void enrichStepNotCountedAsWebCall() {
+        given(
+                log("l1", NOW.minusHours(1), stepSearchAndEnrich("q1", 20, 8, 3, 1, 9000, 0)),
+                log("l2", NOW.minusHours(2), stepSearchAndEnrich("q2", 10, 10, 0, 3, 0, 0)));
+
+        WebHealthDtos.HealthOverview vo = service.overview(null, 30);
+
+        // 两次搜索 + 两条串联抓取步骤, 调用数只能是 2 —— 否则"联网调用次数"凭空翻倍
+        assertEquals(2, vo.getWebCalls());
+        assertEquals(2, vo.getSearchCalls());
+        assertEquals(0, vo.getExtractCalls(), "串联抓取不是模型发起的独立调用");
+        // 抓取成功率跨两种形态都算: 成功 3 / (3+1+0+3)
+        assertEquals(3.0 / 7, vo.getExtractSuccessRate(), 0.001);
+        // 空结果率只看顶层: 两次搜索都有结果 → 0。若不排除 enrich, l2 的"0 篇成功"会把它拉到 0.25
+        assertEquals(0.0, vo.getEmptyRate(), 0.001);
+        // 按天趋势同口径
+        assertEquals(2, vo.getTrend().get(0).getWebCalls());
+    }
+
+    @Test
+    @DisplayName("新旧数据混存: 老形态的抓取数字在搜索步骤上, 新形态在 enrich 步骤上, 不得重复计算")
+    void mixedOldAndNewExtractStatsDoNotDoubleCount() {
+        given(
+                // 老形态: 搜索 + 抓取合并成一条(搜索步骤自带 extractOk/extractFailed)
+                log("l1", NOW.minusHours(1), stepSearch("q1", 20, 8, 3, 1, 9000, 0)),
+                // 新形态: 搜索一条 + enrich 抓取一条(搜索侧抓取字段恒为 0)
+                log("l2", NOW.minusHours(2), stepSearchAndEnrich("q2", 15, 15, 2, 0, 6000, 0)));
+
+        WebHealthDtos.HealthOverview vo = service.overview(null, 30);
+
+        assertEquals(2, vo.getWebCalls());
+        // 成功 3(老) + 2(新) / 总 (3+1) + (2+0) = 5/6
+        assertEquals(5.0 / 6, vo.getExtractSuccessRate(), 0.001);
+        // 正文均值: 老形态 9000 一条、新形态 6000 一条(搜索步骤的内容字数恒为 0, 不参与)
+        assertEquals(7500L, vo.getAvgContentChars());
+    }
+
     // ==================================================================
     //  构造
     // ==================================================================
@@ -229,6 +268,20 @@ class WebHealthServiceTest {
     private static String stepExtract(String url, int ok, int failed, int contentChars, int thin) {
         return "[{\"kind\":\"web\",\"seq\":1,\"tool\":\"web_extract\",\"query\":\"" + url + "\","
                 + "\"costMs\":2000,\"results\":" + (ok + failed) + ","
+                + "\"extractOk\":" + ok + ",\"extractFailed\":" + failed + ","
+                + "\"contentChars\":" + contentChars + ",\"thinPages\":" + thin + "}]";
+    }
+
+    /**
+     * 拆分后的形态: 一条搜索 + 一条 phase=enrich 的串联抓取。
+     * <p>搜索步骤不再背抓取数字(那是老形态), 抓取数字整体搬到 enrich 步骤上。
+     */
+    private static String stepSearchAndEnrich(String query, int raw, int results,
+                                              int ok, int failed, int contentChars, int thin) {
+        return "[{\"kind\":\"web\",\"seq\":1,\"tool\":\"web_search\",\"query\":\"" + query + "\","
+                + "\"costMs\":3000,\"rawCount\":" + raw + ",\"results\":" + results + "},"
+                + "{\"kind\":\"web\",\"seq\":2,\"tool\":\"web_extract\",\"phase\":\"enrich\","
+                + "\"query\":\"" + query + "\",\"costMs\":2500,\"results\":" + ok + ","
                 + "\"extractOk\":" + ok + ",\"extractFailed\":" + failed + ","
                 + "\"contentChars\":" + contentChars + ",\"thinPages\":" + thin + "}]";
     }
