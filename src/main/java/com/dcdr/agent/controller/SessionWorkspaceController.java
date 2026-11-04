@@ -18,10 +18,12 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
  * 会话与工作区的绑定 + 撤回接口(V3.3 F-49)。
@@ -41,48 +43,61 @@ public class SessionWorkspaceController {
     private final WorkspaceChangeService changeService;
     private final OwnershipGuard ownershipGuard;
 
+    /**
+     * 把阻塞的业务调用切到 {@code boundedElastic} 后执行。
+     * <p>
+     * <b>为什么不能直接 {@code currentContext().map(...)}</b>: 上下文是同步发出的,
+     * {@code map} 里的代码就落在 reactor-http-nio 上 —— 而这些方法全都要查库, 撤回/变更列表
+     * 还要读回收区快照与磁盘上的当前文件(见 {@code WorkspaceChangeService})。
+     * 在 event loop 上做 JDBC + 文件 IO 会占死 Netty worker 线程, 期间所有 SSE 流一起卡住。
+     * 与 {@code NotifyConfigController} / {@code ScheduledTaskController} 保持同一口径。
+     */
+    private <T> Mono<T> onBlocking(Callable<T> body) {
+        return Mono.fromCallable(body).subscribeOn(Schedulers.boundedElastic());
+    }
+
     @Operation(summary = "绑定工作区", description = "把某个工作区授权给本会话使用; 传空 workspaceId 表示解绑")
     @ApiResponse(responseCode = "404", description = "会话或工作区不存在/无权访问")
     @PutMapping("/workspace")
     public Mono<Result<Map<String, String>>> bind(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id,
             @RequestBody Map<String, String> body) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             SessionEntity session = requireSession(id, ctx.userId(), ctx.admin());
-            String workspaceId = body.get("workspaceId");
-            if (workspaceId != null && !workspaceId.isBlank()) {
+            String raw = body.get("workspaceId");
+            // 空串与 null 同义(解绑); 统一成一个值, 后面不用再判两次
+            String workspaceId = (raw == null || raw.isBlank()) ? null : raw;
+            if (workspaceId != null) {
                 // 只允许绑定自己的(或 admin 绑定任意)工作区, 且要求工作区本身存在
                 workspaceService.requireOwned(workspaceId, ctx.userId(), ctx.admin());
-            } else {
-                workspaceId = null;
             }
             session.setWorkspaceId(workspaceId);
             session.setUpdatedAt(LocalDateTime.now());
             sessionRepository.save(session);
             return Result.success(Map.of("sessionId", id,
                     "workspaceId", workspaceId == null ? "" : workspaceId));
-        });
+        }));
     }
 
     @Operation(summary = "解绑工作区", description = "解除本会话与工作区的关联, 不删除工作区, 也不动磁盘文件")
     @DeleteMapping("/workspace")
     public Mono<Result<Void>> unbind(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             SessionEntity session = requireSession(id, ctx.userId(), ctx.admin());
             session.setWorkspaceId(null);
             session.setUpdatedAt(LocalDateTime.now());
             sessionRepository.save(session);
             return Result.<Void>success();
-        });
+        }));
     }
 
     @Operation(summary = "查看可撤回点", description = "返回会话内的用户消息列表, 供前端在消息旁显示「撤回此轮」")
     @GetMapping("/checkpoints")
     public Mono<Result<List<SessionRewindService.Checkpoint>>> checkpoints(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
-        return ownershipGuard.currentContext().map(ctx ->
-                Result.success(rewindService.checkpoints(id, ctx.userId(), ctx.admin())));
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() ->
+                Result.success(rewindService.checkpoints(id, ctx.userId(), ctx.admin()))));
     }
 
     @Operation(summary = "撤回",
@@ -93,7 +108,7 @@ public class SessionWorkspaceController {
     public Mono<Result<SessionRewindService.Report>> rewind(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id,
             @RequestBody Map<String, String> body) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             requireSession(id, ctx.userId(), ctx.admin());
             String messageId = body.get("messageId");
             if (messageId == null || messageId.isBlank()) {
@@ -103,7 +118,7 @@ public class SessionWorkspaceController {
                     ? SessionRewindService.Scope.FILES
                     : SessionRewindService.Scope.ALL;
             return Result.success(rewindService.rewind(id, messageId, scope));
-        });
+        }));
     }
 
     @Operation(summary = "撤销单次文件操作",
@@ -114,10 +129,10 @@ public class SessionWorkspaceController {
     public Mono<Result<SessionRewindService.Report>> undoOperation(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id,
             @Parameter(description = "操作 ID, 形如 op_20261026_174912_331", required = true) @PathVariable String opId) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             requireSession(id, ctx.userId(), ctx.admin());
             return Result.success(rewindService.undoOperation(id, opId, ctx.userId(), ctx.admin()));
-        });
+        }));
     }
 
     @Operation(summary = "查看本会话的文件变更",
@@ -132,7 +147,7 @@ public class SessionWorkspaceController {
             @RequestParam(required = false) String path,
             @Parameter(description = "3(默认) 或 full")
             @RequestParam(required = false, defaultValue = "3") String context) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             SessionEntity session = requireSession(id, ctx.userId(), ctx.admin());
             if (session.getWorkspaceId() == null || session.getWorkspaceId().isBlank()) {
                 return Result.success(new WorkspaceChangeService.Changes(List.of(), false, 0));
@@ -144,7 +159,7 @@ public class SessionWorkspaceController {
             int maxLines = full ? WorkspaceChangeService.maxLinesForFull() : 200;
             String onlyPath = path == null || path.isBlank() ? null : path;
             return Result.success(changeService.list(workspace, id, onlyPath, ctxLines, maxLines));
-        });
+        }));
     }
 
     @Operation(summary = "按文件撤销改动",
@@ -155,10 +170,10 @@ public class SessionWorkspaceController {
     public Mono<Result<SessionRewindService.Report>> undoPath(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id,
             @RequestBody Map<String, String> body) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             requireSession(id, ctx.userId(), ctx.admin());
             return Result.success(rewindService.undoPath(id, body.get("path"), ctx.userId(), ctx.admin()));
-        });
+        }));
     }
 
     @Operation(summary = "清空本会话的全部改动",
@@ -170,13 +185,13 @@ public class SessionWorkspaceController {
     public Mono<Result<SessionRewindService.Report>> rewindAll(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id,
             @RequestBody(required = false) Map<String, String> body) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             requireSession(id, ctx.userId(), ctx.admin());
             SessionRewindService.Scope scope = body != null && "ALL".equalsIgnoreCase(body.get("scope"))
                     ? SessionRewindService.Scope.ALL
                     : SessionRewindService.Scope.FILES;
             return Result.success(rewindService.rewindAll(id, ctx.userId(), ctx.admin(), scope));
-        });
+        }));
     }
 
     private SessionEntity requireSession(String id, String userId, boolean isAdmin) {

@@ -13,9 +13,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
  * 工作区接口(V3.3 F-49)。
@@ -40,12 +42,25 @@ public class WorkspaceController {
     private final WorkspaceService workspaceService;
     private final OwnershipGuard ownershipGuard;
 
+    /**
+     * 把阻塞的业务调用切到 {@code boundedElastic} 后执行。
+     * <p>
+     * <b>为什么不能直接 {@code currentContext().map(...)}</b>: 取上下文是同步发出的,
+     * {@code map} 里的代码就落在 reactor-http-nio 上。而本 Controller 的每个方法都要查库,
+     * {@code browse} 还要枚举目录 —— 磁盘 syscall 碰上网盘 (SMB 超时可达 30s) 会把
+     * Netty worker 线程占死, 期间所有 SSE 流一起卡住。这与
+     * {@code NotifyConfigController} / {@code ScheduledTaskController} 的口径保持一致。
+     */
+    private <T> Mono<T> onBlocking(Callable<T> body) {
+        return Mono.fromCallable(body).subscribeOn(Schedulers.boundedElastic());
+    }
+
     @Operation(summary = "工作区列表", description = "管理员返回全部, 普通用户仅自己的")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = WorkspaceDTO.class)))
     @GetMapping
     public Mono<Result<List<WorkspaceDTO>>> list() {
         return ownershipGuard.currentContext()
-                .map(ctx -> Result.success(workspaceService.list(ctx.userId(), ctx.admin())));
+                .flatMap(ctx -> onBlocking(() -> Result.success(workspaceService.list(ctx.userId(), ctx.admin()))));
     }
 
     @Operation(summary = "创建工作区",
@@ -54,8 +69,8 @@ public class WorkspaceController {
     @PostMapping
     public Mono<Result<WorkspaceDTO>> create(@RequestBody Map<String, String> body) {
         return ownershipGuard.currentContext()
-                .map(ctx -> Result.success(workspaceService.create(
-                        ctx.userId(), body.get("name"), body.get("rootPath"), body.get("accessLevel"))));
+                .flatMap(ctx -> onBlocking(() -> Result.success(workspaceService.create(
+                        ctx.userId(), body.get("name"), body.get("rootPath"), body.get("accessLevel")))));
     }
 
     @Operation(summary = "获取工作区详情")
@@ -63,10 +78,10 @@ public class WorkspaceController {
     @GetMapping("/{id}")
     public Mono<Result<WorkspaceDTO>> get(
             @Parameter(description = "工作区 ID", required = true) @PathVariable String id) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             workspaceService.requireOwned(id, ctx.userId(), ctx.admin());
             return Result.success(workspaceService.get(id));
-        });
+        }));
     }
 
     @Operation(summary = "修改工作区", description = "改名或升降档位; 降档立即生效")
@@ -75,10 +90,10 @@ public class WorkspaceController {
     public Mono<Result<WorkspaceDTO>> update(
             @Parameter(description = "工作区 ID", required = true) @PathVariable String id,
             @RequestBody Map<String, String> body) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             workspaceService.requireOwned(id, ctx.userId(), ctx.admin());
             return Result.success(workspaceService.update(id, body.get("name"), body.get("accessLevel")));
-        });
+        }));
     }
 
     @Operation(summary = "删除工作区",
@@ -87,11 +102,11 @@ public class WorkspaceController {
     @DeleteMapping("/{id}")
     public Mono<Result<Void>> delete(
             @Parameter(description = "工作区 ID", required = true) @PathVariable String id) {
-        return ownershipGuard.currentContext().map(ctx -> {
+        return ownershipGuard.currentContext().flatMap(ctx -> onBlocking(() -> {
             workspaceService.requireOwned(id, ctx.userId(), ctx.admin());
             workspaceService.delete(id);
             return Result.<Void>success();
-        });
+        }));
     }
 
     @Operation(summary = "目录浏览",
@@ -102,6 +117,6 @@ public class WorkspaceController {
             @Parameter(description = "要展开的目录绝对路径, 不传则从用户主目录开始")
             @RequestParam(required = false) String path) {
         return ownershipGuard.currentContext()
-                .map(ctx -> Result.success(workspaceService.browse(path, ctx.admin())));
+                .flatMap(ctx -> onBlocking(() -> Result.success(workspaceService.browse(path, ctx.admin()))));
     }
 }
