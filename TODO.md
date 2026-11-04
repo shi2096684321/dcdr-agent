@@ -2057,3 +2057,22 @@ web_search 怎么用，一个字没提 web_extract，而搜索结果的每条又
 **验证**：新增 `WebSearchToolPaginationTest` 4 项（schema 能力、页码透传、第三页拒绝、
 不支持源拒绝）；连同 RuntimePromptProviderTest 14、WebSearchBudgetTest 18、SearxngEngineRankTest 4，
 共 40 项通过；`mvn -o compile` 通过。前端、数据库无改动。
+
+## V3.3 修复：钉钉岗位推送表格转卡片后仍挤成一行
+
+**现象**：每日岗位推荐推送在钉钉里没有排版，9 个字段被 `｜` 连成一条。
+原始 Agent 输出本身是合法 Markdown 表格，`NotifyRender.forIm` 也正常转成了列表，
+公司名甚至带 `**加粗**`，所以问题不在“没转”。
+
+**根因**：钉钉官方 markdown 的换行要求是「`\n` 前后各两个空格」，单 `\n` 会被折叠。
+`appendTable` 生成的三行字段用的是单换行，到客户端就重新拼成了一行；
+另外表格第一列携带 `[[1]]` 引用角标，IM 没有来源卡片，角标只增加噪音。
+
+**做法**：
+- `NotifyRender` 新增 `IM_LINE_BREAK = "  \n"`，表格转出的标题与字段行统一使用硬换行。
+- `forIm` 入口移除 `[[n]]` 角标（只匹配 1~3 位数字，避免误伤普通双中括号）。
+- 钉钉仍不支持 Markdown 表格，因此保留“表格 → 岗位卡片”的转换，不尝试伪造表格。
+  将来若改用企业微信，可评估切换 `markdown_v2`（官方支持表格），但客户端需 4.1.38+。
+
+**验证**：`NotifyImRenderTest` 新增线上真实输出用例（带 `[[1]]`、9 列）断言硬换行与角标移除；
+`NotifyImRenderTest 8 / NotifyTemplateTest 20 / DingtalkBotNotifierTest 10`，共 38 项通过。

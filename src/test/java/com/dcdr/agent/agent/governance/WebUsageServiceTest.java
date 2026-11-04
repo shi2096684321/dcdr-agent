@@ -106,7 +106,41 @@ class WebUsageServiceTest {
         assertFalse(s.pricingConfigured());
         assertNull(s.estimatedCost(), "未配置单价时必须为 null, 界面显示「未配置单价」而不是 0 元");
         assertNull(byProvider(s, "deepseek").cost());
+        assertNull(s.daily().get(0).searchCost(), "按天费用同样不能编一个 0 元");
         assertEquals(1, s.searchCalls(), "次数仍要统计 —— 没有单价不等于没有用量");
+    }
+
+    @Test
+    @DisplayName("按天费用: 搜索与抓取分开累加, 免费源不摊到收费日")
+    void dailyCostSeparatesSearchAndExtract() {
+        properties.getWeb().getPricing().put("deepseek:web_search", new BigDecimal("0.005"));
+        properties.getWeb().getPricing().put("deepseek:web_extract", new BigDecimal("0.003"));
+        properties.getWeb().getPricing().put("searxng:web_search", BigDecimal.ZERO);
+        LocalDateTime yesterday = LocalDateTime.now().minusDays(1);
+        given(
+                log(yesterday, """
+                        [{"kind":"web","tool":"web_search","provider":"deepseek"},
+                         {"kind":"web","tool":"web_search","provider":"deepseek"},
+                         {"kind":"web","tool":"web_extract","provider":"deepseek"},
+                         {"kind":"web","tool":"web_search","provider":"searxng"}]
+                        """),
+                log(LocalDateTime.now(), """
+                        [{"kind":"web","tool":"web_search","provider":"deepseek"}]
+                        """));
+
+        WebUsageService.UsageSummary s = service.summary(30);
+
+        assertEquals(2, s.daily().size(), "两天应各一行");
+        WebUsageService.DayUsage first = s.daily().get(0);
+        assertEquals(3, first.searchCalls());
+        assertEquals(3, first.billableSearch(), "免费源也是成功请求, 只是单价为 0");
+        assertEquals(0, new BigDecimal("0.010").compareTo(first.searchCost()));
+        assertEquals(0, new BigDecimal("0.003").compareTo(first.extractCost()));
+        assertEquals(0, new BigDecimal("0.013").compareTo(first.cost()));
+
+        WebUsageService.DayUsage second = s.daily().get(1);
+        assertEquals(1, second.searchCalls());
+        assertEquals(0, new BigDecimal("0.005").compareTo(second.searchCost()));
     }
 
     @Test
@@ -240,11 +274,15 @@ class WebUsageServiceTest {
     }
 
     private static LlmCallLogEntity log(String stepsJson) {
+        return log(LocalDateTime.now(), stepsJson);
+    }
+
+    private static LlmCallLogEntity log(LocalDateTime createdAt, String stepsJson) {
         LlmCallLogEntity e = new LlmCallLogEntity();
         e.setId(java.util.UUID.randomUUID().toString());
         e.setUserId("u-1");
         e.setStepsJson(stepsJson);
-        e.setCreatedAt(LocalDateTime.now());
+        e.setCreatedAt(createdAt);
         return e;
     }
 }

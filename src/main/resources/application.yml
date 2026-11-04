@@ -872,7 +872,7 @@ agent-tools:
     language: zh-CN
     # 结果清洗管线会过滤掉大量聚合页(实测约砍掉一半), 故默认取 12 条以保证过滤后仍有足够条数
     max-results: 12
-    max-results-limit: 15
+    max-results-limit: 10
     timeout-seconds: 15
     # 单页正文最大长度(字符), 超出截断
     max-content-length: 8000

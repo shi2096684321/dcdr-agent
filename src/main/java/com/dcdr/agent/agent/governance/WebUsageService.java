@@ -68,7 +68,11 @@ public class WebUsageService {
         // 按 provider 汇总; 按天汇总单独记, 因为趋势图要的是"每天多少", 与源的维度正交
         // provider → [搜索次数, 抓取次数, 计费搜索, 计费抓取]
         Map<String, long[]> byProvider = new LinkedHashMap<>();
-        Map<String, long[]> byDay = new LinkedHashMap<>();        // yyyy-MM-dd → [search, extract]
+        // yyyy-MM-dd → [search, extract, billableSearch, billableExtract]
+        Map<String, long[]> byDay = new LinkedHashMap<>();
+        // 每天单独累加费用, 不能用"窗口总费用 ÷ 天数": 单价按来源不同, 某天只跑了免费源时
+        // 平均法会凭空摊出一笔钱。 [0]=搜索费用, [1]=抓取费用
+        Map<String, BigDecimal[]> costByDay = new LinkedHashMap<>();
         long searchTotal = 0;
         long extractTotal = 0;
         long billableSearch = 0;
@@ -111,7 +115,19 @@ public class WebUsageService {
                     agg[idx + 2]++;
                 }
                 if (day != null) {
-                    byDay.computeIfAbsent(day, k -> new long[2])[idx]++;
+                    long[] dayAgg = byDay.computeIfAbsent(day, k -> new long[4]);
+                    dayAgg[idx]++;
+                    if (billable) {
+                        dayAgg[idx + 2]++;
+                        // 只有真正计费的调用才累加金额; 单价缺失时留 null,
+                        // 由后面的 pricingConfigured 统一决定是 0 元还是"未配置"
+                        BigDecimal unitPrice = price(provider, tool);
+                        if (unitPrice != null) {
+                            BigDecimal[] dayCost = costByDay.computeIfAbsent(day,
+                                    k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO});
+                            dayCost[idx] = dayCost[idx].add(unitPrice);
+                        }
+                    }
                 }
             }
         }
@@ -137,7 +153,18 @@ public class WebUsageService {
 
         List<DayUsage> daily = new ArrayList<>();
         byDay.entrySet().stream().sorted(Map.Entry.comparingByKey())
-                .forEach(e -> daily.add(new DayUsage(e.getKey(), e.getValue()[0], e.getValue()[1])));
+                .forEach(e -> {
+                    long[] v = e.getValue();
+                    BigDecimal[] c = costByDay.get(e.getKey());
+                    BigDecimal searchCost = pricingConfigured
+                            ? (c == null ? BigDecimal.ZERO : c[0]) : null;
+                    BigDecimal extractCost = pricingConfigured
+                            ? (c == null ? BigDecimal.ZERO : c[1]) : null;
+                    BigDecimal dayCost = pricingConfigured
+                            ? searchCost.add(extractCost) : null;
+                    daily.add(new DayUsage(e.getKey(), v[0], v[1], v[2], v[3],
+                            searchCost, extractCost, dayCost));
+                });
 
         return new UsageSummary(window, truncated, searchTotal, extractTotal,
                 billableSearch, billableExtract,
@@ -259,6 +286,16 @@ public class WebUsageService {
                                 BigDecimal searchPrice, BigDecimal extractPrice, BigDecimal cost) {
     }
 
-    public record DayUsage(String date, long searchCalls, long extractCalls) {
+    /**
+     * 单日用量与费用。
+     *
+     * @param billableSearch 实际计费的搜索次数
+     * @param searchCost     搜索费用; null 表示未配置单价
+     * @param cost           当天合计费用; null 表示未配置单价
+     */
+    public record DayUsage(String date,
+                           long searchCalls, long extractCalls,
+                           long billableSearch, long billableExtract,
+                           BigDecimal searchCost, BigDecimal extractCost, BigDecimal cost) {
     }
 }

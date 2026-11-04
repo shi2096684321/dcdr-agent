@@ -95,7 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_run_task    ON scheduled_task_runs (task_id);
 CREATE INDEX IF NOT EXISTS idx_run_created ON scheduled_task_runs (created_at);
 
 -- =============================================================================
--- 定时任务增强 + 用户级推送配置（V3.4）
+-- 定时任务增强 + 用户级推送配置（V3.3 补丁；原注释标为 V3.4，实际已并入 3.3.0）
 --
 -- 设计要点：
 --   1. scheduled_tasks.model：任务可显式指定执行模型，优先级高于 Agent 配置的模型

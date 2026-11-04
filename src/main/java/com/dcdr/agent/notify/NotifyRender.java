@@ -99,10 +99,21 @@ final class NotifyRender {
 
     private static final java.util.regex.Pattern URL_ONLY = java.util.regex.Pattern.compile("^https?://\\S+$");
 
+    /** 正文里的引用角标 {@code [[1]]}；IM 没有来源卡片，留着只是噪音 */
+    private static final java.util.regex.Pattern CITATION = java.util.regex.Pattern.compile("\\[\\[\\d{1,3}]]");
+
     /** 每行最多拼几个"列名：值"，超过就换行 —— 一列一行的横排会把单行撑到几百字符 */
     private static final int PAIRS_PER_LINE = 3;
 
     private static final String PAIR_SEP = "｜";
+
+    /**
+     * IM 的硬换行（行尾两个空格 + \n）。
+     * <p>钉钉官方说明里单 {@code \n} 会被折叠，必须写成「\n 前后各两个空格」才换行；
+     * 只写 {@code \n} 时三个字段会连成一行，看起来就是"表格全挤在一起"。
+     * 企业微信的 Markdown 同样识别这个写法，因此两边共用。
+     */
+    private static final String IM_LINE_BREAK = "  \n";
 
     /**
      * 把正文转成 IM 里能看的样子（目前就是处理 Markdown 表格）。
@@ -120,6 +131,9 @@ final class NotifyRender {
      */
     static String forIm(String text) {
         if (text == null || text.isEmpty()) return "";
+        // 先去掉引用角标: 表格转卡片后第一列会变成公司名, 角标若留在里面会显示成
+        // "小满科技（阿里巴巴旗下）[[1]]"; 而 IM 里既没有来源卡片, 也没有可点的 [1]
+        text = CITATION.matcher(text).replaceAll("");
         String[] lines = text.split("\n", -1);
         StringBuilder out = new StringBuilder(text.length() + 128);
         int i = 0;
@@ -148,7 +162,8 @@ final class NotifyRender {
             if (row.stream().allMatch(String::isBlank)) continue;
             seq++;
             String head = cellAt(row, 0);
-            out.append("**").append(seq).append(". ").append(head.isEmpty() ? "(空)" : head).append("**\n");
+            out.append("**").append(seq).append(". ").append(head.isEmpty() ? "(空)" : head).append("**")
+                    .append(IM_LINE_BREAK);
             StringBuilder line = new StringBuilder();
             int pairsOnLine = 0;
             int cols = Math.max(header.size(), row.size());
@@ -159,12 +174,12 @@ final class NotifyRender {
                 if (pairsOnLine > 0) line.append(PAIR_SEP);
                 line.append(name).append("：").append(cellValue(value));
                 if (++pairsOnLine >= PAIRS_PER_LINE) {
-                    out.append(line).append('\n');
+                    out.append(line).append(IM_LINE_BREAK);
                     line.setLength(0);
                     pairsOnLine = 0;
                 }
             }
-            if (line.length() > 0) out.append(line).append('\n');
+            if (line.length() > 0) out.append(line).append(IM_LINE_BREAK);
             out.append('\n');
         }
     }

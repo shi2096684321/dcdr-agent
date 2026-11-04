@@ -178,7 +178,9 @@
     </div>
 
     <!-- 创建/编辑对话框 -->
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑定时任务' : '新建定时任务'" width="600px" @closed="resetForm">
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑定时任务' : '新建定时任务'"
+               class="task-edit-dialog" width="min(920px, 94vw)" top="5vh"
+               :close-on-click-modal="false" @closed="resetForm">
       <el-form :model="form" label-width="100px">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="如: 每日晨报" maxlength="100" />
@@ -236,7 +238,10 @@
           </div>
         </el-form-item>
         <el-form-item label="提示词">
-          <el-input v-model="form.inputMessage" type="textarea" :rows="3"
+          <!-- 任务提示词常有一整段检索条件与输出格式, 3 行编辑等于盲改:
+               默认给 10 行, 随内容最高长到 18 行, 仍可手动拖拽调整 -->
+          <el-input v-model="form.inputMessage" type="textarea" resize="vertical"
+                    :autosize="{ minRows: 10, maxRows: 18 }"
                     placeholder="每次触发时发给模型的提示词 (留空则用 '(定时触发)')" />
         </el-form-item>
         <el-form-item label="启用">
@@ -977,4 +982,8 @@ onUnmounted(() => {
 /* 一个会呼吸的圆点: 比静止图标更能说明"这会儿还在动" */
 .running-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dcdr-accent); flex-shrink: 0; animation: running-pulse 1.2s ease-in-out infinite; }
 @keyframes running-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* 编辑弹窗加宽后, 内容可能超过一屏: 让弹窗体自己滚,
+   避免提示词拖高时把底部「保存」按钮顶出视口 */
+.task-edit-dialog :deep(.el-dialog__body) { max-height: 72vh; overflow-y: auto; }
 </style>

@@ -21,6 +21,26 @@ class NotifyImRenderTest {
             | 高新兴科技集团股份有限公司 | Java工程师 | 广州 | 3-5年 | 12-20K·13薪 | Spring Cloud, Kafka/Redis | 2026-11-02 | https://www.liepin.com/job/1986446635.shtml | 未标注 |
             """;
 
+    /** 线上实际输出: 公司名后带引用角标, 岗位字段较长 */
+    private static final String REAL_RUN_TABLE = """
+            | 公司 | 岗位 | 城市 | 年限要求 | 薪资 | 核心技术要求 | 发布时间 | 投递链接 | 内推 |
+            |---|---|---|---|---|---|---|---|---|
+            | 小满科技（阿里巴巴旗下）[[1]] | Java后端开发工程师（平台方向） | 深圳 | 3-5年 | 25-35K·16薪 | Spring Boot 基础框架/Starter、并发编程与JVM、MySQL+Redis+消息队列 | 11月2日更新 | https://www.liepin.com/job/1986471989.shtml | 未标注 |
+            """;
+
+    @Test
+    @DisplayName("岗位卡片按钉钉要求硬换行, 引用角标不进入公司名")
+    void jobCardsUseHardBreaksAndDropCitations() {
+        String out = NotifyRender.forIm(REAL_RUN_TABLE);
+
+        assertFalse(out.contains("[[1]]"), "IM 没有来源卡片, 角标应去掉:\n" + out);
+        assertTrue(out.contains("**1. 小满科技（阿里巴巴旗下）**  \n"),
+                "公司名后必须是「两空格 + 换行」, 单 \\n 会被钉钉折叠:\n" + out);
+        assertTrue(out.contains("岗位：Java后端开发工程师（平台方向）｜城市：深圳｜年限要求：3-5年  \n"),
+                out);
+        assertTrue(out.contains("投递链接：[链接](https://www.liepin.com/job/1986471989.shtml)"), out);
+    }
+
     @Test
     @DisplayName("真表格: 表头消失, 第一列变标题, 其余列变“列名：值”")
     void convertsRealTable() {

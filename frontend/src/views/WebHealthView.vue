@@ -135,6 +135,38 @@
           <div v-else class="ub-empty">
             窗口内还没有联网调用记录。历史数据没有 provider 字段的记为 none 且不计费。
           </div>
+
+          <!-- 按天花费: 总费用看不出"哪天花得多", 搜索占比高时尤其需要单独一列 -->
+          <div v-if="dailyRows.length" class="ub-daily">
+            <div class="ub-daily-head">
+              <span class="ub-title">每日花费</span>
+              <span class="ub-sub">
+                搜索费用合计
+                <b class="ub-daily-total">{{ searchCostTotal == null ? '—' : fmtCost(searchCostTotal) }}</b>
+              </span>
+              <span class="ub-sub">计费/总 = 实际计费次数 / 全部调用次数</span>
+            </div>
+            <table class="ub-table">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th class="ta-r">搜索 计费/总</th>
+                  <th class="ta-r">搜索费用</th>
+                  <th class="ta-r">抓取费用</th>
+                  <th class="ta-r">合计</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="d in dailyRows" :key="d.date">
+                  <td>{{ d.date }}</td>
+                  <td class="ta-r">{{ d.billableSearch }} / {{ d.searchCalls }}</td>
+                  <td class="ta-r ub-daily-cost">{{ fmtCost(d.searchCost) }}</td>
+                  <td class="ta-r">{{ fmtCost(d.extractCost) }}</td>
+                  <td class="ta-r">{{ fmtCost(d.cost) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
 
         <div v-else ref="trendRef" class="wh-chart"></div>
@@ -268,6 +300,25 @@ const pricingUnmatched = computed(() => {
   if (!u || !u.pricingConfigured || u.pricingMatched) return false
   return (u.providers || []).some(p => p.provider !== 'none')
 })
+
+/** 每日花费倒序: 最近的一天先看, 与执行历史的方向一致 */
+const dailyRows = computed(() => (usage.value?.daily || []).slice().reverse())
+
+/** 窗口内搜索费用合计; 未配置单价时后端返回 null, 这里也保持 null 而不是 0 */
+const searchCostTotal = computed(() => {
+  const costs = dailyRows.value.map(d => d.searchCost).filter(v => v != null)
+  if (!costs.length) return null
+  return costs.reduce((sum, v) => sum + Number(v), 0)
+})
+
+/** 费用可能小到 0.005, 两位小数会全变成 0.01/0; 按金额大小切换精度 */
+function fmtCost(v) {
+  if (v == null) return '—'
+  const n = Number(v)
+  if (!Number.isFinite(n)) return '—'
+  if (n === 0) return '¥ 0'
+  return '¥ ' + n.toFixed(n < 0.01 ? 4 : 2)
+}
 
 async function load() {
   loading.value = true
@@ -421,6 +472,12 @@ watch(days, () => {
 .ub-table td { color: var(--dcdr-text-1); font-family: var(--dcdr-font-mono); }
 .ub-table .ta-r { text-align: right; }
 .ub-empty { font-size: 11.5px; color: var(--dcdr-text-3); padding: 4px 0; }
+/* 每日花费单独一块, 与"按源汇总"用虚线上分隔 */
+.ub-daily { margin-top: 16px; }
+.ub-daily-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px;
+  margin-bottom: 6px; padding-top: 12px; border-top: 1px dashed var(--dcdr-border); }
+.ub-daily-total { color: var(--dcdr-accent); font-weight: 600; }
+.ub-daily-cost { color: var(--dcdr-accent); font-weight: 600; }
 
 .wh-chart { height: 300px; }
 .wh-empty { text-align: center; color: var(--dcdr-text-3); padding: 40px 0; }
