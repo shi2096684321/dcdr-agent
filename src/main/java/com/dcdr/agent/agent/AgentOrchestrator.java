@@ -3,10 +3,14 @@ package com.dcdr.agent.agent;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.agent.memory.strategy.ContextStrategy;
+import com.dcdr.agent.agent.memory.strategy.ContextStrategyFactory;
 import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
 import com.dcdr.agent.agent.memory.longterm.MemoryAutoExtractor;
 import com.dcdr.agent.agent.memory.longterm.MemoryContextHolder;
 import com.dcdr.agent.agent.prompt.BackgroundContextBudget;
+import com.dcdr.agent.agent.prompt.ContextLimitPreference;
+import com.dcdr.agent.agent.prompt.ContextUsageService;
 import com.dcdr.agent.agent.prompt.RuntimePromptProvider;
 import com.dcdr.agent.agent.prompt.SystemPromptResolver;
 import com.dcdr.agent.agent.definition.AgentDefinitionService;
@@ -17,6 +21,7 @@ import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.audit.AuditService;
 import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
+import com.dcdr.agent.dto.ContextUsage;
 import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.dto.SessionDTO;
@@ -118,6 +123,12 @@ public class AgentOrchestrator {
     private final SkillCatalogProvider skillCatalogProvider;
     /** V3.3 F-49: 工作区摘要(根目录 + 档位 + 可用工具)。未绑定工作区时不注入 */
     private final WorkspacePromptProvider workspacePromptProvider;
+    /** V3.4: 上下文占用分段统计(下发给前端的圆环与明细) */
+    private final ContextUsageService contextUsageService;
+    /** V3.4: 「总上下文大小」的用户级设置(决定占用百分比的分母与告警阈值) */
+    private final ContextLimitPreference contextLimitPreference;
+    /** V3.4: 上下文策略(摘要压缩 / 滑动窗口) —— 决定发给模型的历史视图 */
+    private final ContextStrategyFactory contextStrategyFactory;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /**
@@ -298,7 +309,10 @@ public class AgentOrchestrator {
                              MemoryAutoExtractor memoryAutoExtractor,
                              ToolResultCompressor toolResultCompressor,
                              SkillCatalogProvider skillCatalogProvider,
-                             WorkspacePromptProvider workspacePromptProvider) {
+                             WorkspacePromptProvider workspacePromptProvider,
+                             ContextUsageService contextUsageService,
+                             ContextLimitPreference contextLimitPreference,
+                             ContextStrategyFactory contextStrategyFactory) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -324,6 +338,9 @@ public class AgentOrchestrator {
         this.toolResultCompressor = toolResultCompressor;
         this.skillCatalogProvider = skillCatalogProvider;
         this.workspacePromptProvider = workspacePromptProvider;
+        this.contextUsageService = contextUsageService;
+        this.contextLimitPreference = contextLimitPreference;
+        this.contextStrategyFactory = contextStrategyFactory;
     }
 
     /**
@@ -343,8 +360,9 @@ public class AgentOrchestrator {
             List<Message> contextForEstimate,
             boolean nearLimit,
             int estTokens,
+            int contextLimit,      // 本轮生效的总上下文上限(用户设置优先), 占用百分比与告警共用同一个分母
             List<String> agentAllowedTools,
-            int memoryTrimmed,     // 记忆窗口截断条数(>0 表示已丢弃早期消息, 用于超限提示)
+            String historyNotice,   // 上下文视图的调整说明(压缩/截断); 为空表示本轮未裁剪
             List<Map<String, Object>> forcedKbSources,  // 强制检索(RAG 显式模式)命中的引用来源, 供 done 块下发前端
             String forcedKbNotice,   // 强制检索的即时提示(空结果时告知用户"未找到", 命中时为 null)
             List<String> agenticKbIds,   // Agentic 语义触发的工具检索范围(未显式选择时含用户全部自有库)
@@ -391,9 +409,17 @@ public class AgentOrchestrator {
                 trace != null ? trace : com.dcdr.agent.common.log.LlmCallTrace.begin();
         final boolean ownTrace = trace == null;
 
-        Flux<ChatChunk> pipeline = Mono.fromCallable(() -> prepareForChat(request, currentUserId, t))
+        // 准备阶段偶尔会夹一次历史压缩(摘要策略, 最长 compaction.timeout-seconds): 那几秒用户收不到
+        // 任何字节, 界面看起来就像"点了发送没反应"。挂一个「迟到的提示」—— 只有准备超过 1.2 秒才真正
+        // 下发, 常态(几百毫秒)下不额外闪任何东西, 也就不必为了极少数慢请求给每一轮都加噪音。
+        Mono<ChatContext> prepared = Mono.fromCallable(() -> prepareForChat(request, currentUserId, t))
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(ctx -> Flux.<ChatChunk>create(sink -> {
+                // cache: 提示的截止信号与主链路是两个订阅方, 必须共用同一次准备, 否则准备会跑两遍
+                .cache();
+
+        Flux<ChatChunk> pipeline = Flux.merge(
+                slowPrepareHint(prepared),
+                prepared.flatMapMany(ctx -> Flux.<ChatChunk>create(sink -> {
                     try {
                         final String sessId = ctx.sessId();
                         final List<Message> history = ctx.history();
@@ -415,11 +441,10 @@ public class AgentOrchestrator {
                         }
 
                         // 记忆窗口超限提示: max-messages 截断已发生, 早期消息不再参与本轮回答(完整历史仍可在会话界面查看)
-                        if (ctx.memoryTrimmed() > 0) {
-                            sink.next(ChatChunk.contextWarning(
-                                    String.format("对话已达记忆窗口上限，仅保留最近 %d 条消息参与回答（已省略最早 %d 条），完整历史仍可在会话中查看。",
-                                            ctx.history().stream().filter(m -> !"system".equals(m.getRole())).count(),
-                                            ctx.memoryTrimmed())));
+                        // 上下文视图被调整(压缩/截断)时如实告知: 提示文案由策略给出 ——
+                        // 只有它知道自己是"压成了摘要"还是"丢掉了最早几条", 编排器不该替它编
+                        if (ctx.historyNotice() != null) {
+                            sink.next(ChatChunk.contextWarning(ctx.historyNotice()));
                         }
                         // 上下文接近上限提示: 用「将发送给模型的完整上下文」做估算, 在调用模型前先下发, 不阻断对话
                         if (ctx.nearLimit()) {
@@ -543,6 +568,20 @@ public class AgentOrchestrator {
                         // 工具回灌轮 includeCurrentUser=false, 若 history 缺当前提问,
                         // 回灌请求将只有 assistant(tool_calls)+tool 结果, 模型看不到用户问题(只能盲目重试工具)
                         history.add(Message.user(request.getMessage(), request.getImages()));
+
+                        // V3.4 上下文占用明细: 在调用模型之前算并下发。
+                        // 时机必须在这里 —— 晚于 history 补入当前提问、晚于工具定义就绪, 才等于"这一轮真正发出去的东西";
+                        // 早一步(如放在准备阶段)会漏掉当前提问与工具定义, 数字失真。
+                        // 不支持函数调用的模型根本不发工具定义, 此时按 0 计, 不能把工具定义算进去。
+                        List<Map<String, Object>> sentToolDefs =
+                                provider.supportsFunctionCalling() ? toolDefs : List.of();
+                        ContextUsage contextUsage =
+                                contextUsageService.compute(history, sentToolDefs, ctx.contextLimit());
+                        sink.next(ChatChunk.contextUsage(contextUsage));
+                        // 这里刻意<b>不落库</b>: 收尾时还会用「同一列为最新值」再写一次(带本轮消耗),
+                        // 两次写走各自独立的异步订阅、先后无保证 —— 早的那次晚到就会把收尾那份覆盖成
+                        // "没有本轮消耗"的旧版本(刷新后整块消失)。快照只在收尾写一次。
+
                         // 首轮模型流(user 消息已在 history, 不再由 provider 追加);
                         // tracedRound: 调用链打点(订阅计时, doFinally 记录 token/耗时/是否中断)
                         Flux<ChatChunk> upstream = tracedRound(
@@ -641,7 +680,8 @@ public class AgentOrchestrator {
                             return Flux.defer(() -> finalizeAssistant(sessId, provider,
                                     accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
                                     usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t,
-                                    taskTokenExceeded.get(), taskTokens.get()));
+                                    taskTokenExceeded.get(), taskTokens.get(),
+                                    history, sentToolDefs, ctx.contextLimit()));
                         });
                         tailRef.set(tailFlux);
 
@@ -753,7 +793,7 @@ public class AgentOrchestrator {
                         sink.next(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR"));
                         sink.complete();
                     }
-                }).subscribeOn(Schedulers.parallel()));
+                }).subscribeOn(Schedulers.parallel())));
 
         // 有图片时在管线前拼接"正在识别图片"状态提示(立即发出, 不阻塞)
         Flux<ChatChunk> result = hasImages
@@ -770,6 +810,24 @@ public class AgentOrchestrator {
             t.fail(null, "系统错误: " + e.getMessage());
             return Flux.just(ChatChunk.error("系统错误: " + e.getMessage(), "INTERNAL_ERROR"));
         });
+    }
+
+    /** 准备阶段超过该时长才提示; 常态(几百毫秒)不提示, 免得每一轮都闪一条状态 */
+    private static final long SLOW_PREPARE_HINT_MS = 1_200;
+
+    /**
+     * 「准备阶段变慢」的迟到提示(V3.4)。
+     * <p>
+     * 摘要压缩跑在准备阶段(SSE 首字节之前), 最长一个 {@code compaction.timeout-seconds} ——
+     * 那段时间客户端收不到任何东西, 用户只能看着发送按钮转。这里延时下发一条状态,
+     * <b>准备一完成就取消</b>({@code takeUntilOther}), 因此只会在真的慢的时候出现。
+     * <p>
+     * 准备的失败在这里静默: 主链路有统一的错误出口, 在这里再抛一次会让同一次失败被报两遍。
+     */
+    private static Flux<ChatChunk> slowPrepareHint(Mono<?> prepared) {
+        return Mono.delay(Duration.ofMillis(SLOW_PREPARE_HINT_MS))
+                .flatMapMany(ignored -> Flux.just(ChatChunk.status("正在整理上下文…")))
+                .takeUntilOther(prepared.ignoreElement().onErrorResume(e -> Mono.empty()));
     }
 
     /** 调用链打点: 包装一轮模型流, 订阅时计时, doFinally 记录该轮 token/耗时/是否中断(含请求参数与 system prompt 明细) */
@@ -2352,7 +2410,8 @@ public class AgentOrchestrator {
                                              long startNanos, List<Message> contextForEstimate,
                                              AtomicBoolean assistantSaved, AtomicBoolean costRecorded, String userId,
                                              ChatRequest request, com.dcdr.agent.common.log.LlmCallTrace trace,
-                                             boolean taskTokenExceeded, long taskTokens) {
+                                             boolean taskTokenExceeded, long taskTokens,
+                                             List<Message> history, List<Map<String, Object>> toolDefs, int contextLimit) {
         // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
         ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
                 usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
@@ -2440,6 +2499,22 @@ public class AgentOrchestrator {
                 .subscribe();
 
         List<ChatChunk> tail = new ArrayList<>();
+
+        // V3.4: 这一轮结束后的上下文占用 + 本轮消耗。
+        // 为什么要在收尾再算一次: 开头那次只算得到 prompt 侧 —— 答案还没生成, 用户看到的是
+        // "刚发出去时的那点占用", 而真正占住窗口的是"问题 + 答案"。收尾这次把已生成的回答补进
+        // history 重算, 下一条消息发出去之前看到的数字就是真实占用。顺带把本轮实测 usage 挂上,
+        // 让"这轮花了多少"和"窗口里躺着多少"分开呈现 —— 两者是不同的账。
+        // 注意这里没切 boundedElastic: 它是 CPU 型计算(不是阻塞 IO), 且结果必须同步拿到才能插在
+        // done 之前(异步化会让 context_usage 与 done 乱序)。代价是大上下文下占用 reactor 线程
+        // 几百毫秒 —— 若后续成为热点, 应改为"复用开头结果 + 只算本轮增量", 而不是简单挪线程。
+        ContextUsage afterTurn = contextUsageService.compute(appendAnswer(history, assistantMessage), toolDefs, contextLimit);
+        // measured 口径与 TokenEstimator.resolveUsage 一致: 模型回了非零 usage 才算实测
+        boolean measured = usageHolder[0] != null && usageHolder[0].getTotal() > 0;
+        contextUsageService.withRound(afterTurn, p, c, t, measured);
+        tail.add(ChatChunk.contextUsage(afterTurn));
+        persistContextUsage(sessId, afterTurn);
+
         // done 块: collectedSources 含联网搜索/知识库检索的引用来源(Agentic RAG 模式下由工具返回),
         // 随 done 下发给前端渲染引用卡片
         if (collectedSources != null && !collectedSources.isEmpty()) {
@@ -2498,17 +2573,22 @@ public class AgentOrchestrator {
         //     (Conversation 与 Agent 持久绑定后, 后续轮次才能确定这些记忆属于哪个 Agent)
         sessionManager.bindAgent(sessId, request.getAgentId());
 
-        // 2. 加载记忆
-        //    load(): 全量历史(落库与前端展示口径); loadWindow(): 发给 LLM 的滑窗视图(system 全保留 + 最近 N 条)。
-        //    超出 max-messages 时只截取视图、不删库(旧版直接删最早消息导致会话历史丢失, 已废弃该实现)。
+        // 2. 加载记忆 + 组装发给模型的上下文(V3.4: 策略化)
+        //    load(): 全量历史(落库与前端展示口径); 具体"发什么"由 ContextStrategy 决定 ——
+        //    默认摘要压缩(超预算时把早期对话压成摘要), 也可配 sliding-window 退回旧行为。
+        //    两种策略都只裁剪视图、不删库(旧版直接删最早消息导致会话历史丢失, 已废弃)。
+        //    上限要在策略之前解析: 是否压缩、压缩到多少, 都取决于"这个用户给模型多大的窗口"
+        int contextLimit = contextLimitPreference.effectiveLimit(userId);
         List<Message> fullHistory = memory.load(sessId);
-        List<Message> history = memory.loadWindow(sessId);
-        int memoryTrimmed = fullHistory.size() - history.size();
-        if (memoryTrimmed > 0) {
-            log.info("会话 {} 记忆窗口截断: 全量 {} 条, 发送 LLM {} 条(丢弃最早 {} 条)",
-                    sessId, fullHistory.size(), history.size(), memoryTrimmed);
+        ContextStrategy.View historyView =
+                contextStrategyFactory.current().apply(sessId, userId, fullHistory, contextLimit);
+        List<Message> history = new ArrayList<>(historyView.messages());
+        String historyNotice = historyView.notice();
+        if (historyNotice != null) {
+            log.info("会话 {} 上下文视图调整: 全量 {} 条 → 发送 {} 条",
+                    sessId, fullHistory.size(), history.size());
         }
-        log.debug("会话 {} 加载记忆 {} 条(窗口)", sessId, history.size());
+        log.debug("会话 {} 加载记忆 {} 条", sessId, history.size());
 
         // 2.1 V3.1 清除历史中的裸 system 消息(role=system 且无 name):
         //     V3.0 及之前"会话级 systemPrompt"以无 name 的 system 消息落库, 用户文本会以系统指令身份生效(提权风险)。
@@ -2647,19 +2727,21 @@ public class AgentOrchestrator {
         }
 
         // 2.1 上下文上限估算(用于调用模型前的提示)
-        //    注意: 必须基于「全量历史」而非滑窗视图估算 —— 滑窗只保留最近 max-messages 条(默认 6)，
-        //    按 6 条对话估算远达不到 context-token-limit 阈值, 导致 nearLimit 恒为 false 提示从未触发。
-        //    contextTokenLimit 衡量的是会话累计上下文占用, 故用 fullHistory + 当前提问来估算。
-        List<Message> contextForEstimate = new ArrayList<>(fullHistory);
+        //    V3.4: 上限(分母)已在策略之前解析, 此处直接复用 —— 与前端圆环的分母是同一个值,
+        //    否则会出现"界面 92% 却不告警"或"界面 3% 就弹提示"这种自相矛盾的表现。
+        //    估算对象改为「策略裁剪后的视图」: 它才是真正会发出去的东西。
+        //    旧版分别用 fullHistory(高估, 压缩后其实很小)与滑窗视图(低估到从不触发),
+        //    共同错误都是"拿另一个东西当上下文", 而不是"估算方法不准"。
+        List<Message> contextForEstimate = new ArrayList<>(history);
         contextForEstimate.add(Message.user(request.getMessage()));
-        boolean nearLimit = tokenEstimator.isNearLimit(contextForEstimate);
+        boolean nearLimit = tokenEstimator.isNearLimit(contextForEstimate, contextLimit);
         int est = nearLimit ? tokenEstimator.estimate(contextForEstimate) : 0;
 
         return new ChatContext(sessId, history, provider, imageFallbackWarning, imageUnrecognizedError,
                 prep.visionModel(), prep.imageStatus(), prep.imageCaption(), prep.imageTokenUsage(),
-                contextForEstimate, nearLimit, est,
+                contextForEstimate, nearLimit, est, contextLimit,
                 agentOverride != null ? agentOverride.allowedTools() : null,
-                memoryTrimmed, forcedKbSources, forcedKbNotice, agenticKbIds,
+                historyNotice, forcedKbSources, forcedKbNotice, agenticKbIds,
                 // 档位在准备阶段解析: 这里在 boundedElastic 上, 允许查库; 流式主链路里不应该再打 DB
                 workspacePromptProvider.accessForSession(sessId));
     }
@@ -3187,6 +3269,44 @@ public class AgentOrchestrator {
                 .map(Message::getContent)
                 .filter(c -> c != null && !c.isBlank())
                 .collect(java.util.stream.Collectors.joining("\n\n---\n\n"));
+    }
+
+    /**
+     * 把本轮回答并进上下文视图。
+     * <p>
+     * 回答本身就是下一轮要重发的上下文 —— 不算它, 用户会看到"问了一大段、答了一大段,
+     * 占用却几乎没变"。不直接 {@code history.add}: 那条列表还要给别处用, 就地改会污染调用方。
+     */
+    private static List<Message> appendAnswer(List<Message> history, Message assistantMessage) {
+        if (assistantMessage == null) return history;
+        List<Message> out = new ArrayList<>(history.size() + 1);
+        out.addAll(history);
+        out.add(assistantMessage);
+        return out;
+    }
+
+    /**
+     * 把本轮上下文占用快照写回会话(V3.4), 供切会话/刷新页面后仍能看到"上次那一轮用了多少"。
+     * <p>
+     * <b>异步 + 尽力而为</b>: 快照是展示层数据, 存不下最多是"下次打开看不到上次的明细",
+     * 而同步写库会把一次 DB 抖动放大成"对话卡住不动"。与失败消息落库同一口径。
+     * <p>
+     * 不阻塞 SSE: 这里不 join, 也不向上游传播异常。
+     */
+    private void persistContextUsage(String sessId, ContextUsage usage) {
+        String json = contextUsageService.toJson(usage);
+        if (json == null) return;
+        try {
+            Mono.fromCallable(() -> {
+                        sessionManager.saveContextUsage(sessId, json);
+                        return json;
+                    })
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .doOnError(e -> log.warn("保存上下文快照失败(不影响对话): {}", e.getMessage()))
+                    .subscribe();
+        } catch (Exception e) {
+            log.warn("保存上下文快照派发失败(不影响对话): {}", e.getMessage());
+        }
     }
 
     /** 消息快照序列化用(静态方法无法访问实例 mapper) */

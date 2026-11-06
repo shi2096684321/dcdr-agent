@@ -3,14 +3,22 @@ package com.dcdr.agent.entity;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.persistence.*;
 import lombok.Data;
+import org.hibernate.annotations.DynamicUpdate;
 
 import java.time.LocalDateTime;
 
 /**
  * 会话实体 (对话模式)
+ * <p>
+ * {@code @DynamicUpdate}(V3.4): 这个实体上有多条<b>互不相干</b>的窄写路径 —— 每轮对话收尾时
+ * {@code touch}(只改 updatedAt)、{@code saveContextUsage}(只改 contextUsage)、
+ * 首条消息的 {@code autoTitleFromFirstMessage}(只改标题) —— 它们走各自独立的异步事务、几乎同时发生。
+ * 默认的静态 UPDATE 会写全列, 于是"后提交的那次"会把别人刚写进去的列覆盖回自己读到的旧值
+ * (典型症状: 刚看到的上下文明细刷新后消失、会话列表排序不更新)。只写变更列即可消除这类丢更新。
  */
 @Data
 @Entity
+@DynamicUpdate
 @EntityListeners(OwnershipFillListener.class)
 @Schema(description = "会话实体 (对话模式)")
 @Table(name = "sessions", indexes = {
@@ -61,6 +69,45 @@ public class SessionEntity implements OwnedEntity {
             + "自动会话按它分组收敛保留数量 —— 单个任务跑几百次不该留下几百个会话")
     @Column(length = 64)
     private String sourceRef;
+
+    /**
+     * 最近一轮上下文占用快照(JSON, V3.4) —— 结构见 {@code com.dcdr.agent.dto.ContextUsage}。
+     * <p>
+     * <b>为什么落库而不是每次现算</b>: 真实的占用只有"组装完这一轮上下文"的那一刻才知道
+     * (平台提示词 + 记忆召回 + RAG + 技能目录 + 本轮工具定义), 事后现算等于把整条准备链路再跑一遍,
+     * 而其中若干步(记忆召回、路由)有副作用和成本。存快照的代价只有每轮一次 UPDATE,
+     * 换来切会话、刷新页面后仍能看到"上次那一轮用了多少"。
+     * <p>
+     * 存的是<b>快照</b>不是实时值: 用户改了总上下文之后, 分母由读取侧按当前设置重算
+     * (见 {@code ContextUsageService#fromJson}), 所以这里不必跟着改。
+     */
+    @Schema(description = "最近一轮上下文占用快照 (V3.4, JSON)")
+    @Column(columnDefinition = "TEXT")
+    private String contextUsage;
+
+    /**
+     * 历史对话的压缩摘要(V3.4) —— 由 {@code SummaryCompactionStrategy} 维护。
+     * <p>
+     * <b>为什么不另建表</b>: 一个会话只有"当前这一份摘要"(每次压缩整体替换), 天然是会话的一个属性;
+     * 建历史表意味着要处理"哪一版生效"和清理, 换不来任何东西。
+     * <p>
+     * 原文不会被删: 摘要只影响"发给模型什么", 界面里的完整历史照旧从 messages 表读。
+     * 这也意味着摘要是<b>可丢弃的缓存</b> —— 校验不过(见 {@link #contextSummarySeq})时整份作废即可。
+     */
+    @Schema(description = "历史对话压缩摘要 (V3.4)")
+    @Column(columnDefinition = "TEXT")
+    private String contextSummary;
+
+    /**
+     * 摘要已覆盖到的最后一条消息 seq(V3.4)。
+     * <p>
+     * 这是压缩的<b>边界证明</b>: 组装上下文时只丢掉 seq &lt;= 它的消息。用户撤回/删除历史后,
+     * 这个 seq 对应的那条消息可能已经不存在了 —— 那就说明摘要描述的是已被删掉的内容,
+     * 必须整份作废, 否则模型会"记得"用户明确撤回过的事。
+     */
+    @Schema(description = "摘要覆盖到的最后一条消息 seq (V3.4)")
+    @Column(name = "context_summary_seq")
+    private Integer contextSummarySeq;
 
     @Schema(description = "创建时间")
     @Column(nullable = false)

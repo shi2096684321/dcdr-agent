@@ -28,8 +28,53 @@ public class AgentProperties {
         private int contextTokenLimit = 8000;
         /** 触发提示的阈值比例(0~1) */
         private double contextWarnRatio = 0.8;
+
+        /**
+         * 上下文策略(V3.4): {@code summary}(摘要压缩, 默认) | {@code sliding-window}(只保留最近若干条)。
+         * <p>
+         * <b>为什么默认改成摘要</b>: 滑动窗口一过阈值就把最早的对话直接丢掉, 模型"忘事"是断崖式的 ——
+         * 丢了就永远不知道, 用户只能靠新开会话规避。摘要压缩把旧对话压成一段可复述的事实
+         * (用户目标、已定方案、未完成事项), 同样的 token 预算下能留下多得多的信息。
+         * <p>
+         * 保留 {@code sliding-window} 作为可选项: 它的优点是零成本零延迟(不额外调模型),
+         * 在"上下文预算很紧、且历史确实不重要"的场景仍然更合适。
+         */
+        private String strategy = "summary";
+
+        /** 摘要压缩策略的参数(仅 strategy=summary 时生效) */
+        private CompactionConfig compaction = new CompactionConfig();
+
         /** LLM 自动抽取记忆 (V3.1 P1), 默认关闭 */
         private AutoExtractConfig autoExtract = new AutoExtractConfig();
+    }
+
+    /**
+     * 摘要压缩参数(V3.4)。
+     * <p>
+     * 触发口径用 <b>token 数</b>而不是消息条数: 条数无法表达"这些内容有多占地方" ——
+     * 20 条寒暄和 20 条带代码的长回答, 代价差一个数量级。
+     */
+    @Data
+    public static class CompactionConfig {
+        /**
+         * 估算 token 超过该值即压缩。
+         * <p>
+         * 默认 24000 是"每轮愿意为上下文付的成本", 明显小于模型窗口(30 万) ——
+         * 两者不是一回事: 窗口是上限, 这里是预算。调大能记住更多, 代价是每轮都在为历史付费。
+         */
+        private int triggerTokens = 24000;
+
+        /** 压缩时保留原文的最近消息条数(非 system)。太小会把"刚才说的"也摘要掉, 太大会让压缩无效 */
+        private int keepRecent = 6;
+
+        /** 摘要正文长度上限(字符)。摘要本身也在上下文里, 不设上限等于换一种方式膨胀 */
+        private int summaryMaxChars = 4000;
+
+        /** 摘要用模型(留空 = 系统默认对话模型)。建议配低成本模型 —— 它是周期性调用 */
+        private String model;
+
+        /** 单次摘要调用的超时(秒)。超时即降级为滑动窗口, 不让对话跟着卡住 */
+        private int timeoutSeconds = 30;
     }
 
     /**

@@ -1,0 +1,334 @@
+package com.dcdr.agent.agent.prompt;
+
+import com.dcdr.agent.agent.memory.Message;
+import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.dto.ContextUsage;
+import com.dcdr.agent.skill.SkillCatalogProvider;
+import com.dcdr.agent.tool.Tool;
+import com.dcdr.agent.tool.ToolRegistry;
+import com.dcdr.agent.tool.mcp.McpTool;
+import com.dcdr.agent.tool.plugin.PluginToolAdapter;
+import com.dcdr.agent.workspace.WorkspacePromptProvider;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * 上下文占用的分段统计 (V3.4) —— 把"发给模型的一整坨上下文"拆成用户看得懂的几笔账。
+ *
+ * <p><b>统计对象是"实际发出的东西", 不是配置</b>: 分段来源全部取自本轮真实组装的
+ * {@code history}(含平台提示词、人设、记忆、RAG、运行时约束、工作区摘要)与真实下发的工具定义,
+ * 因此"改了配置但没生效"这类问题在这里会直接暴露为某段为 0。
+ *
+ * <p><b>分类依据</b>: system 消息按注入时写下的 {@code name} 归类 —— 这是这套注入机制本来就维护的
+ * 去重键, 拿它当分类键不需要让任何 Provider 多报一个字段, 也不会与注入逻辑脱节。
+ * 工具按注册类型分: MCP 工具({@link McpTool})与插件({@link PluginToolAdapter})归"连接器与 MCP",
+ * 其余归"工具及子智能体"(本仓库暂无子智能体概念, 该分类先只统计工具定义)。
+ *
+ * <p><b>全是估算</b>: 走 {@link TokenEstimator} 的 cl100k BPE。同一段中文, Qwen 的分词器通常比
+ * cl100k 更省, 因此这里的结果对国产模型偏保守(略高)。界面标注"估算"是契约的一部分。
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class ContextUsageService {
+
+    /** 分段 key: 前端按它取色, 不要用 label 匹配 */
+    public static final String KEY_SYSTEM = "system";
+    public static final String KEY_TOOLS = "tools";
+    public static final String KEY_MESSAGES = "messages";
+    public static final String KEY_CONNECTORS = "connectors";
+    public static final String KEY_SKILLS = "skills";
+
+    /** 属于"技能"分类的注入片段(目录 + 本轮手动指定的正文) */
+    private static final Set<String> SKILL_FRAGMENT_NAMES = Set.of(
+            SkillCatalogProvider.PROMPT_NAME, SkillCatalogProvider.MANUAL_PROMPT_NAME);
+
+    /**
+     * 系统提示词内的片段名 → 人话。
+     * <p>未收录的名字直接显示原名: 新增注入片段时宁可露出一个 tech 名字, 也不要被静默归进"其它"
+     * —— 那会让"这轮到底多注入了什么"永远查不出来。
+     */
+    private static final Map<String, String> SYSTEM_FRAGMENT_LABELS = Map.ofEntries(
+            Map.entry("session:persona", "会话角色设定"),
+            Map.entry("agent:persona", "专家人设"),
+            Map.entry("memory:long-term", "长期记忆"),
+            Map.entry("memory:summary", "历史摘要"),
+            Map.entry("runtime:rag-context", "知识库检索"),
+            Map.entry("rag:forced", "知识库检索(未命中提示)"),
+            Map.entry(WorkspacePromptProvider.FRAGMENT_NAME, "工作区摘要"),
+            Map.entry("runtime:current-time", "当前时间"),
+            Map.entry("runtime:multi-turn", "多轮对话约束"),
+            Map.entry("runtime:web-search", "联网搜索引导"),
+            Map.entry("runtime:image-policy", "生图策略"),
+            Map.entry("runtime:tool-data", "外部数据边界"));
+
+    private static final String PLATFORM_PROMPT_LABEL = "平台系统提示词";
+
+    private final TokenEstimator tokenEstimator;
+    private final ToolRegistry toolRegistry;
+
+    /** 序列化/反序列化共用(快照落 sessions.context_usage); ObjectMapper 线程安全 */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /**
+     * 统计本轮上下文占用。
+     *
+     * @param history  本轮实际发给模型的消息列表(须已含当前用户消息)
+     * @param toolDefs 本轮实际下发的 OpenAI 格式工具定义(可为空: 模型不支持函数调用时)
+     * @param limit    当前生效的总上下文上限
+     */
+    public ContextUsage compute(List<Message> history, List<Map<String, Object>> toolDefs, int limit) {
+        ContextUsage usage = new ContextUsage();
+        usage.setAvailable(true);
+        usage.setLimitTokens(limit);
+
+        List<ContextUsage.Segment> segments = new ArrayList<>(5);
+        segments.add(systemSegment(history));
+        segments.add(toolsSegment(toolDefs));
+        segments.add(messagesSegment(history));
+        segments.add(connectorsSegment(toolDefs));
+        segments.add(skillsSegment(history));
+
+        int total = 0;
+        for (ContextUsage.Segment s : segments) {
+            total += s.getTokens();
+        }
+        for (ContextUsage.Segment s : segments) {
+            s.setPercent(round1(total == 0 ? 0 : s.getTokens() * 100.0 / total));
+        }
+        usage.setSegments(segments);
+        usage.setTotalTokens(total);
+        usage.setPercent(percent(total, limit));
+        return usage;
+    }
+
+    /** 系统提示词: 除技能以外的全部 system 消息, 按片段名合并 */
+    private ContextUsage.Segment systemSegment(List<Message> history) {
+        Map<String, int[]> byLabel = new LinkedHashMap<>();
+        for (Message m : history) {
+            if (!"system".equals(m.getRole())) continue;
+            String name = m.getName();
+            if (name != null && SKILL_FRAGMENT_NAMES.contains(name)) continue;
+            String label = name == null ? PLATFORM_PROMPT_LABEL
+                    : SYSTEM_FRAGMENT_LABELS.getOrDefault(name, name);
+            addTo(byLabel, label, tokensOf(m));
+        }
+        return segment(KEY_SYSTEM, "系统提示词", byLabel);
+    }
+
+    /** 技能: 技能目录 + 本轮手动指定技能的正文 */
+    private ContextUsage.Segment skillsSegment(List<Message> history) {
+        Map<String, int[]> byLabel = new LinkedHashMap<>();
+        for (Message m : history) {
+            if (!"system".equals(m.getRole())) continue;
+            String name = m.getName();
+            if (name == null || !SKILL_FRAGMENT_NAMES.contains(name)) continue;
+            String label = SkillCatalogProvider.PROMPT_NAME.equals(name) ? "技能目录" : "指定技能正文";
+            addTo(byLabel, label, tokensOf(m));
+        }
+        return segment(KEY_SKILLS, "技能", byLabel);
+    }
+
+    /** 对话消息: 用户提问 / 助手回答 / 工具结果(含工具调用的结构化参数, 与发给模型的口径一致) */
+    private ContextUsage.Segment messagesSegment(List<Message> history) {
+        Map<String, int[]> byLabel = new LinkedHashMap<>();
+        for (Message m : history) {
+            if ("system".equals(m.getRole())) continue;
+            addTo(byLabel, roleLabel(m.getRole()), tokensOf(m));
+        }
+        return segment(KEY_MESSAGES, "对话消息", byLabel);
+    }
+
+    private ContextUsage.Segment toolsSegment(List<Map<String, Object>> toolDefs) {
+        return toolSegment(KEY_TOOLS, "工具及子智能体", toolDefs, false);
+    }
+
+    private ContextUsage.Segment connectorsSegment(List<Map<String, Object>> toolDefs) {
+        return toolSegment(KEY_CONNECTORS, "连接器与MCP", toolDefs, true);
+    }
+
+    /**
+     * 工具定义分段。工具定义是每轮重发的固定成本, 也是"关掉几个连接器能省多少"的唯一答案,
+     * 所以按工具名逐条列出, 不做聚合。
+     *
+     * @param connectorSide true=只统计 MCP/插件工具; false=只统计其余工具
+     */
+    private ContextUsage.Segment toolSegment(String key, String label,
+                                             List<Map<String, Object>> toolDefs, boolean connectorSide) {
+        Map<String, int[]> byLabel = new LinkedHashMap<>();
+        if (toolDefs != null) {
+            for (Map<String, Object> def : toolDefs) {
+                String name = toolNameOf(def);
+                if (name == null) continue;
+                if (isConnectorTool(name) != connectorSide) continue;
+                addTo(byLabel, name, estimateJson(def));
+            }
+        }
+        return segment(key, label, byLabel);
+    }
+
+    /** 工具归属: MCP 与插件都算"连接器" —— 它们都是外部提供的能力, 可整体摘掉 */
+    private boolean isConnectorTool(String name) {
+        // 工具已注销时 getTool 返回 null: 归到"工具"侧而不是丢掉, 否则总数会对不上
+        Tool tool = toolRegistry.getTool(name);
+        return tool instanceof McpTool || tool instanceof PluginToolAdapter;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String toolNameOf(Map<String, Object> def) {
+        Object fn = def.get("function");
+        if (!(fn instanceof Map)) return null;
+        Object name = ((Map<String, Object>) fn).get("name");
+        return name == null ? null : String.valueOf(name);
+    }
+
+    private int estimateJson(Object value) {
+        try {
+            return tokenEstimator.estimate(MAPPER.writeValueAsString(value));
+        } catch (Exception e) {
+            // 序列化失败时退化为 toString 估算: 少算总比整段消失好, 且不会影响对话主链路
+            log.warn("上下文统计: 工具定义序列化失败, 退化为 toString 估算: {}", e.getMessage());
+            return tokenEstimator.estimate(String.valueOf(value));
+        }
+    }
+
+    /**
+     * 单条消息在<b>下一轮会被重发</b>的 token 数。
+     * <p>
+     * 与 {@code TokenEstimator#estimate(List)} 的差别只有一条: <b>不计思维链</b>。
+     * 那个方法的口径是"这条消息里有多少字"(用于成本兜底估算), 而占用面板要回答的是
+     * "下一轮请求里还有多少字" —— 本项目 Provider 不回传历史消息的 reasoning(见
+     * {@code LangChain4jChatProvider#appendHistoryMessage}), 把它算进去会让思考型模型的占用
+     * 凭空翻倍, 用户照着这个数字去开新会话就是白开。
+     */
+    private int tokensOf(Message m) {
+        int tokens = tokenEstimator.estimate(m.getContent());
+        // 工具往返: assistant 的 tool_calls 结构化字段与 tool 角色的名称/调用 id 同样会被重发
+        if (m.getToolCalls() != null && !m.getToolCalls().isEmpty()) {
+            tokens += estimateJson(m.getToolCalls());
+        }
+        if (m.getToolCallId() != null) tokens += tokenEstimator.estimate(m.getToolCallId());
+        if (m.getName() != null) tokens += tokenEstimator.estimate(m.getName());
+        return tokens;
+    }
+
+    private static void addTo(Map<String, int[]> acc, String label, int tokens) {
+        int[] v = acc.computeIfAbsent(label, k -> new int[2]);
+        v[0] += tokens;
+        v[1] += 1;
+    }
+
+    private static ContextUsage.Segment segment(String key, String label, Map<String, int[]> byLabel) {
+        ContextUsage.Segment s = new ContextUsage.Segment();
+        s.setKey(key);
+        s.setLabel(label);
+        int total = 0;
+        List<ContextUsage.Item> items = new ArrayList<>(byLabel.size());
+        for (Map.Entry<String, int[]> e : byLabel.entrySet()) {
+            ContextUsage.Item item = new ContextUsage.Item();
+            item.setLabel(e.getKey());
+            item.setTokens(e.getValue()[0]);
+            item.setCount(e.getValue()[1]);
+            items.add(item);
+            total += e.getValue()[0];
+        }
+        // 段内按 token 降序: 明细里最该被看见的是"最贵的那几项"
+        items.sort((a, b) -> Integer.compare(b.getTokens(), a.getTokens()));
+        s.setItems(items);
+        s.setTokens(total);
+        return s;
+    }
+
+    private static String roleLabel(String role) {
+        if ("user".equals(role)) return "用户消息";
+        if ("assistant".equals(role)) return "助手回答";
+        if ("tool".equals(role)) return "工具结果";
+        return role;
+    }
+
+    private static double percent(int total, int limit) {
+        if (limit <= 0) return 0;
+        return round1(total * 100.0 / limit);
+    }
+
+    private static double round1(double v) {
+        return Math.round(v * 10) / 10.0;
+    }
+
+    // ===== 快照存取 =====
+
+    /** 快照序列化(落 sessions.context_usage)。失败返回 null —— 存不下就不存, 不影响本轮对话 */
+    public String toJson(ContextUsage usage) {
+        try {
+            return MAPPER.writeValueAsString(usage);
+        } catch (Exception e) {
+            log.warn("上下文快照序列化失败(不影响对话): {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 读取快照并按<b>当前</b>上限重算百分比。
+     * <p>必须重算而不是原样返回: 用户改了总上下文之后, 百分比的分母跟着变,
+     * 但快照里的分子(各类实际占用)没变。直接返回旧值会让界面在"改了设置"后仍显示旧比例。
+     *
+     * @param json  快照(可为 null)
+     * @param limit 当前生效上限
+     * @return 无快照或快照损坏时返回 {@code available=false} 的空结构(界面显示空态)
+     */
+    public ContextUsage fromJson(String json, int limit) {
+        if (json == null || json.isBlank()) return empty(limit);
+        try {
+            ContextUsage usage = MAPPER.readValue(json, ContextUsage.class);
+            if (usage == null || usage.getSegments() == null || usage.getSegments().isEmpty()) {
+                return empty(limit);
+            }
+            usage.setAvailable(true);
+            usage.setLimitTokens(limit);
+            usage.setPercent(percent(usage.getTotalTokens(), limit));
+            return usage;
+        } catch (Exception e) {
+            // 结构升级后老快照可能解析不了: 降级为空态(下次对话会覆盖), 不抛给前端
+            log.warn("上下文快照解析失败, 按空态返回: {}", e.getMessage());
+            return empty(limit);
+        }
+    }
+
+    /** 空态: 带上当前上限, 让界面在没有数据时也能显示"上限多少" */
+    public ContextUsage empty(int limit) {
+        ContextUsage usage = new ContextUsage();
+        usage.setAvailable(false);
+        usage.setLimitTokens(limit);
+        usage.setPercent(0);
+        usage.setTotalTokens(0);
+        return usage;
+    }
+
+    /**
+     * 补上"本轮消耗"(收尾时调用)。
+     * <p>
+     * 单独一步而不是塞进 {@link #compute}: 计算占用时答案还没生成, 输入/输出根本不存在 ——
+     * 若那时留 0, 界面会显示"本轮 0 token", 比不显示更糟。
+     *
+     * @param measured 是否来自模型返回的真实 usage(否则为估算)
+     * @return 原对象(便于链式), 已写入 {@code lastRound}
+     */
+    public ContextUsage withRound(ContextUsage usage, int prompt, int completion, int total, boolean measured) {
+        if (usage == null) return null;
+        ContextUsage.Round round = new ContextUsage.Round();
+        round.setPrompt(prompt);
+        round.setCompletion(completion);
+        round.setTotal(total);
+        round.setMeasured(measured);
+        usage.setLastRound(round);
+        return usage;
+    }
+}

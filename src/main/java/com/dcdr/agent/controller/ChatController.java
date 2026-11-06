@@ -4,6 +4,7 @@ import com.dcdr.agent.agent.ActiveChatRegistry;
 import com.dcdr.agent.agent.AgentOrchestrator;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
+import com.dcdr.agent.agent.prompt.ContextLimitPreference;
 import com.dcdr.agent.agent.router.IntentRouter;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.agent.workflow.WorkflowEngine;
@@ -62,6 +63,8 @@ public class ChatController {
     private final com.dcdr.agent.agent.log.LlmCallLogWriter callLogWriter;
     /** V3.1 F-41: 对话内 RAG 检索范围的归属校验(防止携带他人知识库 ID 越权检索) */
     private final OwnershipGuard ownershipGuard;
+    /** V3.4: 「总上下文大小」的用户级设置(占用百分比的分母) */
+    private final ContextLimitPreference contextLimitPreference;
 
     private static final Function<ChatChunk, ServerSentEvent<ChatChunk>> TO_SSE =
             chunk -> ServerSentEvent.<ChatChunk>builder().data(chunk).build();
@@ -332,5 +335,61 @@ public class ChatController {
         log.info("中断会话请求: session={}", sessionId);
         boolean stopped = activeChatRegistry.stop(sessionId);
         return Result.success(stopped);
+    }
+
+    /**
+     * 总上下文大小 (V3.4) —— 上下文占用百分比的分母, 也是"接近上限"告警的阈值依据。
+     * <p>
+     * 挂在对话接口下而不是系统设置接口下: 它只影响对话侧的展示与告警, 与部署级配置无关。
+     */
+    @Operation(summary = "获取总上下文设置 (V3.4)",
+            description = "返回当前生效上限、用户自己设置的值(null=跟随部署默认)、部署默认值与允许范围。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ContextLimitDtos.ContextLimitView.class)))
+    @GetMapping("/context-limit")
+    public Mono<Result<ContextLimitDtos.ContextLimitView>> getContextLimit() {
+        return ownershipGuard.currentContext()
+                .flatMap(ctx -> Mono.fromCallable(() -> Result.success(limitView(ctx.userId())))
+                        .subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    @Operation(summary = "设置总上下文 (V3.4)",
+            description = "limit=null 表示恢复默认(清除个人设置, 重新跟随部署配置)。"
+                    + "取值越界返回 400; 无登录用户时忽略写入并在返回体里标记 editable=false。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ContextLimitDtos.ContextLimitView.class)))
+    @ApiResponse(responseCode = "400", description = "取值超出允许范围")
+    @PutMapping("/context-limit")
+    public Mono<Result<ContextLimitDtos.ContextLimitView>> setContextLimit(
+            @RequestBody(required = false) ContextLimitDtos.ContextLimitRequest req) {
+        return ownershipGuard.currentContext()
+                .flatMap(ctx -> Mono.fromCallable(() -> {
+                    try {
+                        contextLimitPreference.update(ctx.userId(), req == null ? null : req.getLimit());
+                    } catch (IllegalArgumentException e) {
+                        // 越界是用户输入问题(400), 不是服务端故障; 沿用项目错误码口径
+                        return Result.<ContextLimitDtos.ContextLimitView>error(400, e.getMessage());
+                    }
+                    // 回传完整视图而不是 boolean: 界面同时要更新"生效值"和"是否有个人设置", 省一次 GET
+                    return Result.success(limitView(ctx.userId()));
+                }).subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    /** 组装总上下文视图(三值一次给全, 见 {@code ContextLimitDtos} 的类注释) */
+    private ContextLimitDtos.ContextLimitView limitView(String userId) {
+        ContextLimitDtos.ContextLimitView view = new ContextLimitDtos.ContextLimitView();
+        view.setLimit(contextLimitPreference.effectiveLimit(userId));
+        view.setUserValue(contextLimitPreference.userChoice(userId));
+        view.setDefaultValue(contextLimitPreference.deploymentDefault());
+        view.setMin(ContextLimitPreference.MIN_LIMIT);
+        view.setMax(ContextLimitPreference.MAX_LIMIT);
+        // 认证关闭时没有用户行可写 —— 让界面直接禁用输入框, 而不是让用户改完发现没保存
+        view.setEditable(userId != null);
+        // 档位清单由后端给: 部署默认值会变, 标签里还要标"哪一档是当前默认", 前端拼不出来
+        view.setOptions(contextLimitPreference.options().stream().map(o -> {
+            ContextLimitDtos.ContextLimitView.Option opt = new ContextLimitDtos.ContextLimitView.Option();
+            opt.setValue(o.value());
+            opt.setLabel(o.label());
+            return opt;
+        }).toList());
+        return view;
     }
 }

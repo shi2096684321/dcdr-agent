@@ -44,4 +44,11 @@ public interface MessageRepository extends JpaRepository<MessageEntity, Long> {
 
     /** 会话最近 N 条消息(按 seq 倒序); 供自动抽取回看"自上次抽取以来的几轮对话" */
     List<MessageEntity> findBySessionIdOrderBySeqDesc(String sessionId, Pageable pageable);
+
+    /**
+     * 会话内 seq &lt;= 指定值的消息条数(V3.4)。
+     * <p>摘要的"覆盖了多少条"用它, 而不是拿 seq 除 2 去估 —— 摘要边界可能落在任意一条消息上
+     * (工具往返、图片消息的条数都不规则), 估算出来的数字会与实际不符。
+     */
+    long countBySessionIdAndSeqLessThanEqual(String sessionId, int seq);
 }

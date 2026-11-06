@@ -12,10 +12,12 @@ import lombok.Data;
 @Schema(description = "流式消息块 - SSE 推送的最小单元")
 public class ChatChunk {
 
-    /** 块类型: chunk / tool_call / tool_result / done / error / interrupted */
-    @Schema(description = "块类型", allowableValues = {"chunk", "tool_call", "tool_result", "done", "error", "interrupted"}, example = "chunk")
+    /** 块类型: chunk / tool_call / tool_result / done / error / interrupted / context_usage */
+    @Schema(description = "块类型",
+            allowableValues = {"chunk", "tool_call", "tool_result", "done", "error", "interrupted",
+                    "context_warning", "context_usage", "status", "image", "trace_step"},
+            example = "chunk")
     private String type;
-
     /** 文本内容(type=chunk时) */
     @Schema(description = "文本内容（type=chunk 时）")
     private String content;
@@ -62,6 +64,14 @@ public class ChatChunk {
     /** Token消耗(type=done时) */
     @Schema(description = "Token 消耗（type=done 时）")
     private ChatResponse.TokenUsage tokenUsage;
+
+    /**
+     * 上下文占用明细(type=context_usage 时, V3.4)。
+     * <p>在<b>调用模型之前</b>下发: 这一块的数字就是本轮请求的 prompt 规模,
+     * 用户在等待回答时就能看到"这次要花多少上下文", 而不是等答完才回填。
+     */
+    @Schema(description = "上下文占用明细（type=context_usage 时）")
+    private ContextUsage contextUsage;
 
     /** 结束原因(type=usage/done时, 来自模型 finish_reason, 如 stop/length/content_filter/insufficient_system_resource) */
     @Schema(description = "结束原因（来自模型 finish_reason）")
@@ -198,6 +208,14 @@ public class ChatChunk {
         ChatChunk c = new ChatChunk();
         c.setType("context_warning");
         c.setMessage(message != null ? message : "对话已较长，建议开启新对话");
+        return c;
+    }
+
+    /** 上下文占用明细块(V3.4): 五段分词 + 本轮生效上限, 供界面圆环与明细面板展示 */
+    public static ChatChunk contextUsage(ContextUsage usage) {
+        ChatChunk c = new ChatChunk();
+        c.setType("context_usage");
+        c.setContextUsage(usage);
         return c;
     }
 

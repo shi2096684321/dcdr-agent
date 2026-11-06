@@ -26,6 +26,40 @@ export const getMessages = (id) => unwrap(api.get(`/api/sessions/${id}/messages`
 export const deleteMessages = (id, fromSeq) =>
   api.delete(`/api/sessions/${id}/messages`, { params: { fromSeq } }).then(r => r.data)
 
+// ===== 上下文占用 (V3.4) =====
+/**
+ * 会话最近一轮的上下文占用快照。
+ * <p>
+ * 走会话接口而不是对话接口: 占用是"某个会话的历史累积", 没有会话就没有可展示的值。
+ * 返回 available=false 表示该会话还没对话过(界面显示空态, 不要画成 0%)。
+ */
+export const getContextUsage = (sessionId) =>
+  unwrap(api.get(`/api/sessions/${sessionId}/context-usage`))
+
+/** 总上下文设置(生效值 / 用户设置值 / 部署默认 / 允许范围) */
+export const getContextLimit = () => unwrap(api.get('/api/chat/context-limit'))
+
+/** 设置总上下文; limit 传 null 表示恢复默认(清除个人设置) */
+export const updateContextLimit = (limit) =>
+  unwrap(api.put('/api/chat/context-limit', { limit }))
+
+// ===== 历史摘要 (V3.4) =====
+/**
+ * 会话当前的上下文压缩摘要。
+ * <p>摘要决定模型"记得什么", 因此必须可读可改: 模型漏记关键约束时, 用户直接补一句,
+ * 比重新开一轮对话便宜得多。available=false 表示该会话还没压缩过。
+ */
+export const getSessionSummary = (sessionId) =>
+  unwrap(api.get(`/api/sessions/${sessionId}/summary`))
+
+/** 改写摘要正文(不动"已压缩到第几条"的边界, 那是压缩策略的职责) */
+export const updateSessionSummary = (sessionId, text) =>
+  unwrap(api.put(`/api/sessions/${sessionId}/summary`, { text }))
+
+/** 清除摘要: 下一轮若仍超预算, 会从完整原文重新压缩 */
+export const clearSessionSummary = (sessionId) =>
+  api.delete(`/api/sessions/${sessionId}/summary`).then(r => r.data)
+
 // ===== 对话流式接口 =====
 /** 对话流式 (SSE): /api/chat/stream */
 export const streamChat = (request, onChunk, onDone, onError) =>

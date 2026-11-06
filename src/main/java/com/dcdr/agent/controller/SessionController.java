@@ -2,12 +2,18 @@ package com.dcdr.agent.controller;
 
 import com.dcdr.agent.agent.feedback.FeedbackService;
 import com.dcdr.agent.agent.memory.ChatMemory;
+import com.dcdr.agent.agent.memory.strategy.SessionSummaryStore;
+import com.dcdr.agent.agent.memory.strategy.SummaryCompactionStrategy;
+import com.dcdr.agent.agent.prompt.ContextLimitPreference;
+import com.dcdr.agent.agent.prompt.ContextUsageService;
 import com.dcdr.agent.agent.session.SessionManager;
 import com.dcdr.agent.agent.session.SessionSource;
 import com.dcdr.agent.auth.ownership.OwnershipGuard;
 import com.dcdr.agent.common.Result;
+import com.dcdr.agent.dto.ContextUsage;
 import com.dcdr.agent.dto.MessageDTO;
 import com.dcdr.agent.dto.SessionDTO;
+import com.dcdr.agent.dto.SessionSummaryView;
 import com.dcdr.agent.service.ConversationExportService;
 import com.dcdr.agent.service.ConversationExportService.Format;
 import io.swagger.v3.oas.annotations.Operation;
@@ -22,6 +28,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -57,6 +64,14 @@ public class SessionController {
     private final FeedbackService feedbackService;
     /** V3.1 F-41: 响应式读取当前登录用户(替代原先的 ServerWebExchange 参数) */
     private final OwnershipGuard ownershipGuard;
+    /** V3.4: 上下文占用快照的读取与"按当前上限重算百分比" */
+    private final ContextUsageService contextUsageService;
+    /** V3.4: 用户设置的"总上下文大小"(百分比的分母) */
+    private final ContextLimitPreference contextLimitPreference;
+    /** V3.4: 历史摘要的读写(对应上下文策略中的摘要压缩) */
+    private final SessionSummaryStore summaryStore;
+    /** V3.4: 读当前上下文策略, 用于标记"这份摘要是否仍参与组上下文" */
+    private final com.dcdr.agent.config.AgentProperties agentProperties;
 
     @Operation(summary = "获取会话列表",
             description = "返回当前用户的可访问会话(认证启用时按 userId 隔离; 未登录返回全部)。"
@@ -144,6 +159,89 @@ public class SessionController {
         // userId 只用于回填"我是否评价过这条回答", 由响应式上下文提供
         return ownershipGuard.currentContext()
                 .map(ctx -> Result.success(sessionManager.getMessages(id, ctx.userId())));
+    }
+
+    @Operation(summary = "获取上下文占用明细 (V3.4)",
+            description = "返回该会话最近一轮的上下文占用快照(五段分词 + 本轮生效上限 + 百分比)。"
+                    + "快照的分子是先前的实际占用, 分母按<b>当前</b>设置的上限重算, "
+                    + "因此用户改过总上下文后这里立刻反映新比例。"
+                    + "从未对话过的会话返回 available=false 的空结构(界面显示空态, 而不是「已用 0」)")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = ContextUsage.class)))
+    @ApiResponse(responseCode = "404", description = "会话不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'SESSION', principal)")
+    @GetMapping("/{id}/context-usage")
+    public Mono<Result<ContextUsage>> contextUsage(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
+        // 读用户设置 + 会话快照都是阻塞 IO(两次查库), 必须离开 reactor 线程(项目硬约束)
+        return ownershipGuard.currentContext()
+                .flatMap(ctx -> Mono.fromCallable(() -> {
+                    int limit = contextLimitPreference.effectiveLimit(ctx.userId());
+                    return Result.success(
+                            contextUsageService.fromJson(sessionManager.findContextUsage(id), limit));
+                }).subscribeOn(Schedulers.boundedElastic()));
+    }
+
+    @Operation(summary = "获取历史摘要 (V3.4)",
+            description = "返回该会话当前的上下文压缩摘要(可见/可改/可删)。从未压缩过时 available=false。"
+                    + "摘要直接影响模型记得什么, 因此必须对用户可见 —— 否则会话突然「忘事」时无从排查。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionSummaryView.class)))
+    @ApiResponse(responseCode = "404", description = "会话不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireRead(#id, 'SESSION', principal)")
+    @GetMapping("/{id}/summary")
+    public Mono<Result<SessionSummaryView>> summary(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
+        // 读会话 + 统计条数是阻塞 IO, 离开 reactor 线程(项目硬约束)
+        return Mono.fromCallable(() -> Result.success(summaryView(id)))
+                .subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @Operation(summary = "改写历史摘要 (V3.4)",
+            description = "只改摘要正文, 不动「已压缩到第几条」的边界 —— 那是压缩策略的职责。"
+                    + "用于模型漏记关键约束时由用户直接补上。会话从未压缩过时返回 400")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = SessionSummaryView.class)))
+    @ApiResponse(responseCode = "400", description = "会话尚未压缩过, 或摘要过长")
+    @ApiResponse(responseCode = "404", description = "会话不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'SESSION', principal)")
+    @PutMapping("/{id}/summary")
+    public Mono<Result<SessionSummaryView>> updateSummary(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @RequestBody Map<String, String> body) {
+        return Mono.fromCallable(() -> {
+            try {
+                if (!summaryStore.updateText(id, body.get("text"))) {
+                    return Result.<SessionSummaryView>error(400, "该会话尚未压缩过, 没有可改写的摘要");
+                }
+            } catch (IllegalArgumentException e) {
+                return Result.<SessionSummaryView>error(400, e.getMessage());
+            }
+            // 回传完整视图: 界面要同步字数, 省一次 GET
+            return Result.success(summaryView(id));
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    @Operation(summary = "清除历史摘要 (V3.4)",
+            description = "作废当前摘要; 下一轮对话若仍超预算, 会从完整原文重新压缩。"
+                    + "这是摘要失准(漏记约束、混进错误结论)时的唯一出口。")
+    @ApiResponse(responseCode = "200", description = "已清除")
+    @ApiResponse(responseCode = "404", description = "会话不存在或无权访问")
+    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'SESSION', principal)")
+    @DeleteMapping("/{id}/summary")
+    public Mono<Result<Void>> clearSummary(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
+        return Mono.fromCallable(() -> {
+            summaryStore.clear(id);
+            return Result.<Void>success();
+        }).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    /**
+     * 摘要视图 + "当前是否生效"标记。
+     * <p>生效判断放在这里而不是 store 里: 那是"部署选择了哪种策略"的问题, 与摘要自身的存取无关。
+     */
+    private SessionSummaryView summaryView(String sessionId) {
+        SessionSummaryView view = summaryStore.view(sessionId);
+        view.setApplied(SummaryCompactionStrategy.NAME.equals(agentProperties.getMemory().getStrategy()));
+        return view;
     }
 
     @Operation(summary = "删除会话中的部分消息", description = "删除 seq >= fromSeq 的消息，用于编辑历史或重试失败时截断上下文")

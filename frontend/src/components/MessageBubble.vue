@@ -493,6 +493,21 @@ async function withdraw() {
 .msg-content { flex: 1; min-width: 0; }
 .msg-role { font-size: 13px; color: var(--dcdr-text-3); margin-bottom: 6px; font-weight: 500; }
 
+/* 用户消息靠右: 头像在右侧、气泡贴右边缘, 与助手消息形成左右分栏 ——
+   长对话里"谁说的"靠位置一眼可辨, 不必去读头像上的字。
+   用 row-reverse 而不是改 DOM 顺序: 屏幕阅读器与复制出的文本仍按"头像→内容"的自然顺序。 */
+.msg-user { flex-direction: row-reverse; }
+/* 让子元素各自收缩到内容宽度并靠右; 不加这句的话 .msg-content 是 flex:1 的满宽块,
+   气泡会被拉满整行, "靠右"就看不出来了 */
+.msg-user .msg-content { display: flex; flex-direction: column; align-items: flex-end; }
+.msg-user .msg-role { text-align: right; }
+.msg-user .msg-bubble { max-width: 100%; background: var(--dcdr-accent-wash); border-color: var(--dcdr-accent-line); }
+.msg-user .msg-images, .msg-user .msg-videos { justify-content: flex-end; }
+.msg-user .msg-meta { justify-content: flex-end; }
+.msg-user .msg-actions { justify-content: flex-end; }
+/* 编辑框要占满一行: 它内部是 textarea, 收缩到内容宽度会让输入区变成一条细缝 */
+.msg-user .edit-box { width: 100%; }
+
 /* 图片消息 */
 .msg-images { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 10px; }
 .msg-image-wrapper { position: relative; }

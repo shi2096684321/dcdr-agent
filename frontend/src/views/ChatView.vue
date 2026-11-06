@@ -187,12 +187,6 @@
 
       <!-- 输入区域 -->
       <div class="input-area">
-        <!-- V3.3 F-49 工作区: 绑定在会话上, 徽标常驻显示当前授权目录与档位 -->
-        <div class="ws-toolbar">
-          <WorkspaceSelector :session-id="currentSessionId || ''" @need-session="ensureSession" />
-          <!-- 变更面板: 模型改完文件后, 用户必须能看清"改了什么"并一键退回 -->
-          <WorkspaceChangePanel ref="changePanelRef" :session-id="currentSessionId || ''" @changed="onChangesReverted" />
-        </div>
         <!-- 已选图片预览 -->
         <div v-if="selectedFiles.length" class="selected-files">
           <div v-for="(file, idx) in selectedFiles" :key="idx" class="selected-file">
@@ -208,11 +202,45 @@
         </div>
 
         <div class="input-box">
+          <!-- V3.3 F-49 工作区: 绑定在会话上, 徽标常驻显示当前授权目录与档位。
+               V3.4 起放进输入框内部 —— 它和"这轮带什么上下文"是同一类信息(知识库/技能/工作区),
+               摆在框外会让人以为它是页面级设置, 而不是本会话的授权状态 -->
+          <div class="ws-toolbar">
+            <WorkspaceSelector :session-id="currentSessionId || ''" @need-session="ensureSession" />
+            <!-- 变更面板: 模型改完文件后, 用户必须能看清"改了什么"并一键退回 -->
+            <WorkspaceChangePanel ref="changePanelRef" :session-id="currentSessionId || ''" @changed="onChangesReverted" />
+          </div>
           <textarea ref="inputEl" v-model="input" placeholder="输入消息，Enter 发送，Shift + Enter 换行"
                     @keydown.enter.exact.prevent="send" rows="1"
                     :class="{ 'has-files': selectedFiles.length > 0 }"></textarea>
+          <!-- 已选上下文: 加号面板收起后必须还看得见 —— 否则用户会忘记这轮带了哪几个库/技能,
+               要么重复添加, 要么以为没生效 -->
+          <div v-if="pickedCount" class="picked-chips">
+            <span v-if="currentAgentName" class="pchip expert">
+              <span class="pchip-k">专家</span>{{ currentAgentName }}
+              <button class="pchip-x" title="取消选择专家" @click="selectedAgentId = ''">×</button>
+            </span>
+            <span v-for="kb in pickedKbs" :key="kb.id" class="pchip">
+              <span class="pchip-k">库</span>{{ kb.name }}
+              <button class="pchip-x" title="移出本轮" @click="removeKb(kb.id)">×</button>
+            </span>
+            <span v-for="s in pickedSkills" :key="s.name" class="pchip">
+              <span class="pchip-k">技能</span>{{ s.displayName || s.name }}
+              <button class="pchip-x" title="移出本轮" @click="removeSkill(s.name)">×</button>
+            </span>
+          </div>
           <div class="input-foot">
             <div class="input-actions">
+            <!-- V3.4 统一「+」入口: 专家 / 知识库 / 技能收在一个面板里, 取代原先并排的三个下拉
+                 (三者本就是同一件事"这轮带什么", 并排会吃掉 300+px, 窄屏时动作按钮被挤成两行) -->
+            <AgentContextPicker
+              v-model:agent-id="selectedAgentId"
+              v-model:kb-ids="selectedKbIds"
+              v-model:skill-names="selectedSkillNames"
+              :agents="agents" :knowledge-bases="selectableKnowledgeBases" :skills="availableSkills"
+              :loading="kbLoading || skillLoading || agentLoading"
+              :disabled="streaming" :logged-in="authStore.isLoggedIn"
+              @open="onPickerOpen" />
             <!-- 文生图按钮 -->
             <button class="action-btn" title="文生图（AI 绘图）：请先在输入框填写图片描述" @click="sendImage"
                     :disabled="streaming"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.6L13.7 9.2L19.3 10.9L13.7 12.6L12 18.2L10.3 12.6L4.7 10.9L10.3 9.2L12 3.6Z"/><path d="M18.6 16.2L19.3 18.3L21.4 19L19.3 19.7L18.6 21.8L17.9 19.7L15.8 19L17.9 18.3L18.6 16.2Z"/></svg></button>
@@ -227,42 +255,15 @@
               <input type="file" ref="fileInput" @change="handleFileSelect" accept="image/*,video/*" multiple hidden />
               <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16.4 8.2L9.2 15.4C8 16.6 6.1 16.6 4.9 15.4C3.7 14.2 3.7 12.3 4.9 11.1L12.1 3.9C13.7 2.3 16.3 2.3 17.9 3.9C19.5 5.5 19.5 8.1 17.9 9.7L10.7 16.9C9.7 17.9 8.1 17.9 7.1 16.9C6.1 15.9 6.1 14.3 7.1 13.3L13.7 6.7"/></svg>
             </label>
-            <!-- 知识库选择(RAG 检索增强): 登录用户可见; 显式选择=强意图, 后端走强制检索(命中带引用/未命中明说)。
-                 普通用户仅显示自己的 USER 级库(PLATFORM 级是管理员统一配置的无感增强, 不出现在选择器);
-                 admin 可见全部(可显式选平台库强制检索) -->
-            <el-select v-if="authStore.isLoggedIn" v-model="selectedKbIds" multiple collapse-tags collapse-tags-tooltip
-                       :max-collapse-tags="1" placeholder="知识库" size="small"
-                       class="kb-select" :class="{active: selectedKbIds.length > 0}"
-                       :disabled="streaming" :loading="kbLoading"
-                       title="选择知识库后, 每轮对话会自动从知识库检索相关内容增强回答"
-                       @visible-change="onKbDropdownOpen">
-              <el-option v-for="kb in selectableKnowledgeBases" :key="kb.id" :label="kb.name" :value="kb.id" />
-            </el-select>
-            <!-- V3.1 技能(手动指定执行): 选中后其正文会直接注入本轮上下文, 不再等模型自行判断是否加载。
-                 只列"已启用"的技能 —— 停用/不可见的技能后端会拒绝注入(见 SkillCatalogProvider#skillPrompts),
-                 列出来只会让人以为选中就生效了。留空 = 回到默认的"模型按需加载"。 -->
-            <el-select v-if="authStore.isLoggedIn" v-model="selectedSkillNames" multiple collapse-tags collapse-tags-tooltip
-                       :max-collapse-tags="1" placeholder="技能" size="small"
-                       class="skill-select" :class="{active: selectedSkillNames.length > 0}"
-                       :disabled="streaming" :loading="skillLoading"
-                       title="手动指定技能：选中后强制把其正文加入本轮上下文并按它执行；留空则由模型自行判断是否需要"
-                       @visible-change="onSkillDropdownOpen">
-              <el-option v-for="s in availableSkills" :key="s.name"
-                         :label="s.displayName || s.name" :value="s.name" />
-            </el-select>
-            <!-- V2.3 Agent 选择: 登录用户可见, 选择后对话使用该 Agent 的角色/模型/工具配置 -->
-            <el-select v-if="authStore.isLoggedIn" v-model="selectedAgentId" clearable
-                       placeholder="专家" size="small"
-                       class="agent-select" :class="{active: !!selectedAgentId}"
-                       :disabled="streaming" :loading="agentLoading"
-                       title="选择自定义专家后, 对话将使用其角色设定/模型/工具/知识库配置"
-                       @visible-change="onAgentDropdownOpen">
-              <el-option v-for="a in agents" :key="a.id" :label="a.name" :value="a.id" />
-            </el-select>
           </div>
+            <!-- 只留条数与发送提示: 知识库/技能已在 chips 里可见, 这里再报一遍"N 库"就是重复 -->
             <div class="input-meta mono">
-              {{ messages.length }} 条 · {{ selectedKbIds.length ? selectedKbIds.length + ' 库' : '无知识库' }} · Enter 发送
+              {{ turns }} 轮 · Enter 发送
             </div>
+            <!-- 上下文占用圆环(V3.4): 常驻显示本轮已用 / 总上下文, 点击展开五段明细并调整分母。
+                 放在 meta 与发送键之间 —— input-meta 的 margin-left:auto 会把它俩一起推到右侧 -->
+            <ContextUsageRing :usage="contextUsage" :limit-view="contextLimitView"
+                              :saving="contextLimitSaving" @update-limit="onUpdateContextLimit" />
             <button class="send-btn gradient-bg" @click="streaming ? stop() : send()"
                     :disabled="(!input.trim() && !selectedFiles.length) && !streaming">
               <svg v-if="!streaming" class="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.4V5"/><path d="M5.6 11.4L12 5L18.4 11.4"/></svg>
@@ -299,7 +300,7 @@
         </div>
         <div class="ctx-row">
           <span class="ctx-k">对话消息</span>
-          <span class="ctx-v mono">{{ messages.length }} 条</span>
+          <span class="ctx-v mono">{{ turns }} 轮</span>
         </div>
       </div>
 
@@ -325,6 +326,30 @@
         </div>
       </div>
 
+      <!-- 历史摘要(V3.4): 压缩掉的旧对话变成了这一段, 必须能看见 ——
+           否则会话突然"忘事"时, 用户没有任何地方能查到它当前记住的是哪一版 -->
+      <div v-if="summaryView?.available" class="ctx-card">
+        <div class="ctx-card-title">历史摘要</div>
+        <details class="ctx-summary">
+          <summary>
+            <span class="summary-snippet">{{ summarySnippet }}</span>
+            <span class="summary-count mono">{{ summaryView.chars }} 字</span>
+          </summary>
+          <div class="summary-body">{{ summaryView.text }}</div>
+        </details>
+        <div class="ctx-row">
+          <span class="ctx-k">已压缩</span>
+          <span class="ctx-v mono">{{ summaryView.coveredMessages }} 条</span>
+        </div>
+        <div v-if="!summaryView.applied" class="summary-tip">
+          当前上下文策略未使用摘要，这段内容不会发给模型。
+        </div>
+        <div class="ctx-actions">
+          <button v-if="summaryView.applied" class="ctx-act" @click="openSummaryEditor">编辑</button>
+          <button class="ctx-act danger" @click="onClearSummary">清除</button>
+        </div>
+      </div>
+
       <div class="ctx-foot mono">
         {{ currentSessionId ? '会话 #' + currentSessionId : '新会话 · 尚未保存' }}
       </div>
@@ -347,6 +372,19 @@
       </template>
     </el-dialog>
 
+    <!-- 摘要编辑弹窗(V3.4): 模型漏记约束时由用户直接补上 -->
+    <el-dialog v-model="summaryEditing" title="编辑历史摘要" width="620px" append-to-body>
+      <div class="summary-tip">
+        这段文字会作为「更早对话的压缩记录」注入上下文（标注为背景资料，不是指令）。
+        修改只影响下一轮之后发给模型的内容，不会改动对话原文。
+      </div>
+      <el-input v-model="summaryDraft" type="textarea" :rows="12" placeholder="摘要正文" />
+      <template #footer>
+        <el-button @click="summaryEditing = false">取消</el-button>
+        <el-button type="primary" :loading="summarySaving" @click="saveSummary">保存</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 图片预览弹窗 -->
     <ImagePreviewModal v-model:url="previewImageUrl" />
 
@@ -365,7 +403,9 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
-  buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation
+  buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation,
+  getContextUsage, getContextLimit, updateContextLimit,
+  getSessionSummary, updateSessionSummary, clearSessionSummary
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
@@ -374,6 +414,8 @@ import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
 import WorkspaceChangePanel from '@/components/WorkspaceChangePanel.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import CodePreviewModal from '@/components/CodePreviewModal.vue'
+import ContextUsageRing from '@/components/ContextUsageRing.vue'
+import AgentContextPicker from '@/components/AgentContextPicker.vue'
 import { useMarkdown } from '@/composables/useMarkdown'
 import { useCodeBlock } from '@/composables/useCodeBlock'
 import { useAuthStore } from '@/stores/auth'
@@ -443,6 +485,25 @@ const editText = ref('')
 const contextWarning = ref(null)
 const lastTokenUsage = ref(null)
 const lastDurationMs = ref(null)
+
+// ===== 上下文占用 (V3.4) =====
+/** 最近一轮的分段占用(后端算, 结构见 dto.ContextUsage) */
+const contextUsage = ref(null)
+/** 总上下文设置: 生效值 / 个人值 / 部署默认 / 允许范围 / 是否可改 */
+const contextLimitView = ref(null)
+const contextLimitSaving = ref(false)
+
+// ===== 历史摘要 (V3.4) =====
+/** 当前会话的压缩摘要(available=false 表示还没压缩过) */
+const summaryView = ref(null)
+const summaryEditing = ref(false)
+const summaryDraft = ref('')
+const summarySaving = ref(false)
+/** 卡片里只露前 120 字: 摘要动辄上千字, 全铺开会把右侧面板顶满 */
+const summarySnippet = computed(() => {
+  const t = summaryView.value?.text || ''
+  return t.length > 120 ? t.slice(0, 120) + '…' : t
+})
 
 // 消息编辑/重试
 const editingSeq = ref(null)
@@ -519,11 +580,6 @@ async function loadKnowledgeBases() {
   }
 }
 
-// 下拉首次展开时懒加载知识库列表
-function onKbDropdownOpen(open) {
-  if (open && knowledgeBases.value.length === 0) loadKnowledgeBases()
-}
-
 // V3.1 技能(手动指定执行): 选中的技能正文会被后端直接注入本轮上下文, 强制模型按其流程执行
 const skills = ref([])
 const selectedSkillNames = ref([])
@@ -541,12 +597,6 @@ async function loadSkills() {
   } finally {
     skillLoading.value = false
   }
-}
-
-// 每次展开都刷新(不像知识库那样只加载一次): 技能启用/停用改得很频繁,
-// 拿一份过期的列表会让人选到已停用的技能, 然后困惑"为什么没生效"
-function onSkillDropdownOpen(open) {
-  if (open) loadSkills()
 }
 
 // V2.3 自定义 Agent 选择
@@ -572,8 +622,172 @@ async function loadAgents() {
   }
 }
 
-function onAgentDropdownOpen(open) {
-  if (open && agents.value.length === 0) loadAgents()
+/* ---------- V3.4 统一「+」入口: 已选上下文的 chips ---------- */
+
+/**
+ * 轮次 = 用户提问的条数。
+ * <p>
+ * 不按消息条数算: 一问一答在库里是两行(user + assistant), 显示"2 条"会让用户以为自己
+ * 已经聊了两轮, 于是过早去开新会话。用 user 消息数当轮次, 恰好一问一答算一条 ——
+ * 且"刚发出、还没回复"的那一轮也会被算进去, 这才是用户心里的一轮。
+ */
+const turns = computed(() => messages.value.filter((m) => m.role === 'user').length)
+
+/** 已选知识库(取名称用于 chips, 同时保证只展示当前可见的库) */
+const pickedKbs = computed(() =>
+  selectableKnowledgeBases.value.filter((k) => selectedKbIds.value.includes(k.id))
+)
+const pickedSkills = computed(() =>
+  availableSkills.value.filter((s) => selectedSkillNames.value.includes(s.name))
+)
+const pickedCount = computed(() =>
+  (selectedAgentId.value ? 1 : 0) + pickedKbs.value.length + pickedSkills.value.length
+)
+
+/* chips 上的 × 直接改状态: 就不必为了删一个技能再点开面板找一遍 */
+function removeKb(id) {
+  selectedKbIds.value = selectedKbIds.value.filter((x) => x !== id)
+}
+function removeSkill(name) {
+  selectedSkillNames.value = selectedSkillNames.value.filter((x) => x !== name)
+}
+
+/**
+ * 加号面板展开时按需加载三份列表(此前是三个下拉各自的 visible-change 回调)。
+ * <p>
+ * 懒加载的策略照旧不变: 知识库/专家只加载一次(变化少), 技能每次展开都刷新 ——
+ * 技能的启用/停用改得很频繁, 拿一份过期列表会让人选到已停用的技能, 然后困惑"为什么没生效"。
+ */
+function onPickerOpen() {
+  if (knowledgeBases.value.length === 0) loadKnowledgeBases()
+  loadSkills()
+  if (agents.value.length === 0) loadAgents()
+}
+
+/* ---------- 历史摘要 (V3.4) ---------- */
+
+/**
+ * 读某个会话的摘要。
+ * <p>回填前必须校验「回来时这个 id 还是当前会话」: 快速连点两个会话时, 先发的请求可能后到,
+ * 把 A 的摘要写到 B 的卡片上 —— 而这个错误的摘要用户会当成真的(它决定模型记得什么)。
+ * 与流式输出用 streamSessionId 做归属判断是同一个道理。
+ */
+async function loadSummary(sessionId) {
+  if (!sessionId) { summaryView.value = null; return }
+  try {
+    const view = await getSessionSummary(sessionId)
+    if (currentSessionId.value !== sessionId) return
+    summaryView.value = view
+  } catch (e) {
+    // 摘要读不到不影响对话: 面板那块直接不显示即可
+    console.error('加载历史摘要失败', e)
+    if (currentSessionId.value === sessionId) summaryView.value = null
+  }
+}
+
+function openSummaryEditor() {
+  summaryDraft.value = summaryView.value?.text || ''
+  summaryEditing.value = true
+}
+
+async function saveSummary() {
+  const id = currentSessionId.value
+  if (!id || summarySaving.value) return
+  summarySaving.value = true
+  try {
+    summaryView.value = await updateSessionSummary(id, summaryDraft.value)
+    summaryEditing.value = false
+    ElMessage.success('摘要已更新，下一轮对话生效')
+  } catch (e) {
+    ElMessage.error(e?.message || '保存失败')
+  } finally {
+    summarySaving.value = false
+  }
+}
+
+/**
+ * 清除摘要。这是摘要失准(漏记约束、混进错误结论)时的唯一出口:
+ * 清掉之后下一轮若仍超预算, 会从完整原文重新压一份, 而不是在这份错的基础上继续滚。
+ */
+async function onClearSummary() {
+  const id = currentSessionId.value
+  if (!id) return
+  try {
+    await ElMessageBox.confirm(
+      '清除后，下一轮对话会从完整原文重新压缩（原文一直保留，不会丢）。继续吗？',
+      '清除历史摘要', { type: 'warning', confirmButtonText: '清除', cancelButtonText: '取消' }
+    )
+  } catch (e) {
+    return
+  }
+  try {
+    await clearSessionSummary(id)
+    ElMessage.success('摘要已清除，下一轮将重新压缩')
+    loadSummary(id)
+  } catch (e) {
+    ElMessage.error(e?.message || '清除失败')
+  }
+}
+
+/* ---------- 上下文占用 (V3.4) ---------- */
+
+/**
+ * 读某个会话的占用快照。
+ * <p>
+ * 切会话必须重读: 圆环展示的是"这个会话上一轮用了多少", 不重读就会把上一个会话的数字带过来,
+ * 用户会以为"我刚开的新会话就已经用了 60%"。
+ * <p>回填前同样校验归属, 理由见 loadSummary。
+ */
+async function loadContextUsage(sessionId) {
+  if (!sessionId) { contextUsage.value = null; return }
+  try {
+    const usage = await getContextUsage(sessionId)
+    if (currentSessionId.value !== sessionId) return
+    contextUsage.value = usage
+  } catch (e) {
+    console.error('加载上下文占用失败', e)
+    if (currentSessionId.value === sessionId) contextUsage.value = null
+  }
+}
+
+async function loadContextLimit() {
+  try {
+    contextLimitView.value = await getContextLimit()
+  } catch (e) {
+    console.error('加载总上下文设置失败', e)
+  }
+}
+
+/**
+ * 修改总上下文(分母)。null = 恢复默认。
+ * <p>
+ * 返回的视图带新的生效值, 直接替换; 圈上的百分比必须<b>就地按新分母重算</b> ——
+ * 否则用户改完设置要等下一轮对话才看到变化, 会以为"没生效"。
+ */
+async function onUpdateContextLimit(limit) {
+  if (contextLimitSaving.value) return
+  contextLimitSaving.value = true
+  try {
+    contextLimitView.value = await updateContextLimit(limit)
+    applyLimitToUsage()
+    // 提示语带上具体档位(与 WorkBuddy 的「上下文长度已切换至 {value}」同一口径):
+    // 只回一句"已更新"的话, 用户仍要自己回头去确认到底切到了哪一档
+    const label = contextLimitView.value?.options?.find((o) => (o.value ?? '') === (limit ?? ''))?.label
+    ElMessage.success(label ? `上下文长度已切换至 ${label}` : '上下文长度已更新')
+  } catch (e) {
+    ElMessage.error(e?.message || '设置失败')
+  } finally {
+    contextLimitSaving.value = false
+  }
+}
+
+/** 分母变了 → 重算总百分比; 各分段的占比以"已用总量"为分母, 不受影响 */
+function applyLimitToUsage() {
+  const u = contextUsage.value
+  const limit = contextLimitView.value?.limit
+  if (!u || !limit) return
+  u.limitTokens = limit
+  u.percent = Math.round((u.totalTokens * 100 / limit) * 10) / 10
 }
 
 function isImage(file) {
@@ -595,6 +809,9 @@ async function newSession() {
   sessions.value.unshift(s)
   currentSessionId.value = s.id
   messages.value = []
+  // 新会话没有快照与摘要: 清空而不是沿用上一个会话的
+  contextUsage.value = null
+  summaryView.value = null
 }
 
 /**
@@ -614,6 +831,9 @@ async function switchSession(id) {
   if (editingId.value) return
   currentSessionId.value = id
   messages.value = await getMessages(id)
+  // 占用与摘要都按会话独立, 切过去就要换成这个会话的
+  loadContextUsage(id)
+  loadSummary(id)
   scrollBottom()
 }
 
@@ -942,6 +1162,12 @@ async function send(opts = {}) {
         scrollBottom(); return
       }
       if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
+      if (chunk.type === 'context_usage') {
+        // 后端在调用模型前下发本轮占用明细。仅归属会话当前展示时更新 ——
+        // 期间切走了的话, 这个数字属于另一个会话, 写进来会把当前会话的圆环带偏
+        if (streamSessionId.value === currentSessionId.value) contextUsage.value = chunk.contextUsage || null
+        return
+      }
       if (chunk.type === 'done') {
         statusHint.value = ''
         pipeline.value = null
@@ -991,6 +1217,8 @@ async function send(opts = {}) {
       scrollBottom()
       // 模型这一轮可能刚改过文件, 变更计数要跟着走, 否则用户得手动点开面板才看到
       changePanelRef.value?.refresh()
+      // 压缩发生在准备阶段: 这一轮结束后摘要可能刚生成/刚更新, 面板要跟上
+      if (currentSessionId.value) loadSummary(currentSessionId.value)
       // 将后端 seq 回写到本地消息, 以支持编辑/重试时按 seq 截断历史(同样仅在归属会话当前展示时)
       if (stillOnOwnerSession && currentSessionId.value) {
         getMessages(currentSessionId.value)
@@ -1093,6 +1321,12 @@ async function sendImage() {
       if (chunk.type === 'interrupted') { statusHint.value = ''; interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || ''; return }
       if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
+      if (chunk.type === 'context_usage') {
+        // 后端在调用模型前下发本轮占用明细。仅归属会话当前展示时更新 ——
+        // 期间切走了的话, 这个数字属于另一个会话, 写进来会把当前会话的圆环带偏
+        if (streamSessionId.value === currentSessionId.value) contextUsage.value = chunk.contextUsage || null
+        return
+      }
       if (chunk.type === 'done') {
         statusHint.value = ''
         lastTokenUsage.value = chunk.tokenUsage?.total ?? null
@@ -1239,7 +1473,7 @@ function onFeedbackChange({ seq, rating }) {
   if (m) m.feedback = rating || undefined
 }
 
-onMounted(() => { loadSessions() })
+onMounted(() => { loadSessions(); loadContextLimit() })
 </script>
 
 <style scoped>
@@ -1287,6 +1521,30 @@ onMounted(() => { loadSessions() })
   background: var(--dcdr-hover); border: 1px solid var(--dcdr-border);
   border-radius: 999px; padding: 2px 7px;
 }
+/* 历史摘要卡片(V3.4): 默认只露前三行, 展开才铺全文 —— 摘要动辄上千字, 全铺会把面板顶满 */
+.ctx-summary { font-size: 11px; color: var(--dcdr-text-2); }
+.ctx-summary summary { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; list-style: none; }
+.ctx-summary summary::-webkit-details-marker { display: none; }
+.summary-snippet {
+  flex: 1; min-width: 0; line-height: 1.55;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.summary-count { flex: none; font-size: 9.5px; color: var(--dcdr-text-3); }
+.summary-body {
+  margin-top: 6px; padding: 8px; max-height: 220px; overflow-y: auto; white-space: pre-wrap;
+  line-height: 1.6; border-radius: 8px;
+  background: var(--dcdr-bg-subtle); border: 1px solid var(--dcdr-border);
+}
+.ctx-actions { display: flex; gap: 6px; }
+.ctx-act {
+  height: 24px; padding: 0 10px; font-size: 11px; cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--dcdr-border); background: transparent; color: var(--dcdr-text-2);
+  transition: all 0.15s ease;
+}
+.ctx-act:hover { border-color: var(--dcdr-accent-line); color: var(--dcdr-text-1); }
+.ctx-act.danger:hover { border-color: var(--dcdr-danger); color: var(--dcdr-danger); }
+.summary-tip { margin-bottom: 10px; font-size: 12px; line-height: 1.6; color: var(--dcdr-text-3); }
+
 .ctx-foot { margin-top: auto; padding-top: 6px; font-size: 9.5px; color: var(--dcdr-text-3); }
 
 .panel-expand {
@@ -1443,9 +1701,10 @@ onMounted(() => { loadSessions() })
 
 /* 输入区域 */
 /* flex: none: 输入区高度由内容(含自适应高度的 textarea)决定, 不参与压缩 */
-/* 工作区徽标 + 变更入口同一行; 缩进由这层统一给, 徽标自身的内边距去掉避免双倍 */
-.ws-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 28px 8px; }
-.ws-toolbar :deep(.ws-bar) { padding: 0; }
+/* 工作区徽标 + 变更入口: 现在位于输入框内部的第一行, 缩进由 .input-box 的内边距承担,
+   因此这里不再给横向内边距; 徽标自身的内边距同样去掉, 避免双倍 */
+.ws-toolbar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ws-toolbar :deep(.ws-bar) { padding: 0; min-width: 0; }
 
 .input-area { flex: none; padding: 16px 28px 20px; background: linear-gradient(180deg, transparent 0%, var(--dcdr-bg) 70%); }
 
@@ -1473,26 +1732,22 @@ onMounted(() => { loadSessions() })
 .send-btn .ic-send { width: 15px; height: 15px; }
 .send-btn { display: inline-flex; align-items: center; justify-content: center; }
 .action-btn.active { background: var(--dcdr-accent-wash); color: var(--dcdr-accent); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
-/* 知识库多选下拉: 与 action-btn 同高, 选中时高亮 */
-.kb-select { width: 130px; flex-shrink: 0; }
-.kb-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
-.kb-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.kb-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
-.kb-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
-.kb-select :deep(.el-select__tags-text) { font-size: 12px; }
-/* V3.1 技能选择下拉: 复用 kb-select 样式 */
-.skill-select { width: 116px; flex-shrink: 0; }
-.skill-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
-.skill-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.skill-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
-.skill-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
-.skill-select :deep(.el-select__tags-text) { font-size: 12px; }
-/* V2.3 Agent 选择下拉: 复用 kb-select 样式 */
-.agent-select { width: 120px; flex-shrink: 0; }
-.agent-select :deep(.el-select__wrapper) { min-height: 36px; border-radius: 10px; background: var(--dcdr-bg-subtle); box-shadow: none; border: 1px solid transparent; transition: all 0.2s; }
-.agent-select :deep(.el-select__wrapper:hover) { background: var(--dcdr-accent-wash); }
-.agent-select.active :deep(.el-select__wrapper) { background: var(--dcdr-accent-wash); box-shadow: inset 0 0 0 1px var(--dcdr-accent-line); }
-.agent-select :deep(.el-select__placeholder) { font-size: 13px; color: var(--dcdr-text-2); }
+/* 已选上下文 chips(V3.4): 加号面板收起后, "这轮带了什么"仍要可见 */
+.picked-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pchip {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 220px;
+  padding: 3px 4px 3px 8px; border-radius: 999px;
+  font-size: 11.5px; color: var(--dcdr-text-1);
+  background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border);
+}
+.pchip.expert { border-color: var(--dcdr-accent-line); background: var(--dcdr-accent-wash); }
+.pchip-k { flex: none; font-size: 9.5px; letter-spacing: 0.3px; color: var(--dcdr-text-3); }
+.pchip-x {
+  flex: none; width: 16px; height: 16px; padding: 0; border: none; border-radius: 50%;
+  background: transparent; color: var(--dcdr-text-3); cursor: pointer; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; transition: all 0.15s ease;
+}
+.pchip-x:hover { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
 .input-box textarea { flex: none; width: 100%; border: none; outline: none; resize: none; font-size: 13px; line-height: 1.65; max-height: 240px; font-family: inherit; padding: 2px 2px 0; background: transparent; color: var(--dcdr-text-1); }
 /* 有附件预览时收窄上限: 预览区 + 超长输入框会把消息区挤没 */
 .input-box textarea.has-files { max-height: 120px; }

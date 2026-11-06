@@ -17,6 +17,7 @@
 | `v3.1_schema.sql` | projects.user_id → agent_definition_versions → 长期记忆 → 技能与专家维度 → message_feedback → 混合检索索引（pg_trgm + trigram GIN） | `03_`；由原 5 个功能分脚本合并（2026-10-15 又并入原 v3.2 的混合检索索引 —— 该能力已随 v3.1 交付且随仓默认开启），**段落顺序即依赖顺序**（f44 建的表会被 expert_skill 段 ALTER） |
 | `v3.2_schema.sql` | llm_call_logs.failed_step / error_message（调用链失败定位） | `04_`；纯增量，全部 `IF NOT EXISTS`，仅补列与 COMMENT |
 | `v3.3_schema.sql` | workspaces + sessions.workspace_id（F-49 工作区）→ scheduled_tasks 推送字段（F-50 结果推送）→ scheduled_tasks.model + user_notify_configs（用户级推送配置）→ sessions.source / sessions.source_ref（会话来源分类）→ llm_call_logs.source（调用链来源） | `05_`；各段独立，均为 `IF NOT EXISTS`；两段来源字段都带存量回填（历史数据一律归 `user`） |
+| `v3.4_schema.sql` | users.context_token_limit（上下文分母）→ sessions.context_usage（占用快照）→ sessions.context_summary / context_summary_seq（历史摘要压缩） | `06_`；纯增量、全部 `IF NOT EXISTS`；**不回填存量**（老会话没有快照/摘要就是没有，补 0 会被读成"上下文是空的"） |
 
 > **升级路径**：从旧库升级 = 按版本逐个执行（或一条 psql 带多个 `-f`，见第九节）；
 > 全新部署 = `docker compose up -d` 自动完成。应用侧 `ddl-auto=update` 始终兜底补齐表与列。
@@ -47,7 +48,7 @@ docker compose up -d
 启动后自动完成：
 1. 拉取 `pgvector/pgvector:pg16` 与 `redis:7-alpine` 镜像
 2. 创建数据库 `dcdr_agent`、用户/密码 `dcdr_agent` / `dcdr_agent`
-3. 挂载 `docs/sql/` 下 v2.0 / v3.0 / v3.1 / v3.2 / v3.3 五个脚本到初始化目录（`01_~05_` 前缀排序），
+3. 挂载 `docs/sql/` 下 v2.0 / v3.0 / v3.1 / v3.2 / v3.3 / v3.4 六个脚本到初始化目录（`01_~06_` 前缀排序），
    **首次建库时自动全量执行（含 pgvector 扩展）** —— 全新部署无需手工执行任何 SQL
 4. 数据持久化到名为 `pgdata` 的 Docker 卷
 
@@ -180,11 +181,11 @@ netstat -ano | findstr :5432
    CREATE USER dcdr_agent WITH PASSWORD 'dcdr_agent';
    GRANT ALL PRIVILEGES ON DATABASE dcdr_agent TO dcdr_agent;
    ```
-4. 执行 schema（一条命令、五个文件按序；全部幂等可重复执行）：
+4. 执行 schema（一条命令、六个文件按序；全部幂等可重复执行）：
    ```bash
    psql -U dcdr_agent -d dcdr_agent \
      -f docs/sql/v2.0_schema.sql -f docs/sql/v3.0_schema.sql \
      -f docs/sql/v3.1_schema.sql -f docs/sql/v3.2_schema.sql \
-     -f docs/sql/v3.3_schema.sql
+     -f docs/sql/v3.3_schema.sql -f docs/sql/v3.4_schema.sql
    ```
 5. Redis 可用 Windows 版或 WSL 内 `apt install redis-server` 启动。

@@ -131,11 +131,38 @@ agent:
 
   # 记忆配置
   memory:
+    # ===== 上下文策略 (V3.4) =====
+    # summary        摘要压缩(默认): 估算占用超过 compaction.trigger-tokens 时, 把较早的对话
+    #                压成一段摘要(system 消息) + 保留最近 keep-recent 条原文。
+    #                代价: 压缩那次多一次模型调用(几秒 + 费用); 收益: 长会话不必逼用户开新窗口。
+    # sliding-window 只保留最近 max-messages 条(旧行为): 零成本零延迟, 但早期对话对模型直接消失。
+    strategy: summary
+
+    # 滑动窗口策略的条数上限(仅 strategy=sliding-window 或摘要降级时生效)
     max-messages: 20
     storage: memory
     # 上下文上限提示: 估算 token 达到上限的 warn-ratio 时, 建议用户开启新对话
     context-token-limit: 300000
     context-warn-ratio: 0.8
+
+    # 摘要压缩参数(仅 strategy=summary 生效)
+    compaction:
+      # 触发压缩的 token 数 —— 这是"每轮愿意为上下文付的预算", 与上面的窗口上限(30 万)不是一回事。
+      # 调大能记住更多, 代价是每轮都在为历史付费; 调小则压缩更频繁(每次压缩都是一次模型调用)
+      trigger-tokens: 24000
+      # 压缩时保留原文的最近条数。太小会把"刚才说的"也摘要掉; 太大则压缩无效
+      keep-recent: 6
+      # 摘要正文上限(字符)。摘要本身也在上下文里, 不设上限等于换个方式膨胀
+      summary-max-chars: 4000
+      # 摘要用模型。填 model-registry 里的 provider 名(application.yml 中 models.chat 的 name:
+      # 如 qwen-chat / deepseek-chat), 不是上游模型 id(如 qwen3.8-flash) —— 填 id 会在
+      # getChatProvider 抛 404, 被降级路径吞掉, 表现为"摘要压缩永远不生效"。
+      # 留空 = 跟随系统默认对话模型。建议配低成本模型 —— 它是周期性调用
+      model: ""
+      # 单次摘要调用超时(秒)。超时即降级为滑动窗口, 不让用户卡在"发消息没反应"。
+      # 注意这段时间是同步等在最前面的(首字节之前), 别调大
+      timeout-seconds: 8
+
     # ===== LLM 自动抽取记忆 (V3.1 P1) =====
     # 开启后每隔若干轮对话, 异步调用一次模型, 从对话里提炼"关于用户的结论性信息"
     # 写入长期记忆, 并做 ADD / UPDATE / DELETE(归档) / NOOP 的冲突消解。
@@ -159,8 +186,9 @@ agent:
       # 之所以默认 true: 否则部署方把 enabled 设为 true 后什么都不会发生 ——
       # 一个显式开关被另一个开关的默认值悄悄抵消, 排查起来很费解。
       user-default: true
-      # 抽取用模型, 留空 = 系统默认对话模型。建议配低成本模型
-      model: "qwen3.8-flash"
+      # 抽取用模型。同样填 provider 名(如 qwen-chat), 不是上游模型 id; 留空 = 系统默认对话模型。
+      # 建议配低成本模型
+      model: ""
       # 每多少轮抽取一次(按会话累计消息数估算); 4 轮约等于一次完整任务的规模
       every-n-turns: 4
       # 单次最多写入几条(ADD/UPDATE/DELETE 合计) —— 注入是每轮的常驻成本, 一次灌太多会吃光背景预算

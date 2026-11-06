@@ -27,6 +27,9 @@ public enum CostSource {
     /** 长期记忆自动抽取(每 N 轮一次) */
     MEMORY_EXTRACT("memory_extract", "记忆自动抽取"),
 
+    /** 历史对话摘要压缩(V3.4, 超预算时触发) —— 与工具结果摘要分列, 便于分别评估这两层压缩的性价比 */
+    MEMORY_COMPACTION("memory_compaction", "历史对话压缩"),
+
     /** 专家 AI 生成(用户一句话需求 → 专家配置草稿) */
     AGENT_GENERATE("agent_generate", "AI 生成专家");
 

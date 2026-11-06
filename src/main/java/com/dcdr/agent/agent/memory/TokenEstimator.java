@@ -73,6 +73,21 @@ public class TokenEstimator {
     }
 
     /**
+     * 按<b>调用方给定的上限</b>判断是否接近上限 (V3.4)。
+     * <p>
+     * 为什么需要这个重载: 上限自 V3.4 起可由用户设置({@code users.context_token_limit}),
+     * 而字段 {@link #contextTokenLimit} 只是部署默认值。两者不一致时若仍用无参版本判定,
+     * 界面(按用户上限算百分比)与告警(按部署上限判定)会给出互相矛盾的结论 ——
+     * 界面上明明 92% 却不告警, 或者 3% 就先弹一句"建议开启新对话"。
+     *
+     * @param limit 本轮生效的总上下文上限; {@code <= 0} 时退回部署默认值
+     */
+    public boolean isNearLimit(List<Message> messages, int limit) {
+        int effective = limit > 0 ? limit : contextTokenLimit;
+        return estimate(messages) >= effective * contextWarnRatio;
+    }
+
+    /**
      * 统一的「真实 usage 优先, 估算兜底」收敛入口。
      * <p>模型返回了 usage (total>0) 时直接透传; 否则用 BPE 估算:
      * prompt = 上下文消息, completion = 正文 + 思维链。

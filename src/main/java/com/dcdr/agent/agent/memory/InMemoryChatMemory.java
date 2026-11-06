@@ -17,22 +17,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 基于 JPA 持久化的对话记忆
+ * 基于 JPA 持久化的对话记忆(V3.4 起只负责存储)。
  * <p>
- * 按会话隔离，限制最大消息数(上下文窗口控制)。
- * 消息持久化到 messages 表，应用重启后历史不丢失。
+ * 按会话隔离, 消息持久化到 messages 表, 应用重启后历史不丢失。
+ * <b>发给模型的裁剪/压缩不在这里</b>: 交给
+ * {@code com.dcdr.agent.agent.memory.strategy.ContextStrategy} —— 存储与"发什么"是两件会分别演进的事,
+ * 混在一个方法里(旧版 {@code loadWindow})意味着换一种上下文策略就要改存储实现。
  */
 @Component
 public class InMemoryChatMemory implements ChatMemory {
 
-    private final int maxMessages;
     /** V3.1 F-47.6: sources 落库前单个来源正文的字符上限 */
     private final int sourceContentMaxLength;
     private final MessageRepository messageRepository;
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public InMemoryChatMemory(AgentProperties properties, MessageRepository messageRepository) {
-        this.maxMessages = properties.getMemory().getMaxMessages();
         this.sourceContentMaxLength = properties.getTools().getResult().getSourceContentMaxLength();
         this.messageRepository = messageRepository;
     }
@@ -132,29 +132,6 @@ public class InMemoryChatMemory implements ChatMemory {
             messages.add(m);
         }
         return messages;
-    }
-
-    @Override
-    public List<Message> loadWindow(String sessionId) {
-        List<Message> all = load(sessionId);
-        // system 消息(会话级提示词/运行时约束)不占窗口配额, 始终保留
-        List<Message> systemMsgs = new ArrayList<>();
-        List<Message> others = new ArrayList<>();
-        for (Message m : all) {
-            if ("system".equals(m.getRole())) {
-                systemMsgs.add(m);
-            } else {
-                others.add(m);
-            }
-        }
-        if (others.size() <= maxMessages) {
-            return all;
-        }
-        // 仅截取视图, 不删除数据库记录(区别于旧版直接删库导致会话历史丢失的实现)
-        List<Message> windowed = new ArrayList<>(systemMsgs.size() + maxMessages);
-        windowed.addAll(systemMsgs);
-        windowed.addAll(others.subList(others.size() - maxMessages, others.size()));
-        return windowed;
     }
 
     @Override

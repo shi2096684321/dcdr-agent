@@ -349,6 +349,39 @@ public class SessionManager {
         });
     }
 
+    /**
+     * 保存最近一轮的上下文占用快照 (V3.4)。
+     * <p>
+     * <b>不更新 {@code updatedAt}</b>: 这不是"会话有新内容", 不应因此把会话顶到列表最前 ——
+     * 与 {@link #bindAgent} 同一取舍。
+     * <p>
+     * 调用方(编排器)在流式链路上异步调用它, 因此这里必须是<b>独立事务且不抛异常</b>:
+     * 存不下快照是展示层降级, 绝不能反过来让一轮已成功的对话失败。
+     *
+     * @param sessionId 会话 ID
+     * @param json      快照 JSON; 为空表示清除
+     */
+    @Transactional
+    public void saveContextUsage(String sessionId, String json) {
+        if (json == null || json.isBlank()) return;
+        sessionRepository.findById(sessionId).ifPresent(s -> {
+            s.setContextUsage(json);
+            sessionRepository.save(s);
+        });
+    }
+
+    /**
+     * 读取最近一轮的上下文占用快照 (V3.4)。
+     *
+     * @return 快照 JSON; 会话不存在或从未对话过时返回 {@code null}
+     */
+    public String findContextUsage(String sessionId) {
+        return sessionRepository.findById(sessionId)
+                .map(SessionEntity::getContextUsage)
+                .filter(v -> !v.isBlank())
+                .orElse(null);
+    }
+
     /** 以首个用户问题作为会话标题（仅在标题仍为自动默认时生效，避免覆盖用户自定义标题） */
     @Transactional
     public void autoTitleFromFirstMessage(String sessionId, String userMessage) {
