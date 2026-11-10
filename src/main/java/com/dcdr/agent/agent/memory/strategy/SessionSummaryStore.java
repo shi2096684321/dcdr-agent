@@ -22,6 +22,11 @@ public class SessionSummaryStore {
 
     private final SessionRepository sessionRepository;
     private final MessageRepository messageRepository;
+    /**
+     * 压缩事件记录器。作废/清除/改写这三件事都发生在摘要正文之外,
+     * 不落事件的话界面上只剩"摘要没了", 用户分不清是自己清的还是边界失效。
+     */
+    private final ContextCompactionRecorder recorder;
 
     /**
      * 已存摘要。
@@ -62,17 +67,33 @@ public class SessionSummaryStore {
     }
 
     /**
-     * 作废摘要。用于两种情况: 摘要描述的消息被撤回/删除, 或换了策略不再需要它。
+     * 摘要自愈: 它覆盖到的边界消息已不在历史里(用户撤回/删除), 整份作废。
      * <p>刻意不抛异常: 摘要本来就是缓存, 清不掉(会话已删)没有后果。
      */
     @Transactional
-    public void clear(String sessionId) {
+    public void invalidate(String sessionId, String reason) {
+        clearInternal(sessionId, CompactionEvent.INVALIDATED, reason);
+    }
+
+    /** 用户在界面上主动清除摘要 —— 与自愈分开记: 一个是用户意图, 一个是系统判断 */
+    @Transactional
+    public void clearByUser(String sessionId) {
+        clearInternal(sessionId, CompactionEvent.CLEARED, null);
+    }
+
+    private void clearInternal(String sessionId, CompactionEvent event, String reason) {
         sessionRepository.findById(sessionId).ifPresent(s -> {
             if (s.getContextSummary() == null && s.getContextSummarySeq() == null) return;
+            int chars = s.getContextSummary() == null ? 0 : s.getContextSummary().length();
             s.setContextSummary(null);
             s.setContextSummarySeq(null);
             sessionRepository.save(s);
-            log.info("会话 {} 摘要已作废", sessionId);
+            log.info("会话 {} 摘要已作废({})", sessionId, event.label());
+            if (event == CompactionEvent.CLEARED) {
+                recorder.cleared(sessionId, s.getUserId(), chars);
+            } else {
+                recorder.invalidated(sessionId, s.getUserId(), reason);
+            }
         });
     }
 
@@ -118,9 +139,11 @@ public class SessionSummaryStore {
         return sessionRepository.findById(sessionId)
                 .filter(s -> s.getContextSummary() != null && s.getContextSummarySeq() != null)
                 .map(s -> {
+                    int beforeChars = s.getContextSummary().length();
                     s.setContextSummary(trimmed);
                     sessionRepository.save(s);
                     log.info("会话 {} 摘要被手工改写: {} 字", sessionId, trimmed.length());
+                    recorder.edited(sessionId, s.getUserId(), beforeChars, trimmed.length());
                     return true;
                 })
                 .orElse(false);

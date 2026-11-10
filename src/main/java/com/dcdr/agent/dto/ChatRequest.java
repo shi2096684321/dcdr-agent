@@ -42,6 +42,20 @@ public class ChatRequest {
     @Schema(description = "图片 URL 列表（多模态输入，可选）")
     private List<String> images = new ArrayList<>();
 
+    /**
+     * 用户对「上一条提问卡片」的结构化回答(可选)。
+     * <p>
+     * 形如 {@code {"q1":["docker"],"q2":["a","b"]}} —— key 是提问块里下发的 questionId,
+     * value 是选中的选项值列表(单选也放数组, 前端不必分两种形状)。
+     * 也兼容 {@code {"questions":[{"id":"q1","answers":["docker"]}]}}。
+     * <p>
+     * 为什么不直接拿 {@link #message} 当答案: 一句话在多问题场景下看不出回答的是哪一题。
+     * 但本字段<b>可为空</b> —— 用户不点选项、直接在输入框打字是完全合法的回答方式,
+     * 此时后端退化成用 message 原文作答。
+     */
+    @Schema(description = "对提问卡片的结构化回答（questionId → 选中值列表），可空")
+    private Map<String, Object> questionAnswer;
+
     /** 温度参数(可选) */
     @Schema(description = "温度参数（可选）", example = "0.7")
     private Double temperature;
@@ -155,4 +169,38 @@ public class ChatRequest {
      */
     @Schema(description = "结构化输出说明（仅 tool_call 模式生效, 作为工具描述）", hidden = true)
     private String jsonSchemaDescription;
+
+    /**
+     * 收尾轮副本: 复制本请求但摘掉全部工具定义。
+     * <p>
+     * <b>为什么需要副本</b>: 原 request 在工具循环里被每一轮复用, 临时清空再还原既不是原子的,
+     * 也会让调用链日志里"这一轮究竟发了什么"不可信。
+     * <p>
+     * <b>为什么逐字段手写而不是框架拷贝工具</b>: 收尾轮必须与正常轮保持同一套生成参数
+     * (温度 / 思考开关 / 结构化输出), 漏拷一个字段会让同一句话在不同轮次表现不一致;
+     * 手写在本类内, 新增字段时改动点就在字段声明旁边, 不会被忽略。
+     * 已在 prepare 阶段消费完的字段(agentId / skillNames / knowledgeBaseIds / images)
+     * 也一并拷过来 —— 它们对 provider 无效, 但保留能让调用链日志完整还原这次请求。
+     */
+    public ChatRequest copyWithoutTools() {
+        ChatRequest copy = new ChatRequest();
+        copy.sessionId = sessionId;
+        copy.message = message;
+        copy.model = model;
+        copy.modelLocked = modelLocked;
+        copy.images = images;
+        copy.temperature = temperature;
+        copy.stream = stream;
+        copy.webSearch = webSearch;
+        copy.thinkingEnabled = thinkingEnabled;
+        copy.knowledgeBaseIds = knowledgeBaseIds;
+        copy.skillNames = skillNames;
+        copy.agentId = agentId;
+        copy.responseFormat = responseFormat;
+        copy.jsonSchemaName = jsonSchemaName;
+        copy.jsonSchema = jsonSchema;
+        copy.jsonSchemaDescription = jsonSchemaDescription;
+        // tools / toolSpecifications 刻意不拷: 收尾轮的全部意义就是让模型没有工具可调
+        return copy;
+    }
 }

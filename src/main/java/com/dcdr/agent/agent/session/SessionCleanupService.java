@@ -2,6 +2,7 @@ package com.dcdr.agent.agent.session;
 
 import com.dcdr.agent.agent.feedback.FeedbackService;
 import com.dcdr.agent.agent.memory.ChatMemory;
+import com.dcdr.agent.repository.ContextCompactionRepository;
 import com.dcdr.agent.repository.LlmCallLogRepository;
 import com.dcdr.agent.repository.MessageRepository;
 import com.dcdr.agent.repository.SessionRepository;
@@ -33,13 +34,16 @@ public class SessionCleanupService {
     private final MessageRepository messageRepository;
     private final FeedbackService feedbackService;
     private final LlmCallLogRepository llmCallLogRepository;
+    /** V3.5 压缩事件: 与会话解除引用, 理由同调用链日志 */
+    private final ContextCompactionRepository contextCompactionRepository;
     private final ChatMemory memory;
 
     /**
      * 删除会话及其全部从属数据。
      * <p>
-     * 调用链日志只<b>解除引用</b>不删行, 理由见
-     * {@link LlmCallLogRepository#detachSession(String)}。
+     * 调用链日志与压缩记录都只<b>解除引用</b>不删行, 理由见
+     * {@link LlmCallLogRepository#detachSession(String)}: 它们承载的是可观测性统计,
+     * 会话只是能跳回去看的那条线索。
      */
     @Transactional
     public void deleteCascade(String sessionId) {
@@ -47,8 +51,10 @@ public class SessionCleanupService {
         sessionRepository.deleteById(sessionId);
         messageRepository.deleteBySessionId(sessionId);
         feedbackService.deleteBySession(sessionId);
-        int detached = llmCallLogRepository.detachSession(sessionId);
+        int detachedLogs = llmCallLogRepository.detachSession(sessionId);
+        int detachedCompactions = contextCompactionRepository.detachSession(sessionId);
         memory.clear(sessionId);
-        log.info("删除会话: {} (解除调用链引用 {} 条)", sessionId, detached);
+        log.info("删除会话: {} (解除调用链引用 {} 条, 压缩记录引用 {} 条)",
+                sessionId, detachedLogs, detachedCompactions);
     }
 }

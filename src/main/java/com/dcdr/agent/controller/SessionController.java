@@ -229,7 +229,8 @@ public class SessionController {
     public Mono<Result<Void>> clearSummary(
             @Parameter(description = "会话 ID", required = true) @PathVariable String id) {
         return Mono.fromCallable(() -> {
-            summaryStore.clear(id);
+            // 走 clearByUser 而不是直接置空: 事件表要能区分"用户清的"与"边界失效自愈的"
+            summaryStore.clearByUser(id);
             return Result.<Void>success();
         }).subscribeOn(Schedulers.boundedElastic());
     }

@@ -50,3 +50,48 @@ COMMENT ON COLUMN sessions.context_summary IS
     '历史对话压缩摘要; NULL=从未压缩。由 SummaryCompactionStrategy 维护，原文仍保留在 messages';
 COMMENT ON COLUMN sessions.context_summary_seq IS
     '摘要覆盖到的最后一条消息 seq; 组装上下文时只丢弃 seq <= 它的消息。边界消息被删除即视为摘要失效';
+
+-- =============================================================================
+-- 上下文压缩事件（V3.5）
+--
+-- 设计要点：
+--   1. 与 sessions.context_summary 分工不同：那两列是「当前生效的摘要」（覆盖即替换），
+--      本表是「发生过的压缩事件」（只追加）。前者回答"模型现在记得什么"，
+--      后者回答"它是什么时候、因为什么变成这样的" —— 用户报"会话突然忘事"时，
+--      需要的正是后者的时间线，而覆盖式的摘要字段天然留不下。
+--   2. 不并进 llm_call_logs：降级、摘要作废、用户清除这些事件根本没有模型调用，
+--      混进去会出现没有 token、没有耗时的行，也会污染按来源统计的指标。
+--   3. 会话删除时只把 session_id 置空、不删行：压缩频率与降级率是部署级观测数据，
+--      不能由"会话只保留最近 N 条"的清理策略决定还能不能复盘。
+--   4. event_type 取值见 CompactionEvent：compacted / degraded / invalidated / cleared / edited。
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS context_compactions (
+    id                VARCHAR(64) PRIMARY KEY,
+    session_id        VARCHAR(64),
+    user_id           VARCHAR(64),
+    event_type        VARCHAR(24),
+    reason            VARCHAR(512),
+    trigger_tokens    INTEGER,
+    before_tokens     INTEGER,
+    after_tokens      INTEGER,
+    summarized_count  INTEGER,
+    kept_count        INTEGER,
+    summary_chars     INTEGER,
+    boundary_seq      INTEGER,
+    model             VARCHAR(64),
+    duration_ms       BIGINT,
+    created_at        TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ctxcomp_session_time ON context_compactions (session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ctxcomp_user_time ON context_compactions (user_id, created_at);
+
+COMMENT ON TABLE context_compactions IS
+    '上下文压缩事件(一次压缩/降级/作废/清除/改写一条); 由 SummaryCompactionStrategy 与 SessionSummaryStore 写入';
+COMMENT ON COLUMN context_compactions.event_type IS
+    'compacted=压缩成功 / degraded=降级窗口 / invalidated=摘要作废 / cleared=用户清除 / edited=用户改写';
+COMMENT ON COLUMN context_compactions.reason IS
+    '降级或作废原因; 成功压缩为空';
+COMMENT ON COLUMN context_compactions.session_id IS
+    '会话 ID; 会话删除后置空(保留统计)';

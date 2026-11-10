@@ -11,7 +11,7 @@ import java.util.List;
  * 单独劈出来之后, 压缩策略本身(什么时候压、压到哪、失败怎么办)可以完全不依赖模型做单元测试 ——
  * 否则"超过阈值不压缩""失败要降级"这些关键分支只能靠真调模型来验证, 实际上就没人验证。
  *
- * <p>实现必须<b>永不抛异常</b>: 返回 {@code null} 表示这次压缩没成功, 由调用方决定降级方式。
+ * <p>实现必须<b>永不抛异常</b>: 返回 {@code null} 正文表示这次压缩没成功, 由调用方决定降级方式。
  */
 public interface SummaryGenerator {
 
@@ -20,7 +20,7 @@ public interface SummaryGenerator {
      * @param messages        待压缩的消息(按时间正序)
      * @param userId          当前用户(成本记账用)
      * @param sessionId       会话 ID(成本记账用)
-     * @return 新摘要正文; 失败/超时/返回为空时返回 {@code null}
+     * @return 生成结果; 失败时 {@link SummaryResult#ok()} 为 false, 且带失败原因
      */
-    String summarize(String existingSummary, List<Message> messages, String userId, String sessionId);
+    SummaryResult summarize(String existingSummary, List<Message> messages, String userId, String sessionId);
 }

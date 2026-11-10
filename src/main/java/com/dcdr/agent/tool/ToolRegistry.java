@@ -2,6 +2,7 @@ package com.dcdr.agent.tool;
 
 import com.dcdr.agent.config.ToolsProperties;
 import com.dcdr.agent.model.langchain4j.JsonSchemaConverter;
+import com.dcdr.agent.tool.ask.AskUserTool;
 import com.dcdr.agent.tool.result.ToolResultReadTool;
 import com.dcdr.agent.tool.skill.SkillLoadTool;
 import com.dcdr.agent.workspace.WorkspaceAccess;
@@ -48,6 +49,9 @@ public class ToolRegistry {
      *       的自相矛盾状态。</li>
      *   <li>{@code tool_result_read}: 超长工具结果落盘后, 唯一的取回途径。它是 V3.0 就存在的
      *       潜在缺陷 —— Agent 白名单里只要没列它, "落盘 + 分页读取"这条链路对该 Agent 就是断的。</li>
+     *   <li>{@code ask_user}: 它是「对话机制」而不是「某个 Agent 的业务能力」。被白名单挡掉的后果
+     *       不是"少一个功能", 而是同一个模型在通用助手里有澄清入口、在 Agent 里只能靠猜 ——
+     *       而且用户看不出差别在哪。它不执行任何操作(只下发一张卡片), 放行没有任何授权风险。</li>
      * </ul>
      * 安全上可接受: 两者都是<b>只读</b>工具, 且读取范围受当前会话/当前用户约束
      * (skill_load 按归属过滤, tool_result_read 按会话目录 + 路径穿越校验)。
@@ -56,7 +60,7 @@ public class ToolRegistry {
      * 都要记得带上它们, 属于把机制正确性寄托在配置纪律上。
      */
     private static final Set<String> PLATFORM_TOOLS =
-            Set.of(SkillLoadTool.NAME, ToolResultReadTool.NAME);
+            Set.of(SkillLoadTool.NAME, ToolResultReadTool.NAME, AskUserTool.NAME);
 
     /** 平台机制工具的只读视图(供启动期自检复用, 避免第二份真值源) */
     public static Set<String> platformToolNames() {

@@ -2,6 +2,7 @@
   <HubShell :tabs="tabs" v-model:tab="tab">
     <MonitorView v-if="tab === 'monitor'" />
     <LlmCallLogView v-else-if="tab === 'llm-logs'" />
+    <ContextCompactionView v-else-if="tab === 'compactions'" />
     <RoutingView v-else-if="tab === 'routing'" />
     <!-- 与 App.vue 原先的守卫一致: 页签已按角色过滤, 这里再兜一层, 避免非管理员落到 403 -->
     <RetrievalHealthView v-else-if="tab === 'retrieval-health' && authStore.isAdmin" />
@@ -15,6 +16,7 @@ import { computed, ref } from 'vue'
 import HubShell from '@/components/HubShell.vue'
 import MonitorView from '@/views/MonitorView.vue'
 import LlmCallLogView from '@/views/LlmCallLogView.vue'
+import ContextCompactionView from '@/views/ContextCompactionView.vue'
 import RoutingView from '@/views/RoutingView.vue'
 import RetrievalHealthView from '@/views/RetrievalHealthView.vue'
 import WebHealthView from '@/views/WebHealthView.vue'
@@ -33,6 +35,8 @@ import { useAuthStore } from '@/stores/auth'
 const TABS = [
   { key: 'monitor', label: '监控与成本', hint: '工作流执行监控 / token 成本 / 配额 / 回答反馈' },
   { key: 'llm-logs', label: '调用链', hint: '每次请求的完整调用链(路由判断 / 生成轮 / 工具步骤 / token / 耗时)' },
+  // 与调用链互补: 调用链看"一次请求花了什么", 这里看"什么被压掉了、哪次没压成"
+  { key: 'compactions', label: '压缩记录', hint: '上下文压缩成功/降级/作废的时间线(触发阈值、前后 token、摘要字数、失败原因)' },
   { key: 'routing', label: '智能路由', hint: '路由判断结果, 用于分析准确率与调优置信度阈值' },
   // 零命中样本含用户原始提问, 属运维数据 → 仅管理员(后端亦校验)
   { key: 'retrieval-health', label: '检索健康', hint: 'RAG 检索质量的可观测性', adminOnly: true },

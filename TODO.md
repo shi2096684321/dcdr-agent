@@ -2264,3 +2264,145 @@ K/M 缩写口径、配置被写坏时兜到下限）；与 `ContextUsageServiceT
 
 **验证**：`npm run build` 通过；`docs/README.md` 内 30+ 条相对链接逐条校验存在；
 根 README 的 `docs/` 引用校验通过（仅两处为通配符描述）。后端无改动。
+
+## V3.4 修复：工具循环被上限截断时补一轮「不带工具」的收尾生成
+
+**背景**：工具循环（`tailFlux`）有两条停止路径 —— 累计 token 达上限、回灌轮数达 `MAX_TOOL_ROUNDS`，
+原来都是直接 `finalizeAssistant`。但此刻模型刚发完 `tool_calls`，正文基本是空的：用户拿到的是一条
+只有工具卡片、没有结论的消息，而 token 已经花掉了。这不是"少答一点"，是"花了钱没拿到答案"。
+
+**做法**：
+- `tailFlux` 把「模型自己想停」与「被上限拦住」分成两个信号（`blockedByLimit`）；被拦住时补一轮生成：
+  `ChatRequest#copyWithoutTools()` 复制请求并摘掉 `tools` / `toolSpecifications`，用同一份 history 再发一次，
+  调用链记为 `round-N-wrapup`。
+- 收尾轮临时追加一条 `runtime:tool-loop-stop` 的 system 消息（不落库），说明"工具已停止"，
+  否则模型容易输出"我再去查一下"然后半句话就停。
+- 顺带记一条**为什么不能只在第一轮注入工具**：OpenAI 兼容接口是无状态的，`tools` 是本次请求的参数；
+  回灌轮不带工具，模型就没有能力输出 `tool_calls`，工具循环只能走一步。省钱的正确姿势是
+  "每轮都发、但集合小"，其中前缀稳定还能吃到上下文缓存 —— 所以工具集合必须会话级固定，
+  不能每轮按技能重算。
+
+**关键取舍**：
+- **不把没执行的那批 `tool_calls` 回灌 history**：既没执行也不该执行；回灌会留下孤儿 `tool_call_id`，
+  下一轮模型看到"有调用没结果"只会重试。
+- **摘掉全部工具，而不是留一个只读子集**：留任何一个都给了它继续拖延的选项。
+- **代价**：上限命中时多一次模型调用（含 prompt）。换来的是一条能用的回答。
+  `usageHolder` 本来就只保留最后一轮，故"本轮消耗"会显示收尾轮的数字；累计量走 `taskTokens`，不受影响。
+- **`copyWithoutTools` 逐字段手写**：用 `BeanUtils` 更省事，但漏拷温度/思考开关会让收尾轮的"说话方式"
+  和前面几轮不一致；手写放在 DTO 内，新增字段时改动点就在声明旁边。
+
+**验证**：本机无 `mvn`，**未做编译验证**（仅 IDE 诊断 0 错误）。建议人工回归：让模型连着调工具直到 token 上限，
+确认最后一条助手消息有正文、`done` 前有"已达 token 上限"提示、调用链出现 `round-N-wrapup` 且该轮无工具定义。
+
+## V3.5 修复：自部署 Qwen3 端点 400「System message must be at the beginning.」
+
+**现象**：接 `https://developer.amd.com.cn/radeon/api/v1`（自部署 vLLM + Qwen3.8-27B）后，每轮对话都失败：
+`System message must be at the beginning.`（`type: BadRequest`）。
+
+**根因（不是 LangChain4j 的锅）**：
+- Qwen3 系 chat_template 只认 `messages[0]` 一条 system，第二条起直接 `raise_exception` ——
+  **连续两条 system 也算违规**；OpenAI 官方协议则允许多条、任意位置，两者的合法集合不同。
+- 本项目编排层按「片段 + name 去重」注入 system（平台规则 / 长期记忆 / 当前时间 / 技能目录 /
+  工作区摘要 / 外部数据边界 / 工具循环收尾），且多用 `history.add(...)` 追加在**尾部**，
+  于是请求里必然出现多条 system 且不在首位。DashScope / DeepSeek 宽松，vLLM 直接 400。
+
+**做法**：新增 `MessageNormalizer#mergeSystemMessages`，在两个 Provider 的协议出口
+（`LangChain4jChatProvider#buildChatRequest`、`OpenAiCompatibleChatProvider#buildRequestBody`）
+先把历史里的 system 按出现顺序合并成一条并置顶，其余消息保持相对顺序。
+
+**关键取舍**：
+- **不改编排层**：CodeBuddy / WorkBuddy 之所以天然没这问题，是它们从设计上只有一个 system 槽位
+  （AI SDK 的 `system` 字段 / `instructions` 字符串，运行时约束一律 append 进同一字符串）。
+  本平台已是多片段形态，回调编排层要动 6 处注入点 + 调用链分段展示 + `ContextUsageService`
+  分段统计；在唯一出口合并覆盖面相同、改动最小，与它们「在协议转换层兜底」
+  （`systemMessageMode: system | developer | remove`）属同一层。
+- **顺序即优先级**：合并保留原顺序（越靠后越具体），片段间用 `---` 分隔；顺带消除了
+  「system 夹在 tool 结果之后」这类同样会被严格端点拒绝的形状。
+- **快照同源**：合并在 `buildChatRequest` 内部完成，`WireCapture` 记录的就是真实发出的形状，
+  调用链日志不会与线上请求漂移（代价：日志里 system 只剩一段）。
+- **`enable_thinking=false` 不再无条件下发**：`tool_call` 强制结构化分支原先硬编码该参数，
+  而它是 DashScope / 智谱私有字段，vLLM 这类严格端点会因未知字段 400；改为仅对识别到的厂商下发。
+
+**验证**：新增 `MessageNormalizerTest` 6 项（合并置顶、顺序保持、单条快路径不拷贝、无 system 透传、
+空片段跳过、null 安全）；`mvn -o clean test` 全量 778 项通过（0 失败 / 2 跳过）。
+**待验证**：用 AMD 端点实际对话一轮，确认不再 400 且回答正常（本机无该 Key）。
+
+---
+
+## V3.5 对话内向用户提问（ask_user，2026-11-10）
+
+### 已实现
+- 新增流式工具 `tool/ask/AskUserTool`（`supportsStreaming=true`）与 SSE 块 `ChatChunk.type=user_input_request`；
+  模型需要确认/补充信息时调用它，编排层**在 executeTools 之前拦截**，下发提问块后本轮结束。
+- 前端 `components/AskUserCard.vue`：单选点即提交、多题/多选显示进度 + 「完成」、每题一行自定义输入、
+  「跳过」也发一条消息。回答随普通消息回传（`ChatRequest.questionAnswer`），前端不引入任何 pending 接口。
+- 新增 `agent/memory/ToolPairingRepair`：每次请求准备阶段给「没有结果的 assistant.tool_calls」补 tool 消息，
+  补的内容按位置判定（提问是最后一条 → 用本轮输入；否则用它后面紧邻的那条用户消息；再否则记"跳过"）。
+- 同步接口 `/api/chat` 增加 `pendingQuestions` / `pendingRequestId`，并把空正文兜成「需要你确认：…」。
+- `ToolRegistry.PLATFORM_TOOLS` 加入 `ask_user`（与 Agent 工具白名单解耦）。
+
+### 关键设计决策
+- **"数据落着"而不是"连接挂着"**：CodeBuddy 的等待是常驻连接 + `QuestionManager` 挂起 + `questionTimeout`
+  自动取消；本项目是一次性 SSE，挂起会撞 120s 空闲超时、重启即丢。改为"本轮结束 + 用户回答触发新的一轮"，
+  代价是每次问答多一次 prefill（上下文重算），换来跨刷新/跨设备/跨天可恢复、服务端零资源占用。
+- **修复器不落库**：按 seq 追加会把 tool 消息排到会话末尾，而协议要求它紧跟 assistant 消息 —— 顺序天然是错的。
+  改为每次请求重算：给定历史 + 本轮输入，结果唯一确定，因此天然幂等、天然自愈（中断/崩溃/重启留下的悬空调用
+  一并兜住，不止 ask_user）。
+- **答案随用户消息走**：不新增"回答接口"，也不新增 `ui_payload` 列 —— 问题存在 `tool_calls_json`、
+  答案就是那条普通用户消息 + 修复器补出的 tool 结果。**零 DDL 变更**。
+- **提问轮正文必须非空**：`SessionManager.isHiddenToolMessage` 会把「无正文的 tool_calls 消息」判为用户不可见，
+  卡片会连带消失。收尾时补一句占位文案，并先下发同样的 chunk，保证"立刻看到的"和"刷新后看到的"一致。
+- **同批调用一律不执行**：用户还没确认就替他把工具跑完，下一轮他会看到"已经按某个方案做了"。
+  未执行的那些由修复器回灌「未执行」，与真实执行区分开。
+
+### 已知代价 / 待办
+- 卡片"已回答/待回答"由**消息顺序**判定（下一条是不是 user），不是 id 绑定。会话 rewind 只删部分历史时可能判错，
+  影响回看展示、不影响模型正确性（正确性由配对修复保证）。
+- 上下文压缩若把提问的 assistant 消息裁掉，修复器会记"跳过"，模型看到的是"用户没回答"—— 属预期降级。
+- 一次确认 = 多一跳模型调用，工具描述里已约束「能推断/能查到的不要问；同一问题只问一次」。
+- 未做：提问进度的超时提醒（不需要，见上）、多轮提问的"已回答"逐题回显（历史里只有用户消息原文）。
+
+### 验证
+- 后端 `mvn -o -llr test-compile`：423 源文件 + 92 测试文件编译通过；`ToolPairingRepairTest` 7 项全绿。
+- 前端 `npm run build` 通过。
+- **未做真实链路联调**（需可用的函数调用模型）；建议按「单选 / 多选 / 自定义 / 跳过 / 回答前刷新 / 不理会直接问别的 / 中途停止后再问」
+  七条路径各走一遍，重点看后三条是否出现上游 400。
+
+---
+
+## V3.5 上下文压缩记录：前端可查的压缩日志（2026-11-10）
+
+**背景**：压缩原先只有 `log.info` 落在服务端文件日志里 —— 本机跑 dev 还能看控制台，部署之后
+「这个会话为什么突然忘事 / 这一轮为什么没压成」基本无从查。摘要在界面上只能看到「当前这一版正文」，
+看不到「什么时候压的、压掉多少、失败原因」。
+
+**做法**：
+- 新表 `context_compactions`（只追加）：事件类型 `compacted / degraded / invalidated / cleared / edited`，
+  记录触发阈值、压缩前后 token、被压/保留条数、摘要字数、边界 seq、模型、耗时、失败原因。
+  会话删除时只把 `session_id` 置空、保留统计（与 `llm_call_logs` 同一口径）。
+- `SummaryGenerator` 的返回从 `String` 改为 `SummaryResult`（正文 + 模型 + 耗时 + 失败原因），
+  让「成功」与「降级」都能把原因带出来；策略里三个分支（保留条数不足、摘要失败、压缩成功）分别落事件，
+  `SessionSummaryStore` 负责「边界自愈作废 / 用户清除 / 手工改写」三种事件。
+- `ContextCompactionRecorder` 用 `TransactionTemplate(REQUIRES_NEW)` 单独开短事务并吞掉异常：
+  记录失败不许影响对话，也不许把业务事务标记成 rollback-only（否则「吞了异常还是把对话搞挂了」）。
+- 接口 `GET /api/context-compactions`：分页，按会话 / 事件 / 用户筛选；普通用户强制只查自己，
+  管理员可传 `userId=all`。
+- 前端：运维台新增「压缩记录」页签（全局视图）；对话右侧上下文面板新增「压缩记录」入口，
+  抽屉只列当前会话，顶部带节省 token 汇总。
+
+**关键取舍**：
+- **不并进 `llm_call_logs`**：降级、作废、清除根本没有模型调用，混进去会出现没有 token / 耗时的行，
+  也会污染「本页平均轮次」这类指标。
+- **「未触发压缩」不落库**：每轮一条 skipped 会得到一张每天几万行、没人看的表；这类信息继续留在 debug 日志。
+  记录范围限定为「真的发生了，或真的需要解释」的事件。
+- **失败原因只落一句话**：`e.toString()` 可能带上游 URI 等细节，落库只保留「超时 / 被中断 / 调用失败(类型)」，
+  完整异常仍进服务端日志。
+- **不做手动触发压缩的按钮**：本次只补可观测性；手动压缩（`/compact`）是另一件事，涉及交互与成本提示。
+
+**验证**：
+- 前端 `npm run build` 通过（2427 modules，43.34s）。
+- 后端：本机无 `mvn` / `mvnw`，**未做编译验证**（IDE 诊断 0 错误）。测试已适配
+  `SummaryCompactionStrategyTest`（新增成功 / 降级事件断言）与 `SessionSummaryStoreTest`（构造参数），
+  需在有 Maven 的环境跑 `mvn -o test` 复核。
+- **未做真实链路联调**：建议让某个会话真实超阈值压缩一次，确认「压缩记录」页出现 compacted、
+  摘要卡片入口能拉开抽屉、手工清除后出现 cleared、撤回历史后出现 invalidated。

@@ -55,17 +55,25 @@ class SummaryCompactionStrategyTest {
     private static SummaryCompactionStrategy strategy(SummaryGenerator generator,
                                                       SessionSummaryStore store,
                                                       int triggerTokens, int keepRecent, int maxMessages) {
+        return strategy(generator, store, triggerTokens, keepRecent, maxMessages,
+                mock(ContextCompactionRecorder.class));
+    }
+
+    private static SummaryCompactionStrategy strategy(SummaryGenerator generator,
+                                                      SessionSummaryStore store,
+                                                      int triggerTokens, int keepRecent, int maxMessages,
+                                                      ContextCompactionRecorder recorder) {
         AgentProperties props = new AgentProperties();
         props.getMemory().getCompaction().setTriggerTokens(triggerTokens);
         props.getMemory().getCompaction().setKeepRecent(keepRecent);
         props.getMemory().setMaxMessages(maxMessages);
         TokenEstimator estimator = new TokenEstimator(props);
         return new SummaryCompactionStrategy(props, store, generator, estimator,
-                new SlidingWindowStrategy(props));
+                new SlidingWindowStrategy(props), recorder);
     }
 
     private static SummaryGenerator generator(String result) {
-        return (existing, messages, userId, sessionId) -> result;
+        return (existing, messages, userId, sessionId) -> SummaryResult.ok(result, "mock-model", 10);
     }
 
     @Test
@@ -88,11 +96,14 @@ class SummaryCompactionStrategyTest {
     void compactsWhenOverBudget() {
         SessionSummaryStore store = mock(SessionSummaryStore.class);
         SummaryGenerator gen = mock(SummaryGenerator.class);
+        ContextCompactionRecorder recorder = mock(ContextCompactionRecorder.class);
         when(store.load("s1")).thenReturn(null);
-        when(gen.summarize(any(), any(), any(), any())).thenReturn(FAKE_SUMMARY);
+        when(gen.summarize(any(), any(), any(), any()))
+                .thenReturn(SummaryResult.ok(FAKE_SUMMARY, "mock-model", 120));
 
         // 10 条对话, 保留最近 2 条 → 待压缩的是前 8 条
-        ContextStrategy.View view = strategy(gen, store, 1, 2, 20).apply("s1", "u1", dialogue(5), 300_000);
+        ContextStrategy.View view = strategy(gen, store, 1, 2, 20, recorder)
+                .apply("s1", "u1", dialogue(5), 300_000);
 
         List<Message> messages = view.messages();
         // 1 条摘要 + 最近 2 条原文
@@ -107,6 +118,10 @@ class SummaryCompactionStrategyTest {
 
         // 边界 = 被压缩的最后一条消息的 seq(这里是 seq=7, 即第 3 轮回答)
         verify(store).save(eq("s1"), eq(FAKE_SUMMARY), eq(7));
+        // 成功压缩必须留一条事件: 前端「压缩记录」靠它回答"什么时候压过、省了多少"
+        // 阈值按 1000 兜底(配置 1 token 会撞下限), 事件里记的必须是实际生效值而不是配置值
+        verify(recorder).compacted(eq("s1"), eq("u1"), eq(1_000), anyInt(), anyInt(),
+                eq(8), eq(2), eq(FAKE_SUMMARY.length()), eq(7), eq("mock-model"), eq(120L));
     }
 
     @Test
@@ -128,14 +143,20 @@ class SummaryCompactionStrategyTest {
     void fallsBackToSlidingWindowWhenGenerationFails() {
         SessionSummaryStore store = mock(SessionSummaryStore.class);
         SummaryGenerator gen = mock(SummaryGenerator.class);
+        ContextCompactionRecorder recorder = mock(ContextCompactionRecorder.class);
         when(store.load("s1")).thenReturn(null);
-        when(gen.summarize(any(), any(), any(), any())).thenReturn(null);
+        when(gen.summarize(any(), any(), any(), any()))
+                .thenReturn(SummaryResult.failed("摘要模型调用超时(>30s)", 30_000));
 
-        ContextStrategy.View view = strategy(gen, store, 1, 2, 4).apply("s1", "u1", dialogue(5), 300_000);
+        ContextStrategy.View view = strategy(gen, store, 1, 2, 4, recorder)
+                .apply("s1", "u1", dialogue(5), 300_000);
 
         assertEquals(4, view.messages().size(), "应退回「最近 max-messages 条」");
         assertNotNull(view.notice(), "降级必须让用户知道, 否则'为什么它忘了'无法解释");
         verify(store, never()).save(anyString(), anyString(), anyInt());
+        // 降级原因要落库: 只写在文件日志里的话, 部署后没人能回答"这次为什么没压成"
+        verify(recorder).degraded(eq("s1"), eq("u1"), eq("摘要模型调用超时(>30s)"),
+                eq(1_000), anyInt(), eq(8), eq(2));
     }
 
     @Test
@@ -148,7 +169,7 @@ class SummaryCompactionStrategyTest {
 
         ContextStrategy.View view = strategy(gen, store, 1_000_000, 2, 20).apply("s1", "u1", dialogue(3), 300_000);
 
-        verify(store).clear("s1");
+        verify(store).invalidate(eq("s1"), anyString());
         assertEquals(6, view.messages().size(), "摘要作废后应回到完整历史, 不能按旧边界继续丢");
     }
 

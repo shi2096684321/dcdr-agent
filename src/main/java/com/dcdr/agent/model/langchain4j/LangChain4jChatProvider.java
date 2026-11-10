@@ -7,6 +7,7 @@ import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.model.provider.ChatModelProvider;
+import com.dcdr.agent.model.provider.MessageNormalizer;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
@@ -299,10 +300,11 @@ public class LangChain4jChatProvider implements ChatModelProvider {
     private dev.langchain4j.model.chat.request.ChatRequest buildChatRequest(
             ChatRequest request, List<Message> history, boolean includeCurrentUser, WireCapture capture) {
         List<ChatMessage> messages = new ArrayList<>();
-        if (history != null) {
-            for (Message msg : history) {
-                appendHistoryMessage(messages, msg, capture);
-            }
+        // 单一 system 归一化: 上游(Qwen3 系模板/vLLM)只接受 messages[0] 一条 system,
+        // 而编排层按片段注入了多条且多在尾部 —— 在此合并并置顶(顺序即优先级),
+        // 快照 capture 与真实请求同源, 见 MessageNormalizer 的说明
+        for (Message msg : MessageNormalizer.mergeSystemMessages(history)) {
+            appendHistoryMessage(messages, msg, capture);
         }
         if (includeCurrentUser) {
             messages.add(toUserMessage(request.getMessage(), request.getImages()));
@@ -324,7 +326,8 @@ public class LangChain4jChatProvider implements ChatModelProvider {
         // 模型唯一可调用的工具即 schema 工具, arguments 必须符合 parameters schema;
         // 等价于手写版的 tool_choice={type:function, function:{name}}。
         // 注意: 通义等模型默认开启思考模式, DashScope 思考模式下不支持 tool_choice=required/object,
-        // 故经 customParameters 按请求传 enable_thinking=false 关闭思考以保证强约束成立
+        // 故对识别到的厂商经 customParameters 关闭思考以保证强约束成立 —— 参数是厂商私有的,
+        // 不认识的端点(自部署 vLLM 等)不发送, 否则未知字段会被严格校验拒绝
         // (仅影响路由等结构化调用, 普通对话的思维链能力不受影响)
         boolean forcedToolMode = "tool_call".equals(responseFormat)
                 && request.getJsonSchema() != null && supportsFunctionCalling();
@@ -339,15 +342,19 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                     .parameters(JsonSchemaConverter.toObjectSchema(request.getJsonSchema()))
                     .build();
             // 参数全部走 parameters 对象(ChatRequest 在 flat 字段全空时原样使用显式 parameters)
-            var params = OpenAiChatRequestParameters.builder()
+            var paramsBuilder = OpenAiChatRequestParameters.builder()
                     .toolSpecifications(List.of(submitTool))
-                    .toolChoice(ToolChoice.REQUIRED)
-                    .customParameters(Map.of("enable_thinking", false));
-            if (temp != null) {
-                params.temperature(temp);
+                    .toolChoice(ToolChoice.REQUIRED);
+            // "关闭思考"是各厂商私有参数(DashScope enable_thinking / 智谱 thinking),
+            // 只对识别到的厂商下发: 自部署 vLLM 等严格校验端点上, 多带一个未知字段会直接 400
+            if (thinkingDisableParams != null) {
+                paramsBuilder.customParameters(thinkingDisableParams);
             }
-            builder.parameters(params.build());
-            captureForcedToolParams(capture, fnName, submitTool, request, temp);
+            if (temp != null) {
+                paramsBuilder.temperature(temp);
+            }
+            builder.parameters(paramsBuilder.build());
+            captureForcedToolParams(capture, fnName, submitTool, request, temp, thinkingDisableParams);
             return builder.build();
         }
 
@@ -570,7 +577,8 @@ public class LangChain4jChatProvider implements ChatModelProvider {
      * 与普通路径差异很大, 故单独采集。
      */
     private static void captureForcedToolParams(WireCapture capture, String fnName, ToolSpecification submitTool,
-                                               ChatRequest request, Double temp) {
+                                               ChatRequest request, Double temp,
+                                               Map<String, Object> customParams) {
         if (capture == null) return;
         if (temp != null) capture.params.put("temperature", temp);
         Map<String, Object> fn = new LinkedHashMap<>();
@@ -579,8 +587,10 @@ public class LangChain4jChatProvider implements ChatModelProvider {
         fn.put("parameters", request.getJsonSchema());
         capture.params.put("tools", List.of(Map.of("type", "function", "function", fn)));
         capture.params.put("tool_choice", "required(仅可调用 " + fnName + ")");
-        // DashScope 思考模式不支持 tool_choice=required, 该分支固定关闭思考
-        capture.params.put("customParameters", Map.of("enable_thinking", false));
+        // 与实际请求一致: 仅识别到厂商时才带"关闭思考"参数(DashScope 思考模式不支持 tool_choice=required)
+        if (customParams != null) {
+            capture.params.put("customParameters", customParams);
+        }
     }
 
     /** 采集普通调用路径的请求参数(与 buildChatRequest 中的各分支一一对应) */

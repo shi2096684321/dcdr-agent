@@ -101,21 +101,33 @@
         </div>
 
         <!-- 已持久化消息项 -->
-        <MessageBubble
-          v-for="msg in messages" :key="msg.id"
-          :msg="msg" :streaming="streaming"
-          :editing="editingSeq === msg.seq"
-          v-model:editBuffer="editBuffer"
-          @start-edit="startEdit"
-          @save-edit="saveEdit"
-          @cancel-edit="cancelEdit"
-          @retry="retry"
-          @rewind="onRewind"
-          @undo-op="onUndoOp"
-          @preview-image="previewImage"
-          @preview-code="openCodePreview"
-          @feedback="onFeedbackChange"
-        />
+        <template v-for="(msg, idx) in messages" :key="msg.id">
+          <MessageBubble
+            :msg="msg" :streaming="streaming"
+            :editing="editingSeq === msg.seq"
+            v-model:editBuffer="editBuffer"
+            @start-edit="startEdit"
+            @save-edit="saveEdit"
+            @cancel-edit="cancelEdit"
+            @retry="retry"
+            @rewind="onRewind"
+            @undo-op="onUndoOp"
+            @preview-image="previewImage"
+            @preview-code="openCodePreview"
+            @feedback="onFeedbackChange"
+          />
+          <!-- 提问卡片: 挂在发起提问的那条 assistant 消息下面。
+               "是否已回答"由消息顺序判定(下一条是不是 user) —— 不额外存状态,
+               刷新后重放历史也能得到同样的结果。 -->
+          <AskUserCard
+            v-if="askOf(msg)"
+            :questions="askOf(msg)"
+            :answered="isAskAnswered(idx)"
+            :answer-text="isAskAnswered(idx) ? (messages[idx + 1]?.content || '') : ''"
+            @submit="onAskSubmit"
+            @skip="onAskSkip"
+          />
+        </template>
 
         <!-- 流式输出中(仅当当前会话正是该流归属会话时展示; 切走则不显示, 返回继续) -->
         <div v-if="streaming && streamSessionId === currentSessionId" class="msg-item msg-assistant">
@@ -350,6 +362,19 @@
         </div>
       </div>
 
+      <!-- 压缩记录(V3.5): 摘要卡片只说"现在记得什么", 表达不了"什么时候压过、哪次没压成"。
+           入口放在面板里而不是弹提示: 压缩是背景事件, 不该每轮打断对话 -->
+      <div v-if="currentSessionId" class="ctx-card">
+        <div class="ctx-card-title">压缩记录</div>
+        <div class="ctx-row">
+          <span class="ctx-k">范围</span>
+          <span class="ctx-v">本会话的压缩 / 降级 / 作废</span>
+        </div>
+        <div class="ctx-actions">
+          <button class="ctx-act" @click="openCompactions">查看记录</button>
+        </div>
+      </div>
+
       <div class="ctx-foot mono">
         {{ currentSessionId ? '会话 #' + currentSessionId : '新会话 · 尚未保存' }}
       </div>
@@ -385,6 +410,34 @@
       </template>
     </el-dialog>
 
+    <!-- 压缩记录抽屉(V3.5): 排查"这个会话为什么突然忘事"的第一现场 ——
+         只列本会话, 全局视图在运维台的「压缩记录」页 -->
+    <el-drawer v-model="compactionsOpen" title="压缩记录 · 当前会话" size="540px" append-to-body>
+      <div v-loading="compactionsLoading" class="cmp-wrap">
+        <div v-for="r in compactions" :key="r.id" class="cmp-item">
+          <div class="cmp-top">
+            <span class="cmp-evt" :class="'evt-' + (r.eventType || '')">{{ r.eventLabel || r.eventType }}</span>
+            <span class="cmp-time mono">{{ cmpTime(r.createdAt) }}</span>
+          </div>
+          <div class="cmp-meta mono">
+            <span v-if="r.beforeTokens != null">
+              约 {{ cmpTokens(r.beforeTokens) }} → {{ cmpTokens(r.afterTokens) }} token
+            </span>
+            <span v-if="r.summarizedCount != null">
+              {{ r.summarizedCount }} 条 → 摘要 {{ r.summaryChars || 0 }} 字
+            </span>
+            <span v-if="r.keptCount != null">保留 {{ r.keptCount }} 条</span>
+            <span v-if="r.durationMs">{{ cmpDur(r.durationMs) }}</span>
+          </div>
+          <p v-if="r.reason" class="cmp-reason">{{ r.reason }}</p>
+        </div>
+        <div v-if="!compactionsLoading && !compactions.length" class="cmp-empty">
+          本会话还没有压缩记录<br />
+          历史超过触发阈值并被压缩 / 降级时会生成一条
+        </div>
+      </div>
+    </el-drawer>
+
     <!-- 图片预览弹窗 -->
     <ImagePreviewModal v-model:url="previewImageUrl" />
 
@@ -405,11 +458,13 @@ import {
   renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
   buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation,
   getContextUsage, getContextLimit, updateContextLimit,
-  getSessionSummary, updateSessionSummary, clearSessionSummary
+  getSessionSummary, updateSessionSummary, clearSessionSummary,
+  getContextCompactions
 } from '@/api'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
+import AskUserCard from '@/components/AskUserCard.vue'
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
 import WorkspaceChangePanel from '@/components/WorkspaceChangePanel.vue'
 import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
@@ -445,6 +500,12 @@ const sessions = ref([])
 const currentSessionId = ref(null)
 const messages = ref([])
 const input = ref('')
+/**
+ * 本轮待回答的提问 {id, questions}。
+ * <p>只在「收到 user_input_request → done」这段窗口里存在, 收尾时挂到 assistant 消息上后清空;
+ * 不做持久化 —— 刷新后的卡片是从消息的 toolCalls 里还原出来的。
+ */
+const askRound = ref(null)
 const streaming = ref(false)
 // 方案 B: 流式输出归属会话隔离。streamSessionId 记录当前流式输出归属的会话。
 // 由于同一时刻最多只有一个流式(send/sendImage 均有 streaming 互斥), 全局流式展示变量
@@ -504,6 +565,47 @@ const summarySnippet = computed(() => {
   const t = summaryView.value?.text || ''
   return t.length > 120 ? t.slice(0, 120) + '…' : t
 })
+
+// ===== 压缩记录 (V3.5) =====
+/** 当前会话的压缩事件; 打开抽屉时才拉取, 不跟着每轮对话刷新 */
+const compactions = ref([])
+const compactionsOpen = ref(false)
+const compactionsLoading = ref(false)
+
+/**
+ * 打开压缩记录抽屉。
+ * <p>回填前校验「回来时当前会话没变」: 与 loadSummary 同一个理由 ——
+ * 快速连点两个会话时, 先发的请求可能后到, 把 A 的事件写到 B 的面板上。
+ */
+async function openCompactions() {
+  const id = currentSessionId.value
+  if (!id) return
+  compactionsOpen.value = true
+  compactionsLoading.value = true
+  compactions.value = []
+  try {
+    const data = await getContextCompactions({ sessionId: id, size: 30 })
+    if (currentSessionId.value !== id) return
+    compactions.value = data.content || []
+  } catch (e) {
+    ElMessage.error(e?.message || '加载压缩记录失败')
+  } finally {
+    compactionsLoading.value = false
+  }
+}
+
+/** 抽屉里的三个展示格式: 时间去掉 T、token 用 k 缩写、耗时 ms/s 自适应 */
+function cmpTime(s) {
+  return s ? String(s).replace('T', ' ').slice(0, 19) : '—'
+}
+function cmpTokens(n) {
+  const v = Number(n) || 0
+  return v >= 1000 ? (v / 1000).toFixed(1) + 'k' : String(v)
+}
+function cmpDur(ms) {
+  const v = Number(ms) || 0
+  return v >= 1000 ? (v / 1000).toFixed(1) + 's' : v + 'ms'
+}
 
 // 消息编辑/重试
 const editingSeq = ref(null)
@@ -1014,6 +1116,53 @@ function quickSend(text) {
   send()
 }
 
+/**
+ * 从消息的 toolCalls 里取出提问问题列表; 不是提问消息则返回 null。
+ * <p>后端落库的 arguments 是模型原样给的 JSON, 不含服务端生成的 id, 而卡片组件依赖 id 做 key
+ * 和答案配对, 所以这里补齐一遍(id 按顺序生成, 与流式下发时同规则, 前后一致)。
+ */
+function askOf(msg) {
+  if (!msg || !Array.isArray(msg.toolCalls)) return null
+  const call = msg.toolCalls.find(tc => tc && ((tc.name || tc.function?.name) === 'ask_user'))
+  if (!call) return null
+  const rawArgs = call.arguments ?? call.function?.arguments
+  if (!rawArgs) return null
+  try {
+    const parsed = typeof rawArgs === 'string' ? JSON.parse(rawArgs) : rawArgs
+    const questions = Array.isArray(parsed?.questions) ? parsed.questions : []
+    if (!questions.length) return null
+    return questions.slice(0, 4).map((q, i) => ({
+      id: q.id || `q${i + 1}`,
+      header: q.header || '',
+      question: q.question || '',
+      multiSelect: q.multiSelect === true,
+      options: (Array.isArray(q.options) ? q.options : []).slice(0, 4).map(o => {
+        if (typeof o === 'string') return { value: o, label: o }
+        const label = o.label || o.text || o.value || ''
+        return { value: o.value || label, label, description: o.description || '' }
+      }).filter(o => o.label)
+    }))
+  } catch (e) {
+    console.warn('解析提问参数失败', e)
+    return null
+  }
+}
+
+/** 提问是否已回答: 紧跟着的下一条就是用户消息(提问轮必然以用户回复收尾) */
+function isAskAnswered(idx) {
+  return messages.value[idx + 1]?.role === 'user'
+}
+
+/** 卡片提交: 答案结构化回传, 气泡文案用可读文本(用户能看懂自己在回什么) */
+function onAskSubmit({ answers, text }) {
+  send({ questionAnswer: answers, text })
+}
+
+/** 跳过: 仍然发一条消息 —— 让模型明确"用户不想回答", 而不是以为自己在干等 */
+function onAskSkip() {
+  send({ questionAnswer: {}, text: '跳过这些问题，请按你的判断继续' })
+}
+
 function scrollBottom() { nextTick(() => { if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight }) }
 
 /** 模型类型 → 中文名(仅用于提示文案) */
@@ -1044,10 +1193,12 @@ function ensureChatModel() {
 
 async function send(opts = {}) {
   const overrideImages = opts.images || null
-  const text = input.value.trim()
+  // opts.text: 点选项/跳过时由卡片直接给出文案, 不必先塞进输入框再读回来(会闪一下)
+  const text = (opts.text != null ? String(opts.text) : input.value).trim()
   const hasFiles = selectedFiles.value.length > 0
 
-  if ((!text && !hasFiles && !overrideImages) || streaming.value) return
+  // 只点了选项没打字也允许发送: questionAnswer 本身就是一条完整的回答
+  if ((!text && !hasFiles && !overrideImages && !opts.questionAnswer) || streaming.value) return
   if (!ensureChatModel()) return
   contextWarning.value = null
   lastTokenUsage.value = null
@@ -1101,12 +1252,16 @@ async function send(opts = {}) {
   statusHint.value = ''
   pipeline.value = null
   interruptedRef.value = false
+  askRound.value = null
   scrollBottom()
 
   await streamChat(
     {
       sessionId: currentSessionId.value,
       message: text,
+      // 对提问卡片的回答: key=questionId, value=选中值列表。
+      // 后端据此把答案补成那次 ask_user 调用的工具结果(见 ToolPairingRepair)。
+      questionAnswer: opts.questionAnswer,
       model: props.currentModel,
       images: (userMsg.images || []).map(i => i.url),
       webSearch: props.webSearch,
@@ -1162,6 +1317,13 @@ async function send(opts = {}) {
         scrollBottom(); return
       }
       if (chunk.type === 'image') { statusHint.value = ''; streamImages.value.push(chunk.imageUrl); scrollBottom(); return }
+      if (chunk.type === 'user_input_request') {
+        // 模型需要确认: 本轮到此结束(紧随其后的只有 done)。先记下来, 卡片在 onDone 里挂到消息上 ——
+        // 挂在临时状态里刷新就没了, 挂在消息上才能回看。
+        statusHint.value = ''
+        askRound.value = { id: chunk.id, questions: chunk.questions || [] }
+        return
+      }
       if (chunk.type === 'context_usage') {
         // 后端在调用模型前下发本轮占用明细。仅归属会话当前展示时更新 ——
         // 期间切走了的话, 这个数字属于另一个会话, 写进来会把当前会话的圆环带偏
@@ -1189,7 +1351,13 @@ async function send(opts = {}) {
       const stillOnOwnerSession = streamSessionId.value === currentSessionId.value
       // 本轮流式累积的工具调用清单, 随回答一起落到本地消息上(与后端 getMessages 的聚合结果结构一致)
       const roundInvocations = streamToolInvocations.value.slice()
-      if (stillOnOwnerSession && (streamContent.value || reasoningContent.value || streamImages.value.length)) {
+      // 提问轮: 正文可能是空的(模型直接发工具调用), 也要落一条消息, 否则卡片挂不上去;
+      // toolCalls 的形状必须和后端落库的那份一致, 刷新前后才渲染成同一种卡片。
+      const asked = askRound.value
+      const askToolCalls = asked
+        ? [{ id: asked.id, name: 'ask_user', arguments: JSON.stringify({ questions: asked.questions }) }]
+        : undefined
+      if (stillOnOwnerSession && (streamContent.value || reasoningContent.value || streamImages.value.length || asked)) {
         messages.value.push({
           id: Date.now(),
           role: 'assistant',
@@ -1198,12 +1366,14 @@ async function send(opts = {}) {
           images: streamImages.value.length ? streamImages.value.map(u => ({ url: u, name: '' })) : undefined,
           sources: streamSources.value.length ? streamSources.value.slice() : undefined,
           toolInvocations: roundInvocations.length ? roundInvocations : undefined,
+          toolCalls: askToolCalls,
           type: streamImages.value.length ? 'image' : 'text',
           interrupted: interruptedRef.value,
           tokenUsage: lastTokenUsage.value,
           durationMs: lastDurationMs.value
         })
       }
+      askRound.value = null
       streamContent.value = ''
       reasoningContent.value = ''
       streamImages.value = []
@@ -1544,6 +1714,25 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .ctx-act:hover { border-color: var(--dcdr-accent-line); color: var(--dcdr-text-1); }
 .ctx-act.danger:hover { border-color: var(--dcdr-danger); color: var(--dcdr-danger); }
 .summary-tip { margin-bottom: 10px; font-size: 12px; line-height: 1.6; color: var(--dcdr-text-3); }
+
+/* 压缩记录抽屉(V3.5): 每条事件挂在一条竖线上, 让"什么时候压过"有先后感 */
+.cmp-wrap { padding: 4px 2px; }
+.cmp-item { padding: 10px 0 10px 12px; margin-left: 3px; border-left: 2px solid var(--dcdr-border); }
+.cmp-top { display: flex; align-items: center; gap: 8px; }
+.cmp-evt {
+  font-size: 10.5px; padding: 1px 7px; border-radius: 999px;
+  border: 1px solid var(--dcdr-border); color: var(--dcdr-text-2);
+}
+.cmp-evt.evt-compacted { color: var(--dcdr-accent-soft); border-color: var(--dcdr-accent-line); }
+.cmp-evt.evt-degraded { color: var(--dcdr-warning); border-color: var(--dcdr-warning); }
+.cmp-evt.evt-invalidated { color: var(--dcdr-danger); border-color: var(--dcdr-danger); }
+.cmp-time { font-size: 10.5px; color: var(--dcdr-text-3); }
+.cmp-meta {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px;
+  font-size: 11px; color: var(--dcdr-text-2);
+}
+.cmp-reason { margin: 5px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--dcdr-text-3); }
+.cmp-empty { padding: 40px 0; text-align: center; font-size: 12px; line-height: 2; color: var(--dcdr-text-3); }
 
 .ctx-foot { margin-top: auto; padding-top: 6px; font-size: 9.5px; color: var(--dcdr-text-3); }
 

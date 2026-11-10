@@ -154,6 +154,11 @@ public class UserModelService {
         config.setModel(e.getModel());
         config.setTemperature(e.getTemperature());
         config.setMaxTokens(e.getMaxTokens());
+        // 与 toModelInfo 的对外口径对齐: 自定义模型是 OpenAI 兼容对话端点, 必须真的把 tools 发出去。
+        // 此前漏设导致 supportsFunctionCalling() 恒为 false, Provider 会静默丢弃工具定义 ——
+        // 模型拿不到 schema 只能按训练习惯瞎猜参数名(如把 maxResults 猜成 count), 表现为
+        // "看似在调工具、实际一个都没执行"。
+        config.setCapabilities(List.of("function_calling"));
         return new LangChain4jChatProvider(config);
     }
 

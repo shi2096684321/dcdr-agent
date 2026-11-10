@@ -41,6 +41,8 @@ public class SummaryCompactionStrategy implements ContextStrategy {
     private final SummaryGenerator summaryGenerator;
     private final TokenEstimator tokenEstimator;
     private final SlidingWindowStrategy slidingWindow;
+    /** 压缩事件落库: 成功与降级都要留痕, 否则前端只能看到"摘要有没有变", 看不到"为什么没变" */
+    private final ContextCompactionRecorder compactionRecorder;
 
     @Override
     public String name() {
@@ -69,7 +71,8 @@ public class SummaryCompactionStrategy implements ContextStrategy {
         SessionSummaryStore.Snapshot snapshot = summaryStore.load(sessionId);
         if (snapshot != null && !boundaryAlive(dialogue, snapshot.seq())) {
             log.info("会话 {} 的摘要边界 seq={} 已不在历史中(可能被撤回), 作废摘要", sessionId, snapshot.seq());
-            summaryStore.clear(sessionId);
+            summaryStore.invalidate(sessionId,
+                    "摘要边界 seq=" + snapshot.seq() + " 的消息已不在历史中(可能被撤回/删除)");
             snapshot = null;
         }
         if (snapshot != null) {
@@ -93,19 +96,25 @@ public class SummaryCompactionStrategy implements ContextStrategy {
         if (dialogue.size() <= keepRecent) {
             log.info("会话 {} 待保留的 {} 条消息已超预算(约 {} token, 阈值 {}), 摘要无从下手, 降级为窗口",
                     sessionId, dialogue.size(), tokens, trigger);
+            compactionRecorder.degraded(sessionId, userId,
+                    "待保留的 " + dialogue.size() + " 条消息已超预算, 没有可压缩的更早内容",
+                    trigger, tokens, 0, dialogue.size());
             return slidingWindow.apply(sessionId, userId, fullHistory, contextLimit);
         }
 
         // 4. 压缩: 除最近 keepRecent 条之外的全部, 连同已有摘要一起交给模型
         List<Message> toSummarize = dialogue.subList(0, dialogue.size() - keepRecent);
         List<Message> keep = dialogue.subList(dialogue.size() - keepRecent, dialogue.size());
-        String merged = summaryGenerator.summarize(
+        SummaryResult result = summaryGenerator.summarize(
                 snapshot == null ? null : snapshot.text(), toSummarize, userId, sessionId);
-        if (merged == null || merged.isBlank()) {
+        if (!result.ok()) {
             // 摘要不可用: 降级为窗口, 并让用户知道本轮是降级状态
-            log.warn("会话 {} 摘要生成失败, 本轮降级为滑动窗口", sessionId);
+            log.warn("会话 {} 摘要生成失败, 本轮降级为滑动窗口: {}", sessionId, result.failureReason());
+            compactionRecorder.degraded(sessionId, userId, result.failureReason(), trigger, tokens,
+                    toSummarize.size(), keep.size());
             return slidingWindow.apply(sessionId, userId, fullHistory, contextLimit);
         }
+        String merged = result.text();
 
         int newBoundary = lastSeq(toSummarize, snapshot == null ? 0 : snapshot.seq());
         summaryStore.save(sessionId, merged, newBoundary);
@@ -114,6 +123,9 @@ public class SummaryCompactionStrategy implements ContextStrategy {
         int compactedTokens = tokenEstimator.estimate(compacted);
         log.info("会话 {} 上下文压缩: {} 条对话 → 摘要 {} 字, 约 {} token → 约 {} token (边界 seq={}, 保留最近 {} 条)",
                 sessionId, toSummarize.size(), merged.length(), tokens, compactedTokens, newBoundary, keepRecent);
+        compactionRecorder.compacted(sessionId, userId, trigger, tokens, compactedTokens,
+                toSummarize.size(), keep.size(), merged.length(), newBoundary,
+                result.model(), result.costMs());
 
         String notice = String.format(
                 "已把较早的 %d 条对话压缩成摘要（约 %d token），最近 %d 条保留原文；原文仍可在会话中查看。",

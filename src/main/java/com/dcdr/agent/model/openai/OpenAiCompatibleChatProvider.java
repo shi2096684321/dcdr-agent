@@ -5,6 +5,7 @@ import com.dcdr.agent.dto.ChatChunk;
 import com.dcdr.agent.dto.ChatRequest;
 import com.dcdr.agent.dto.ChatResponse;
 import com.dcdr.agent.model.provider.ChatModelProvider;
+import com.dcdr.agent.model.provider.MessageNormalizer;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.common.constant.ModelType;
 import com.dcdr.agent.dto.*;
@@ -127,7 +128,9 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
 
         ArrayNode messages = body.putArray("messages");
         if (history != null) {
-            for (Message msg : history) {
+            // 单一 system 归一化(与 langchain4j 引擎同口径): 编排层注入的多条 system
+            // 在此合并为 messages[0] 一条, 否则 Qwen3 系模板/vLLM 会 400
+            for (Message msg : MessageNormalizer.mergeSystemMessages(history)) {
                 ObjectNode mNode = messages.addObject();
                 String role = msg.getRole();
                 mNode.put("role", role);

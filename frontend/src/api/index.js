@@ -18,6 +18,8 @@ export * from './market'
 export * from './monitor'
 // 调用链日志
 export * from './llmCalls'
+// V3.5 上下文压缩记录(压缩/降级/作废/清除/改写)
+export * from './contextCompactions'
 // 检索健康度 (RAG 可观测性, 仅管理员)
 export * from './retrievalHealth'
 // 联网健康度 (联网搜索/抓取的可观测性, 仅管理员)

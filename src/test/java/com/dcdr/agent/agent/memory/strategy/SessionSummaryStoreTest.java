@@ -46,7 +46,8 @@ class SessionSummaryStoreTest {
         MessageRepository messages = mock(MessageRepository.class);
         when(repo.findById(SESSION)).thenReturn(Optional.of(session(null, null)));
 
-        SessionSummaryView view = new SessionSummaryStore(repo, messages).view(SESSION);
+        SessionSummaryView view = new SessionSummaryStore(repo, messages,
+                mock(ContextCompactionRecorder.class)).view(SESSION);
 
         assertFalse(view.isAvailable(), "没压过就不该显示摘要卡片");
         verify(messages, never()).countBySessionIdAndSeqLessThanEqual(anyString(), anyInt());
@@ -60,7 +61,8 @@ class SessionSummaryStoreTest {
         when(repo.findById(SESSION)).thenReturn(Optional.of(session("旧摘要正文", 7)));
         when(messages.countBySessionIdAndSeqLessThanEqual(SESSION, 7)).thenReturn(8L);
 
-        SessionSummaryView view = new SessionSummaryStore(repo, messages).view(SESSION);
+        SessionSummaryView view = new SessionSummaryStore(repo, messages,
+                mock(ContextCompactionRecorder.class)).view(SESSION);
 
         assertTrue(view.isAvailable());
         assertEquals("旧摘要正文", view.getText());
@@ -76,7 +78,8 @@ class SessionSummaryStoreTest {
         SessionEntity entity = session("旧摘要", 7);
         when(repo.findById(SESSION)).thenReturn(Optional.of(entity));
 
-        boolean ok = new SessionSummaryStore(repo, mock(MessageRepository.class))
+        boolean ok = new SessionSummaryStore(repo, mock(MessageRepository.class),
+                mock(ContextCompactionRecorder.class))
                 .updateText(SESSION, "  用户要求：不要动生产库  ");
 
         assertTrue(ok);
@@ -91,7 +94,8 @@ class SessionSummaryStoreTest {
         SessionRepository repo = mock(SessionRepository.class);
         when(repo.findById(SESSION)).thenReturn(Optional.of(session(null, null)));
 
-        boolean ok = new SessionSummaryStore(repo, mock(MessageRepository.class))
+        boolean ok = new SessionSummaryStore(repo, mock(MessageRepository.class),
+                mock(ContextCompactionRecorder.class))
                 .updateText(SESSION, "想直接写一段");
 
         assertFalse(ok, "没有边界就没有摘要 —— 直接写一段会让'哪些消息已被压过'无从判断");
@@ -106,6 +110,7 @@ class SessionSummaryStoreTest {
         String tooLong = "长".repeat(SessionSummaryStore.MAX_EDITABLE_CHARS + 1);
 
         assertThrows(IllegalArgumentException.class,
-                () -> new SessionSummaryStore(repo, mock(MessageRepository.class)).updateText(SESSION, tooLong));
+                () -> new SessionSummaryStore(repo, mock(MessageRepository.class),
+                        mock(ContextCompactionRecorder.class)).updateText(SESSION, tooLong));
     }
 }

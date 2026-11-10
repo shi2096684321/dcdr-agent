@@ -87,8 +87,10 @@ public class LlmSummaryGenerator implements SummaryGenerator {
     }
 
     @Override
-    public String summarize(String existingSummary, List<Message> messages, String userId, String sessionId) {
-        if (messages == null || messages.isEmpty()) return null;
+    public SummaryResult summarize(String existingSummary, List<Message> messages, String userId, String sessionId) {
+        if (messages == null || messages.isEmpty()) {
+            return SummaryResult.failed("没有可压缩的消息", 0);
+        }
         AgentProperties.CompactionConfig cfg = properties.getMemory().getCompaction();
         int maxChars = Math.max(200, cfg.getSummaryMaxChars());
 
@@ -103,9 +105,10 @@ public class LlmSummaryGenerator implements SummaryGenerator {
             // 由于降级路径把异常吞在这里, 不写清楚的话症状只有"摘要永远不生效"。
             log.warn("摘要请求组装失败(将降级为滑动窗口), 请确认 agent.memory.compaction.model 填的是"
                     + " provider 名而非模型 id: {}", e.getMessage());
-            return null;
+            return SummaryResult.failed("摘要请求组装失败, 请确认 compaction.model 填的是 provider 名", 0);
         }
 
+        long startNanos = System.nanoTime();
         String systemPrompt = String.format(SYSTEM_PROMPT, maxChars);
         Future<String> future = executor.submit(() -> {
             ChatRequest req = new ChatRequest();
@@ -121,25 +124,46 @@ public class LlmSummaryGenerator implements SummaryGenerator {
             return resp.getContent();
         });
 
+        int timeout = Math.max(5, cfg.getTimeoutSeconds());
         try {
-            int timeout = Math.max(5, cfg.getTimeoutSeconds());
             String text = future.get(timeout, TimeUnit.SECONDS);
+            long costMs = elapsedMs(startNanos);
             if (text == null || text.isBlank()) {
                 log.warn("摘要生成为空(将降级为滑动窗口): session={}, model={}", sessionId, provider.getName());
-                return null;
+                return SummaryResult.failed("摘要模型返回为空", costMs);
             }
             String cleaned = stripFence(text.strip());
             // 硬截断兜底: 提示词里要求了长度, 但模型并不总是遵守
             if (cleaned.length() > maxChars) {
                 cleaned = cleaned.substring(0, maxChars) + "…";
             }
-            return cleaned;
+            return SummaryResult.ok(cleaned, provider.getName(), costMs);
         } catch (Exception e) {
             // 超时/线程中断/模型报错都走同一条降级路径, 不动对话链路
             future.cancel(true);
             log.warn("摘要生成失败(将降级为滑动窗口): session={}, err={}", sessionId, e.toString());
-            return null;
+            return SummaryResult.failed(failureReason(e, timeout), elapsedMs(startNanos));
         }
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
+    }
+
+    /**
+     * 给前端/事件表看的一句话失败原因。
+     * <p>刻意不落 {@code e.toString()} 全文: 它可能带上游 URI 与请求细节, 而排查需要的是
+     * "哪一类失败"(超时 vs 中断 vs 模型报错)。完整异常仍会进服务端日志。
+     */
+    private static String failureReason(Exception e, int timeoutSeconds) {
+        if (e instanceof java.util.concurrent.TimeoutException) {
+            return "摘要模型调用超时(>" + timeoutSeconds + "s)";
+        }
+        if (e instanceof InterruptedException) {
+            return "摘要调用被中断";
+        }
+        Throwable cause = e.getCause() == null ? e : e.getCause();
+        return "摘要模型调用失败(" + cause.getClass().getSimpleName() + ")";
     }
 
     /** 配置了专用模型就用它(建议配低成本模型), 否则跟随系统默认对话模型 */

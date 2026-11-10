@@ -87,7 +87,11 @@ public class ChatController {
                     "- `error`: 错误信息\n" +
                     "- `interrupted`: 用户主动中断\n" +
                     "- `context_warning`: 上下文接近上限，建议开启新对话\n" +
-                    "- `status`: 路由/处理中提示",
+                    "- `status`: 路由/处理中提示\n" +
+                    "- `user_input_request`: 模型需要用户确认/补充信息，携带 questions 选项列表。\n" +
+                    "  **收到本块后本轮立即结束**（其后只有 done），前端渲染选项卡片；用户选择后\n" +
+                    "  以普通请求再发一次，并把选择放在 `questionAnswer` 字段里（形状 `{q1:[值...]}`）。\n" +
+                    "  用户不点选项、直接打字也是合法回答，此时 questionAnswer 可省略。",
             responses = {
                     @ApiResponse(responseCode = "200", description = "SSE 流，逐条推送 ChatChunk",
                             content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,

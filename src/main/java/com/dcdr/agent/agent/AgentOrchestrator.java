@@ -3,6 +3,7 @@ package com.dcdr.agent.agent;
 import com.dcdr.agent.agent.memory.ChatMemory;
 import com.dcdr.agent.agent.memory.Message;
 import com.dcdr.agent.agent.memory.TokenEstimator;
+import com.dcdr.agent.agent.memory.ToolPairingRepair;
 import com.dcdr.agent.agent.memory.strategy.ContextStrategy;
 import com.dcdr.agent.agent.memory.strategy.ContextStrategyFactory;
 import com.dcdr.agent.agent.memory.longterm.LongTermMemoryService;
@@ -36,6 +37,7 @@ import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
 import com.dcdr.agent.rag.tool.KnowledgeSearchTool;
 import com.dcdr.agent.skill.SkillCatalogProvider;
 import com.dcdr.agent.skill.SkillContextHolder;
+import com.dcdr.agent.tool.ask.AskUserTool;
 import com.dcdr.agent.tool.result.ToolResultCompressor;
 import com.dcdr.agent.tool.result.ToolResultContextHolder;
 import com.dcdr.agent.tool.sandbox.SandboxContextHolder;
@@ -231,6 +233,19 @@ public class AgentOrchestrator {
             请基于已经获得的信息作答；如果没有可用信息，请如实告诉用户"联网检索当前不可用，暂时拿不到实时信息"，
             不要换关键词继续试探，也不要把记忆里的旧数据当成检索结果。
             """.formatted(com.dcdr.agent.agent.loop.WebSearchBudget.FAILURE_THRESHOLD);
+
+    /**
+     * 提问轮的兜底正文。
+     * <p>
+     * 模型直接发 {@code ask_user} 而不写一句话是完全合法的(OpenAI function calling 允许
+     * content 为空), 但空正文的 assistant 消息会被 {@code SessionManager.isHiddenToolMessage}
+     * 判成"用户不可见的中间消息" —— 提问卡片会连同消息一起从历史里消失, 刷新后只剩一条孤零零的
+     * 用户回答。所以落库前必须给它补一句可读的话。
+     * <p>
+     * 不用"给卡片单独建一张表"来解决: 卡片的问题与选项本来就存在这条消息的 tool_calls 里,
+     * 为了绕开一个显示规则再复制一份数据, 只会多出一个会和 tool_calls 不一致的真值源。
+     */
+    private static final String ASK_PENDING_PLACEHOLDER = "我需要先向你确认几个问题。";
 
     private static final String LOOP_STOP_MESSAGE = """
             [工具调用被系统拦截] 同一个工具已连续 %d 次以上使用完全相同的参数调用，本次调用未执行。
@@ -597,15 +612,59 @@ public class AgentOrchestrator {
                             // 回灌轮需重新捕获本轮新产生的工具调用(多步: 模型在第 2 轮可能又发起工具)
                             List<ChatChunk> currentRound = new ArrayList<>(toolCallsHolder[0]);
                             boolean needTool = "tool_calls".equals(finishReasonHolder[0]) && !currentRound.isEmpty();
+                            // 「模型自己想停」与「被上限拦住」必须分开: 后者要补一轮收尾生成(见下方 blockedByLimit 分支)
+                            boolean blockedByLimit = false;
                             // V3.1 单任务 token 上限: 轮次边界判定(此时本轮正文已完整生成, 掐掉的是"下一轮")。
-                            // 累计达上限则不再派生下一轮, 直接收尾 —— 避免工具结果回灌使 prompt 逐轮膨胀而失控烧 token。
+                            // 累计达上限则不再派生下一轮 —— 避免工具结果回灌使 prompt 逐轮膨胀而失控烧 token。
                             if (needTool && taskMaxTokens > 0 && taskTokens.get() >= taskMaxTokens) {
                                 needTool = false;
+                                blockedByLimit = true;
                                 taskTokenExceeded.set(true);
                                 log.info("会话 {} 单任务 token 上限触发: 累计 {} >= {} (已完成 {} 轮), 停止工具循环并收尾",
                                         sessId, taskTokens.get(), taskMaxTokens, toolRound[0] + 1);
                             }
-                            if (needTool && toolRound[0] < MAX_TOOL_ROUNDS) {
+                            if (needTool && toolRound[0] >= MAX_TOOL_ROUNDS) {
+                                needTool = false;
+                                blockedByLimit = true;
+                                log.info("会话 {} 工具轮次达上限 {}: 停止工具循环并收尾", sessId, MAX_TOOL_ROUNDS);
+                            }
+
+                            // 向用户提问: 必须在「执行工具」之前判定, 否则工具先跑完、问题才发出去,
+                            // 用户看到的是一次已发生的操作 + 一句迟到的确认。
+                            // 判定要求问题列表能解析出来: 参数不合 schema 时退化成普通工具(回一条失败让模型重试),
+                            // 而不是把一张空卡片推给用户。
+                            ChatChunk askCall = needTool ? currentRound.stream()
+                                    .filter(tc -> AskUserTool.NAME.equals(tc.getTool()))
+                                    .findFirst().orElse(null) : null;
+                            List<Map<String, Object>> askQuestions = askCall == null
+                                    ? Collections.emptyList() : AskUserTool.parseQuestions(askCall.getArgs());
+                            boolean askPending = askCall != null && !askQuestions.isEmpty();
+
+                            // 收尾(落库 + done + 成本 + 审计)。defer 到订阅时求值:
+                            // roundToolCalls[0] 会在工具分支里被改写, 这里必须读到最终值。
+                            Flux<ChatChunk> finish = Flux.defer(() -> finalizeAssistant(sessId, provider,
+                                    accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
+                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t,
+                                    taskTokenExceeded.get(), taskTokens.get(),
+                                    history, sentToolDefs, ctx.contextLimit(), askPending));
+
+                            if (askPending) {
+                                // 本批调用登记为「已发起、未执行」: 收尾会把 assistant 消息连 tool_calls 一起落库,
+                                // 下一轮的配对修复再逐条补结果(提问补用户答案, 其余补"未执行")。
+                                roundToolCalls[0] = new ArrayList<>(currentRound);
+                                List<ChatChunk> head = new ArrayList<>(2);
+                                // 模型一句话没说就发工具调用时, 兜一句正文再发卡片:
+                                // 落库那份会被收尾补成同样的文案, 现在也补上, 界面立刻看到的样子
+                                // 才与刷新后的历史一致(否则刷新前后同一条消息长得不一样)。
+                                if (accumulated.toString().isBlank()) {
+                                    head.add(ChatChunk.chunk(ASK_PENDING_PLACEHOLDER));
+                                }
+                                // 先下发提问块再收尾: done / token 统计 / 成本 / 审计一样不少,
+                                // 前端也不必为"没有 done 的分支"单独兜底。
+                                head.add(ChatChunk.userInputRequest(askCall.getId(), askQuestions));
+                                return Flux.fromIterable(head).concatWith(finish);
+                            }
+                            if (needTool) {
                                 toolRound[0]++;
                                 // assistant(tool_calls) 消息不依赖执行结果, 先行回填 history
                                 List<Map<String, Object>> tcs = new ArrayList<>();
@@ -676,12 +735,21 @@ public class AgentOrchestrator {
                                 }));
                                 return next.concatWith(tailRef.get());
                             }
-                            // 无需工具(或已达上限): 收尾并保存
-                            return Flux.defer(() -> finalizeAssistant(sessId, provider,
-                                    accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
-                                    usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t,
-                                    taskTokenExceeded.get(), taskTokens.get(),
-                                    history, sentToolDefs, ctx.contextLimit()));
+                            // 无需工具: 收尾并保存(提问分支已在上面短路)
+                            // 模型本来就不需要工具(或没给它工具): 直接收尾
+                            if (!blockedByLimit || !provider.supportsFunctionCalling() || toolDefs.isEmpty()) {
+                                return finish;
+                            }
+                            // 被上限拦下: 此刻最后一轮模型只产出了 tool_calls、几乎没有正文, 直接收尾等于把一条
+                            // 空回答推给用户。去掉工具再要一次, 它就只剩「用文字总结已有结果」这一条路。
+                            // 只做这一轮, 且不把手上那批 tool_calls 回灌 —— 它们没有执行, 也不该被执行。
+                            ChatRequest wrapUpReq = request.copyWithoutTools();
+                            List<Message> wrapUpHistory = new ArrayList<>(history);
+                            wrapUpHistory.add(Message.system("runtime:tool-loop-stop", TOOL_LOOP_STOP_NOTICE));
+                            return tracedRound(
+                                    provider.stream(wrapUpReq, wrapUpHistory, false).doOnNext(collector),
+                                    t, "round-" + (toolRound[0] + 2) + "-wrapup", provider, usageHolder, wrapUpReq, wrapUpHistory)
+                                    .concatWith(finish);
                         });
                         tailRef.set(tailFlux);
 
@@ -1626,8 +1694,26 @@ public class AgentOrchestrator {
     /** 正文最大长度（清洗后，超出截断） */
     private static final int MAX_CONTENT_LENGTH = 4000;
 
-    /** 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮 */
+    /**
+     * 工具循环(agentic loop)最大回灌轮数: 模型发起工具调用后, 最多再回灌生成 N 轮。
+     * <p>
+     * 注意实际模型调用会多一次: 达上限时若模型仍在发起工具调用, 会再补一轮「不带工具定义」的
+     * 收尾生成(见 tailFlux 的 blockedByLimit 分支), 让它在没有工具可调的情况下用文字给出结论 ——
+     * 否则用户拿到的是一条只有工具卡片、没有回答的消息。
+     * 故回灌轮最多 N+1, 模型调用最多 N+2 次(含首轮); 调用链日志里会看到一次 {@code round-N-wrapup}。
+     */
     private static final int MAX_TOOL_ROUNDS = 10;
+
+    /**
+     * 工具循环被上限拦下时的收尾指令(仅本轮临时注入, 不落库)。
+     * <p>
+     * 为什么要显式说明"工具已停止": 收尾轮的工具定义已被摘掉, 模型事实上调不动工具, 但仍可能
+     * 输出"我再去查一下"这类半句话就停; 把原因说清楚, 它才会落到「基于已有结果总结」上。
+     */
+    private static final String TOOL_LOOP_STOP_NOTICE =
+            "【系统】本轮工具调用已停止（工具轮次或 token 预算已达上限）。"
+                    + "请立刻基于上面已经拿到的工具结果直接给出最终回答：不要再尝试调用工具，"
+                    + "也不要让用户重试；信息不足以回答时，明确说明还缺什么。";
 
     // 注: 工具结果的回灌长度上限已收敛到配置 agent.tools.result.max-length,
     // 压缩统一由 ToolResultCompressor 在"结果产出处"完成(V3.1 F-47), 编排层不再自行截断。
@@ -2402,6 +2488,23 @@ public class AgentOrchestrator {
      * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
      * 并下发 done 分块与 finish_reason 相关提示。
      */
+    /**
+     * 工具调用块 → 落库用的 tool_calls 结构 {@code {id, name, arguments}}。
+     * <p>形状必须与工具循环里回填 history 的那份(见 tailFlux 内 tcs 的构造)完全一致:
+     * 两处一旦不同, 从库里加载回来的历史在 Provider 组装时就认不出调用, 配对也随之失效。
+     */
+    private static List<Map<String, Object>> toToolCallMaps(List<ChatChunk> toolCalls) {
+        List<Map<String, Object>> result = new ArrayList<>(toolCalls.size());
+        for (ChatChunk tc : toolCalls) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", tc.getId());
+            m.put("name", tc.getTool());
+            m.put("arguments", tc.getArgs() == null ? "" : tc.getArgs());
+            result.add(m);
+        }
+        return result;
+    }
+
     private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
                                              StringBuilder accumulated, StringBuilder reasoning,
                                              List<ChatChunk> toolCalls, List<String> urls, String[] toolError,
@@ -2411,7 +2514,8 @@ public class AgentOrchestrator {
                                              AtomicBoolean assistantSaved, AtomicBoolean costRecorded, String userId,
                                              ChatRequest request, com.dcdr.agent.common.log.LlmCallTrace trace,
                                              boolean taskTokenExceeded, long taskTokens,
-                                             List<Message> history, List<Map<String, Object>> toolDefs, int contextLimit) {
+                                             List<Message> history, List<Map<String, Object>> toolDefs, int contextLimit,
+                                             boolean askUserPending) {
         // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
         ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
                 usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
@@ -2469,6 +2573,20 @@ public class AgentOrchestrator {
                 }
             } else {
                 assistantMessage = Message.assistant(accumulated.toString(), reasoning.toString(), provider.getName(), t);
+            }
+            if (askUserPending) {
+                // 提问轮: assistant 必须带上 tool_calls 落库, 否则下一轮无从知道"它问过什么",
+                // 用户的选择也就没有可配对的调用 id(卡片随之从历史里消失)。
+                assistantMessage.setToolCalls(toToolCallMaps(toolCalls));
+                // 正文不能为空: SessionManager 把「无正文的 tool_calls 消息」判为用户不可见的
+                // 中间消息(isHiddenToolMessage), 卡片会跟着一起被隐藏。
+                // 模型一句话没说直接发工具调用时(OpenAI function calling 允许 content 为空),
+                // 这里补一句 -- 否则用户在界面上什么也看不到。
+                if (assistantMessage.getContent() == null || assistantMessage.getContent().isBlank()) {
+                    assistantMessage.setContent(ASK_PENDING_PLACEHOLDER);
+                    accumulated.setLength(0);
+                    accumulated.append(ASK_PENDING_PLACEHOLDER);
+                }
             }
             if ("insufficient_system_resource".equals(fr) || "content_filter".equals(fr)) {
                 assistantMessage.setError(true);
@@ -2598,6 +2716,14 @@ public class AgentOrchestrator {
         history = new ArrayList<>(history);
         fullHistory.removeIf(m -> "system".equals(m.getRole()) && m.getName() == null);
         history.removeIf(m -> "system".equals(m.getRole()) && m.getName() == null);
+
+        // 2.2 工具调用配对修复(见 ToolPairingRepair):
+        //     给"没有结果的 assistant.tool_calls"补一条 tool 消息, 否则下游 Provider 组装出的
+        //     messages 违反 OpenAI 协议(tool_calls 后必须跟 tool 结果), 部分厂商直接 400。
+        //     本项目最常见的那条悬空来源就是「向用户提问」—— 提问轮刻意不产出 tool_result,
+        //     用户这一轮说的话(以及他点的选项)就是那条迟到的结果。
+        //     修复结果只进本次请求的视图, 不落库: 按 seq 追加会把 tool 消息排到会话末尾, 顺序天然是错的。
+        history = ToolPairingRepair.repair(history, request.getMessage(), request.getQuestionAnswer());
 
         // 3. 路由决策
         ChatModelProvider provider = router.route(request, history, userId);
@@ -3005,6 +3131,10 @@ public class AgentOrchestrator {
         AtomicReference<String> warning = new AtomicReference<>();
         AtomicReference<String> model = new AtomicReference<>();
         AtomicReference<String> error = new AtomicReference<>();
+        // 提问块必须单独捕获: 它是"本轮没有回答、在等用户选择", 与"成功但内容为空"是两回事。
+        // 不捕的话调用方(定时任务/RPA)会拿到一条空回答, 以为对话正常结束了。
+        AtomicReference<List<Map<String, Object>>> pendingQuestions = new AtomicReference<>();
+        AtomicReference<String> pendingRequestId = new AtomicReference<>();
 
         try {
             flux.doOnNext(chunk -> {
@@ -3019,6 +3149,10 @@ public class AgentOrchestrator {
                     }
                     case "context_warning" -> warning.set(chunk.getMessage());
                     case "error" -> error.set(chunk.getMessage());
+                    case "user_input_request" -> {
+                        pendingQuestions.set(chunk.getQuestions());
+                        pendingRequestId.set(chunk.getId());
+                    }
                     case "done" -> {
                         if (chunk.getTokenUsage() != null) usage.set(chunk.getTokenUsage());
                         if (chunk.getModel() != null) model.set(chunk.getModel());
@@ -3039,6 +3173,17 @@ public class AgentOrchestrator {
         response.setTokenUsage(usage.get());
         response.setContextWarning(warning.get());
         if (!tools.isEmpty()) response.setToolsUsed(String.join(", ", tools));
+        if (pendingQuestions.get() != null && !pendingQuestions.get().isEmpty()) {
+            response.setPendingQuestions(pendingQuestions.get());
+            response.setPendingRequestId(pendingRequestId.get());
+            // 提问轮模型往往只发了工具调用、没写正文, 同步接口会返回一条"成功但内容为空"的响应 ——
+            // 调用方(工作流节点/定时任务)拿到空字符串最容易当成"模型没话说"而静默结束。
+            // 给一句可读兜底, 让"在等用户"这件事在纯文本通道上也能看出来。
+            if (content.length() == 0) {
+                Object first = pendingQuestions.get().get(0).get("question");
+                response.setContent("需要你确认：" + (first == null ? "有一个问题待回答" : first));
+            }
+        }
         return response;
     }
 

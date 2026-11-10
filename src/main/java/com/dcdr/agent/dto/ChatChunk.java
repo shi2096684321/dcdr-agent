@@ -15,7 +15,8 @@ public class ChatChunk {
     /** 块类型: chunk / tool_call / tool_result / done / error / interrupted / context_usage */
     @Schema(description = "块类型",
             allowableValues = {"chunk", "tool_call", "tool_result", "done", "error", "interrupted",
-                    "context_warning", "context_usage", "status", "image", "trace_step"},
+                    "context_warning", "context_usage", "status", "image", "trace_step",
+                    "user_input_request"},
             example = "chunk")
     private String type;
     /** 文本内容(type=chunk时) */
@@ -44,6 +45,15 @@ public class ChatChunk {
     /** 引用来源(type=tool_result且为联网搜索时, 携带来自 web_search 的来源列表) */
     @Schema(description = "引用来源（type=tool_result 且为联网搜索时，携带来源列表）")
     private java.util.List<java.util.Map<String, Object>> sources;
+
+    /**
+     * 提问列表(type=user_input_request 时)。
+     * <p>元素结构: {@code {id, header, question, options:[{value,label,description}], multiSelect}}。
+     * id 由服务端生成(q1/q2…), 用户回答时按 id 回传, 两者靠它对齐 —— 不让模型自己编 id,
+     * 否则它两次调用生成不同的 id, 前端回传的答案就配不上。
+     */
+    @Schema(description = "提问列表（type=user_input_request 时）")
+    private java.util.List<java.util.Map<String, Object>> questions;
 
     /** 图片 URL(type=image 时, 文生图内联结果) */
     @Schema(description = "图片 URL（type=image 时，文生图内联结果）")
@@ -200,6 +210,24 @@ public class ChatChunk {
         ChatChunk c = new ChatChunk();
         c.setType("status");
         c.setMessage(message);
+        return c;
+    }
+
+    /**
+     * 向用户提问块: 模型调用 {@code ask_user} 时下发, 前端渲染成选项卡片。
+     * <p>
+     * <b>这是一次「未完成的工具调用」</b>: 本块之后本轮立即结束, 不产生 tool_result。
+     * 用户的选择会作为下一条普通用户消息发回来, 由编排层的配对修复补成该 tool_call 的结果 ——
+     * 因此前端不需要记住任何 pending 状态, 也不需要额外接口。
+     *
+     * @param id        对应 assistant.tool_calls[].id, 修复器靠它把答案配对回去
+     * @param questions 已归一化的问题列表(id/header/question/options/multiSelect)
+     */
+    public static ChatChunk userInputRequest(String id, java.util.List<java.util.Map<String, Object>> questions) {
+        ChatChunk c = new ChatChunk();
+        c.setType("user_input_request");
+        c.setId(id);
+        c.setQuestions(questions);
         return c;
     }
 
