@@ -1175,7 +1175,7 @@ public class WorkflowEngine {
                 AgentDefinitionEntity agent = agentDefinitionService.loadEntity(step.getAgentId());
                 r.setAgentName(agent.getName());
             } catch (Exception ignored) {}
-            SessionDTO sess = sessionManager.createSession("工作流 · " + step.getName(), null, null, ctx.userId,
+            SessionDTO sess = sessionManager.createSession("工作流 · " + step.getName(), null, ctx.userId,
                     SessionSource.WORKFLOW.code(), ctx.entity.getWorkflowId());
             callLogWriter.bind(trace, ctx.userId, sess.getId(), input, SessionSource.WORKFLOW);
             ChatRequest req = new ChatRequest();

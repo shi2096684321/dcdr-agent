@@ -6,15 +6,19 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 /**
  * System Prompt 配置（分层 + 运行时两个正交维度）。
  * <p>
- * <b>维度一 · Base System Prompt（静态基线，可配置/可持久化）</b>
+ * <b>维度一 · Base System Prompt（静态基线，可配置）</b>
  * <p>层级（优先级从低到高，后者追加/覆盖前者）：
  * <ol>
  *   <li>L1 全局默认 {@link #defaultPrompt}：所有场景兜底</li>
  *   <li>L2 场景级 {@link #scenes}：按 chat / text-to-image / image-to-image 场景注入</li>
- *   <li>L3 会话级（{@code SessionEntity.systemPrompt}，持久化于 DB）：聊天场景用户可定制，运行时覆盖 L2/chat</li>
  * </ol>
- * 长文本建议外置到 {@code classpath:prompts/*.md}，通过 {@code *-location} 字段引用；
- * 若同时在内联字段（如 {@link Scenes#chat}）写了文本，内联优先。
+ * 长文本建议外置到 {@code classpath:prompts/*.md}，通过 {@code *-location} 字段引用
+ * （L1 用 {@link #defaultLocation}，L2 用 {@link Scenes#chatLocation}，Runtime 用
+ * {@link PromptFragment#textLocation}）；若同时在内联字段写了文本，内联优先 —— 此时外置文件
+ * 会被静默忽略，故解析器在检测到覆盖时会打一条 WARN 提示。
+ * <p>
+ * 注：会话级角色设定（{@code SessionEntity.systemPrompt}）已移除，它与自定义 Agent 人设功能重叠，
+ * 且自由文本配置与「用户只做选择、不做配置」的产品定位冲突。角色需求统一走 Agent。
  * <p>
  * <b>维度二 · Runtime 运行时约束（平台动态增强，不持久化）</b>
  * <p>与 Base 层级<b>正交</b>，不属于 L1/L2/L3 任何一层。由平台根据运行时状态动态决定注入
@@ -28,8 +32,16 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "agent.system-prompt")
 public class SystemPromptProperties {
 
-    /** L1 全局默认 system prompt（所有场景兜底，可为空） */
+    /** L1 全局默认 system prompt 内联文本（所有场景兜底，可为空；非空时覆盖 {@link #defaultLocation}） */
     private String defaultPrompt;
+
+    /**
+     * L1 全局默认 system prompt 外置文件（{@code classpath:prompts/identity.md}）。
+     * <p>
+     * 仅当 {@link #defaultPrompt} 为空时生效 —— 与 L2 场景级、维度二 Runtime 的
+     * 「内联优先于文件」规则保持一致。人设类长文本放这里，改人设不必动 {@code application.yml}。
+     */
+    private String defaultLocation = "classpath:prompts/identity.md";
 
     /** L2 场景级配置 */
     private Scenes scenes = new Scenes();

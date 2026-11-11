@@ -57,7 +57,6 @@ public class ContextUsageService {
      * —— 那会让"这轮到底多注入了什么"永远查不出来。
      */
     private static final Map<String, String> SYSTEM_FRAGMENT_LABELS = Map.ofEntries(
-            Map.entry("session:persona", "会话角色设定"),
             Map.entry("agent:persona", "专家人设"),
             Map.entry("memory:long-term", "长期记忆"),
             Map.entry("memory:summary", "历史摘要"),

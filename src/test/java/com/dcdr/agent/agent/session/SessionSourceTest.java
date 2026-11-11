@@ -55,10 +55,10 @@ class SessionSourceTest {
     @DisplayName("对话列表默认只返回用户自己开的会话")
     void defaultFilterReturnsUserSessionsOnly() {
         String uid = newUser();
-        sessionManager.createSession("我的对话", null, null, uid);
-        sessionManager.createSession("定时任务 · 早报", null, null, uid,
+        sessionManager.createSession("我的对话", null, uid);
+        sessionManager.createSession("定时任务 · 早报", null, uid,
                 SessionSource.SCHEDULE.code(), "sched_a");
-        sessionManager.createSession("工作流 · 抓取", null, null, uid,
+        sessionManager.createSession("工作流 · 抓取", null, uid,
                 SessionSource.WORKFLOW.code(), "wf_a");
 
         List<SessionDTO> list = sessionManager.listSessions(uid, false, SessionSource.parseFilter(null));
@@ -72,10 +72,10 @@ class SessionSourceTest {
     @DisplayName("automation 同时覆盖定时任务与工作流两种来源")
     void automationFilterCoversBothAutoSources() {
         String uid = newUser();
-        sessionManager.createSession("我的对话", null, null, uid);
-        sessionManager.createSession("定时任务 · 早报", null, null, uid,
+        sessionManager.createSession("我的对话", null, uid);
+        sessionManager.createSession("定时任务 · 早报", null, uid,
                 SessionSource.SCHEDULE.code(), "sched_b");
-        sessionManager.createSession("工作流 · 抓取", null, null, uid,
+        sessionManager.createSession("工作流 · 抓取", null, uid,
                 SessionSource.WORKFLOW.code(), "wf_b");
 
         List<SessionDTO> automation = sessionManager.listSessions(uid, false,
@@ -95,11 +95,11 @@ class SessionSourceTest {
     void trimAutoSessionsKeepsRecentOnly() {
         String uid = newUser();
         for (int i = 0; i < 5; i++) {
-            sessionManager.createSession("定时任务 · 第 " + i + " 次", null, null, uid,
+            sessionManager.createSession("定时任务 · 第 " + i + " 次", null, uid,
                     SessionSource.SCHEDULE.code(), "sched_keep");
         }
         // 另一个任务的数据不能被连带清掉
-        sessionManager.createSession("定时任务 · 别的任务", null, null, uid,
+        sessionManager.createSession("定时任务 · 别的任务", null, uid,
                 SessionSource.SCHEDULE.code(), "sched_other");
 
         sessionManager.trimAutoSessions(SessionSource.SCHEDULE.code(), "sched_keep", 2);
@@ -128,9 +128,9 @@ class SessionSourceTest {
     void legacyTitlesAreReclassified() {
         String uid = newUser();
         // 旧版二进制写出来的数据: 标题带前缀, 但没有 source(加列后回填为 user)
-        sessionManager.createSession("schedule: 每日早报", null, null, uid);
-        sessionManager.createSession("workflow: 抓取资讯", null, null, uid);
-        sessionManager.createSession("帮我写个周报", null, null, uid);
+        sessionManager.createSession("schedule: 每日早报", null, uid);
+        sessionManager.createSession("workflow: 抓取资讯", null, uid);
+        sessionManager.createSession("帮我写个周报", null, uid);
 
         assertEquals(1, sessionRepository.reclassifyLegacyAutoSessions(
                 SessionSource.SCHEDULE.code(), "schedule:%"));

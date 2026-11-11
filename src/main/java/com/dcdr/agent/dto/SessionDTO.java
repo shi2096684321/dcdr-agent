@@ -22,8 +22,6 @@ public class SessionDTO {
     private boolean titleAuto;
     @Schema(description = "默认模型")
     private String model;
-    @Schema(description = "会话角色设定(用户人设/偏好, 由平台包装后转述给模型, 非系统提示词)")
-    private String persona;
     @Schema(description = "本会话使用的自定义 Agent ID (V3.1; 为空表示通用助手)。用于 Agent 级长期记忆归属")
     private String agentId;
     @Schema(description = "绑定的工作区 ID (V3.3 F-49; 为空表示未授权任何目录)") 

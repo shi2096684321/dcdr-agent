@@ -297,7 +297,7 @@ public class ChatController {
         // 确保会话存在
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isBlank()) {
-            SessionDTO sess = sessionManager.createSession("新对话", request.getModel(), null, userId);
+            SessionDTO sess = sessionManager.createSession("新对话", request.getModel(), userId);
             sessionId = sess.getId();
             request.setSessionId(sessionId);
         }

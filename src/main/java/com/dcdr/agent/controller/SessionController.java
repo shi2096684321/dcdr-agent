@@ -93,9 +93,8 @@ public class SessionController {
     public Mono<Result<SessionDTO>> create(@RequestBody Map<String, String> body) {
         String title = body.get("title");
         String model = body.get("model");
-        String persona = body.get("persona");
         return ownershipGuard.currentContext()
-                .map(ctx -> Result.success(sessionManager.createSession(title, model, persona, ctx.userId())));
+                .map(ctx -> Result.success(sessionManager.createSession(title, model, ctx.userId())));
     }
 
     @Operation(summary = "获取会话详情")
@@ -127,24 +126,6 @@ public class SessionController {
         String title = body.get("title");
         if (title == null || title.isBlank()) return Mono.just(Result.error(400, "标题不能为空"));
         sessionManager.updateTitle(id, title);
-        return Mono.just(Result.success());
-    }
-
-    @Operation(summary = "更新会话角色设定",
-            description = "用户可为会话设定角色(人设/偏好)。注意: 这不是 System Prompt —— 角色设定由平台包装后转述给模型, "
-                    + "不以独立系统指令身份生效, 与平台规则冲突时以平台规则为准。传空字符串可清除。")
-    @ApiResponse(responseCode = "200", description = "更新成功")
-    @ApiResponse(responseCode = "400", description = "persona 过长")
-    @ApiResponse(responseCode = "404", description = "会话不存在或无权访问")
-    @PreAuthorize("@ownershipGuard.requireWrite(#id, 'SESSION', principal)")
-    @PatchMapping("/{id}/persona")
-    public Mono<Result<Void>> updatePersona(@Parameter(description = "会话 ID", required = true) @PathVariable String id,
-                                            @RequestBody Map<String, String> body) {
-        try {
-            sessionManager.updatePersona(id, body.get("persona"));
-        } catch (IllegalArgumentException e) {
-            return Mono.just(Result.error(400, e.getMessage()));
-        }
         return Mono.just(Result.success());
     }
 

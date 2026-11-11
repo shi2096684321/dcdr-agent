@@ -13,15 +13,12 @@
           </template>
           <template v-else>
             <span class="session-title" :title="s.title">{{ s.title }}</span>
-            <!-- 操作按钮收进绝对定位的浮层：它们在正常流里会固定吃掉 ~120px 宽度，
+            <!-- 操作按钮收进绝对定位的浮层：它们在正常流里会固定吃掉 ~80px 宽度，
                  侧边栏只有 150px 左右，标题因此被压成"生产级回..."。悬停才浮出，
                  不参与布局，标题可以占到整行宽度。 -->
             <div class="session-actions">
             <button class="rename-btn" @click.stop="startRename(s)" title="重命名">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
-            </button>
-            <button class="settings-btn" @click.stop="openSettings(s)" title="会话设置(人设/约束)">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2M12 18.5v2M4.8 7.8l1.7 1.7M17.5 14.5l1.7 1.7M3.5 12h2M18.5 12h2M4.8 16.2l1.7-1.7M17.5 9.5l1.7-1.7"/></svg>
             </button>
             <el-dropdown class="export-dropdown" trigger="click" @command="fmt => exportSession(s, fmt)" @click.stop>
               <button class="export-btn" @click.stop title="导出对话">
@@ -381,22 +378,6 @@
     </aside>
     <button v-else class="panel-expand" @click="panelOpen = true" title="展开上下文面板">«</button>
 
-    <!-- 会话设置弹窗: 定制会话角色设定(人设/偏好), 由平台包装后转述给模型, 不覆盖平台系统约束 -->
-    <el-dialog v-model="settingsVisible" title="会话设置 · 角色设定" width="560px" append-to-body>
-      <el-form label-position="top">
-        <el-form-item label="角色设定">
-          <el-input v-model="settingsPrompt" type="textarea" :rows="6"
-                    placeholder="为当前会话设定角色与偏好，例如：回答先给结论、用中文、不超过 200 字。它将由平台转述给模型，不会覆盖平台的安全与规则约束。留空保存可清除。" />
-        </el-form-item>
-      </el-form>
-      <div class="settings-tip">提示：仅对当前会话生效，不影响其他会话；与平台规则冲突时以平台规则为准。</div>
-      <template #footer>
-        <el-button @click="settingsVisible = false">取消</el-button>
-        <el-button @click="clearSettings" v-if="settingsPrompt">清除</el-button>
-        <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
-      </template>
-    </el-dialog>
-
     <!-- 摘要编辑弹窗(V3.4): 模型漏记约束时由用户直接补上 -->
     <el-dialog v-model="summaryEditing" title="编辑历史摘要" width="620px" append-to-body>
       <div class="summary-tip">
@@ -455,7 +436,7 @@ import { ref, computed, onMounted, nextTick, watch, onUnmounted } from 'vue'
 import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
-  renameSession, updateSessionPersona, getSession, deleteSession, uploadFile,
+  renameSession, deleteSession, uploadFile,
   buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation,
   getContextUsage, getContextLimit, updateContextLimit,
   getSessionSummary, updateSessionSummary, clearSessionSummary,
@@ -653,12 +634,6 @@ onMounted(() => {
   window.addEventListener('resize', autoGrowInput)
 })
 onUnmounted(() => window.removeEventListener('resize', autoGrowInput))
-
-// 会话设置(会话级 System Prompt 定制)
-const settingsVisible = ref(false)
-const settingsSessionId = ref(null)
-const settingsPrompt = ref('')
-const settingsSaving = ref(false)
 
 // 知识库选择(RAG 检索增强)
 const knowledgeBases = ref([])
@@ -1048,39 +1023,6 @@ async function removeSession(s) {
     contextWarning.value = null
   }
   ElMessage.success('已删除')
-}
-
-// ===== 会话设置: 定制会话级 System Prompt(人设/约束) =====
-async function openSettings(s) {
-  settingsSessionId.value = s.id
-  settingsPrompt.value = ''
-  try {
-    const detail = await getSession(s.id)
-    settingsPrompt.value = detail?.persona || ''
-  } catch (e) {
-    console.error('加载会话 System Prompt 失败', e)
-  }
-  settingsVisible.value = true
-}
-
-async function saveSettings() {
-  if (!settingsSessionId.value) return
-  settingsSaving.value = true
-  try {
-    await updateSessionPersona(settingsSessionId.value, settingsPrompt.value.trim())
-    ElMessage.success('已保存，后续对话按新的角色设定生效')
-    settingsVisible.value = false
-  } catch (e) {
-    const msg = e?.response?.data?.message || e?.message || '保存失败'
-    ElMessage.error(msg)
-  } finally {
-    settingsSaving.value = false
-  }
-}
-
-async function clearSettings() {
-  settingsPrompt.value = ''
-  await saveSettings()
 }
 
 // 文件选择处理
@@ -1767,14 +1709,12 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .session-item:hover .session-actions { opacity: 1; }
 .session-item:hover .session-actions button,
 .session-item:hover .session-actions .export-dropdown { pointer-events: auto; }
-.rename-btn, .delete-btn, .export-btn, .settings-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
-.rename-btn svg, .delete-btn svg, .export-btn svg, .settings-btn svg { width: 13px; height: 13px; }
+.rename-btn, .delete-btn, .export-btn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; background: transparent; cursor: pointer; color: var(--dcdr-text-3); padding: 0; border-radius: 6px; flex-shrink: 0; transition: all 0.2s; }
+.rename-btn svg, .delete-btn svg, .export-btn svg { width: 13px; height: 13px; }
 .rename-btn:hover { color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
-.settings-btn:hover { color: var(--dcdr-warning); background: rgba(230,162,60,0.1); }
 .export-btn:hover { color: var(--dcdr-success); background: rgba(103,194,58,0.1); }
 .delete-btn:hover { color: var(--dcdr-danger); background: rgba(245,108,108,0.1); }
 .export-dropdown { flex-shrink: 0; }
-.settings-tip { font-size: 12px; color: var(--dcdr-text-3); line-height: 1.5; margin-top: -8px; }
 .rename-input { flex: 1; font-size: 13px; border: 2px solid var(--dcdr-accent); border-radius: 8px; padding: 6px 10px; outline: none; min-width: 0; }
 
 /* 聊天区域 */

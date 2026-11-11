@@ -591,7 +591,7 @@ public class ScheduledTaskService {
             // 会话不再用完即删: 它归档到「自动化 → 任务对话」, 用户可以回看"这次到底问了/答了什么"。
             // 保留数量按任务收敛(见 finally), 不会因为分钟级 cron 无限膨胀。
             var sess = sessionManager.createSession(
-                    "定时任务 · " + task.getName(), null, null, task.getUserId(),
+                    "定时任务 · " + task.getName(), null, task.getUserId(),
                     SessionSource.SCHEDULE.code(), task.getId());
             sessionId = sess.getId();
             // 先落一条 running 记录, 再开始干活: 实测单次执行要 405s, 而原先记录只在结束时才写,

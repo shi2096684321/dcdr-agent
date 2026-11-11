@@ -37,9 +37,6 @@ public class SessionManager {
     /** 默认会话标题，首个用户问题到达时会被替换 */
     private static final String DEFAULT_TITLE = "新对话";
 
-    /** 会话角色设定字符上限(超过抛异常而非静默截断) */
-    public static final int MAX_PERSONA_LEN = 8000;
-
     private final SessionRepository sessionRepository;
     private final MessageRepository messageRepository;
     private final ChatMemory memory;
@@ -68,16 +65,10 @@ public class SessionManager {
                 + String.format("%06x", ThreadLocalRandom.current().nextInt(0x1000000));
     }
 
-    /** 创建新会话 */
-    @Transactional
-    public SessionDTO createSession(String title, String model, String persona) {
-        return createSession(title, model, persona, null);
-    }
-
     /** 创建新会话(带 userId, V2.2 数据隔离) */
     @Transactional
-    public SessionDTO createSession(String title, String model, String persona, String userId) {
-        return createSession(title, model, persona, userId, SessionSource.USER.code(), null);
+    public SessionDTO createSession(String title, String model, String userId) {
+        return createSession(title, model, userId, SessionSource.USER.code(), null);
     }
 
     /**
@@ -91,7 +82,7 @@ public class SessionManager {
      * @param sourceRef 来源聚合 ID(定时任务 ID / 工作流 ID); 用户会话为 null
      */
     @Transactional
-    public SessionDTO createSession(String title, String model, String persona, String userId,
+    public SessionDTO createSession(String title, String model, String userId,
                                     String source, String sourceRef) {
         String id = nextSessionId();
         LocalDateTime now = LocalDateTime.now();
@@ -100,11 +91,6 @@ public class SessionManager {
         entity.setTitle(title != null ? title : DEFAULT_TITLE);
         entity.setTitleAuto(true);
         entity.setModel(model != null ? model : properties.getModels().getDefaultChat());
-        if (persona != null && persona.length() > MAX_PERSONA_LEN) {
-            throw new IllegalArgumentException(
-                    "persona 过长(上限 " + MAX_PERSONA_LEN + " 字符), 当前 " + persona.length());
-        }
-        entity.setSystemPrompt(persona);
         entity.setUserId(userId);
         entity.setSource(source == null || source.isBlank() ? SessionSource.USER.code() : source);
         entity.setSourceRef(sourceRef);
@@ -299,32 +285,6 @@ public class SessionManager {
     }
 
     /**
-     * 更新会话角色设定(仅更新 {@code sessions.system_prompt} 落库字段)。
-     * <p>
-     * V3.1 起用户角色设定不再写入消息历史中的 system 消息(避免用户文本以系统指令身份生效),
-     * 对话时由 AgentOrchestrator 读取本字段并包装后注入。旧版本落库的独立 system 消息
-     * 由编排层在加载历史时清除(见 AgentOrchestrator 对裸 system 消息的 removeIf 处理)。
-     *
-     * @param sessionId 会话 ID
-     * @param persona   新的角色设定(可为空, 表示清除)
-     * @throws IllegalArgumentException 会话不存在或超长时抛出
-     */
-    @Transactional
-    public void updatePersona(String sessionId, String persona) {
-        SessionEntity entity = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
-        if (persona != null && persona.length() > MAX_PERSONA_LEN) {
-            throw new IllegalArgumentException(
-                    "persona 过长(上限 " + MAX_PERSONA_LEN + " 字符), 当前 " + persona.length());
-        }
-
-        String trimmed = (persona == null || persona.isBlank()) ? null : persona;
-        entity.setSystemPrompt(trimmed);
-        entity.setUpdatedAt(LocalDateTime.now());
-        sessionRepository.save(entity);
-    }
-
-    /**
      * 绑定/解绑本会话使用的自定义 Agent (V3.1)。
      * <p>
      * 会话的 {@code agentId} 是 Agent 级长期记忆的归属依据: 落库后, 后续对话才能确定
@@ -421,7 +381,6 @@ public class SessionManager {
         dto.setTitle(e.getTitle());
         dto.setTitleAuto(Boolean.TRUE.equals(e.getTitleAuto()));
         dto.setModel(e.getModel());
-        dto.setPersona(e.getSystemPrompt());
         dto.setAgentId(e.getAgentId());
         dto.setWorkspaceId(e.getWorkspaceId());
         // 存量数据 source 可能为 null(加列前的会话), 一律按用户会话兜底, 否则对话列表会漏掉它们

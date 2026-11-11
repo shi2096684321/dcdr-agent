@@ -47,9 +47,9 @@ public class SessionEntity implements OwnedEntity {
     @Column(length = 64)
     private String agentId;
 
-    @Schema(description = "系统提示词 (覆盖默认行为)")
-    @Column(columnDefinition = "TEXT")
-    private String systemPrompt;
+    // 已移除: sessions.system_prompt(会话角色设定) —— 与自定义 Agent 人设功能重叠且属于"配置",
+    // 与「用户只做选择、不做配置」的产品定位冲突。DB 列保留不删(ddl-auto=update 不会 drop,
+    // 且存量会话可能有值), 代码不再读写; 角色需求统一走 Agent。详见 2026-11-11 的改动记录。
 
     @Schema(description = "绑定的工作区 ID (V3.3 F-49; 为空表示本会话未授权任何目录)。"
             + "绑定在会话而非用户上: 同一用户不同会话可以操作不同目录, 避免权限隐式扩散")
