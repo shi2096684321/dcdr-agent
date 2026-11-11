@@ -9,7 +9,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 /**
  * Java AI Agent 应用启动入口
  * <p>
- * 多模态智能对话助手 - 支持对话模式与创作模式(Banana风格)
+ * 一人公司多模态 AI 助手工作台 —— 对话 / 专家(Agent) / 知识库 RAG / 工作流 / 定时任务 /
+ * 多模态生成 / 成本与调用链治理, 对外只呈现一个统一入口。
  * <p>
  * 排除 {@link ReactiveUserDetailsServiceAutoConfiguration}: V2.2 使用 JWT 无状态认证,
  * 不需要 Spring Security 默认的 UserDetailsService (会生成随机密码的默认用户)。

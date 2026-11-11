@@ -5,7 +5,7 @@
         <img :src="logoUrl" class="auth-logo" alt="DCDR" />
         <div>
           <h2 class="auth-title">DCDR Agent</h2>
-          <p class="auth-subtitle">多模态智能对话助手</p>
+          <p class="auth-subtitle">一人公司 AI 助手工作台</p>
         </div>
       </div>
 
