@@ -5,7 +5,7 @@ import { canPreviewCode, langLabel } from './useCodeBlock'
 const md = new MarkdownIt()
 
 // 开启「复制 / 运行预览」按钮的渲染环境标记。
-// 只对对话正文、推理过程开启: 工作流预览等场景直接输出 HTML, 不需要(也不该有)按钮。
+// 只对对话正文、思考开启: 工作流预览等场景直接输出 HTML, 不需要(也不该有)按钮。
 const CODE_ACTIONS_ENV = { codeActions: true }
 
 /**

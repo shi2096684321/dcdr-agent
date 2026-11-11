@@ -24,10 +24,10 @@
         </div>
       </div>
 
-      <!-- 推理过程 -->
+      <!-- 思考 -->
       <div v-if="msg.reasoningContent" class="msg-reasoning">
         <details :open="reasoningOpen">
-          <summary>推理过程</summary>
+          <summary>思考</summary>
           <div v-html="renderReasoning(msg.reasoningContent)" @click="onBubbleClick"></div>
         </details>
       </div>
@@ -198,7 +198,7 @@ const props = defineProps({
    */
   readonly: { type: Boolean, default: false },
   /**
-   * 推理过程是否默认展开。
+   * 思考是否默认展开。
    * <p>
    * 首页历史消息保持收起（一屏多条回答时，全展开会把正文挤到看不见），
    * 只有「自动化 → 任务对话」传 true：那边一条会话往往只有一条最终回答，
@@ -212,7 +212,7 @@ const props = defineProps({
 const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'undo-op', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
-// 推理过程同样允许复制代码块(与正文共用同一套按钮与处理逻辑)
+// 思考同样允许复制代码块(与正文共用同一套按钮与处理逻辑)
 const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
 // 代码块按钮实现「复制 / 运行预览」: 预览交给父级统一弹窗
 const { handleCodeClick } = useCodeBlock((payload) => emit('preview-code', payload))
@@ -521,7 +521,7 @@ async function withdraw() {
 .msg-video { max-width: 400px; max-height: 300px; border-radius: 12px; background: #000; }
 .video-name { font-size: 11px; color: var(--dcdr-text-3); text-align: center; margin-top: 4px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 推理过程 */
+/* 思考 */
 .msg-reasoning { margin-bottom: 8px; }
 .msg-reasoning details { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 10px 14px; }
 .msg-reasoning summary { cursor: pointer; color: var(--dcdr-text-2); font-size: 12px; font-weight: 500; user-select: none; outline: none; padding: 4px 0; }
@@ -546,7 +546,7 @@ async function withdraw() {
 .msg-bubble :deep(code) { background: var(--dcdr-bg-subtle); padding: 3px 8px; border-radius: 5px; font-size: 13px; color: var(--dcdr-accent-2); }
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
-/* 代码块: 语言标签 + 复制 / 运行预览 工具条(正文与推理过程共用) */
+/* 代码块: 语言标签 + 复制 / 运行预览 工具条(正文与思考共用) */
 .msg-bubble :deep(.code-block), .msg-reasoning details > div :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid var(--dcdr-code-border); }
 .msg-bubble :deep(.code-block pre), .msg-reasoning details > div :deep(.code-block pre) { margin: 0; border-radius: 0; }
 .msg-bubble :deep(.code-block-bar), .msg-reasoning details > div :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--dcdr-code-bar); border-bottom: 1px solid var(--dcdr-code-border); }

@@ -128,7 +128,7 @@ class TokenEstimatorTest {
             int withoutReasoning = estimator.estimate(
                     List.of(Message.assistant("答案", null, "qwen")));
             int withReasoning = estimator.estimate(
-                    List.of(Message.assistant("答案", "这是一段较长的推理过程内容", "qwen")));
+                    List.of(Message.assistant("答案", "这是一段较长的思考内容", "qwen")));
 
             assertTrue(withReasoning > withoutReasoning);
         }

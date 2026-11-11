@@ -120,7 +120,7 @@ public class ConversationExportService {
                 sb.append(m.getContent()).append("\n\n");
             }
             if (m.getReasoningContent() != null && !m.getReasoningContent().isBlank()) {
-                sb.append("<details><summary>推理过程</summary>\n\n")
+                sb.append("<details><summary>思考</summary>\n\n")
                   .append(m.getReasoningContent()).append("\n\n</details>\n\n");
             }
             if (m.getImages() != null && !m.getImages().isEmpty()) {

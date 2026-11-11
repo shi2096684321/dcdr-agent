@@ -43,7 +43,7 @@ public class MessageEntity {
     @Column(columnDefinition = "TEXT")
     private String content;
 
-    @Schema(description = "思维链/推理过程内容 (深度思考模型返回)")
+    @Schema(description = "思维链/思考内容 (深度思考模型返回)")
     @Column(columnDefinition = "TEXT")
     private String reasoningContent;
 

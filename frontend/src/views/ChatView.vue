@@ -133,7 +133,7 @@
             <div class="msg-role">DCDR</div>
             <div v-if="reasoningContent" class="msg-reasoning">
               <details open>
-                <summary>推理过程</summary>
+                <summary>思考</summary>
                 <div v-html="renderReasoning(reasoningContent)" @click="onCodeClick"></div>
               </details>
             </div>
@@ -459,7 +459,7 @@ import { useAuthStore } from '@/stores/auth'
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 // 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
 const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
-// 流式态推理过程: 代码块同样带「复制 / 运行预览」按钮
+// 流式态思考: 代码块同样带「复制 / 运行预览」按钮
 const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
 // 代码块「复制 / 运行预览」: 复制就地完成, 预览弹窗由本组件统一承载
 const codePreview = ref({ visible: false, code: '', lang: '' })
