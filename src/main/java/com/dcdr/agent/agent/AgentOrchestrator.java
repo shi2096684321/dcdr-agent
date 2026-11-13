@@ -2788,13 +2788,13 @@ public class AgentOrchestrator {
         // 3.2 档位一 · 进程常量: 平台运行时约束(多轮规范 / 外部数据边界 / 生图策略)
         //     合并成一条 system 紧跟 base: 这几段在进程生命周期内不变, 拆成三条只是多两个
         //     消息分隔符, 对可复用前缀没有任何贡献; 合并后档位边界更清楚, 也少两次消息拼装。
-        prefix.addAll(buildStaticConstraints(provider, request, history));
+        prefix.addAll(buildStaticConstraints(provider, history));
 
         // 3.3 档位二 · 会话级: Agent 人设 / 技能目录 / 工作区摘要
         //     变化频率是"改了配置才变", 与对话轮次无关, 因此也算稳定前缀。
         //     必须放在对话历史之前 —— 放尾部的话每轮历史增长都会把它们往后推,
         //     位置一变前缀就断在历史上一轮的某处(这是重排前的实际问题)。
-        prefix.addAll(buildSessionConstraints(provider, request, userId, sessId, agentOverride));
+        prefix.addAll(buildSessionConstraints(request, userId, sessId, agentOverride));
 
         // 3.4 档位三 · 每轮都变: 记忆召回 / 当前时间 / RAG 片段
         //     一律进 volatileTail, 由 chat 主链路追加在「本轮 user 消息之后」。
@@ -3337,8 +3337,7 @@ public class AgentOrchestrator {
      * @param history 当前对话历史(仅用于去重判断, 不被修改)
      * @return 至多一条合并后的 system 消息
      */
-    private List<Message> buildStaticConstraints(ChatModelProvider provider, ChatRequest request,
-                                                 List<Message> history) {
+    private List<Message> buildStaticConstraints(ChatModelProvider provider, List<Message> history) {
         List<Message> sink = new ArrayList<>(1);
         List<SystemPromptProperties.PromptFragment> parts = new ArrayList<>(3);
 
@@ -3379,8 +3378,7 @@ public class AgentOrchestrator {
      * 它们要能被上下文占用面板按名字归类, 也要保住「同名只注入一次」的幂等语义。
      * 注入失败不该影响对话主链路, 故技能与工作区两段整体兜住异常。
      */
-    private List<Message> buildSessionConstraints(ChatModelProvider provider, ChatRequest request,
-                                                  String userId, String sessionId,
+    private List<Message> buildSessionConstraints(ChatRequest request, String userId, String sessionId,
                                                   AgentOverride agentOverride) {
         List<Message> sink = new ArrayList<>(3);
 
