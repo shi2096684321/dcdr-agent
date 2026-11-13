@@ -1,0 +1,71 @@
+{
+  "id": "stepboy",
+  "name": "眼镜少年（Q 版）",
+  "version": 10,
+  "author": "user-provided",
+  "license": "AI-generated image, local personal use only",
+  "skin": "skin.json",
+  "motions": "motions/index.json",
+  "pools": {
+    "micro": [
+      "blink",
+      "look",
+      "stretch",
+      "sigh",
+      "yawn",
+      "headtilt",
+      "wobble",
+      "tiptoe",
+      "shake",
+      "bounce",
+      "daydream",
+      "thinking",
+      "focus",
+      "break_time",
+      "brainstorm",
+      "reading",
+      "note_taking",
+      "coffee_break",
+      "listening"
+    ],
+    "poke": [
+      "happy",
+      "shy",
+      "startle",
+      "proud",
+      "curious",
+      "pout",
+      "giggle",
+      "wave"
+    ],
+    "dream": [
+      "再走五分钟",
+      "云好像慢下来了",
+      "先歇一会儿",
+      "……",
+      "别关窗呀",
+      "梦里也在散步"
+    ],
+    "pose": [
+      "pose_greet",
+      "pose_cheer",
+      "pose_walk",
+      "pose_sit",
+      "pose_sleep",
+      "pose_stretch",
+      "pose_coding",
+      "pose_think",
+      "pose_read",
+      "pose_drink",
+      "pose_pout",
+      "pose_desk_sleep"
+    ]
+  },
+  "defaults": {
+    "idleToSleepMs": 300000,
+    "microMinGapMs": 1600,
+    "microMaxGapMs": 5000,
+    "poseMinGapMs": 4000,
+    "poseMaxGapMs": 12000
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "id": "pose_sleep",
+  "layer": "event",
+  "duration": 3600,
+  "priority": 19,
+  "fade": 260,
+  "easing": "easeInOut",
+  "loop": true,
+  "line": "……zzZ",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": -1
+      },
+      {
+        "t": 0.9,
+        "alpha": -1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "pose_sleep": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": 1,
+        "dy": 0
+      },
+      {
+        "t": 0.5,
+        "alpha": 1,
+        "dy": 1.5
+      },
+      {
+        "t": 0.9,
+        "alpha": 1,
+        "dy": 0
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": 0
+      }
+    ],
+    "zzz": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0
+      },
+      {
+        "t": 0.25,
+        "alpha": 1,
+        "dy": -10
+      },
+      {
+        "t": 0.8,
+        "alpha": 1,
+        "dy": -28
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -32
+      }
+    ]
+  }
+}

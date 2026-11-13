@@ -1,0 +1,95 @@
+{
+  "id": "fix_done",
+  "layer": "event",
+  "duration": 1100,
+  "priority": 25,
+  "fade": 100,
+  "easing": "easeOutBack",
+  "line": "跑通啦",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "rot": 0,
+        "sy": 1
+      },
+      {
+        "t": 0.35,
+        "dy": -18,
+        "rot": -5,
+        "sy": 1.08
+      },
+      {
+        "t": 0.7,
+        "dy": -3,
+        "rot": 2,
+        "sy": 0.99
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "rot": 0,
+        "sy": 1
+      }
+    ],
+    "laptop_done": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "eyes_sparkle": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "star": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -8
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -8
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -30
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -34
+      }
+    ]
+  }
+}

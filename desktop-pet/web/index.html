@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stepboy</title>
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <div id="stage" class="stage">
+    <canvas id="pet" width="200" height="300"></canvas>
+    <div id="bubble" class="bubble" hidden></div>
+
+    <div id="settings" class="settings" hidden>
+      <div class="settings-title">桌宠设置</div>
+      <label class="row">
+        <span>皮肤</span>
+        <select id="skin-select"></select>
+      </label>
+      <label class="row">
+        <span>道具</span>
+        <select id="prop-select"></select>
+      </label>
+      <label class="row">
+        <span>试动作</span>
+        <select id="motion-select"></select>
+      </label>
+      <label class="row">
+        <span>大小</span>
+        <select id="size-select">
+          <option value="0.5">50%</option>
+          <option value="0.6">60%</option>
+          <option value="0.7">70%</option>
+          <option value="0.8">80%</option>
+          <option value="0.9">90%</option>
+          <option value="1">100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+        </select>
+      </label>
+      <label class="row"><span>透明窗口</span><input id="opt-transparent" type="checkbox" checked></label>
+      <label class="row"><span>开机自启</span><input id="opt-autostart" type="checkbox"></label>
+      <div class="row actions">
+        <button id="btn-reload" type="button">重载皮肤</button>
+        <button id="btn-close" type="button">关闭</button>
+      </div>
+      <div id="settings-note" class="note"></div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

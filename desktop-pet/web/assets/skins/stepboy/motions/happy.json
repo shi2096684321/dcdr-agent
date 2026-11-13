@@ -1,0 +1,73 @@
+{
+  "id": "happy",
+  "layer": "event",
+  "duration": 720,
+  "priority": 20,
+  "weight": 0.5,
+  "fade": 100,
+  "easing": "easeOutBack",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "sy": 1
+      },
+      {
+        "t": 0.3,
+        "dy": -14,
+        "sy": 1.06
+      },
+      {
+        "t": 0.7,
+        "dy": -3,
+        "sy": 0.98
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "sy": 1
+      }
+    ],
+    "heart": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -6
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -6
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -26
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -30
+      }
+    ],
+    "eyes_happy": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ]
+  }
+}

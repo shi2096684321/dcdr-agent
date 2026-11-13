@@ -1,0 +1,28 @@
+{
+  "id": "breathe",
+  "layer": "base",
+  "duration": 3600,
+  "loop": true,
+  "priority": 0,
+  "fade": 0,
+  "easing": "easeInOutSine",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "sy": 1,
+        "dy": 0
+      },
+      {
+        "t": 0.5,
+        "sy": 1.022,
+        "dy": -1.2
+      },
+      {
+        "t": 1,
+        "sy": 1,
+        "dy": 0
+      }
+    ]
+  }
+}

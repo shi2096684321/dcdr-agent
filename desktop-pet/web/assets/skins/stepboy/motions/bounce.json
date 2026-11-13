@@ -1,0 +1,50 @@
+{
+  "id": "bounce",
+  "layer": "micro",
+  "duration": 700,
+  "priority": 8,
+  "weight": 0.25,
+  "fade": 90,
+  "easing": "easeOutBack",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "sy": 1
+      },
+      {
+        "t": 0.45,
+        "dy": -20,
+        "sy": 1.08
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "sy": 1
+      }
+    ],
+    "star": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -4
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -4
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -28
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -32
+      }
+    ]
+  }
+}

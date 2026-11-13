@@ -1,0 +1,599 @@
+{
+  "id": "stepboy",
+  "canvas": {
+    "w": 200,
+    "h": 300,
+    "anchor": {
+      "x": 100,
+      "y": 288
+    }
+  },
+  "hitbox": {
+    "x": -66,
+    "y": -260,
+    "w": 132,
+    "h": 260
+  },
+  "parts": [
+    {
+      "id": "body",
+      "src": "parts/body.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 1
+    },
+    {
+      "id": "eyes_closed",
+      "src": "parts/eyes_closed.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "eyes_happy",
+      "src": "parts/eyes_happy.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "eyes_wide",
+      "src": "parts/eyes_wide.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "eyes_angry",
+      "src": "parts/eyes_angry.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "eyes_dizzy",
+      "src": "parts/eyes_dizzy.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "eyes_sparkle",
+      "src": "parts/eyes_sparkle.svg",
+      "z": 2,
+      "x": 0,
+      "y": 0,
+      "w": 132,
+      "h": 260,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "follow": "body"
+    },
+    {
+      "id": "zzz",
+      "src": "parts/zzz.svg",
+      "z": 3,
+      "x": 58,
+      "y": -246,
+      "w": 32,
+      "h": 32,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "sweat",
+      "src": "parts/sweat.svg",
+      "z": 3,
+      "x": 62,
+      "y": -214,
+      "w": 26,
+      "h": 26,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "heart",
+      "src": "parts/heart.svg",
+      "z": 3,
+      "x": -60,
+      "y": -230,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "note",
+      "src": "parts/note.svg",
+      "z": 3,
+      "x": 64,
+      "y": -186,
+      "w": 28,
+      "h": 28,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "star",
+      "src": "parts/star.svg",
+      "z": 3,
+      "x": -58,
+      "y": -196,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "question",
+      "src": "parts/question.svg",
+      "z": 3,
+      "x": 60,
+      "y": -168,
+      "w": 28,
+      "h": 28,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "exclaim",
+      "src": "parts/exclaim.svg",
+      "z": 3,
+      "x": -62,
+      "y": -262,
+      "w": 24,
+      "h": 32,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "cloud",
+      "src": "parts/cloud.svg",
+      "z": 4,
+      "x": 0,
+      "y": -266,
+      "w": 40,
+      "h": 24,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "bulb",
+      "src": "parts/bulb.svg",
+      "z": 3,
+      "x": 0,
+      "y": -272,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "gear",
+      "src": "parts/gear.svg",
+      "z": 3,
+      "x": 66,
+      "y": -150,
+      "w": 26,
+      "h": 26,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "laptop_code",
+      "src": "parts/laptop_code.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "laptop_error",
+      "src": "parts/laptop_error.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "laptop_done",
+      "src": "parts/laptop_done.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "book",
+      "src": "parts/book.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "notebook",
+      "src": "parts/notebook.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "coffee",
+      "src": "parts/coffee.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "magnifier",
+      "src": "parts/magnifier.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "clipboard",
+      "src": "parts/clipboard.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "headphone",
+      "src": "parts/headphone.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "pose_greet",
+      "src": "parts/pose_greet.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 145.0,
+      "h": 262.5,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_cheer",
+      "src": "parts/pose_cheer.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 173.0,
+      "h": 262.5,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_walk",
+      "src": "parts/pose_walk.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 131.5,
+      "h": 260.5,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_sit",
+      "src": "parts/pose_sit.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 140.5,
+      "h": 271.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_sleep",
+      "src": "parts/pose_sleep.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 200.0,
+      "h": 260.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_stretch",
+      "src": "parts/pose_stretch.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 169.0,
+      "h": 264.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_coding",
+      "src": "parts/pose_coding.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 167.5,
+      "h": 263.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_think",
+      "src": "parts/pose_think.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 138.0,
+      "h": 271.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_read",
+      "src": "parts/pose_read.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 139.0,
+      "h": 260.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_drink",
+      "src": "parts/pose_drink.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 137.5,
+      "h": 270.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_pout",
+      "src": "parts/pose_pout.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 131.5,
+      "h": 260.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    },
+    {
+      "id": "pose_desk_sleep",
+      "src": "parts/pose_desk_sleep.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 155.5,
+      "h": 260.0,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 0,
+      "group": "pose",
+      "follow": "body"
+    }
+  ]
+}

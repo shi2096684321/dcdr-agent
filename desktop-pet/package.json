@@ -1,0 +1,18 @@
+{
+  "name": "stepboy-desktop-pet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "轻量、配置驱动的桌面宠物（Tauri 2 + 零构建前端）",
+  "scripts": {
+    "dev": "node dev-server.mjs",
+    "preview": "node dev-server.mjs --open",
+    "start": "node dev-server.mjs --open",
+    "tauri:dev": "npx --yes @tauri-apps/cli@2 dev",
+    "tauri:build": "npx --yes @tauri-apps/cli@2 build",
+    "build:exe": "cargo build --release --features custom-protocol --offline --manifest-path src-tauri/Cargo.toml",
+    "pack": "node scripts/pack.mjs",
+    "icon": "python tools/make-icon.py --preview",
+    "test": "node --test tests/core.test.mjs tests/contract.test.mjs"
+  }
+}

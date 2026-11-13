@@ -1,0 +1,32 @@
+{
+  "id": "headtilt",
+  "layer": "micro",
+  "duration": 1000,
+  "priority": 8,
+  "weight": 0.4,
+  "fade": 120,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "rot": 0,
+        "dx": 0
+      },
+      {
+        "t": 0.4,
+        "rot": -9,
+        "dx": -4
+      },
+      {
+        "t": 0.8,
+        "rot": -6,
+        "dx": -3
+      },
+      {
+        "t": 1,
+        "rot": 0,
+        "dx": 0
+      }
+    ]
+  }
+}

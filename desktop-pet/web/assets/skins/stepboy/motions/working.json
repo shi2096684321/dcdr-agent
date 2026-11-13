@@ -1,0 +1,51 @@
+{
+  "id": "working",
+  "layer": "event",
+  "duration": 1000,
+  "priority": 12,
+  "loop": true,
+  "fade": 140,
+  "line": "在翻文件啦",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "rot": -3,
+        "dx": -2,
+        "dy": 0
+      },
+      {
+        "t": 0.5,
+        "rot": 3,
+        "dx": 2,
+        "dy": -2
+      },
+      {
+        "t": 1,
+        "rot": -3,
+        "dx": -2,
+        "dy": 0
+      }
+    ],
+    "eyes_closed": [
+      {
+        "t": 0,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 1
+      }
+    ],
+    "laptop_code": [
+      {
+        "t": 0,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 1
+      }
+    ]
+  }
+}

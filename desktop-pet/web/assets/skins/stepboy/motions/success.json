@@ -1,0 +1,111 @@
+{
+  "id": "success",
+  "layer": "event",
+  "duration": 1000,
+  "priority": 25,
+  "fade": 100,
+  "easing": "easeOutBack",
+  "line": "成了！",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "sy": 1,
+        "rot": 0
+      },
+      {
+        "t": 0.4,
+        "dy": -22,
+        "sy": 1.1,
+        "rot": -5
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "sy": 1,
+        "rot": 0
+      }
+    ],
+    "star": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -8
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -8
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -30
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -34
+      }
+    ],
+    "heart": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -4
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -4
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -20
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -24
+      }
+    ],
+    "eyes_sparkle": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "laptop_done": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ]
+  }
+}

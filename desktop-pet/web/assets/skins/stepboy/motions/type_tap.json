@@ -1,0 +1,59 @@
+{
+  "id": "type_tap",
+  "layer": "event",
+  "duration": 360,
+  "priority": 10,
+  "loop": true,
+  "fade": 100,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.5,
+        "dy": -2,
+        "rot": 1.2
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "rot": 0
+      }
+    ],
+    "note": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -4
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -4
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -18
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -22
+      }
+    ],
+    "laptop_code": [
+      {
+        "t": 0,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 1
+      }
+    ]
+  }
+}

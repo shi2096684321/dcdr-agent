@@ -1,0 +1,30 @@
+{
+  "id": "tiptoe",
+  "layer": "micro",
+  "duration": 1000,
+  "priority": 8,
+  "weight": 0.3,
+  "fade": 120,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "sy": 1,
+        "sx": 1
+      },
+      {
+        "t": 0.5,
+        "dy": -14,
+        "sy": 1.06,
+        "sx": 0.95
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "sy": 1,
+        "sx": 1
+      }
+    ]
+  }
+}

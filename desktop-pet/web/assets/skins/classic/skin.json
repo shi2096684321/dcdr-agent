@@ -1,0 +1,317 @@
+{
+  "id": "classic",
+  "canvas": {
+    "w": 200,
+    "h": 300,
+    "anchor": {
+      "x": 100,
+      "y": 288
+    }
+  },
+  "hitbox": {
+    "x": -82,
+    "y": -240,
+    "w": 163,
+    "h": 240
+  },
+  "parts": [
+    {
+      "id": "body",
+      "src": "parts/body.webp",
+      "z": 0,
+      "x": 0,
+      "y": 0,
+      "w": 163,
+      "h": 240,
+      "pivot": [
+        0.5,
+        1.0
+      ],
+      "alpha": 1
+    },
+    {
+      "id": "zzz",
+      "src": "../stepboy/parts/zzz.svg",
+      "z": 3,
+      "x": 58,
+      "y": -246,
+      "w": 32,
+      "h": 32,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "sweat",
+      "src": "../stepboy/parts/sweat.svg",
+      "z": 3,
+      "x": 62,
+      "y": -214,
+      "w": 26,
+      "h": 26,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "heart",
+      "src": "../stepboy/parts/heart.svg",
+      "z": 3,
+      "x": -60,
+      "y": -230,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "note",
+      "src": "../stepboy/parts/note.svg",
+      "z": 3,
+      "x": 64,
+      "y": -186,
+      "w": 28,
+      "h": 28,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "star",
+      "src": "../stepboy/parts/star.svg",
+      "z": 3,
+      "x": -58,
+      "y": -196,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "question",
+      "src": "../stepboy/parts/question.svg",
+      "z": 3,
+      "x": 60,
+      "y": -168,
+      "w": 28,
+      "h": 28,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "exclaim",
+      "src": "../stepboy/parts/exclaim.svg",
+      "z": 3,
+      "x": -62,
+      "y": -262,
+      "w": 24,
+      "h": 32,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "cloud",
+      "src": "../stepboy/parts/cloud.svg",
+      "z": 4,
+      "x": 0,
+      "y": -266,
+      "w": 40,
+      "h": 24,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "bulb",
+      "src": "../stepboy/parts/bulb.svg",
+      "z": 3,
+      "x": 0,
+      "y": -272,
+      "w": 30,
+      "h": 30,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "gear",
+      "src": "../stepboy/parts/gear.svg",
+      "z": 3,
+      "x": 66,
+      "y": -150,
+      "w": 26,
+      "h": 26,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0
+    },
+    {
+      "id": "laptop_code",
+      "src": "../stepboy/parts/laptop_code.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "laptop_error",
+      "src": "../stepboy/parts/laptop_error.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "laptop_done",
+      "src": "../stepboy/parts/laptop_done.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "book",
+      "src": "../stepboy/parts/book.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "notebook",
+      "src": "../stepboy/parts/notebook.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "coffee",
+      "src": "../stepboy/parts/coffee.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "magnifier",
+      "src": "../stepboy/parts/magnifier.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "clipboard",
+      "src": "../stepboy/parts/clipboard.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    },
+    {
+      "id": "headphone",
+      "src": "../stepboy/parts/headphone.svg",
+      "z": 1,
+      "x": 0,
+      "y": -74,
+      "w": 64,
+      "h": 64,
+      "pivot": [
+        0.5,
+        0.5
+      ],
+      "alpha": 0,
+      "group": "prop",
+      "follow": "body"
+    }
+  ]
+}

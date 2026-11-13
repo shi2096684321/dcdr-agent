@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!--
+    桌宠图标 · 完整版（用于 32px 及以上）
+    设计约束：
+      - 只保留角色最强的三个识别符号：蓬松黑发（含呆毛）、细圆框眼镜、大眼微笑
+      - 蓝色圆角方块底，延续旧图标的品牌色，同时保证在深/浅色任务栏上都有对比
+      - 所有元素按 16px 可辨认的下限设计，细节（腮红、耳朵、发丝高光）只服务大尺寸
+    改完请运行：python tools/make-icon.py
+  -->
+  <defs>
+    <linearGradient id="bgFull" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#8FBDF2"/>
+      <stop offset="1" stop-color="#4A7CC0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 底板：圆角方块，圆角率约 24% -->
+  <rect x="5" y="5" width="246" height="246" rx="59" fill="url(#bgFull)"/>
+
+  <!-- 肩 / 白 T：底部留一条明显的白，缩小后作为“身体”唯一线索 -->
+  <path d="M42 260 C46 208 84 187 128 185 C172 187 210 208 214 260 Z" fill="#F8F7F0"/>
+  <path d="M110 186 C110 199 146 199 146 186 Z" fill="#E8E6DC"/>
+
+  <!-- 脖子 -->
+  <path d="M111 166 h34 v22 q-17 13 -34 0 Z" fill="#E5BC92"/>
+
+  <!-- 耳朵 -->
+  <ellipse cx="64" cy="142" rx="14" ry="17" fill="#F0C99E"/>
+  <ellipse cx="192" cy="142" rx="14" ry="17" fill="#F0C99E"/>
+
+  <!-- 脸 -->
+  <ellipse cx="128" cy="132" rx="66" ry="68" fill="#F8D7AF"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="86" cy="158" rx="15" ry="10" fill="#F0A98C" opacity="0.45"/>
+  <ellipse cx="170" cy="158" rx="15" ry="10" fill="#F0A98C" opacity="0.45"/>
+
+  <!-- 呆毛：先画，根部被头发盖住，只露出上翘的一段 -->
+  <path d="M117 63 C106 47 112 30 127 31" stroke="#2E2A23" stroke-width="11"
+        fill="none" stroke-linecap="round"/>
+
+  <!-- 头发：上半大弧 + 锯齿刘海。锯齿在 16px 会糊掉，但它决定大尺寸的“蓬乱感” -->
+  <path d="M62 136
+           C56 92 76 58 128 54
+           C180 58 200 92 194 136
+           L186 120 L176 138 L166 116 L154 136 L144 114 L130 134
+           L120 114 L108 136 L98 116 L86 138 L74 118 Z"
+        fill="#2E2A23"/>
+
+  <!-- 眼镜：镜片留空（透出肤色），眼睛明显小于镜框内径，才能读出“透过镜片看眼睛” -->
+  <g fill="none" stroke="#B4BBC5" stroke-width="9">
+    <circle cx="99" cy="140" r="29"/>
+    <circle cx="157" cy="140" r="29"/>
+  </g>
+  <line x1="123" y1="138" x2="133" y2="138" stroke="#B4BBC5" stroke-width="9" stroke-linecap="round"/>
+
+  <!-- 眼睛 -->
+  <circle cx="99" cy="142" r="14" fill="#453023"/>
+  <circle cx="157" cy="142" r="14" fill="#453023"/>
+  <circle cx="104" cy="136" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+  <circle cx="162" cy="136" r="4.5" fill="#FFFFFF" opacity="0.95"/>
+
+  <!-- 嘴 -->
+  <path d="M116 172 Q128 181 140 172" stroke="#9A6446" stroke-width="6"
+        fill="none" stroke-linecap="round"/>
+</svg>

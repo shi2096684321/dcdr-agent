@@ -1,0 +1,61 @@
+{
+  "id": "pose_greet",
+  "layer": "event",
+  "duration": 1700,
+  "priority": 22,
+  "fade": 160,
+  "easing": "easeInOut",
+  "line": "嗨～",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.08,
+        "alpha": -1
+      },
+      {
+        "t": 0.9,
+        "alpha": -1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "pose_greet": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1,
+        "rot": -2.5
+      },
+      {
+        "t": 0.45,
+        "alpha": 1,
+        "rot": 2.5
+      },
+      {
+        "t": 0.75,
+        "alpha": 1,
+        "rot": -1.5
+      },
+      {
+        "t": 0.9,
+        "alpha": 1,
+        "rot": 0
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "rot": 0
+      }
+    ]
+  }
+}

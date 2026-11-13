@@ -1,0 +1,59 @@
+{
+  "id": "sleep",
+  "layer": "event",
+  "duration": 2600,
+  "priority": 15,
+  "loop": true,
+  "fade": 200,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 6,
+        "rot": 0
+      },
+      {
+        "t": 0.5,
+        "dy": 8,
+        "rot": -1.5
+      },
+      {
+        "t": 1,
+        "dy": 6,
+        "rot": 0
+      }
+    ],
+    "zzz": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0
+      },
+      {
+        "t": 0.3,
+        "alpha": 1,
+        "dy": -8
+      },
+      {
+        "t": 0.85,
+        "alpha": 1,
+        "dy": -26
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -30
+      }
+    ],
+    "eyes_closed": [
+      {
+        "t": 0,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 1
+      }
+    ]
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "id": "pose_drink",
+  "layer": "event",
+  "duration": 2200,
+  "priority": 18,
+  "fade": 200,
+  "easing": "easeInOutSine",
+  "line": "喝口热的",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": -1
+      },
+      {
+        "t": 0.9,
+        "alpha": -1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "pose_drink": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.35,
+        "alpha": 1,
+        "dy": 0,
+        "rot": -2
+      },
+      {
+        "t": 0.6,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.85,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 2
+      },
+      {
+        "t": 0.9,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": 0,
+        "rot": 0
+      }
+    ]
+  }
+}

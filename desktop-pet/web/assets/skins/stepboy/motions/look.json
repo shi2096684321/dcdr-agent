@@ -1,0 +1,27 @@
+{
+  "id": "look",
+  "layer": "micro",
+  "duration": 900,
+  "priority": 5,
+  "weight": 0.4,
+  "fade": 120,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "rot": 0,
+        "dx": 0
+      },
+      {
+        "t": 0.5,
+        "rot": 2.5,
+        "dx": 3
+      },
+      {
+        "t": 1,
+        "rot": 0,
+        "dx": 0
+      }
+    ]
+  }
+}

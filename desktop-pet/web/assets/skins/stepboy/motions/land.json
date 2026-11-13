@@ -1,0 +1,51 @@
+{
+  "id": "land",
+  "layer": "event",
+  "duration": 600,
+  "priority": 30,
+  "interruptible": false,
+  "fade": 80,
+  "easing": "easeOutCubic",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "sy": 0.88,
+        "dy": 4
+      },
+      {
+        "t": 0.35,
+        "sy": 1.05,
+        "dy": -3
+      },
+      {
+        "t": 0.7,
+        "sy": 0.97,
+        "dy": 1
+      },
+      {
+        "t": 1,
+        "sy": 1,
+        "dy": 0
+      }
+    ],
+    "eyes_dizzy": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ]
+  }
+}

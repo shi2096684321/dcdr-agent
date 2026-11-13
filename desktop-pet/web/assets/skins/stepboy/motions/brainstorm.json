@@ -1,0 +1,93 @@
+{
+  "id": "brainstorm",
+  "layer": "micro",
+  "duration": 900,
+  "priority": 8,
+  "weight": 0.2,
+  "fade": 90,
+  "easing": "easeOutBack",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "rot": 0,
+        "sy": 1
+      },
+      {
+        "t": 0.35,
+        "dy": -22,
+        "rot": -6,
+        "sy": 1.09
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "rot": 0,
+        "sy": 1
+      }
+    ],
+    "eyes_sparkle": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "bulb": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -8
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -8
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -34
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -38
+      }
+    ],
+    "star": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -4
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -4
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -24
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -28
+      }
+    ]
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "id": "pose_stretch",
+  "layer": "event",
+  "duration": 1800,
+  "priority": 21,
+  "fade": 180,
+  "easing": "easeInOut",
+  "line": "伸个懒腰～",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.08,
+        "alpha": -1
+      },
+      {
+        "t": 0.9,
+        "alpha": -1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "pose_stretch": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "sy": 1,
+        "dy": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1,
+        "sy": 1,
+        "dy": 0
+      },
+      {
+        "t": 0.42,
+        "alpha": 1,
+        "sy": 1.03,
+        "dy": -4
+      },
+      {
+        "t": 0.72,
+        "alpha": 1,
+        "sy": 1.01,
+        "dy": -2
+      },
+      {
+        "t": 0.9,
+        "alpha": 1,
+        "sy": 1,
+        "dy": 0
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "sy": 1,
+        "dy": 0
+      }
+    ]
+  }
+}

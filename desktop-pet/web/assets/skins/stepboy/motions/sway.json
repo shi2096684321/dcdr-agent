@@ -1,0 +1,20 @@
+{
+  "id": "sway",
+  "layer": "base",
+  "duration": 6400,
+  "loop": true,
+  "priority": 0,
+  "fade": 0,
+  "easing": "easeInOutSine",
+  "tracks": {
+    "body": [
+      { "t": 0.0, "rot": 0, "dx": 0 },
+      { "t": 0.14, "rot": -0.7, "dx": -1.0 },
+      { "t": 0.30, "rot": 0, "dx": 0 },
+      { "t": 0.52, "rot": 0, "dx": 0 },
+      { "t": 0.66, "rot": 0.7, "dx": 1.0 },
+      { "t": 0.82, "rot": 0, "dx": 0 },
+      { "t": 1.0, "rot": 0, "dx": 0 }
+    ]
+  }
+}

@@ -68,4 +68,24 @@ logs/
 # 设计稿 mockup 的原始生成图, 体积大且已归档进 docs/design/
 generated-images/
 
+# ===== 桌宠 desktop-pet (Tauri 子项目) =====
+# 与后端工程无构建耦合: Maven 只编译 src/main/java, Dockerfile 只 COPY src。
+# 策略: 源码与皮肤包入库, 构建产物和 AI 生成中间物不入库。
+# 体积参考: 全量 25 MB, 过滤后约 9 MB。
+
+# 构建输出: exe、启动器、说明
+/desktop-pet/dist/
+# Rust 编译缓存(正常由 CARGO_TARGET_DIR 指到 C 盘, 此处兜底)
+/desktop-pet/src-tauri/target/
+# 图标生成的尺寸对照图, 由 npm run icon 重新生成
+/desktop-pet/src-tauri/icons/source/icon-preview.png
+# AI 生图的姿态原图与生成工程文件(可从 assets/reference 的原图重新生成)
+/desktop-pet/pet-actions_assets/
+/desktop-pet/pet-actions.miora
+# 生成母版(保留 assets/reference 下的原图与对照图)
+/desktop-pet/assets/generated/
+# 临时脚本与构建快照
+/desktop-pet/.tmp_*
+
+
 

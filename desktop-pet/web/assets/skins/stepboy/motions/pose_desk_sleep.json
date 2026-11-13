@@ -1,0 +1,95 @@
+{
+  "id": "pose_desk_sleep",
+  "layer": "event",
+  "duration": 3600,
+  "priority": 18,
+  "fade": 200,
+  "easing": "easeInOutSine",
+  "line": "眯一会儿",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": -1
+      },
+      {
+        "t": 0.9,
+        "alpha": -1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ],
+    "pose_desk_sleep": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.1,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.35,
+        "alpha": 1,
+        "dy": 1,
+        "rot": 0
+      },
+      {
+        "t": 0.6,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.85,
+        "alpha": 1,
+        "dy": 1,
+        "rot": 0
+      },
+      {
+        "t": 0.9,
+        "alpha": 1,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": 0,
+        "rot": 0
+      }
+    ],
+    "zzz": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": 0
+      },
+      {
+        "t": 0.25,
+        "alpha": 1,
+        "dy": -6
+      },
+      {
+        "t": 0.8,
+        "alpha": 1,
+        "dy": -20
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -24
+      }
+    ]
+  }
+}

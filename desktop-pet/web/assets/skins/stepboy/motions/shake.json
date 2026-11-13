@@ -1,0 +1,33 @@
+{
+  "id": "shake",
+  "layer": "micro",
+  "duration": 420,
+  "priority": 8,
+  "weight": 0.25,
+  "fade": 60,
+  "easing": "easeOutQuad",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "rot": -7
+      },
+      {
+        "t": 0.25,
+        "rot": 7
+      },
+      {
+        "t": 0.5,
+        "rot": -7
+      },
+      {
+        "t": 0.75,
+        "rot": 7
+      },
+      {
+        "t": 1,
+        "rot": 0
+      }
+    ]
+  }
+}

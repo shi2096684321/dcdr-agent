@@ -1,0 +1,30 @@
+{
+  "id": "sigh",
+  "layer": "micro",
+  "duration": 1400,
+  "priority": 8,
+  "weight": 0.3,
+  "fade": 160,
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "sy": 1,
+        "rot": 0
+      },
+      {
+        "t": 0.4,
+        "dy": 7,
+        "sy": 0.97,
+        "rot": -1.5
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "sy": 1,
+        "rot": 0
+      }
+    ]
+  }
+}

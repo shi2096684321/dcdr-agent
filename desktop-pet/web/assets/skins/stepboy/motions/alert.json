@@ -1,0 +1,72 @@
+{
+  "id": "alert",
+  "layer": "event",
+  "duration": 800,
+  "priority": 25,
+  "fade": 80,
+  "easing": "easeOutBack",
+  "tracks": {
+    "body": [
+      {
+        "t": 0,
+        "dy": 0,
+        "rot": 0
+      },
+      {
+        "t": 0.2,
+        "dy": -12,
+        "rot": -4
+      },
+      {
+        "t": 0.6,
+        "dy": -3,
+        "rot": 2
+      },
+      {
+        "t": 1,
+        "dy": 0,
+        "rot": 0
+      }
+    ],
+    "sweat": [
+      {
+        "t": 0,
+        "alpha": 0,
+        "dy": -6
+      },
+      {
+        "t": 0.18,
+        "alpha": 1,
+        "dy": -6
+      },
+      {
+        "t": 0.82,
+        "alpha": 1,
+        "dy": -20
+      },
+      {
+        "t": 1,
+        "alpha": 0,
+        "dy": -24
+      }
+    ],
+    "eyes_wide": [
+      {
+        "t": 0,
+        "alpha": 0
+      },
+      {
+        "t": 0.12,
+        "alpha": 1
+      },
+      {
+        "t": 0.85,
+        "alpha": 1
+      },
+      {
+        "t": 1,
+        "alpha": 0
+      }
+    ]
+  }
+}
