@@ -250,7 +250,7 @@ public class AgentProperties {
         private int keepRecent = 6;
 
         /**
-         * 清理策略(V3.5)。
+         * 清理策略(V3.4)。
          * <ul>
          *   <li>{@code cache-first}(默认): 只在「前缀缓存已确定过期」时才清理 —— 即会话空闲超过
          *       {@link #cacheTtlSeconds} 后的第一轮。理由: 每清一条旧工具结果, 该位置之后的全部

@@ -703,7 +703,7 @@ public class AgentOrchestrator {
                                         .defer(() -> {
                                             // 先释放上下文, 再算本轮额度 —— 顺序反了等于没做:
                                             // 只清不算是白清, 只算不清是越用越紧(见 microcompact 注释)。
-                                            // V3.5: cache-first 口径下, 缓存窗口内不清(改写历史中段会让
+                                            // V3.4: cache-first 口径下, 缓存窗口内不清(改写历史中段会让
                                             // 其后前缀全部失效), 由 spill + tool_result_read 兜住大结果。
                                             toolResultCompressor.microcompact(sessId, history);
                                             int allowance = toolResultCompressor.allowanceForRound(history);
@@ -2660,7 +2660,7 @@ public class AgentOrchestrator {
         } else {
             tail.add(ChatChunk.done(p, c, t, durationMs).withModel(provider.getName()));
         }
-        // V3.5 缓存明细随 done 下发: 同步接口(chatSync 收集 done 块)与前端都据此拿到命中率,
+        // V3.4 缓存明细随 done 下发: 同步接口(chatSync 收集 done 块)与前端都据此拿到命中率,
         // 口径与 CostTracker 落库的同一次 usage 完全一致(u 就是本轮 resolveUsage 的结果)
         ChatChunk doneChunk = tail.get(tail.size() - 1);
         if (doneChunk.getTokenUsage() != null) {

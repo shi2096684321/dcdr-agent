@@ -61,7 +61,7 @@ public class V3Properties {
         /** 模型计价表: key = 模型名, value = 单价(元 / 千 token) */
         private Map<String, ModelPrice> pricing = new LinkedHashMap<>();
 
-        /** 前缀缓存可观测 (V3.5): 缓存读写 token 落库 + 命中率日志 */
+        /** 前缀缓存可观测 (V3.4): 缓存读写 token 落库 + 命中率日志 */
         private CacheStats cacheStats = new CacheStats();
 
         /**

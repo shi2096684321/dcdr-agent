@@ -77,7 +77,7 @@ public class CostTracker {
             e.setOutputTokens(usage.getCompletion());
             e.setTotalTokens(usage.getTotal() > 0 ? usage.getTotal()
                     : usage.getPrompt() + usage.getCompletion());
-            // V3.5 前缀缓存可观测: 缓存读/写 token 随每次调用落库, 命中率见 logCacheHitRate
+            // V3.4 前缀缓存可观测: 缓存读/写 token 随每次调用落库, 命中率见 logCacheHitRate
             e.setCacheReadTokens(usage.getCacheReadTokens());
             e.setCacheCreationTokens(usage.getCacheCreationTokens());
             // V3.1 F-44.2: 按模型定价折算金额(未配置定价的模型留空, 报表金额列降级显示)
@@ -91,7 +91,7 @@ public class CostTracker {
     }
 
     /**
-     * V3.5 前缀缓存命中率: {@code cacheReadTokens / promptTokens}。
+     * V3.4 前缀缓存命中率: {@code cacheReadTokens / promptTokens}。
      * <p>
      * <b>这个数是"prompt 组装顺序是否合理"的唯一硬指标</b>: 命中率高说明相邻两轮之间有长公共前缀,
      * 低则说明有随轮次变化的内容(召回记忆、时间戳、RAG 片段)插在了中段, 把可复用前缀截断了。

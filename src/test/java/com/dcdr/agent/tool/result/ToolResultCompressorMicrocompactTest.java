@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * {@link ToolResultCompressor#microcompact(String, List)} 的策略测试(V3.5)。
+ * {@link ToolResultCompressor#microcompact(String, List)} 的策略测试(V3.4)。
  *
  * <p>锁的是「什么时候值得牺牲前缀缓存」这条判断:
  * <ul>
