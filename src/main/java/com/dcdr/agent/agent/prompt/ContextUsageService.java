@@ -64,6 +64,7 @@ public class ContextUsageService {
             Map.entry("rag:forced", "知识库检索(未命中提示)"),
             Map.entry(WorkspacePromptProvider.FRAGMENT_NAME, "工作区摘要"),
             Map.entry("runtime:current-time", "当前时间"),
+            Map.entry("runtime:static", "运行时约束(常量)"),
             Map.entry("runtime:multi-turn", "多轮对话约束"),
             Map.entry("runtime:web-search", "联网搜索引导"),
             Map.entry("runtime:image-policy", "生图策略"),

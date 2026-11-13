@@ -484,6 +484,14 @@ agent:
     #   langchain4j = 框架内核(默认, 适配任意 OpenAI 兼容端点, 在 base-url 后追加 /chat/completions)
     #   manual = 手写 WebClient 实现(回退选项)
     # 切换引擎只需改 engine 值
+    #
+    # capabilities 可选值:
+    #   vision         支持看图
+    #   function_calling 支持函数调用/工具
+    #   single_system  该端点**只接受一条 system 且在 messages[0]**(自部署 vLLM / Qwen3 系 chat_template 如此)。
+    #                  不声明时按「分段合并」发送: 稳定 system 片段置顶, 每轮变化的内容(记忆/时间/RAG)
+    #                  留在 messages 末尾 —— 这是前缀缓存能覆盖整段对话历史的前提。
+    #                  声明后改为全部 system 合并置顶(兼容严格端点, 但每轮变化的内容会截断可复用前缀)。
     chat:
       - name: "openai-chat"
         enabled: false

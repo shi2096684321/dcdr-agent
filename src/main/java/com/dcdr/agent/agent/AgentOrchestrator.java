@@ -381,7 +381,8 @@ public class AgentOrchestrator {
             List<Map<String, Object>> forcedKbSources,  // 强制检索(RAG 显式模式)命中的引用来源, 供 done 块下发前端
             String forcedKbNotice,   // 强制检索的即时提示(空结果时告知用户"未找到", 命中时为 null)
             List<String> agenticKbIds,   // Agentic 语义触发的工具检索范围(未显式选择时含用户全部自有库)
-            WorkspaceAccess workspaceAccess // 工作区授权档位(null=未绑定), 决定注入哪些工作区工具
+            WorkspaceAccess workspaceAccess, // 工作区授权档位(null=未绑定), 决定注入哪些工作区工具
+            List<Message> volatileFragments  // 档位三: 每轮都变的 system 片段(记忆/时间/RAG), 追加在本轮 user 之后
     ) {}
 
     /** 图片预处理结果(含路由元信息, 用于落库与前端提示) */
@@ -583,6 +584,17 @@ public class AgentOrchestrator {
                         // 工具回灌轮 includeCurrentUser=false, 若 history 缺当前提问,
                         // 回灌请求将只有 assistant(tool_calls)+tool 结果, 模型看不到用户问题(只能盲目重试工具)
                         history.add(Message.user(request.getMessage(), request.getImages()));
+                        // 档位三(记忆召回 / 当前时间 / RAG 片段)必须排在「本轮 user」之后:
+                        // 它们每轮都变, 放在前面会把上一轮的用户提问与回答一起踢出可复用前缀。
+                        // 位置在 user 之后是刻意的 —— 供应商缓存的是从头开始的最长公共前缀,
+                        // 只要变量都在末尾, 「前缀 + 历史 + 本轮提问」就整段可复用。
+                        history.addAll(ctx.volatileFragments());
+                        if (log.isDebugEnabled()) {
+                            // 形状摘要: 排查"注入位置是否随轮次漂移"最直接的证据。
+                            // 期望形状 = system(稳定前缀...) > 历史(问答/工具往返) > user > system(每轮变量...)
+                            log.debug("会话 {} 本轮 prompt 形状({} 条): {}", sessId, history.size(),
+                                    describePromptShape(history));
+                        }
 
                         // V3.4 上下文占用明细: 在调用模型之前算并下发。
                         // 时机必须在这里 —— 晚于 history 补入当前提问、晚于工具定义就绪, 才等于"这一轮真正发出去的东西";
@@ -2742,16 +2754,28 @@ public class AgentOrchestrator {
         ChatModelProvider provider = router.route(request, history, userId);
         log.info("会话 {} 路由到模型: {}", sessId, provider.getName());
 
-        // 3.1 分层 system prompt 注入(L1 全局 + L2/chat 场景级):
+        // ===== 3. system prompt 组装: 按「内容变化频率」由低到高排列 =====
+        // 为什么按频率而不是按业务语义排: 供应商的前缀缓存只认「从头开始一字不差的公共前缀」。
+        // 一旦把每轮都变的东西(召回的记忆 / 精确到秒的时间 / RAG 片段)插在中间, 它后面的
+        // 全部历史都无法复用 —— 而这几段恰恰是"必须让模型看见"的, 不能删, 只能挪。
+        // 于是顺序改成四档:
+        //   档位零 进程常量 base           —— index 0
+        //   档位一 进程常量运行时约束       —— 紧跟 base
+        //   档位二 会话级(改配置才变)       —— 仍在前缀里
+        //   (对话历史 + 本轮 user)         —— 稳定前缀到此为止
+        //   档位三 每轮都变                 —— 追加在本轮 user 之后, 由 chat 主链路放进去
+        // 效果: 相邻两轮的公共前缀可以延续到上一轮的 user 消息, 只有最后一段不可复用。
+        List<Message> prefix = new ArrayList<>();         // 档位零 + 一 + 二
+        List<Message> volatileTail = new ArrayList<>();   // 档位三: 每轮变, 放在本轮 user 之后
+
+        // 3.1 档位零 · 分层 system prompt(L1 全局 + L2/chat 场景级):
         //     - V3.1 起统一注入完整 L1+L2/chat 合并文本(旧逻辑因会话级 systemPrompt 降级为 L1-only,
         //       现会话级用户指令已改为包装注入, 不再与场景级互斥)。
         //     - 仅临时注入本次请求, 不落库(与生图策略一致), 避免污染会话记忆。
         String resolvedChatPrompt = systemPromptResolver.resolveChat();
         if (resolvedChatPrompt != null && history.stream().noneMatch(m ->
                 "system".equals(m.getRole()) && resolvedChatPrompt.equals(m.getContent()))) {
-            List<Message> withSys = new ArrayList<>(history);
-            withSys.add(0, Message.system(resolvedChatPrompt));
-            history = withSys;
+            prefix.add(Message.system(resolvedChatPrompt));
         }
         // prompt 指纹: 记录合并后 system prompt 的短哈希, 使"改了 prompt 导致回答变化"可追溯。
         // prompt 分散在配置与 classpath 模板中, 不留指纹就只能靠人工回忆"那天是不是改过它"。
@@ -2759,28 +2783,31 @@ public class AgentOrchestrator {
             trace.recordPromptFingerprint(resolvedChatPrompt);
         }
 
-        // 3.1.1 V2.3 自定义 Agent 角色提示词注入(V3.1 改为平台包装):
-        //       用户配置的 Agent 人设由包壳转述, 不以裸系统指令身份生效; name="agent:persona" 便于排查。
-        //       仅临时注入本次请求, 不落库。
-        //       `session:persona`(会话级角色设定)已移除 —— 它与 Agent 人设功能重叠(只差模型/工具/知识库绑定),
-        //       而一个自由文本的 system prompt 输入框本质是"配置", 与「用户只做选择、不做配置」的定位冲突;
-        //       用户想要临时换口吻, 直接在对话里说即可。角色注入现在只剩这一处。
-        if (agentOverride != null && agentOverride.systemPrompt() != null
-                && !agentOverride.systemPrompt().isBlank()) {
-            List<Message> withAgent = new ArrayList<>(history);
-            withAgent.add(Message.system("agent:persona", wrapAgentPersona(agentOverride.systemPrompt())));
-            history = withAgent;
+        // 3.2 档位一 · 进程常量: 平台运行时约束(多轮规范 / 外部数据边界 / 生图策略)
+        //     合并成一条 system 紧跟 base: 这几段在进程生命周期内不变, 拆成三条只是多两个
+        //     消息分隔符, 对可复用前缀没有任何贡献; 合并后档位边界更清楚, 也少两次消息拼装。
+        prefix.addAll(buildStaticConstraints(provider, request, history));
+
+        // 3.3 档位二 · 会话级: Agent 人设 / 技能目录 / 工作区摘要
+        //     变化频率是"改了配置才变", 与对话轮次无关, 因此也算稳定前缀。
+        //     必须放在对话历史之前 —— 放尾部的话每轮历史增长都会把它们往后推,
+        //     位置一变前缀就断在历史上一轮的某处(这是重排前的实际问题)。
+        prefix.addAll(buildSessionConstraints(provider, request, userId, sessId, agentOverride));
+
+        // 3.4 档位三 · 每轮都变: 记忆召回 / 当前时间 / RAG 片段
+        //     一律进 volatileTail, 由 chat 主链路追加在「本轮 user 消息之后」。
+        //     这样「稳定前缀 + 历史 + 本轮提问」构成完整可复用前缀, 只有最后这几段不可复用。
+        Message memoryFragment = buildLongTermMemoryFragment(userId, request, trace);
+        if (memoryFragment != null) {
+            volatileTail.add(memoryFragment);
         }
+        // 当前时间每轮强制刷新(内容精确到秒): 用"注入即替换"而非"已存在就跳过",
+        // 避免历史里的旧时间被复用。历史里的残留(旧版本注入、未落库但可能出现在视图里)一并清掉。
+        history.removeIf(m -> "system".equals(m.getRole())
+                && RuntimePromptProvider.CURRENT_TIME_NAME.equals(m.getName()));
+        injectOrReplace(volatileTail, runtimePromptProvider.currentTime());
 
-        // 3.1.2 V3.1 长期记忆注入: 在人设之后、平台运行时约束之前注入跨会话沉淀的记忆。
-        //       召回为「常驻(pinned/高重要度/画像类) + 关键词条件触发」两级, 本版本不含向量检索;
-        //       未命中任何记忆时不产生 system 消息。仅临时注入本次请求, 不落库。
-        history = injectLongTermMemory(history, userId, request, trace);
-
-        // 3.2 平台级运行时约束(生图策略 + 联网搜索引导 + 技能目录), 与同步 chatSync 路径共用, 保证两条链路注入一致
-        history = injectRuntimeSystemPrompts(history, provider, request, userId, sessId);
-
-        // 3.3 RAG 知识库检索增强(意图分层, 对齐主流产品混合式):
+        // 3.5 RAG 知识库检索增强(意图分层, 对齐主流产品混合式):
         //     - 显式模式(强制检索): 用户在前端显式选择了知识库(explicitKbIds 非空)→ 每轮先检索再回答。
         //       对齐 ChatGPT GPTs 语义 —— 用户既然专门选了库, 意图即"基于这些资料回答",
         //       不依赖模型自觉(模型"自信不查"会用过期知识硬答且无日志痕迹, 漏检代价大)。
@@ -2799,12 +2826,18 @@ public class AgentOrchestrator {
         boolean forced = !explicitKbIds.isEmpty() && ragProperties.isEnabled();
         if (forced) {
             // 强制检索范围 = 显式选择 + Agent 绑定 + 平台级(去重合并, 即 buildEffectiveKbIds 全量口径)
-            RagInject inj = retrieveAndInject(buildEffectiveKbIds(request), request.getMessage(),
-                    trace, history, true);
+            RagInject inj = retrieveAndInject(buildEffectiveKbIds(request), request.getMessage(), trace,
+                    memoryChars(memoryFragment), true);
             forcedKbSources = inj.sources;
             forcedKbNotice = inj.notice;
-            history = inj.history;
+            volatileTail.addAll(inj.fragments);
         }
+
+        // 稳定前缀在前, 对话历史在后: 每轮新增的历史都接在前缀之后, 前缀永远不变。
+        List<Message> assembled = new ArrayList<>(prefix.size() + history.size());
+        assembled.addAll(prefix);
+        assembled.addAll(history);
+        history = assembled;
 
         // 注册给 knowledge_base_search 工具的可用范围(去重合并: 平台级公共库 + Agent 绑定库 + 用户自己的 USER 级库)。
         // 未显式选择时含用户全部自有库 —— 让模型追问时不必先勾选也能查到他自己的资料。
@@ -2862,8 +2895,10 @@ public class AgentOrchestrator {
         //    估算对象改为「策略裁剪后的视图」: 它才是真正会发出去的东西。
         //    旧版分别用 fullHistory(高估, 压缩后其实很小)与滑窗视图(低估到从不触发),
         //    共同错误都是"拿另一个东西当上下文", 而不是"估算方法不准"。
+        //    档位三也必须算进来: 它同样会被发出去, 漏算会让"接近上限"的告警偏晚。
         List<Message> contextForEstimate = new ArrayList<>(history);
         contextForEstimate.add(Message.user(request.getMessage()));
+        contextForEstimate.addAll(volatileTail);
         boolean nearLimit = tokenEstimator.isNearLimit(contextForEstimate, contextLimit);
         int est = nearLimit ? tokenEstimator.estimate(contextForEstimate) : 0;
 
@@ -2873,11 +2908,27 @@ public class AgentOrchestrator {
                 agentOverride != null ? agentOverride.allowedTools() : null,
                 historyNotice, forcedKbSources, forcedKbNotice, agenticKbIds,
                 // 档位在准备阶段解析: 这里在 boundedElastic 上, 允许查库; 流式主链路里不应该再打 DB
-                workspacePromptProvider.accessForSession(sessId));
+                workspacePromptProvider.accessForSession(sessId),
+                // 档位三: 每轮都变的内容, 由 chat 主链路追加在「本轮 user 消息之后」
+                volatileTail);
     }
 
-    /** 截断文本到指定长度, 超长追加省略号(用于引用卡片的 snippet) */
-    private static String clipText(String s, int max) {
+    /**
+     * 本轮 messages 的形状摘要(role[:name] 以 " > " 连接)。
+     * <p>只记角色与注入键, 不记内容 —— 它要回答的是"哪一段被插在了哪里",
+     * 而不是"模型到底看到了什么"(后者由调用链的 messages 快照承担)。
+     */
+    private static String describePromptShape(List<Message> messages) {
+        StringBuilder sb = new StringBuilder(messages.size() * 16);
+        for (Message m : messages) {
+            if (sb.length() > 0) sb.append(" > ");
+            sb.append(m.getRole());
+            if (m.getName() != null) sb.append(':').append(m.getName());
+        }
+        return sb.toString();
+    }
+
+    /** 截断文本到指定长度, 超长追加省略号(用于引用卡片的 snippet) */    private static String clipText(String s, int max) {
         if (s == null) return "";
         s = s.replaceAll("\\s+", " ").trim();
         return s.length() > max ? s.substring(0, max) + "…" : s;
@@ -2935,16 +2986,21 @@ public class AgentOrchestrator {
         }
     }
 
-    /** 知识库统一检索 + 相关度门控注入。
-     *  <p>scope 为去重合并后的待检索库 ID; forced=true 表示用户显式选择(强意图), 未命中也下发"未找到"提示。
-     *  <p><b>当前唯一调用方传 forced=true</b>: 平台自动预检索(forced=false)已移除, 未显式选择时
-     *  检索完全交给模型自主调用 {@code knowledge_base_search} 工具。故下方 forced=false 的分支目前不可达,
-     *  但实现完整保留 —— 免得将来想恢复自动预检索时, 还要重新推导"未命中该不该告知模型"这类决定。
-     *  <p>由检索打分(min-score/top-k)门控: 命中才注入; 合并范围避免平台库遮蔽用户库。
+    /**
+     * 知识库统一检索 + 相关度门控注入。
+     * <p>scope 为去重合并后的待检索库 ID; forced=true 表示用户显式选择(强意图), 未命中也下发"未找到"提示。
+     * <p><b>返回值是「档位三」的片段</b>: 检索结果每轮都可能不同, 由调用方追加在本轮 user 消息之后,
+     * 而不是插进历史 —— 插进历史会把上一轮的用户提问与回答一起踢出可复用前缀。
+     * <p><b>当前唯一调用方传 forced=true</b>: 平台自动预检索(forced=false)已移除, 未显式选择时
+     * 检索完全交给模型自主调用 {@code knowledge_base_search} 工具。故下方 forced=false 的分支目前不可达,
+     * 但实现完整保留 —— 免得将来想恢复自动预检索时, 还要重新推导"未命中该不该告知模型"这类决定。
+     * <p>由检索打分(min-score/top-k)门控: 命中才注入; 合并范围避免平台库遮蔽用户库。
+     *
+     * @param memoryChars 本轮长期记忆片段已占用的字符数(背景信息统一预算: 记忆先占, 检索片段拿剩下的)
      */
     private RagInject retrieveAndInject(List<String> scope, String userMessage,
                                         com.dcdr.agent.common.log.LlmCallTrace trace,
-                                        List<Message> history, boolean forced) {
+                                        int memoryChars, boolean forced) {
         List<RetrievalResult> results;
         long ragStart = System.nanoTime();
         try {
@@ -2952,7 +3008,7 @@ public class AgentOrchestrator {
         } catch (Exception e) {
             // 检索失败不阻断对话: 降级为无增强回答并记录
             log.warn("知识库检索失败, 本次对话降级为无知识库增强: {}", e.getMessage());
-            return new RagInject(history, null, null);
+            return new RagInject(List.of(), null, null);
         }
         // 供库侧聚合判断"匹配度趋势"与"死文档": topScore 看整体匹配度是否下滑,
         // docIds 用于反查"入库很久却从未被召回"的文档(见 docs/sql/eval/retrieval-health.sql)
@@ -2965,7 +3021,6 @@ public class AgentOrchestrator {
         trace.recordRag(userMessage, scope.size(), results.size(),
                 (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds,
                 forced ? RagSource.FORCED : RagSource.AUTO);
-        List<Message> withKb = new ArrayList<>(history);
         if (!results.isEmpty()) {
             // 片段渲染统一交给 RuntimePromptProvider.ragInjection:
             // 边界标记(防间接提示注入)、单片段截断、总量预算都在那一处执行。
@@ -2975,14 +3030,14 @@ public class AgentOrchestrator {
             String reason = forced
                     ? "【知识库强制检索结果】你本轮显式选择了知识库, 以下内容来自该知识库。"
                     : "【知识库检索结果】系统已按语义从可用知识库(平台公共库 + 你的知识库)自动检索到以下内容。";
-            // 背景信息统一记账: 记忆那一段先占(它在本方法之前就已注入), 检索片段拿剩下的
-            int ragBudget = backgroundContextBudget.ragBudget(memoryCharsIn(history));
+            // 背景信息统一记账: 记忆那一段先占(同属档位三), 检索片段拿剩下的
+            int ragBudget = backgroundContextBudget.ragBudget(memoryChars);
             RuntimePromptProvider.RagInjection injection =
                     runtimePromptProvider.ragInjection(results, reason, ragBudget);
             if (injection == null) {
                 // 理论不可达(results 非空); 真出现时不能静默降级成"无增强" —— 那与"未命中"在表现上无法区分
                 log.warn("知识库检索命中 {} 条但渲染为空, 本次不做增强", results.size());
-                return new RagInject(history, null, null);
+                return new RagInject(List.of(), null, null);
             }
             List<Map<String, Object>> sources = new ArrayList<>(injection.injectedCount());
             // 只登记真正注入了的片段: 超出 maxTotalChars 被丢弃的片段模型根本没见到,
@@ -3005,38 +3060,38 @@ public class AgentOrchestrator {
                 sources.add(s);
             }
             SystemPromptProperties.PromptFragment frag = injection.fragment();
-            withKb.add(0, Message.system(frag.getName(), frag.getText()));
             log.info("知识库检索(RAG) {}: kbIds={}, 命中 {} 条, 注入 {} 条",
                     forced ? "强制" : "自动", scope, results.size(), injection.injectedCount());
-            return new RagInject(withKb, sources, null);
+            return new RagInject(List.of(Message.system(frag.getName(), frag.getText())), sources, null);
         }
         if (forced) {
             // 用户显式选择但未命中: 明确指令 + 前端即时提示, 不让模型假装查过
-            withKb.add(0, Message.system("rag:forced",
+            log.info("知识库检索(RAG) 强制: kbIds={}, 未命中(用户显式选择)", scope);
+            return new RagInject(List.of(Message.system("rag:forced",
                     "【知识库强制检索结果】你本轮选择了知识库, 系统已自动检索, 但未找到与问题相关的内容。\n" +
                     "要求: 请在回答开头明确告知用户「未在所选知识库中找到相关内容」; " +
-                    "如基于自身知识回答, 必须说明该部分来自模型自身知识而非知识库; 不要假装检索过知识库。"));
-            log.info("知识库检索(RAG) 强制: kbIds={}, 未命中(用户显式选择)", scope);
-            return new RagInject(withKb, null, "已检索所选知识库，未找到相关内容");
+                    "如基于自身知识回答, 必须说明该部分来自模型自身知识而非知识库; 不要假装检索过知识库。")),
+                    null, "已检索所选知识库，未找到相关内容");
         }
         // forced=false 的未命中: 无感, 不注入任何指令, 不做任何打扰
         // (平台自动预检索已移除, 该分支暂无调用方 —— 见 retrieveAndInject 的说明)
-        return new RagInject(history, null, null);
+        return new RagInject(List.of(), null, null);
     }
 
-    /** 检索注入结果: 注入后的历史 + 命中来源(供来源下发) + 未命中提示(forced 未命中时才非空) */
-    private record RagInject(List<Message> history, List<Map<String, Object>> sources, String notice) {}
+    /**
+     * 检索注入结果: 待注入的片段(档位三, 由调用方追加在本轮 user 之后) +
+     * 命中来源(供来源下发) + 未命中提示(forced 未命中时才非空)。
+     */
+    private record RagInject(List<Message> fragments, List<Map<String, Object>> sources, String notice) {}
 
     /**
-     * 长期记忆那一段在 history 里实际占用的字符数, 供背景信息统一记账。
-     * <p>刻意读"真正进了上下文的东西", 而不是让注入方法回头回报用量: 后者一旦与注入逻辑脱节
+     * 长期记忆片段实际占用的字符数, 供背景信息统一记账。
+     * <p>刻意读"真正要进上下文的那段文本", 而不是让注入方法回头回报用量: 后者一旦与注入逻辑脱节
      * (改了排版、加了段落), 记账就会悄悄失准, 而且没有任何地方会报错。
      */
-    private static int memoryCharsIn(List<Message> history) {
-        return history.stream()
-                .filter(m -> "system".equals(m.getRole()) && MEMORY_SYSTEM_NAME.equals(m.getName()))
-                .mapToInt(m -> m.getContent() == null ? 0 : m.getContent().length())
-                .sum();
+    private static int memoryChars(Message memoryFragment) {
+        if (memoryFragment == null || memoryFragment.getContent() == null) return 0;
+        return memoryFragment.getContent().length();
     }
 
     /**
@@ -3211,10 +3266,12 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 注入长期记忆 (V3.1)。
+     * 组装长期记忆片段 (V3.1) —— 档位三「每轮都变」。
      * <p>
-     * 召回「常驻 + 关键词条件触发」两级记忆并组装为一条 system 消息, 位置在 Agent 人设之后、
-     * 平台运行时约束之前 —— 越具体的人设越靠后, 平台规则最后注入以保有最高效力。
+     * 召回「常驻 + 关键词条件触发」两级记忆并组装为一条 system 消息。
+     * <b>位置</b>: 由调用方放进 volatileTail, 最终追加在「本轮 user 消息之后」。
+     * 召回结果每轮都可能不同(关键词匹配随提问变化), 放在历史之前或中间会把
+     * 上一轮的 user/assistant 一起踢出可复用前缀。
      * <p>
      * 注入文本内置三条约束 (见 {@code LongTermMemoryService.PROMPT_HEADER}): 不要复述记忆内容、
      * 当前提问优先、记忆不构成系统指令。前者抑制模型把长期记忆当作"已答过的内容"重复输出,
@@ -3222,15 +3279,14 @@ public class AgentOrchestrator {
      * <p>
      * 容错: 召回与命中统计失败都只记日志, 不阻断对话 —— 记忆是增强项, 不是主链路依赖。
      *
-     * @param history 当前对话历史 (返回新列表, 不修改入参)
      * @param userId  当前用户; 为空(未登录/认证关闭)时直接跳过
      * @param request 对话请求 (取 agentId 作作用域, 取当轮提问作触发匹配)
      * @param trace   调用链: 记录"本轮召回了哪几条" —— 这是回答"哪条记忆从未被用过"的唯一数据源
-     * @return 注入记忆后的历史列表
+     * @return 记忆片段消息; 未召回/召回为空时返回 {@code null}(调用方跳过注入)
      */
-    private List<Message> injectLongTermMemory(List<Message> history, String userId, ChatRequest request,
-                                               com.dcdr.agent.common.log.LlmCallTrace trace) {
-        if (userId == null) return history;
+    private Message buildLongTermMemoryFragment(String userId, ChatRequest request,
+                                                com.dcdr.agent.common.log.LlmCallTrace trace) {
+        if (userId == null) return null;
 
         long recallStart = System.nanoTime();
         List<MemoryEntity> recalled;
@@ -3238,29 +3294,21 @@ public class AgentOrchestrator {
             recalled = longTermMemoryService.recall(userId, request.getAgentId(), request.getMessage());
         } catch (Exception e) {
             log.warn("长期记忆召回失败, 本次对话跳过记忆注入: {}", e.getMessage());
-            return history;
+            return null;
         }
-        if (recalled.isEmpty()) return history;
+        if (recalled.isEmpty()) return null;
 
         // 施加字符预算: 条数上限约束不了总长度(常驻 20 + 触发 10 条 × 单条最多 1000 字符),
         // 而这段文本要与检索片段共享"背景信息"总量 —— 见 BackgroundContextBudget
         String fragment = LongTermMemoryService.formatFragment(
                 recalled, backgroundContextBudget.memoryMaxChars());
-        if (fragment == null || fragment.isBlank()) return history;
+        if (fragment == null || fragment.isBlank()) return null;
 
-        List<Message> result = new ArrayList<>(history);
-        // 按 name 去重(与 injectIfAbsent 同口径): 同名 system 消息已存在则跳过, 保证幂等
-        boolean exists = result.stream().anyMatch(m ->
-                "system".equals(m.getRole()) && MEMORY_SYSTEM_NAME.equals(m.getName()));
-        if (!exists) {
-            result.add(Message.system(MEMORY_SYSTEM_NAME, fragment));
-            // 调用链留痕: 记的是"这一轮真正进了上下文的那几条"。库侧据此反查从未命中的记忆 ——
-            // 它们占着常驻额度、每轮都要过一遍召回与打分, 却对回答毫无贡献。
-            // 只在真的注入了才记(幂等重入时不记), 否则同一轮会被记成两次召回。
-            trace.recordMemory(request.getMessage(), recalled.size(), fragment.length(),
-                    (System.nanoTime() - recallStart) / 1_000_000,
-                    recalled.stream().map(MemoryEntity::getId).toList());
-        }
+        // 调用链留痕: 记的是"这一轮真正进了上下文的那几条"。库侧据此反查从未命中的记忆 ——
+        // 它们占着常驻额度、每轮都要过一遍召回与打分, 却对回答毫无贡献。
+        trace.recordMemory(request.getMessage(), recalled.size(), fragment.length(),
+                (System.nanoTime() - recallStart) / 1_000_000,
+                recalled.stream().map(MemoryEntity::getId).toList());
 
         try {
             longTermMemoryService.recordHit(recalled);
@@ -3268,91 +3316,136 @@ public class AgentOrchestrator {
             log.debug("长期记忆命中统计写入失败(可忽略): {}", e.getMessage());
         }
         log.info("长期记忆注入: {} 条 (user={}, agent={})", recalled.size(), userId, request.getAgentId());
-        return result;
+        return Message.system(MEMORY_SYSTEM_NAME, fragment);
     }
 
     /**
-     * 注入平台级运行时 system 约束(生图策略 + 联网搜索引导)。
+     * 档位一 · 进程常量运行时约束(多轮规范 / 外部数据边界 / 生图策略)。
      * <p>
-     * 抽出为独立方法, 供流式 {@code chat} 与同步 {@code chatSync} 两条路径共用, 保证注入完全一致。
-     * 仅临时注入本次请求, 不落库(避免污染会话记忆); 通过「是否已存在相同内容」去重, 幂等可重复调用。
+     * <b>为什么合并成一条</b>: 这几段在进程生命周期内不变(只随配置变化), 是全局长前缀的一部分。
+     * 拆成多条只是多几个消息分隔符, 对可复用前缀没有任何贡献 —— 而前缀缓存只看字节是否一致,
+     * 不看语义分了几段。
+     * <p>
+     * <b>为什么多轮规范恒定注入</b>: 以前只在「会话已有 user/assistant 轮次」时注入, 于是第 1 轮
+     * 没有这条、第 2 轮有 —— 两轮的档位一边界不同, 第 2 轮必然整体失效一次缓存。这段文字在没有
+     * 历史时也无害(它就是"只回答当前提问"的常规要求), 恒定注入换来稳定的前缀。
+     * <p>
+     * 去重语义不变: 目标列表与历史中已存在同 name 的 system 消息则跳过(幂等可重复调用)。
      *
-     * @param history  当前对话历史(会被复制后在头部插入约束, 不修改原列表)
-     * @param provider 路由后的回答模型(用于判断是否支持函数调用)
-     * @param request  聊天请求(用于判断 webSearch 开关)
-     * @param userId   当前用户(用于按归属取"技能目录"; 为 null 时只能看到公开技能)
-     * @return 注入约束后的新历史列表
+     * @param history 当前对话历史(仅用于去重判断, 不被修改)
+     * @return 至多一条合并后的 system 消息
      */
-    private List<Message> injectRuntimeSystemPrompts(List<Message> history, ChatModelProvider provider,
-                                                     ChatRequest request, String userId, String sessionId) {
-        List<Message> result = new ArrayList<>(history);
+    private List<Message> buildStaticConstraints(ChatModelProvider provider, ChatRequest request,
+                                                 List<Message> history) {
+        List<Message> sink = new ArrayList<>(1);
+        List<SystemPromptProperties.PromptFragment> parts = new ArrayList<>(3);
 
-        // 统一按「name 去重键」判断：history 中已存在同 name 的 system 消息则跳过（幂等）。
-        // 所有运行时约束文本均来自 RuntimePromptProvider（配置优先 + 默认回退），不在本方法硬编码。
+        // 1) 多轮对话约束: 要求模型只回答用户「当前」提问, 历史仅作参考, 避免重复历史答案
+        parts.add(runtimePromptProvider.multiTurn());
 
-        // 1) 生图策略约束: 仅当本轮会注入生图工具时前置为 system 消息
-        //    与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险
-        if (provider != null && provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
-            injectIfAbsent(result, runtimePromptProvider.imagePolicy());
-        }
-
-        // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索
-        if (request != null && request.isWebSearch() && toolRegistry.getTool(WebSearchTool.NAME) != null) {
-            injectIfAbsent(result, runtimePromptProvider.webSearch());
-        }
-
-        // 3) 多轮对话约束: 要求模型只回答用户「当前」提问, 历史仅作参考, 避免重复历史答案
-        //    —— 当会话已有历史(user/assistant 轮次)时注入
-        boolean hasHistory = result.stream().anyMatch(m ->
-                "user".equals(m.getRole()) || "assistant".equals(m.getRole()));
-        if (hasHistory) {
-            injectIfAbsent(result, runtimePromptProvider.multiTurn());
-        }
-
-        // 4) 当前真实时间: 每轮动态注入(不幂等缓存), 保证时间是「当下」。
-        //    根因修复: tool_choice=auto 下模型常不调用 time 工具而用训练知识臆造日期(差数月),
-        //    此处直接把准确时间写进 system prompt, 模型无需调用工具也能拿到正确时间。
-        //    时间必须每轮刷新: 用 injectOrReplace 而非 injectIfAbsent, 避免历史中旧时间被复用。
-        injectOrReplace(result, runtimePromptProvider.currentTime());
-
-        // 5) 技能: 默认只注入"名称 + 简介"目录, 正文由模型调用 skill_load 按需取回(渐进式披露);
-        //    若用户本轮手动指定了技能, 则跳过"模型自己判断"这一步, 直接注入其正文
-        //    (两路如何取舍见 SkillCatalogProvider#skillPrompts)。
-        //    为什么不默认把正文都注入: 正文动辄数千字符, 三五个技能即可吃掉整个上下文预算,
-        //    而模型并不需要每轮都读它们 —— 只提供足以判断"要不要用"的信息, 才是正确取舍。
-        //    注入失败(如技能表异常)不该影响对话主链路, 故整体兜住异常。
-        try {
-            List<String> manualSkillNames = request == null ? null : request.getSkillNames();
-            for (SystemPromptProperties.PromptFragment f
-                    : skillCatalogProvider.skillPrompts(userId, manualSkillNames)) {
-                injectIfAbsent(result, f);
-            }
-        } catch (Exception e) {
-            log.warn("技能注入失败(不影响本轮对话): {}", e.getMessage());
-        }
-
-        // 6) 工作区摘要: 会话绑定了目录时注入 根路径 + 档位 + 可用工具清单。
-        //    不注入的话模型要先调一次 workspace_list 才能知道有没有目录、能写到什么程度,
-        //    白白多一个来回; 而这段信息是确定的三行, 常驻成本远低于一次工具调用。
-        //    未绑定工作区时不产生 system 消息(绝大多数会话属于这种情况)。
-        try {
-            injectIfAbsent(result, workspacePromptProvider.forSession(sessionId));
-        } catch (Exception e) {
-            log.warn("工作区摘要注入失败(不影响本轮对话): {}", e.getMessage());
-        }
-
-        // 7) 外部数据边界: 注册表里存在"输出由第三方写"的工具(网页 / 文档 / 磁盘文件)时才注入。
+        // 2) 外部数据边界: 注册表里存在"输出由第三方写"的工具(网页 / 文档 / 磁盘文件)时才注入。
         //    工具结果上的 <<<TOOL-DATA>>> 标记负责把数据框起来, 这段声明负责告诉模型框是什么意思 ——
         //    只画框不解释, 模型会当成排版噪音; 只在 system 里讲道理而不画框, 又离当前结果太远。
         try {
             if (provider != null && provider.supportsFunctionCalling() && hasUntrustedTool()) {
-                injectIfAbsent(result, runtimePromptProvider.toolDataBoundary());
+                parts.add(runtimePromptProvider.toolDataBoundary());
             }
         } catch (Exception e) {
             log.warn("外部数据边界声明注入失败(不影响本轮对话): {}", e.getMessage());
         }
 
-        return result;
+        // 3) 生图策略约束: 仅当本轮会注入生图工具时注入
+        //    与 executeTools 的协议层硬收敛(每轮最多一张)形成「软 + 硬」双保险
+        if (provider != null && provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
+            parts.add(runtimePromptProvider.imagePolicy());
+        }
+
+        String merged = mergeFragments(parts);
+        if (merged == null) return sink;
+        if (containsSystemNamed(history, RuntimePromptProvider.STATIC_BLOCK_NAME)) return sink;
+        sink.add(Message.system(RuntimePromptProvider.STATIC_BLOCK_NAME, merged));
+        return sink;
+    }
+
+    /**
+     * 档位二 · 会话级运行时约束(Agent 人设 / 技能目录 / 工作区摘要)。
+     * <p>
+     * 变化频率是「改了配置才变」, 与对话轮次无关, 所以也算稳定前缀; 必须排在对话历史之前,
+     * 否则每轮历史增长都会把它们往后推, 位置一变前缀就断在上一轮历史的某处。
+     * <p>
+     * 各片段仍保持各自的 name 去重键(agent:persona / skill:* / workspace:context):
+     * 它们要能被上下文占用面板按名字归类, 也要保住「同名只注入一次」的幂等语义。
+     * 注入失败不该影响对话主链路, 故技能与工作区两段整体兜住异常。
+     */
+    private List<Message> buildSessionConstraints(ChatModelProvider provider, ChatRequest request,
+                                                  String userId, String sessionId,
+                                                  AgentOverride agentOverride) {
+        List<Message> sink = new ArrayList<>(3);
+
+        // 1) V2.3 自定义 Agent 角色提示词(V3.1 改为平台包装):
+        //    用户配置的 Agent 人设由包壳转述, 不以裸系统指令身份生效; name="agent:persona" 便于排查。
+        //    `session:persona`(会话级角色设定)已移除 —— 它与 Agent 人设功能重叠, 且自由文本的
+        //    system prompt 输入框本质是"配置", 与「用户只做选择、不做配置」的定位冲突。
+        if (agentOverride != null && agentOverride.systemPrompt() != null
+                && !agentOverride.systemPrompt().isBlank()) {
+            sink.add(Message.system("agent:persona", wrapAgentPersona(agentOverride.systemPrompt())));
+        }
+
+        // 2) 联网搜索引导: 用户开启联网搜索且已注册 web_search 工具时, 提示优先联网检索。
+        //    它取决于本轮请求的 webSearch 开关, 一个会话内通常恒定(用户开了就一直开), 因此归会话级:
+        //    放档位一会让"是否开搜索"变成进程常量的一部分, 放档位三又会让它每轮都参与断点判断。
+        if (request != null && request.isWebSearch() && toolRegistry.getTool(WebSearchTool.NAME) != null) {
+            injectIfAbsent(sink, runtimePromptProvider.webSearch());
+        }
+
+        // 3) 技能: 默认只注入"名称 + 简介"目录, 正文由模型调用 skill_load 按需取回(渐进式披露);
+        //    若用户本轮手动指定了技能, 则跳过"模型自己判断"这一步, 直接注入其正文
+        //    (两路如何取舍见 SkillCatalogProvider#skillPrompts)。
+        //    为什么不默认把正文都注入: 正文动辄数千字符, 三五个技能即可吃掉整个上下文预算,
+        //    而模型并不需要每轮都读它们 —— 只提供足以判断"要不要用"的信息, 才是正确取舍。
+        try {
+            List<String> manualSkillNames = request == null ? null : request.getSkillNames();
+            for (SystemPromptProperties.PromptFragment f
+                    : skillCatalogProvider.skillPrompts(userId, manualSkillNames)) {
+                injectIfAbsent(sink, f);
+            }
+        } catch (Exception e) {
+            log.warn("技能注入失败(不影响本轮对话): {}", e.getMessage());
+        }
+
+        // 4) 工作区摘要: 会话绑定了目录时注入 根路径 + 档位 + 可用工具清单。
+        //    不注入的话模型要先调一次 workspace_list 才能知道有没有目录、能写到什么程度,
+        //    白白多一个来回; 而这段信息是确定的三行, 常驻成本远低于一次工具调用。
+        //    未绑定工作区时不产生 system 消息(绝大多数会话属于这种情况)。
+        try {
+            injectIfAbsent(sink, workspacePromptProvider.forSession(sessionId));
+        } catch (Exception e) {
+            log.warn("工作区摘要注入失败(不影响本轮对话): {}", e.getMessage());
+        }
+
+        return sink;
+    }
+
+    /**
+     * 把多个片段按顺序合成一条 system 文本(片段之间空一行)。
+     * <p>只拼接非空片段; 全部为空返回 {@code null}(调用方据此不注入)。片段顺序即渲染顺序,
+     * 必须由调用方固定 —— 顺序抖动等于前缀抖动。
+     */
+    private static String mergeFragments(List<SystemPromptProperties.PromptFragment> parts) {
+        if (parts == null || parts.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder(1024);
+        for (SystemPromptProperties.PromptFragment p : parts) {
+            if (p == null || p.getText() == null || p.getText().isBlank()) continue;
+            if (sb.length() > 0) sb.append("\n\n");
+            sb.append(p.getText().strip());
+        }
+        return sb.length() == 0 ? null : sb.toString();
+    }
+
+    /** 列表中是否已存在同名 system 消息(去重判断, 与 injectIfAbsent 同口径) */
+    private static boolean containsSystemNamed(List<Message> messages, String name) {
+        if (messages == null || name == null) return false;
+        return messages.stream().anyMatch(m -> "system".equals(m.getRole()) && name.equals(m.getName()));
     }
 
     /**

@@ -43,6 +43,12 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
     protected final Set<String> capabilities;
 
     /**
+     * 是否把全部 system 片段合并置顶(严格端点口径)。
+     * <p>由模型配置的 capability {@code single_system} 决定(见 {@link MessageNormalizer})。
+     */
+    protected final boolean hoistAllSystem;
+
+    /**
      * 同步调用总超时: 超过该时长仍未返回完整响应即中断并抛异常。
      * 同步模式只有一次发射, 故为"总等待时长"。可按需调整, 后续可提升为可配置字段。
      */
@@ -68,6 +74,7 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         this.temperature = temperature;
         this.maxTokens = maxTokens;
         this.capabilities = capabilities != null ? Set.copyOf(capabilities) : Set.of();
+        this.hoistAllSystem = this.capabilities.contains(MessageNormalizer.CAPABILITY_SINGLE_SYSTEM);
     }
 
     protected String getChatPath() {
@@ -128,9 +135,10 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
 
         ArrayNode messages = body.putArray("messages");
         if (history != null) {
-            // 单一 system 归一化(与 langchain4j 引擎同口径): 编排层注入的多条 system
-            // 在此合并为 messages[0] 一条, 否则 Qwen3 系模板/vLLM 会 400
-            for (Message msg : MessageNormalizer.mergeSystemMessages(history)) {
+            // system 归一化(与 langchain4j 引擎同口径): 编排层注入的多条 system 在此按口径合并。
+            // 默认 split(稳定片段置顶 + 每轮变量留末尾, 让前缀缓存覆盖整段历史);
+            // 声明了 single_system 能力的端点是严格端点(vLLM/Qwen3), 全量置顶。
+            for (Message msg : MessageNormalizer.mergeSystemMessages(history, hoistAllSystem)) {
                 ObjectNode mNode = messages.addObject();
                 String role = msg.getRole();
                 mNode.put("role", role);

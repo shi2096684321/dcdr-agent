@@ -29,6 +29,16 @@ import java.util.List;
 @Component
 public class RuntimePromptProvider {
 
+    /**
+     * 进程常量约束合并后的去重键。
+     * <p>档位一(多轮规范 / 外部数据边界 / 生图策略)合成一条 system 消息下发: 它们在进程生命周期内
+     * 不变, 拆成三条只是多两个消息分隔符, 对可复用前缀没有贡献。
+     */
+    public static final String STATIC_BLOCK_NAME = "runtime:static";
+
+    /** 当前时间的去重键: 每轮刷新, 因此也是「每轮变量」档位的成员 */
+    public static final String CURRENT_TIME_NAME = "runtime:current-time";
+
     private final RuntimePrompts runtime;
     private final PromptTemplateLoader templateLoader;
     private final RagProperties ragProperties;
@@ -111,7 +121,7 @@ public class RuntimePromptProvider {
         String text = "当前真实日期时间: " + now.format(fmt) + " (北京时间, Asia/Shanghai)。"
                 + "回答任何涉及「今天/现在/当前日期/几号/星期几」的问题时，必须以这条时间为准，不要使用你的训练知识臆造日期。";
         PromptFragment f = new PromptFragment();
-        f.setName("runtime:current-time");
+        f.setName(CURRENT_TIME_NAME);
         f.setText(text);
         return f;
     }
