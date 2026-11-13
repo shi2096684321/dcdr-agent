@@ -11,9 +11,11 @@
  *   2. 必须把 MSVC / rc.exe 所在目录放到 PATH 最前，否则会命中 Git 自带的 coreutils link.exe。
  *   3. 必须把编译缓存放到项目盘之外，本项目在 E 盘，E 盘空间不足时 target 会撑爆磁盘。
  *   4. 本机工具链配置只能显式 --config 传入，不能放进 Cargo 自动加载的 .cargo/config.toml。
+ *   5. 默认在线构建：Cargo.lock 里 430 个 crate 都要从 crates.io 拉，新机器第一次必须联网。
+ *      只有本机已经攒过依赖缓存、且明确要断网时才用 CARGO_OFFLINE=1 加 --offline。
  *
  * 工具链位置按「环境变量 → 标准安装路径探测」解析，不绑定某一台机器：
- *   MSVC_BIN / SDK_BIN / CARGO_BIN / CARGO_TARGET_DIR 均可覆盖。
+ *   MSVC_BIN / SDK_BIN / CARGO_BIN / CARGO_TARGET_DIR / CARGO_OFFLINE 均可覆盖。
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -182,7 +184,12 @@ if (fs.existsSync(LOCAL_CONFIG)) {
   cargoArgs.push('--config', LOCAL_CONFIG);
   log(`使用本机工具链配置：${LOCAL_CONFIG}`);
 }
-cargoArgs.push('build', '--release', '--features', 'custom-protocol', '--offline');
+cargoArgs.push('build', '--release', '--features', 'custom-protocol');
+// 新机器第一次构建时 ~/.cargo/registry 是空的，默认 --offline 会直接报「找不到依赖」。
+// 在线模式下已缓存的 crate 不会重复下载，所以对老机器几乎没有额外开销。
+const offline = process.env.CARGO_OFFLINE === '1';
+if (offline) cargoArgs.push('--offline');
+else log('首次构建需联网拉取 crates.io 依赖（约 430 个 crate）；已缓存后可用 CARGO_OFFLINE=1 断网构建。');
 const build = spawnSync('cargo', cargoArgs, {
   cwd: TAURI_DIR,
   env,

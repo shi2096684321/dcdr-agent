@@ -21,14 +21,16 @@ Windows 上也可以**直接双击项目根目录的 `预览桌宠.bat`**，效�
 
 ### 2. Tauri 桌面版
 
-前置：Rust 工具链、`@tauri-apps/cli@2`、WebView2（Win10/11 一般自带）、**MSVC 链接器 + Windows SDK**。
+前置（只做 Web 预览不需要这些）：Rust 工具链（rustup，含 `x86_64-pc-windows-msvc`）、**MSVC 链接器 + Windows SDK**，以及 WebView2 Runtime（Win10/11 一般自带，属**运行期**依赖，不参与编译）。完整的新机器清单见 §4「新机器第一次打包」。
+
+`npm run pack` 直接调 cargo，**不需要** `@tauri-apps/cli@2`、不需要 `npm install`；只有 `npm run tauri:dev` / `tauri:build` 才会走 CLI。
 
 ```bash
 npm run tauri:dev      # 开发：先起 dev-server（5180），再由 Tauri 加载
 npm run pack           # 打包：前端内嵌进 exe，输出 dist/Stepboy.exe（推荐，见 §4）
 ```
 
-> `npm run tauri:build`（走 `npx @tauri-apps/cli@2`）也能出包，但需要联网现拉 CLI，且会自己处理特征开关。本机验证过的是 `npm run pack`，它直接用 cargo，不依赖网络。
+> `npm run tauri:build`（走 `npx @tauri-apps/cli@2`）也能出包，但需要联网现拉 CLI，且会自己处理特征开关。本机验证过的是 `npm run pack`，它直接用 cargo、不经 CLI；但**首次构建仍要联网拉 crates.io 依赖**（见 §4）。
 
 #### 本机编译环境（未安装 Visual Studio）
 
@@ -52,10 +54,10 @@ export PATH="/c/BuildTools/SDK/bin:/c/BuildTools/VC/Tools/MSVC/14.44.35207/bin/H
 cd src-tauri
 
 # 开发版：走 devUrl，需要先起 dev-server，改前端即时生效
-cargo build --offline
+cargo build
 
 # 正式版：前端内嵌进 exe，双击即可运行，不依赖任何服务
-cargo build --release --features custom-protocol --offline
+cargo build --release --features custom-protocol
 ```
 
 产物分别在 `src-tauri/target/{debug,release}/stepboy-pet.exe`。release 版在体积优化配置下是 **5.5 MB**（未优化时 12 MB；`[profile.release]` 里 `opt-level="z"` + `lto` + `codegen-units=1` + `strip` + `panic="abort"`）。
@@ -86,12 +88,47 @@ node --check web/src/main.js              # 逐个文件语法检查
 
 ### 4. 一键打包
 
+#### 新机器第一次打包（clone 后从零到 exe）
+
+exe **不入库**（仓库根 `.gitignore` 的 `/desktop-pet/dist/`），别人拉到的是源码，需要自己出一次包。编译产物可从源码确定性重建、二进制进 git 会让历史持续膨胀且无法 diff，所以走「源码入库 + 产物走 Release 附件 / CI artifacts」这条常规路径。
+
+**一次性前置**（Windows 10/11 x64）：
+
+| 要装什么 | 怎么确认 | 漏了会怎样 |
+|---|---|---|
+| Node 22+ | `node -v` | `npm run pack` 起不来 |
+| Rust 稳定版（[rustup](https://rustup.rs/)，默认 `x86_64-pc-windows-msvc`） | `cargo -V` | 脚本报「找不到 cargo.exe」 |
+| VS Build Tools 2022，勾「**使用 C++ 的桌面开发**」（含 MSVC v143 + Windows 10/11 SDK） | `link.exe` / `rc.exe` 存在 | 脚本报「找不到 link.exe / rc.exe」 |
+| WebView2 Runtime | Win10/11 一般自带 | **只在目标机器运行时**报缺运行时，不影响打包 |
+
+> 装了正式 VS Build Tools 的机器**不要创建** `.cargo/config.local.toml`——那是本机手动落盘 MSVC 专用的，`pack.mjs` 会自动探测标准安装路径。工具链装在非常规目录时用 `MSVC_BIN` / `SDK_BIN` 覆盖（见 §本机编译环境）。
+
+**首次必须联网**：`Cargo.lock` 锁了 430 个 crate，第一次构建要从 crates.io 下载依赖并完整编译（LTO，约 15 分钟，约 3 GB 编译缓存在系统临时目录），之后增量构建 10 秒内。国内网络慢可先配 crates.io 镜像。依赖缓存齐了以后想断网构建：`CARGO_OFFLINE=1 npm run pack`。
+
 ```bash
-npm run pack          # 构建 release 并把 exe 输出到 dist/
-npm run pack -- --out "D:\桌面宠物"   # 输出到自定义目录
+git clone <仓库地址>
+cd desktop-pet
+npm test          # 可选：33 项契约 / 核心测试
+npm run pack      # 首次联网；之后可离线
 ```
 
-脚本 `scripts/pack.mjs` 自动处理三件容易出错的事：把 MSVC / `rc.exe` 加到 PATH 最前、带上 `--features custom-protocol`、把编译缓存指向 `C:\cargo-build-stepboy`（避免撑爆项目所在盘）。
+产物：**`desktop-pet/dist/Stepboy.exe`**（约 5.5 MB，前端与图标已内嵌，双击即用）。分发时只给这一个文件，不用带 `web/`、`assets/`、`node_modules`。目标机器要求 Win10 1803+ / Win11（自带 WebView2；老系统装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)）。首次启动被 SmartScreen 拦（未签名程序的默认行为）：`更多信息 → 仍要运行`。
+
+#### 脚本做了什么
+
+```bash
+npm run pack                                # 输出到 dist/
+npm run pack -- --out "D:\桌面宠物"          # 输出到自定义目录
+```
+
+`scripts/pack.mjs` 自动处理四件容易出错的事：把 MSVC / `rc.exe` 加到 PATH 最前（否则会命中 Git 自带的 coreutils `link.exe`）、带上 `--features custom-protocol`、把编译缓存指向系统临时目录（避免撑爆项目所在盘）、以及**在 `web/**` 或 `icons/icon.ico` 变动时 touch `lib.rs` / `build.rs`**——cargo 不会因资源文件变动重编，不 touch 就会「显示 Finished 但包里还是旧素材」。
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `failed to load source for a dependency ... offline` | 依赖没下全却加了 `--offline`；去掉或改用默认在线 |
+| 找不到 `link.exe` / `rc.exe` | VS Build Tools 没勾 C++ 桌面开发；或用 `MSVC_BIN` / `SDK_BIN` 指到实际目录 |
+| 双击 exe 显示「无法访问此页面」 | 漏了 `--features custom-protocol`，打包时走 `npm run pack` 就不会 |
+| 改了前端但 exe 里还是旧的 | 资源是编译期内嵌的，改完必须重新 `npm run pack` |
 
 **注意**：exe 约 5.5 MB。脚本会先检查目标目录可用空间，**放得下就直接输出 `dist/Stepboy.exe`（当前就是这个分支）**；放不下才降级为「exe 存到 `%LOCALAPPDATA%\Stepboy\` + `dist/` 放个 `启动桌宠.bat` 入口」。降级只是为了在磁盘写满时也能交付，正常情况看不到。
 
@@ -142,7 +179,7 @@ IDEA 里有三条路，按省事程度排序：
 npm run pack
 ```
 
-完事。不用 `npm install`（项目没有任何 npm 依赖，`package.json` 里只有 scripts），装过 Node 就能跑。脚本内部会：自动探测 MSVC / `rc.exe`（也可用 `MSVC_BIN` / `SDK_BIN` 指定）并塞到 PATH 最前 → 本机存在 `config.local.toml` 时以 `--config` 传入 → `cargo build --release --features custom-protocol` → 把产物拷到 `dist/Stepboy.exe`。编译缓存默认放系统临时目录，可用 `CARGO_TARGET_DIR` 覆盖。
+完事。不用 `npm install`（项目没有任何 npm 依赖，`package.json` 里只有 scripts），装过 Node 就能跑。脚本内部会：自动探测 MSVC / `rc.exe`（也可用 `MSVC_BIN` / `SDK_BIN` 指定）并塞到 PATH 最前 → 本机存在 `config.local.toml` 时以 `--config` 传入 → `cargo build --release --features custom-protocol` → 把产物拷到 `dist/Stepboy.exe`。编译缓存默认放系统临时目录，可用 `CARGO_TARGET_DIR` 覆盖；**首次构建需联网拉依赖**，之后可用 `CARGO_OFFLINE=1 npm run pack` 断网。
 
 #### 路线 B：做成 IDEA 里的 Run Configuration（想点绿三角就跑）
 
@@ -152,10 +189,10 @@ npm run pack
 |---|---|
 | Command | `build` |
 | Working directory | `src-tauri` |
-| Additional arguments | `--config ../.cargo/config.local.toml --release --features custom-protocol --offline`（前半段仅本机有该配置时加；`--config` 放在最前） |
+| Additional arguments | `--config ../.cargo/config.local.toml --release --features custom-protocol`（前半段仅本机有该配置时加；`--config` 放在最前。首次构建**不要**加 `--offline`） |
 | Environment variables | `PATH=<SDK bin>;<MSVC bin>;%PATH%` `CARGO_TARGET_DIR=<缓存目录>`（示例值见上一节，按实际路径替换） |
 
-点运行后，产物在：**`<CARGO_TARGET_DIR>\release\stepboy-pet.exe`**（本机示例是 `C://cargo-build-stepboy//release//stepboy-pet.exe`）。想改名成 `Stepboy.exe` 就手动复制一份改名——改名不影响运行，Tauri 不校验文件名。
+点运行后，产物在：**`<CARGO_TARGET_DIR>\release\stepboy-pet.exe`**（本机示例是 `C:\cargo-build-stepboy\release\stepboy-pet.exe`）。想改名成 `Stepboy.exe` 就手动复制一份改名——改名不影响运行，Tauri 不校验文件名。
 
 > 不想写 `CARGO_TARGET_DIR` 也行，那产物就在 `src-tauri/target/release/stepboy-pet.exe`，代价是 E 盘要多占 3 GB 编译缓存。
 
