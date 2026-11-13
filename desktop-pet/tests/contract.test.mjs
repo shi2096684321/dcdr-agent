@@ -245,3 +245,24 @@ test('姿态巡演池：12 个 pose 动作、4–12 s 间隔、用户坐姿图�
   const classicPools = read(SKINS, 'classic', 'manifest.json').pools;
   assert.deepEqual(classicPools.pose, MANIFEST.pools.pose);
 });
+
+test('皮肤下拉读内嵌清单，不依赖 exe 旁的外部 skins/ 目录', async () => {
+  const { bridge } = await import('../web/src/platform/bridge.js');
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({ skins: [{ id: 'stepboy', name: 'Q 版' }] })
+    });
+    assert.deepEqual((await bridge.listSkins()).map((s) => s.id), ['stepboy']);
+
+    // 外部 skins/ 为空或资源取不到时，下拉也不能变成「静默无选项」以外的异常
+    globalThis.fetch = async () => ({ ok: false });
+    assert.deepEqual(await bridge.listSkins(), []);
+
+    globalThis.fetch = async () => { throw new Error('offline'); };
+    assert.deepEqual(await bridge.listSkins(), []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

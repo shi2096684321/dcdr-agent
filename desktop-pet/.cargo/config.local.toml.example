@@ -1,0 +1,28 @@
+# 本机工具链配置模板（只有「没装正式 VS Build Tools、手动落盘 MSVC/SDK」时才需要）。
+#
+# 用法：复制成同目录的 config.local.toml，把下面所有 <...> 换成你机器上的真实路径。
+#       config.local.toml 已被 .gitignore 忽略，不会进仓库；npm run pack 会自动把它
+#       以 --config 传给 cargo。直接跑 cargo 时手动加：
+#         cargo --config ../.cargo/config.local.toml build --release --features custom-protocol
+#       （相对路径以 Working directory 为基准，IDEA 里通常是 src-tauri。）
+#
+# 装了正式 VS Build Tools / Windows SDK 的机器：不要创建 config.local.toml，
+# cargo 会用系统默认工具链，scripts/pack.mjs 也会自动探测标准安装路径。
+# 工具链装在非常规目录时，改用环境变量覆盖即可，不必写这份文件：
+#   MSVC_BIN=<.../VC/Tools/MSVC/<版本>/bin/Hostx64/x64>
+#   SDK_BIN=<.../Windows Kits/10/bin/<版本>/x64>
+#   CARGO_TARGET_DIR=<编译缓存目录>
+#
+# force = true 是必要的：手动落盘的 SDK 头文件不在系统默认 INCLUDE/LIB 里。
+# 但也正因为它会覆盖环境变量，这份配置绝不能放在 Cargo 自动加载的 .cargo/config.toml 中。
+[target.x86_64-pc-windows-msvc]
+linker = "<MSVC_ROOT>/bin/Hostx64/x64/link.exe"
+rustflags = [
+  "-C", "target-feature=+crt-static",
+  "-C", "link-arg=/LIBPATH:<MSVC_ROOT>/lib/x64",
+  "-C", "link-arg=/LIBPATH:<SDK_ROOT>/lib/x64",
+]
+
+[env]
+INCLUDE = { value = "<SDK_INCLUDE_DIRS>;<MSVC_ROOT>/include", force = true }
+LIB = { value = "<MSVC_ROOT>/lib/x64;<SDK_ROOT>/lib/x64", force = true }

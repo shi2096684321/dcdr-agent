@@ -10,7 +10,7 @@
     "start": "node dev-server.mjs --open",
     "tauri:dev": "npx --yes @tauri-apps/cli@2 dev",
     "tauri:build": "npx --yes @tauri-apps/cli@2 build",
-    "build:exe": "cargo build --release --features custom-protocol --offline --manifest-path src-tauri/Cargo.toml",
+    "build:exe": "node scripts/pack.mjs",
     "pack": "node scripts/pack.mjs",
     "icon": "python tools/make-icon.py --preview",
     "test": "node --test tests/core.test.mjs tests/contract.test.mjs"

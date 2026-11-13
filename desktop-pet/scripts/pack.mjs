@@ -9,10 +9,15 @@
  * 为什么要有这个脚本：
  *   1. 必须带 --features custom-protocol，否则 release 版仍会去连 devUrl，双击只会看到「无法访问此页面」。
  *   2. 必须把 MSVC / rc.exe 所在目录放到 PATH 最前，否则会命中 Git 自带的 coreutils link.exe。
- *   3. 必须指定 CARGO_TARGET_DIR，本项目在 E 盘，E 盘空间不足时 target 会撑爆磁盘。
+ *   3. 必须把编译缓存放到项目盘之外，本项目在 E 盘，E 盘空间不足时 target 会撑爆磁盘。
+ *   4. 本机工具链配置只能显式 --config 传入，不能放进 Cargo 自动加载的 .cargo/config.toml。
+ *
+ * 工具链位置按「环境变量 → 标准安装路径探测」解析，不绑定某一台机器：
+ *   MSVC_BIN / SDK_BIN / CARGO_BIN / CARGO_TARGET_DIR 均可覆盖。
  */
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,10 +29,62 @@ const args = process.argv.slice(2);
 const outArgIdx = args.indexOf('--out');
 const DIST = outArgIdx >= 0 && args[outArgIdx + 1] ? path.resolve(args[outArgIdx + 1]) : path.join(ROOT, 'dist');
 
-const MSVC_BIN = 'C:\\BuildTools\\VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64';
-const SDK_BIN = 'C:\\BuildTools\\SDK\\bin';
-const CARGO_BIN = path.join(process.env.USERPROFILE || '', '.cargo', 'bin');
-const BUILD_DIR = process.env.CARGO_TARGET_DIR || 'C:\\cargo-build-stepboy';
+// 本机专用配置：Cargo 会自动加载 .cargo/config.toml，那份文件若写死本机路径并 force 覆盖
+// INCLUDE/LIB，别人 clone 后 cargo 直接失败。改名 config.local.toml（已 gitignore），
+// 由本脚本显式 --config 传入，只有真的存在这台机器的配置时才生效。
+const LOCAL_CONFIG = path.join(ROOT, '.cargo', 'config.local.toml');
+
+/** 找第一个含指定 exe 的目录；优先用环境变量，其次按候选列表探测。 */
+function findBin(envName, exe, candidates) {
+  const fromEnv = process.env[envName];
+  if (fromEnv && fs.existsSync(path.join(fromEnv, exe))) return fromEnv;
+  for (const c of candidates) {
+    if (c && fs.existsSync(path.join(c, exe))) return c;
+  }
+  return null;
+}
+
+/** MSVC 版本号会随 BuildTools 升级变化，遍历版本目录而不是写死一个。 */
+function msvcCandidates() {
+  const out = [];
+  for (const root of [
+    'C:\\BuildTools\\VC\\Tools\\MSVC',
+    'C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC',
+    'C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC',
+    'C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC',
+    'C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\BuildTools\\VC\\Tools\\MSVC',
+  ]) {
+    if (!fs.existsSync(root)) continue;
+    let versions;
+    try { versions = fs.readdirSync(root).sort().reverse(); } catch { continue; }
+    for (const v of versions) out.push(path.join(root, v, 'bin', 'Hostx64', 'x64'));
+  }
+  return out;
+}
+
+/** rc.exe 在手动落盘的 SDK/bin，或 Windows Kits 的版本目录里。 */
+function sdkCandidates() {
+  const out = ['C:\\BuildTools\\SDK\\bin'];
+  const kits = 'C:\\Program Files (x86)\\Windows Kits\\10\\bin';
+  if (fs.existsSync(kits)) {
+    let versions;
+    try { versions = fs.readdirSync(kits).sort().reverse(); } catch { return out; }
+    for (const v of versions) out.push(path.join(kits, v, 'x64'));
+  }
+  return out;
+}
+
+const MSVC_BIN = findBin('MSVC_BIN', 'link.exe', msvcCandidates());
+const SDK_BIN = findBin('SDK_BIN', 'rc.exe', sdkCandidates());
+const CARGO_BIN = process.env.CARGO_BIN || path.join(os.homedir(), '.cargo', 'bin');
+
+// 编译缓存默认放系统临时目录，避免撑爆项目所在盘。
+// 旧版本固定在 C:\cargo-build-stepboy，那里若已有缓存就继续沿用，省一次 15 分钟全量重编。
+const LEGACY_BUILD_DIR = 'C:\\cargo-build-stepboy';
+const BUILD_DIR = process.env.CARGO_TARGET_DIR
+  || (fs.existsSync(path.join(LEGACY_BUILD_DIR, 'release'))
+    ? LEGACY_BUILD_DIR
+    : path.join(os.tmpdir(), 'stepboy-cargo-target'));
 
 const log = (m) => console.log(`[pack] ${m}`);
 const die = (m) => {
@@ -48,13 +105,9 @@ const mb = (n) => (n / 1048576).toFixed(1);
 
 // ---------- 1. 前置检查 ----------
 log('检查工具链…');
-for (const [name, p] of [
-  ['link.exe', path.join(MSVC_BIN, 'link.exe')],
-  ['rc.exe', path.join(SDK_BIN, 'rc.exe')],
-  ['cargo.exe', path.join(CARGO_BIN, 'cargo.exe')],
-]) {
-  if (!fs.existsSync(p)) die(`缺少 ${name}（期望 ${p}）。见 README「本机编译环境」。`);
-}
+if (!MSVC_BIN) die('找不到 link.exe。安装 VS Build Tools，或用 MSVC_BIN 指向 VC/Tools/MSVC/<版本>/bin/Hostx64/x64。');
+if (!SDK_BIN) die('找不到 rc.exe。安装 Windows SDK Build Tools，或用 SDK_BIN 指向 Windows Kits/10/bin/<版本>/x64。');
+if (!fs.existsSync(path.join(CARGO_BIN, 'cargo.exe'))) die(`找不到 cargo.exe（期望 ${CARGO_BIN}），可用 CARGO_BIN 覆盖。`);
 
 // ---------- 2. 构建 ----------
 log(`构建 release（target: ${BUILD_DIR}）…`);
@@ -122,11 +175,18 @@ const env = {
   PATH: [SDK_BIN, MSVC_BIN, CARGO_BIN, process.env.PATH].filter(Boolean).join(path.delimiter),
   CARGO_TARGET_DIR: BUILD_DIR,
 };
-const build = spawnSync('cargo', ['build', '--release', '--features', 'custom-protocol', '--offline'], {
+// --config 是 cargo 的全局参数，必须放在子命令之前；传绝对路径，因为 cwd 是 src-tauri。
+// 不开 shell：Windows 下 cmd.exe 会把带空格的 --config 路径拆开，反而引入新坑。
+const cargoArgs = [];
+if (fs.existsSync(LOCAL_CONFIG)) {
+  cargoArgs.push('--config', LOCAL_CONFIG);
+  log(`使用本机工具链配置：${LOCAL_CONFIG}`);
+}
+cargoArgs.push('build', '--release', '--features', 'custom-protocol', '--offline');
+const build = spawnSync('cargo', cargoArgs, {
   cwd: TAURI_DIR,
   env,
   stdio: 'inherit',
-  shell: true,
 });
 if (build.status !== 0) die('cargo build 失败，看上面的错误。');
 
@@ -171,6 +231,7 @@ if (distFree !== null && distFree < sizeBytes + 2 * 1048576) {
   );
   log(`启动器已生成：${path.join(DIST, '启动桌宠.bat')}`);
   log(`实际 exe：${fallbackExe}`);
+  log('完成。双击 dist 目录里的「启动桌宠.bat」即可运行。');
 } else {
   fs.copyFileSync(builtExe, distExe);
   const leftover = freeBytes(DIST);
@@ -191,6 +252,5 @@ if (distFree !== null && distFree < sizeBytes + 2 * 1048576) {
     ].join('\r\n'),
     'utf8'
   );
+  log('完成。双击 dist 目录里的 Stepboy.exe 即可运行。');
 }
-
-log('完成。双击 dist 目录里的 Stepboy.exe 即可运行。');

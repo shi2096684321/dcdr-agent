@@ -86,6 +86,7 @@ generated-images/
 /desktop-pet/assets/generated/
 # 临时脚本与构建快照
 /desktop-pet/.tmp_*
-
-
-
+# 本机工具链配置: 写死 MSVC/SDK 路径且 force 覆盖 INCLUDE/LIB, 绝不能入库
+# (Cargo 会自动加载 .cargo/config.toml, 别人 clone 后直接构建失败)。
+# 模板 config.local.toml.example 入库, 本机复制成 config.local.toml 后再填路径。
+/desktop-pet/.cargo/config.local.toml

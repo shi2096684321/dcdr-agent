@@ -41,7 +41,9 @@ npm run pack           # 打包：前端内嵌进 exe，输出 dist/Stepboy.exe�
 | `C:\BuildTools\SDK\nuget\c\Include\10.0.19041.0\` | SDK 头文件（`um` / `shared` / `ucrt` / `winrt`） |
 | `C:\BuildTools\SDK\bin\` | `rc.exe`（资源编译器 / 来自 `Microsoft.Windows.SDK.BuildTools` NuGet 包） |
 
-项目根目录的 [`.cargo/config.toml`](./.cargo/config.toml) 把上述路径接进 cargo：指定 `linker`、三条 `/LIBPATH`、`INCLUDE` / `LIB` 环境变量，并开启 `+crt-static`（静态链接 CRT，exe 不依赖 VC 运行库）。
+本机配置模板见 [`.cargo/config.local.toml.example`](./.cargo/config.local.toml.example)：复制成同目录的 `config.local.toml`（已被 `.gitignore` 忽略）并填入本机路径，作用是指定 `linker`、三条 `/LIBPATH`、`INCLUDE` / `LIB` 环境变量，并开启 `+crt-static`（静态链接 CRT，exe 不依赖 VC 运行库）。
+
+**为什么不能叫 `config.toml`**：Cargo 会自动加载工作目录下的 `.cargo/config.toml`，里面这些绝对路径和 `force = true` 的 `INCLUDE`/`LIB` 会在别人 clone 后强行覆盖系统工具链，让 cargo 直接失败。改成 `config.local.toml` 后不再自动加载，由 `npm run pack` 显式以 `--config` 传入；在 IDEA 里直接跑 cargo 也要自己加这个参数（见路线 B）。装了正式 VS Build Tools 的机器不需要这份文件。
 
 编译时把工具链目录放到 PATH 最前（**必须**，否则 Git 自带的 coreutils `link.exe` 会被误用）：
 
@@ -60,10 +62,10 @@ cargo build --release --features custom-protocol --offline
 
 > **必须带 `--features custom-protocol`**，这是 Tauri 的打包标记。漏了它 `cargo build --release` 也会按 dev 模式去连 `devUrl`，双击后只会看到「无法访问此页面 / 127.0.0.1」。`npm run tauri:build` 由 CLI 自动加，手工用 cargo 时要自己写。
 >
-> **磁盘**：`target/` 编译缓存约 3 GB（release；`opt-level=z` + LTO 会完整重编依赖树，首次约 15 分钟，之后增量 10 秒内）。E 盘空间紧张时用 `CARGO_TARGET_DIR=C:/cargo-build-stepboy` 把缓存放 C 盘。
+> **磁盘**：`target/` 编译缓存约 3 GB（release；`opt-level=z` + LTO 会完整重编依赖树，首次约 15 分钟，之后增量 10 秒内）。`npm run pack` 默认把缓存放系统临时目录，不会撑爆项目所在盘；手动跑 cargo 时用 `CARGO_TARGET_DIR=C:/cargo-build-stepboy` 之类指定位置。
 
 
-> **如果以后装了正式的 VS Build Tools**，直接删掉 `.cargo/config.toml` 即可回到默认行为。
+> **如果以后装了正式的 VS Build Tools**，删掉本机的 `.cargo/config.local.toml` 即可回到系统默认工具链；`npm run pack` 会自动探测标准安装路径，不需要再写配置。工具链装在非常规目录时，用 `MSVC_BIN` / `SDK_BIN` / `CARGO_TARGET_DIR` 环境变量覆盖。
 >
 > **四个坑**（都已绕开，记录备查）：
 > 1. VS manifest 里的 `size` 字段**不可信**（含签名区，比真实文件大几 KB~1 MB），必须用 `sha256` 校验。
@@ -111,12 +113,13 @@ npm run pack -- --out "D:\桌面宠物"   # 输出到自定义目录
 
 ### 跑桌面版（Rust 改动）
 
-Rust 侧依赖 MSVC 与 `rc.exe` 在 PATH 里，`.cargo/config.toml` 只负责 linker 和 INCLUDE/LIB，**不负责 PATH**。所以要在 Run Configuration 里设环境变量：
+Rust 侧依赖 MSVC 与 `rc.exe` 在 PATH 里；本机 `config.local.toml` 只负责 linker 和 INCLUDE/LIB，**不负责 PATH**，也不会被 Cargo 自动加载。所以 Run Configuration 里除了环境变量，还要手动补 `--config`（仅本机有该配置时需要）：
 
 - `Run → Edit Configurations → + → Cargo`
 - Command：`run`
 - Working directory：`src-tauri`
-- Environment variables 加上（分号分隔，不要换行）：
+- Additional arguments 追加（本机专用）：`--config ../.cargo/config.local.toml`（相对 `src-tauri` 工作目录）
+- Environment variables 加上（分号分隔，不要换行；下面是本机手动落盘方案的示例，按实际路径替换）：
 
 ```
 PATH=C:\BuildTools\SDK\bin;C:\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64;%PATH%
@@ -139,7 +142,7 @@ IDEA 里有三条路，按省事程度排序：
 npm run pack
 ```
 
-完事。不用 `npm install`（项目没有任何 npm 依赖，`package.json` 里只有 scripts），装过 Node 就能跑。脚本内部会：把 MSVC / `rc.exe` 塞到 PATH 最前 → `cargo build --release --features custom-protocol` → 把产物拷到 `dist/Stepboy.exe`。
+完事。不用 `npm install`（项目没有任何 npm 依赖，`package.json` 里只有 scripts），装过 Node 就能跑。脚本内部会：自动探测 MSVC / `rc.exe`（也可用 `MSVC_BIN` / `SDK_BIN` 指定）并塞到 PATH 最前 → 本机存在 `config.local.toml` 时以 `--config` 传入 → `cargo build --release --features custom-protocol` → 把产物拷到 `dist/Stepboy.exe`。编译缓存默认放系统临时目录，可用 `CARGO_TARGET_DIR` 覆盖。
 
 #### 路线 B：做成 IDEA 里的 Run Configuration（想点绿三角就跑）
 
@@ -149,10 +152,10 @@ npm run pack
 |---|---|
 | Command | `build` |
 | Working directory | `src-tauri` |
-| Additional arguments | `--release --features custom-protocol --offline` |
-| Environment variables | `PATH=C:\BuildTools\SDK\bin;C:\BuildTools\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64;%PATH%` `CARGO_TARGET_DIR=C:\cargo-build-stepboy` |
+| Additional arguments | `--config ../.cargo/config.local.toml --release --features custom-protocol --offline`（前半段仅本机有该配置时加；`--config` 放在最前） |
+| Environment variables | `PATH=<SDK bin>;<MSVC bin>;%PATH%` `CARGO_TARGET_DIR=<缓存目录>`（示例值见上一节，按实际路径替换） |
 
-点运行后，产物在：**`C:\cargo-build-stepboy\release\stepboy-pet.exe`**（因为设了 `CARGO_TARGET_DIR`）。想改名成 `Stepboy.exe` 就手动复制一份改名——改名不影响运行，Tauri 不校验文件名。
+点运行后，产物在：**`<CARGO_TARGET_DIR>\release\stepboy-pet.exe`**（本机示例是 `C://cargo-build-stepboy//release//stepboy-pet.exe`）。想改名成 `Stepboy.exe` 就手动复制一份改名——改名不影响运行，Tauri 不校验文件名。
 
 > 不想写 `CARGO_TARGET_DIR` 也行，那产物就在 `src-tauri/target/release/stepboy-pet.exe`，代价是 E 盘要多占 3 GB 编译缓存。
 

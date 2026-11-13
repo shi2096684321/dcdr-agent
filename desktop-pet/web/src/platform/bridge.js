@@ -116,16 +116,17 @@ export const bridge = {
     return invoke('pet_set_autostart', { on });
   },
 
-  /** P4：外部 skins/ 目录，Web 下降级为内置 index.json */
+  /**
+   * 皮肤下拉统一读内嵌的 index.json。
+   * 不走 pet_list_skins：它列的是 exe 旁的外部 skins/ 目录，正式包里没有该目录，
+   * 桌面模式下会返回空数组把下拉清空；而且 loadSkin 按 ./assets/skins/<id>/ 取包，
+   * 外部皮肤的 path 还没接进加载链路，列出来点了也是 404。P4 接通外部包时再合并。
+   */
   async listSkins() {
-    if (isTauri) {
-      const v = await invoke('pet_list_skins');
-      if (Array.isArray(v)) return v;
-    }
     try {
       const r = await fetch('./assets/skins/index.json', { cache: 'no-store' });
       if (r.ok) return (await r.json()).skins || [];
-    } catch { /* ignore */ }
+    } catch { /* 资源缺失时下拉留空，不影响桌宠本体 */ }
     return [];
   },
 

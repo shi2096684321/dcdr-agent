@@ -2,6 +2,7 @@
 
 用法：
     python tools/sprite_prep.py <输入图> <输出png>
+    STEPBOY_REF_IMG=<参考图> python tools/sprite_prep.py <输入图> <输出png>  # 换尺度基准
 
 对齐策略
 --------
@@ -12,10 +13,12 @@
 * 画布：高度固定 520，宽度按角色需要向两侧对称扩展（皮肤画布 200，故上限 400px）。
   skin.json 里声明 `w = 画布宽 / 2`、`h = 260`、`pivot = [0.5, 1.0]`，角色大小不变。
 
-参考图基准：chibi-matted-raw.png 1024x1536，内容 bbox (207,142,849,1435)
+参考图基准：最初的 1024x1536 立绘，内容 bbox (207,142,849,1435)，head_size 实测 543.85。
+该数值已固化为 REF_HEAD，脚本不依赖任何本机文件；要换基准图时设 STEPBOY_REF_IMG。
 body.png  ：263x520，内容 bbox (3,3,260,517)
 """
 
+import os
 import sys
 from collections import deque
 
@@ -36,7 +39,9 @@ GROUND_Y = BODY_BOX[3]
 AXIS_X = (BODY_BOX[0] + BODY_BOX[2]) / 2
 
 BG_THRESHOLD = 246
-REF_IMG = r"C:\Users\86173\.workbuddy\clipboard-images\clipboard-2026-11-12T03-36-39-486Z-dc4bb8a6.jpg"
+# 以前这里写死本机剪贴板临时图的绝对路径，换台机器就 FileNotFoundError，
+# 还会把个人目录带进仓库。尺度基准只需要一个数字，直接固化实测值即可。
+REF_HEAD = 543.8529212939836
 
 
 def remove_white_bg(img: Image.Image) -> Image.Image:
@@ -110,7 +115,8 @@ _REF_HEAD = None
 def ref_head():
     global _REF_HEAD
     if _REF_HEAD is None:
-        _REF_HEAD = head_size(Image.open(REF_IMG).convert("RGB"))
+        ref_img = os.environ.get("STEPBOY_REF_IMG")
+        _REF_HEAD = head_size(Image.open(ref_img).convert("RGB")) if ref_img else REF_HEAD
     return _REF_HEAD
 
 
