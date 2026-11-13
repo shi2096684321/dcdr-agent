@@ -248,6 +248,26 @@ public class AgentProperties {
         private boolean enabled = true;
         /** 保留最近多少条工具结果不清; 更早的清成一行占位文本 */
         private int keepRecent = 6;
+
+        /**
+         * 清理策略(V3.5)。
+         * <ul>
+         *   <li>{@code cache-first}(默认): 只在「前缀缓存已确定过期」时才清理 —— 即会话空闲超过
+         *       {@link #cacheTtlSeconds} 后的第一轮。理由: 每清一条旧工具结果, 该位置之后的全部
+         *       前缀缓存立即作废(改写的是历史中段), 省下的 token 会以缓存费 + 首字延迟的形式还回去。
+         *       缓存窗口内改为依赖已有的「落盘 + tool_result_read」路径保前缀 —— 落盘是"结果产出时"
+         *       就只回灌摘要 + 路径, 不触碰历史, 因此不产生任何缓存失效。</li>
+         *   <li>{@code compact-first}: 保持旧行为, 每轮都清(上下文最省, 缓存最伤)。</li>
+         * </ul>
+         */
+        private String strategy = "cache-first";
+
+        /**
+         * 前缀缓存的 TTL(秒), 各家默认不同(OpenAI 约 5~10 分钟, DeepSeek 约数小时但按块过期)。
+         * <p>取保守值: 空闲超过它即认为"缓存大概率已过期", 此时清理不再额外损失缓存。
+         * 只影响 {@code cache-first} 的判定, 不改变清理本身的任何参数。
+         */
+        private int cacheTtlSeconds = 300;
     }
 
     /** LLM 摘要降级(F-47.4): 超阈值时先摘要再回灌, 失败回退硬截断 */

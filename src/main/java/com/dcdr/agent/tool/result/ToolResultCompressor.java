@@ -48,6 +48,16 @@ public class ToolResultCompressor {
     /** token 预算比字符上限更紧时的收缩次数上限(按比例收缩 + 复验, 不做逐字符二分) */
     private static final int SHRINK_RETRY = 4;
 
+    /** 参与空闲统计的会话上限: 超过后按时间清掉过期键, 避免长跑进程无界增长 */
+    private static final int IDLE_TRACK_LIMIT = 2048;
+
+    /**
+     * 会话 → 上次真正发起模型调用的时间戳(仅 cache-first 判定用)。
+     * <p>只用于回答"这段前缀现在还有没有缓存价值", 不参与任何内容决策。
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastCallAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private static final String SUMMARY_SYSTEM_PROMPT = """
             你是工具结果压缩器。把下面的工具返回内容压缩成结构化摘要, 要求:
             1. 保留全部事实性信息: 数字、日期、名称、URL、代码标识符、结论与判断
@@ -190,7 +200,68 @@ public class ToolResultCompressor {
             "weather", "time", "calculator");
 
     /**
-     * 清理较早的只读工具结果, 释放回灌窗口。
+     * 清理较早的只读工具结果, 释放回灌窗口(cache-first 口径, 供编排层调用)。
+     *
+     * <p><b>为什么需要 sessionId</b>: 清理会改写<b>历史中段</b>, 该位置之后的全部前缀缓存立即作废。
+     * 因此是否值得清, 取决于"这段前缀现在还有没有缓存价值" —— 而这只与会话是否还在缓存 TTL 内有关。
+     * 编排层每轮工具循环都会调用本方法, 用它的时间戳即可判断"上一次真正发请求"距今多久。
+     *
+     * <p><b>cache-first(默认)</b>: 缓存窗口内<b>不清</b>, 靠已有的「落盘 + tool_result_read」保前缀 ——
+     * 那条路径在结果产出时就把大结果换成"路径 + 前 N 行", 从不触碰历史, 因此不产生任何失效。
+     * 只有会话空闲超过 {@code cache-ttl-seconds}(缓存已确定过期)、清理不再额外损失缓存时, 才真正清理。
+     *
+     * <p><b>compact-first</b>: 保持旧行为, 每次调用都清。
+     *
+     * @param sessionId 会话 ID, 用于判断空闲时长; 为空时按"未过期"处理(不知道 ≠ 已过期)
+     * @return 实际清理的条数(0 表示没动)
+     */
+    public int microcompact(String sessionId, List<Message> history) {
+        AgentProperties.MicrocompactConfig cfg = cfg().getMicrocompact();
+        if (!cfg.isEnabled() || history == null || history.isEmpty()) {
+            return 0;
+        }
+        if (isCompactFirst(cfg)) {
+            return microcompact(history);
+        }
+        // cache-first: 先判定缓存是否已过期(用"上一次调用"作为时间基准, 而不是"本轮开始")
+        boolean expired = cacheLikelyExpired(sessionId, cfg.getCacheTtlSeconds());
+        touch(sessionId);
+        if (!expired) {
+            log.debug("微压缩跳过(cache-first): 会话 {} 仍在缓存窗口内, 改写历史中段会让其后前缀全部失效; "
+                    + "大结果请依赖 spill + tool_result_read 落盘保前缀", sessionId);
+            return 0;
+        }
+        return microcompact(history);
+    }
+
+    private static boolean isCompactFirst(AgentProperties.MicrocompactConfig cfg) {
+        String strategy = cfg.getStrategy();
+        return strategy != null && "compact-first".equalsIgnoreCase(strategy.trim());
+    }
+
+    /**
+     * 缓存是否大概率已过期。
+     * <p>会话没记录(进程内第一次见它)时按<b>未过期</b>处理: 能走到这里说明本轮刚发过一轮请求
+     * (就在几秒前), 缓存正热。这条判定直接决定"要不要牺牲缓存", 宁可保守(不清)。
+     */
+    private boolean cacheLikelyExpired(String sessionId, int ttlSeconds) {
+        if (sessionId == null || ttlSeconds <= 0) return false;
+        Long last = lastCallAt.get(sessionId);
+        if (last == null) return false;
+        return System.currentTimeMillis() - last >= ttlSeconds * 1000L;
+    }
+
+    private void touch(String sessionId) {
+        if (sessionId == null) return;
+        if (lastCallAt.size() > IDLE_TRACK_LIMIT) {
+            long cutoff = System.currentTimeMillis() - 3_600_000L;
+            lastCallAt.entrySet().removeIf(e -> e.getValue() < cutoff);
+        }
+        lastCallAt.put(sessionId, System.currentTimeMillis());
+    }
+
+    /**
+     * 清理较早的只读工具结果, 释放回灌窗口(compact-first 口径)。
      *
      * <p><b>为什么必须在每轮算额度之前调用</b>: {@link #allowanceForRound} 是按
      * "历史工具结果的 token 总量"来决定本轮收紧到多少的。只清不算是白清, 只算不清是越用越紧 ——

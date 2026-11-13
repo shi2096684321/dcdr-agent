@@ -283,6 +283,16 @@ agent:
         enabled: true
         # 保留最近多少条不清(更早的清成一行占位文本); 与工具轮次上限配合看, 6 约等于最近两轮
         keep-recent: 6
+        # 清理策略:
+        #   cache-first (默认) 只在「前缀缓存已确定过期」时清理(会话空闲超过 cache-ttl-seconds 后),
+        #                      缓存窗口内改为依赖 spill + tool_result_read 落盘保前缀。
+        #                      原因: 每清一条旧结果就是改写历史中段, 该位置之后的前缀全部作废,
+        #                      省下的 token 会以缓存费 + 首字延迟的形式还回去。
+        #   compact-first      每轮都清(旧行为): 上下文最省, 但对前缀缓存最伤。
+        strategy: cache-first
+        # 前缀缓存 TTL(秒)。取保守值: 空闲超过它即认为缓存大概率已过期, 此时清理不再额外损失缓存。
+        # 只影响 cache-first 的判定, 不改动任何压缩阈值/头尾保留比例。
+        cache-ttl-seconds: 300
 
   # ===== V2.2 用户认证配置 =====
   # enabled=false 时所有接口免鉴权(兼容 V2.1 单用户场景); 生产环境务必 enabled=true

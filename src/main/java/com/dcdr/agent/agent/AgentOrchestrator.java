@@ -702,8 +702,10 @@ public class AgentOrchestrator {
                                 Flux<ChatChunk> nextTool = tracedTool(Flux
                                         .defer(() -> {
                                             // 先释放上下文, 再算本轮额度 —— 顺序反了等于没做:
-                                            // 只清不算是白清, 只算不清是越用越紧(见 microcompact 注释)
-                                            toolResultCompressor.microcompact(history);
+                                            // 只清不算是白清, 只算不清是越用越紧(见 microcompact 注释)。
+                                            // V3.5: cache-first 口径下, 缓存窗口内不清(改写历史中段会让
+                                            // 其后前缀全部失效), 由 spill + tool_result_read 兜住大结果。
+                                            toolResultCompressor.microcompact(sessId, history);
                                             int allowance = toolResultCompressor.allowanceForRound(history);
                                             return executeTools(currentRound, accumulated.toString(),
                                                     reasoningAccumulated.toString(), generatedUrls, toolError, toolResults, collectedSources, request.getMessage(), effectiveKbIds, resultsById, currentUserId, sessId,
