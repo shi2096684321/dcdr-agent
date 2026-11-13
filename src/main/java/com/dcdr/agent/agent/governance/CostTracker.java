@@ -41,6 +41,10 @@ public class CostTracker {
     private final LlmUsageLogRepository usageRepository;
     private final V3Properties v3Properties;
 
+    /** 命中率日志采样计数 (进程级; 仅用于降噪, 不要求精确) */
+    private final java.util.concurrent.atomic.AtomicLong cacheLogCounter =
+            new java.util.concurrent.atomic.AtomicLong();
+
     /**
      * 记录一次 LLM 调用 token 消耗。
      *
@@ -73,12 +77,47 @@ public class CostTracker {
             e.setOutputTokens(usage.getCompletion());
             e.setTotalTokens(usage.getTotal() > 0 ? usage.getTotal()
                     : usage.getPrompt() + usage.getCompletion());
+            // V3.5 前缀缓存可观测: 缓存读/写 token 随每次调用落库, 命中率见 logCacheHitRate
+            e.setCacheReadTokens(usage.getCacheReadTokens());
+            e.setCacheCreationTokens(usage.getCacheCreationTokens());
             // V3.1 F-44.2: 按模型定价折算金额(未配置定价的模型留空, 报表金额列降级显示)
             e.setCostAmount(estimateCost(model, usage));
             e.setCreatedAt(LocalDateTime.now());
             usageRepository.save(e);
+            logCacheHitRate(sessionId, model, usage);
         } catch (Exception ex) {
             log.warn("LLM 用量记录失败(不影响主链路): {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * V3.5 前缀缓存命中率: {@code cacheReadTokens / promptTokens}。
+     * <p>
+     * <b>这个数是"prompt 组装顺序是否合理"的唯一硬指标</b>: 命中率高说明相邻两轮之间有长公共前缀,
+     * 低则说明有随轮次变化的内容(召回记忆、时间戳、RAG 片段)插在了中段, 把可复用前缀截断了。
+     * <p>
+     * 三条克制:
+     * <ul>
+     *   <li><b>采样</b>: 一轮对话含多轮工具调用, 每次都打会刷屏 —— 按 {@code log-every-n-calls} 采样;</li>
+     *   <li><b>没有观测数据就不打</b>: 供应商未上报缓存明细时命中率恒为 0, 打出来只会被误读成
+     *       "缓存完全没生效"; 此时不出日志(落库字段仍为 0, 可区分);</li>
+     *   <li><b>不抛异常</b>: 只做日志, 失败静默。</li>
+     * </ul>
+     */
+    private void logCacheHitRate(String sessionId, String model, ChatResponse.TokenUsage usage) {
+        try {
+            V3Properties.CacheStats cfg = v3Properties.getCost().getCacheStats();
+            if (cfg == null || !cfg.isEnabled() || usage == null) return;
+            if (usage.getPrompt() <= 0 || usage.getPrompt() < cfg.getMinPromptTokens()) return;
+            // 未上报任何缓存明细 → 没有可说的结论, 不出日志
+            if (usage.getCacheReadTokens() <= 0 && usage.getCacheCreationTokens() <= 0) return;
+            int every = Math.max(cfg.getLogEveryNCalls(), 1);
+            if (every > 1 && cacheLogCounter.incrementAndGet() % every != 0) return;
+            log.info("前缀缓存: session={} model={} prompt={} cacheRead={} cacheCreate={} 命中率={}%",
+                    sessionId, model, usage.getPrompt(), usage.getCacheReadTokens(),
+                    usage.getCacheCreationTokens(), String.format("%.1f", usage.cacheHitRate() * 100));
+        } catch (Exception ex) {
+            log.debug("缓存命中率日志输出失败(可忽略): {}", ex.getMessage());
         }
     }
 

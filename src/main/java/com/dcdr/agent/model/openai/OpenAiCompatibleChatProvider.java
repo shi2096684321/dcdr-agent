@@ -344,8 +344,11 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
                             int prompt = usageNode.path("prompt_tokens").asInt(0);
                             int completion = usageNode.path("completion_tokens").asInt(0);
                             int total = usageNode.path("total_tokens").asInt(0);
-                            log.debug("[USAGE] 解析到 token 消耗: prompt={}, completion={}, total={}", prompt, completion, total);
-                            ChatChunk usageChunk = ChatChunk.usage(prompt, completion, total);
+                            int[] cache = parseCacheTokens(usageNode);
+                            log.debug("[USAGE] 解析到 token 消耗: prompt={}, completion={}, total={}, "
+                                            + "cacheRead={}, cacheCreation={}",
+                                    prompt, completion, total, cache[0], cache[1]);
+                            ChatChunk usageChunk = ChatChunk.usage(prompt, completion, total, cache[0], cache[1]);
                             JsonNode finishNode = root.path("choices").path(0).path("finish_reason");
                             if (!finishNode.isMissingNode() && !finishNode.isNull()) {
                                 String fr = finishNode.asText();
@@ -423,5 +426,33 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         String id;
         String name;
         StringBuilder arguments = new StringBuilder();
+    }
+
+    /**
+     * 从 usage 节点归一化「前缀缓存」读写 token。
+     * <p>
+     * 同一件事各家字段名不同, 且都是<b>可选</b>字段 —— 认不出来就返回 0, 不要猜:
+     * 这里只是可观测性, 猜错会让命中率这条指标失去意义。
+     * <ul>
+     *   <li>OpenAI:    {@code prompt_tokens_details.cached_tokens}</li>
+     *   <li>DeepSeek:  {@code prompt_cache_hit_tokens}(读) / {@code prompt_cache_miss_tokens}(未读, 不计入写)</li>
+     *   <li>Anthropic 兼容网关: {@code cache_read_input_tokens} / {@code cache_creation_input_tokens}</li>
+     * </ul>
+     *
+     * @return {@code [cacheReadTokens, cacheCreationTokens]}
+     */
+    static int[] parseCacheTokens(JsonNode usageNode) {
+        if (usageNode == null || usageNode.isMissingNode() || usageNode.isNull()) {
+            return new int[]{0, 0};
+        }
+        JsonNode details = usageNode.path("prompt_tokens_details");
+        int read = details.path("cached_tokens").asInt(0);
+        if (read <= 0) read = usageNode.path("prompt_cache_hit_tokens").asInt(0);
+        if (read <= 0) read = usageNode.path("cache_read_input_tokens").asInt(0);
+        int creation = usageNode.path("cache_creation_input_tokens").asInt(0);
+        // 缓存读不可能超过输入总量: 个别网关会把 total 与 detail 口径混用, 夹一下避免命中率 >100%
+        int prompt = usageNode.path("prompt_tokens").asInt(0);
+        if (prompt > 0 && read > prompt) read = prompt;
+        return new int[]{Math.max(read, 0), Math.max(creation, 0)};
     }
 }

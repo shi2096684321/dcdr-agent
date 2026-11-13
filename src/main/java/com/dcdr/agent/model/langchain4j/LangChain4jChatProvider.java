@@ -29,6 +29,7 @@ import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiChatRequestParameters;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import dev.langchain4j.model.openai.OpenAiTokenUsage;
 import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.TokenUsage;
 import lombok.extern.slf4j.Slf4j;
@@ -208,6 +209,7 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 u.setPrompt(nz(usage.inputTokenCount()));
                 u.setCompletion(nz(usage.outputTokenCount()));
                 u.setTotal(nz(usage.totalTokenCount()));
+                u.setCacheReadTokens(cacheReadTokens(usage));
                 response.setTokenUsage(u);
             }
             return response;
@@ -250,7 +252,8 @@ public class LangChain4jChatProvider implements ChatModelProvider {
                 TokenUsage usage = completeResponse.metadata().tokenUsage();
                 if (usage != null) {
                     ChatChunk usageChunk = ChatChunk.usage(
-                            nz(usage.inputTokenCount()), nz(usage.outputTokenCount()), nz(usage.totalTokenCount()));
+                            nz(usage.inputTokenCount()), nz(usage.outputTokenCount()), nz(usage.totalTokenCount()),
+                            cacheReadTokens(usage), 0);
                     String fr = mapFinishReason(completeResponse.metadata().finishReason());
                     if (fr != null) {
                         usageChunk.setFinishReason(fr);
@@ -631,5 +634,22 @@ public class LangChain4jChatProvider implements ChatModelProvider {
 
     private static int nz(Integer value) {
         return value != null ? value : 0;
+    }
+
+    /**
+     * 读取「命中前缀缓存」的输入 token 数。
+     * <p>
+     * 框架基类 {@link TokenUsage} 只有三项计数, 缓存明细在 OpenAI 子类
+     * {@link OpenAiTokenUsage#inputTokensDetails()} 里。非 OpenAI 系模型(或供应商未上报)拿不到,
+     * 一律按 0 处理 —— 这里只做可观测, 不臆造数值。
+     */
+    private static int cacheReadTokens(TokenUsage usage) {
+        if (!(usage instanceof OpenAiTokenUsage openAi)) return 0;
+        OpenAiTokenUsage.InputTokensDetails details = openAi.inputTokensDetails();
+        if (details == null || details.cachedTokens() == null) return 0;
+        int cached = details.cachedTokens();
+        int input = nz(usage.inputTokenCount());
+        // 缓存读不会超过输入总量: 夹一下, 避免个别网关口径不一致导致命中率 >100%
+        return input > 0 ? Math.min(cached, input) : Math.max(cached, 0);
     }
 }

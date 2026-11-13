@@ -254,4 +254,18 @@ public class ChatChunk {
         c.setTokenUsage(new ChatResponse.TokenUsage(prompt, completion, total));
         return c;
     }
+
+    /**
+     * 用量块(带前缀缓存明细)。
+     * <p>缓存读写 token 必须随 usage 块一起下发, 否则流式链路上「观测到的缓存命中」会在
+     * 收尾统计时丢掉 —— 收尾只搬 usage 块里的字段, 不会再回查供应商响应。
+     */
+    public static ChatChunk usage(int prompt, int completion, int total,
+                                  int cacheReadTokens, int cacheCreationTokens) {
+        ChatChunk c = new ChatChunk();
+        c.setType("usage");
+        c.setTokenUsage(new ChatResponse.TokenUsage(prompt, completion, total,
+                cacheReadTokens, cacheCreationTokens));
+        return c;
+    }
 }

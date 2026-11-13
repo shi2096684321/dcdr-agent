@@ -55,12 +55,43 @@ public class ChatResponse {
         @Schema(description = "总 Token 数", example = "155")
         private int total;
 
+        /**
+         * 命中「前缀缓存」的输入 token 数(按缓存价计费, 通常为输入价的 1/10 左右)。
+         * <p>字段来源: OpenAI {@code usage.prompt_tokens_details.cached_tokens};
+         * DeepSeek {@code prompt_cache_hit_tokens}; Anthropic {@code cache_read_input_tokens}。
+         * 供应商未上报时恒为 0 —— 0 表示「没有观测到缓存」, 不表示「一定没有缓存」。
+         */
+        @Schema(description = "命中前缀缓存的输入 token 数(未上报时为 0)", example = "1024")
+        private int cacheReadTokens;
+
+        /**
+         * 写入缓存的输入 token 数(仅 Anthropic 显式上报 {@code cache_creation_input_tokens};
+         * OpenAI / DeepSeek 的缓存写入隐含在 prompt 里, 恒为 0)。
+         */
+        @Schema(description = "写入前缀缓存的输入 token 数(仅部分供应商上报)", example = "0")
+        private int cacheCreationTokens;
+
         public TokenUsage() {}
 
         public TokenUsage(int prompt, int completion, int total) {
             this.prompt = prompt;
             this.completion = completion;
             this.total = total;
+        }
+
+        /** 带缓存明细的构造: 新增字段一律追加在末尾, 老调用方的三参构造保持可用 */
+        public TokenUsage(int prompt, int completion, int total, int cacheReadTokens, int cacheCreationTokens) {
+            this(prompt, completion, total);
+            this.cacheReadTokens = cacheReadTokens;
+            this.cacheCreationTokens = cacheCreationTokens;
+        }
+
+        /**
+         * 前缀命中率 = 缓存读 token / 输入 token。
+         * <p>输入 token 为 0(无 usage)时返回 0, 避免出现 NaN —— 调用方不必各自判空。
+         */
+        public double cacheHitRate() {
+            return prompt > 0 ? (double) cacheReadTokens / prompt : 0.0;
         }
     }
 }

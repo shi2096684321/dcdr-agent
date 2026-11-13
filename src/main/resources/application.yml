@@ -668,6 +668,16 @@ agent:
     # 匹配规则: 精确匹配优先, 其次按前缀匹配 (配 "qwen" 可命中 qwen-max / qwen-plus 等变体)。
     cost:
       pricing: {}
+      # 前缀缓存可观测 (V3.5): 缓存读写 token 落库 + 命中率日志。
+      # 命中率 = cacheReadTokens / promptTokens, 是"prompt 组装顺序是否合理"的唯一硬指标:
+      # 命中率高说明相邻两轮之间有长公共前缀; 低说明有每轮变化的内容(记忆/时间/RAG)插在了中段。
+      # 供应商未上报缓存明细时不出日志(落库字段为 0), 不会把"没观测到"打成"缓存没生效"。
+      cache-stats:
+        enabled: true
+        # 采样: 每 N 次 LLM 调用打一行 (1 = 每次都打); 一轮多轮工具调用时可调大降噪
+        log-every-n-calls: 1
+        # 输入 token 少于此值不出日志: 极短请求的命中率没有参考价值
+        min-prompt-tokens: 0
       # 填写示例:
       # pricing:
       #   qwen-max:   { input: 0.02,   output: 0.06 }

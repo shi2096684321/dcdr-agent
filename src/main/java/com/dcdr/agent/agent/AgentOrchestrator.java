@@ -826,7 +826,13 @@ public class AgentOrchestrator {
                                 }
                             }
                             sink.next(ChatChunk.interrupted());
-                            sink.next(ChatChunk.done(estP, estC, estT, durationMs).withModel(provider.getName()));
+                            ChatChunk intDone = ChatChunk.done(estP, estC, estT, durationMs).withModel(provider.getName());
+                            if (intDone.getTokenUsage() != null) {
+                                // 中断路径的 usage 也带上缓存明细(真实 usage 优先时 u 里本就有)
+                                intDone.getTokenUsage().setCacheReadTokens(u.getCacheReadTokens());
+                                intDone.getTokenUsage().setCacheCreationTokens(u.getCacheCreationTokens());
+                            }
+                            sink.next(intDone);
                             sink.complete();
                             activeChatRegistry.unregister(sessId);
                             // V3.0-beta F-34: 中断路径补记 token 用量(成本/配额口径不漏记)。
@@ -2639,6 +2645,13 @@ public class AgentOrchestrator {
             tail.add(ChatChunk.done(p, c, t, durationMs, collectedSources).withModel(provider.getName()));
         } else {
             tail.add(ChatChunk.done(p, c, t, durationMs).withModel(provider.getName()));
+        }
+        // V3.5 缓存明细随 done 下发: 同步接口(chatSync 收集 done 块)与前端都据此拿到命中率,
+        // 口径与 CostTracker 落库的同一次 usage 完全一致(u 就是本轮 resolveUsage 的结果)
+        ChatChunk doneChunk = tail.get(tail.size() - 1);
+        if (doneChunk.getTokenUsage() != null) {
+            doneChunk.getTokenUsage().setCacheReadTokens(u.getCacheReadTokens());
+            doneChunk.getTokenUsage().setCacheCreationTokens(u.getCacheCreationTokens());
         }
         if (taskTokenExceeded) {
             // V3.1 单任务 token 上限: 内容已随 done 正常下发/落库, 此处仅补充"为何停在这里"

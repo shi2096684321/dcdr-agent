@@ -61,6 +61,20 @@ public class LlmUsageLogEntity {
     @Column(name = "total_tokens")
     private Integer totalTokens;
 
+    /**
+     * 命中前缀缓存的输入 token 数 (可空 = 供应商未上报)。
+     * <p>与 {@code inputTokens} 是包含关系: 缓存读的那部分已经算在输入里, 只是计价更低。
+     * 前缀命中率 = cacheReadTokens / inputTokens。
+     */
+    @Schema(description = "命中前缀缓存的输入 token 数 (未上报为空)")
+    @Column(name = "cache_read_tokens")
+    private Integer cacheReadTokens;
+
+    /** 写入前缀缓存的输入 token 数 (仅 Anthropic 系上报, 其余为空) */
+    @Schema(description = "写入前缀缓存的输入 token 数 (仅部分供应商上报)")
+    @Column(name = "cache_creation_tokens")
+    private Integer cacheCreationTokens;
+
     @Schema(description = "成本金额 (可选, 按模型单价计算)")
     @Column(name = "cost_amount", precision = 10, scale = 6)
     private BigDecimal costAmount;

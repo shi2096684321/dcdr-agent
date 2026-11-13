@@ -61,6 +61,9 @@ public class V3Properties {
         /** 模型计价表: key = 模型名, value = 单价(元 / 千 token) */
         private Map<String, ModelPrice> pricing = new LinkedHashMap<>();
 
+        /** 前缀缓存可观测 (V3.5): 缓存读写 token 落库 + 命中率日志 */
+        private CacheStats cacheStats = new CacheStats();
+
         /**
          * 取模型单价: 精确匹配优先, 否则按<b>前缀</b>匹配
          * (配置 {@code qwen} 可命中 {@code qwen-max} / {@code qwen-plus} 等变体);
@@ -77,6 +80,31 @@ public class V3Properties {
             return null;
         }
     }
+
+    /**
+     * 前缀缓存 (prompt caching) 的可观测配置。
+     * <p>
+     * <b>为什么要它</b>: 缓存命中率是"prompt 组装顺序是否合理"的唯一硬指标。没有这个数,
+     * 任何"重排注入位置以复用前缀"的优化都无法验证 —— 只能靠推理, 而推理不出供应商实际命中到哪一段。
+     * <p>
+     * 命中率口径: {@code cacheReadTokens / promptTokens}(缓存读的那部分已含在输入里, 只是计价更低)。
+     * 供应商未上报缓存明细时该值为 0, 表示"没观测到", 不代表"一定没命中"。
+     */
+    @Data
+    public static class CacheStats {
+        /** 是否记录缓存读写 token(落库)并输出命中率日志; 关闭只影响日志, 落库字段照记 */
+        private boolean enabled = true;
+
+        /**
+         * 日志采样: 每 N 次 LLM 调用打一行命中率(1 = 每次都打)。
+         * <p>一轮对话可能包含多轮工具调用, 每次都打会刷屏; 调大 N 只降低日志密度, 不影响落库。
+         */
+        private int logEveryNCalls = 1;
+
+        /** 输入 token 少于此值时不出日志: 极短请求的命中率没有参考价值, 只会干扰观察 */
+        private int minPromptTokens = 0;
+    }
+
 
     /** 单个模型的单价 (元 / 千 token) */
     @Data
