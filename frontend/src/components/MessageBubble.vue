@@ -24,13 +24,17 @@
         </div>
       </div>
 
-      <!-- 思考 -->
-      <div v-if="msg.reasoningContent" class="msg-reasoning">
-        <details :open="reasoningOpen">
-          <summary>思考</summary>
-          <div v-html="renderReasoning(msg.reasoningContent)" @click="onBubbleClick"></div>
-        </details>
-      </div>
+      <!-- 思考流: 思考文本 + 工具步骤在同一个折叠容器里, 与流式态同构 -->
+      <ThinkingTrace
+        v-if="traceSegments.length"
+        :segments="traceSegments"
+        :default-open="reasoningOpen"
+        @undo-op="$emit('undo-op', $event)"
+        @preview-code="$emit('preview-code', $event)"
+      />
+
+      <!-- 提问卡片等"夹在思考与正文之间"的内容从这里插入 -->
+      <slot name="after-trace"></slot>
 
       <!-- 编辑态 -->
       <div v-if="editing" class="edit-box">
@@ -45,7 +49,7 @@
       </div>
       <template v-else>
         <!-- 引用来源汇总行(正文上方): 联网搜索显示网页 favicon, 知识库片段显示📚 -->
-        <div v-if="hasSources" class="search-summary">
+        <div v-if="hasSources && !hideBody" class="search-summary">
           <svg v-if="allKbSources" class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5.5C5 4.4 5.9 3.6 7 3.6h11v14.6H7c-1.1 0-2 .8-2 1.9V5.5z"/><path d="M18 18.2v3.2H7"/></svg>
           <svg v-else class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="6.6"/><path d="M20 20l-3.6-3.6"/></svg>
           <span class="search-text">{{ allKbSources ? `已参考 ${msg.sources.length} 个知识库片段` : `已阅读 ${msg.sources.length } 个网页` }}</span>
@@ -56,10 +60,10 @@
           </div>
         </div>
 
-        <div v-if="displayContent" class="msg-bubble" v-html="renderBubble(displayContent)" @click="onBubbleClick"></div>
+        <div v-if="displayContent && !hideBody" class="msg-bubble" v-html="renderBubble(displayContent)" @click="onBubbleClick"></div>
 
         <!-- 正文下方精简 favicon 汇总(二次强化"有来源"的感知) -->
-        <div v-if="hasSources" class="search-summary-bottom">
+        <div v-if="hasSources && !hideBody" class="search-summary-bottom">
           <div v-if="!allKbSources" class="favicon-stack">
             <img v-for="(f, i) in topFavicons" :key="i" :src="f" class="favicon-img"
                  :style="{ zIndex: topFavicons.length - i }" loading="lazy"
@@ -72,7 +76,7 @@
         </div>
 
         <!-- 引用来源卡片(可展开) -->
-        <div v-if="hasSources" v-show="sourcesOpen" class="sources-list">
+        <div v-if="hasSources && !hideBody" v-show="sourcesOpen" class="sources-list">
           <article v-for="(s, idx) in msg.sources" :key="idx"
                    class="source-card" :class="{ highlight: activeCite && (s.index || (idx + 1)) === activeCite }"
                    :ref="el => registerSourceCard(el, s.index || (idx + 1))">
@@ -90,41 +94,19 @@
           </article>
         </div>
 
-        <!-- 工具调用过程(折叠): 本轮模型调用的工具清单 -->
-        <div v-if="toolList.length" class="tool-invoke">
-          <button class="tool-invoke-toggle" @click="toolOpen = !toolOpen">
-            <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.2a4 4 0 0 1 5.3 5.1l-8.6 8.6a2.6 2.6 0 0 1-3.7-3.7l8.6-8.6"/><path d="M4.4 4.4l3.2 3.2"/></svg>
-            <span>已调用 {{ toolList.length }} 个工具</span>
-            <span class="tool-caret">{{ toolOpen ? '收起' : '展开' }}</span>
-          </button>
-          <div v-if="toolOpen" class="tool-invoke-list">
-            <div v-for="(t, i) in toolList" :key="i" class="tool-item">
-              <div class="tool-item-head">
-                <span class="tool-badge">{{ t.name || 'tool' }}</span>
-                <span v-if="t.id" class="tool-id">{{ t.id }}</span>
-                <!-- 单次写/删操作的回滚入口: 只退这一步, 不影响同轮其它操作与对话 -->
-                <button v-if="t.opId" class="tool-undo" @click="$emit('undo-op', t.opId)">
-                  撤销这次改动
-                </button>
-              </div>
-              <pre v-if="t.args" class="tool-args">{{ t.args }}</pre>
-            </div>
-          </div>
-        </div>
-
         <div v-if="msg.interrupted" class="msg-interrupted">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.5l8.2 14.5H3.8L12 4.5z"/><path d="M12 10v4M12 17h.01"/></svg>
           已中断，以下为已生成的内容
         </div>
 
         <!-- 元信息 -->
-        <div v-if="msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
+        <div v-if="!hideBody && msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
           <span v-if="msg.durationMs != null">{{ (msg.durationMs / 1000).toFixed(1) }}s</span>
           <span v-if="msg.tokenUsage != null">{{ msg.tokenUsage }} token</span>
         </div>
 
         <!-- 操作: 编辑历史消息 / 重新生成助手回答 -->
-        <div v-if="!streaming && !readonly" class="msg-actions">
+        <div v-if="!streaming && !readonly && !hideBody" class="msg-actions">
           <button v-if="msg.role === 'user'" class="btn btn-small" @click="$emit('start-edit', msg)" title="编辑并重新生成">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l9.5-9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/></svg>
             编辑
@@ -181,6 +163,8 @@
 <script setup>
 import { ref, computed, onBeforeUpdate } from 'vue'
 import logoUrl from '@/assets/dcdr-logo.png'
+import ThinkingTrace from '@/components/ThinkingTrace.vue'
+import { buildTraceSegments } from '@/utils/toolTrace'
 import { useMarkdown } from '@/composables/useMarkdown'
 import { useCodeBlock } from '@/composables/useCodeBlock'
 import { submitFeedback, withdrawFeedback, getFeedbackReasonTags, extractMessage } from '@/api'
@@ -207,13 +191,23 @@ const props = defineProps({
    * 用 {@code :open} 直接绑定而不是挂载时 setAttribute: Vue 只在新旧 vnode 的 open
    * 值不同时才改写 DOM，用户手动收起后（DOM open=false，vnode 仍是 true）不会被重新弹开。
    */
-  reasoningOpen: { type: Boolean, default: false }
+  reasoningOpen: { type: Boolean, default: false },
+  /**
+   * 只保留思考流, 不渲染正文与来源。
+   * <p>用于「提问卡片」所在的那条助手消息: 它的正文是占位文案("我需要先向你确认几个问题。"),
+   * 卡片标题已经说了同一件事, 再显示一遍正文等于同一句话出现两次。
+   */
+  hideBody: { type: Boolean, default: false },
+  /**
+   * 外部给定的时间线(用于把"提问轮 + 回答轮"合并成同一个思考块)。
+   * <p>两轮在库里是两条 assistant 消息(中间隔着用户对提问的回答), 展示上要合成一轮 ——
+   * 时间线也就得由调用方拼好传进来, 否则本组件只能看到自己那一条的片段。
+   */
+  mergedTrace: { type: Array, default: null }
 })
 const emit = defineEmits(['update:editBuffer', 'start-edit', 'save-edit', 'cancel-edit', 'retry', 'rewind', 'undo-op', 'preview-image', 'preview-code', 'cite-click', 'feedback'])
 
 const { renderMarkdown, renderBubbleHtml } = useMarkdown()
-// 思考同样允许复制代码块(与正文共用同一套按钮与处理逻辑)
-const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
 // 代码块按钮实现「复制 / 运行预览」: 预览交给父级统一弹窗
 const { handleCodeClick } = useCodeBlock((payload) => emit('preview-code', payload))
 
@@ -255,17 +249,15 @@ const isHidden = computed(() => {
   }
   return false
 })
-// 工具调用清单(本轮模型调用的工具), 折叠展示在回答下方
-const toolOpen = ref(false)
-const toolList = computed(() => {
-  const inv = props.msg?.toolInvocations
-  if (!inv || !inv.length) return []
-  return inv.map(t => {
-    const raw = t.arguments != null ? String(t.arguments) : ''
-    const args = raw.length > 800 ? raw.slice(0, 800) + '\n…(参数过长已截断)' : raw
-    return { name: t.name, id: t.id, args, opId: t.opId || '' }
-  })
-})
+/**
+ * 思考流的时间线：优先按后端落库的 {@code trace} 还原真实顺序
+ * （"这段思考 → 接着调了哪个工具"），老消息没有 trace 时退回"整段思考 + 工具"。
+ * <p>顺序信息由 AgentOrchestrator 在每轮边界记录 —— 否则 reasoningContent 只是
+ * 各轮思考拼成的一大段，前端无论如何切不出"想了→做了→又想了"。
+ */
+const traceSegments = computed(() => (props.mergedTrace != null
+  ? props.mergedTrace
+  : buildTraceSegments(props.msg)))
 // 默认收起来源卡片(正文上下两处汇总已足够展示来源存在; 用户点"查看来源"或角标时展开)
 const sourcesOpen = ref(false)
 const expandedSources = ref(new Set())
@@ -373,6 +365,7 @@ function onBubbleClick(e) {
 // 因此流式刚结束时 (seq 尚未回写) 不展示反馈按钮, 避免提交到错误的回答上。
 // 注: 不跟随 streaming 隐藏 —— 评价的是已完成的回答, 与正在生成的回答无关
 const canFeedback = computed(() => !props.readonly
+  && !props.hideBody   // 提问轮的正文是占位文案, 评价它没有意义
   && props.msg?.role === 'assistant'
   && props.msg?.seq != null
   && !props.msg?.error)
@@ -521,15 +514,7 @@ async function withdraw() {
 .msg-video { max-width: 400px; max-height: 300px; border-radius: 12px; background: #000; }
 .video-name { font-size: 11px; color: var(--dcdr-text-3); text-align: center; margin-top: 4px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* 思考 */
-.msg-reasoning { margin-bottom: 8px; }
-.msg-reasoning details { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 10px 14px; }
-.msg-reasoning summary { cursor: pointer; color: var(--dcdr-text-2); font-size: 12px; font-weight: 500; user-select: none; outline: none; padding: 4px 0; }
-/* max-height + 内部滚动: 展开态在「任务对话」默认开启, 而那边一条思考常有上万字符,
-   不限高会把正文顶到两屏之外 —— 让人以为"只有思考没有回答"。 */
-.msg-reasoning details > div { color: var(--dcdr-text-2); font-size: 13px; line-height: 1.7; margin-top: 10px; max-height: 420px; overflow-y: auto; }
-.msg-reasoning details > div :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; }
-.msg-reasoning details > div :deep(code) { background: var(--dcdr-surface); padding: 2px 8px; border-radius: 4px; }
+/* 思考: 已统一由 ThinkingTrace 承载(思考文本 + 工具步骤同一条时间线), 本组件不再自带样式 */
 
 /* 联网搜索汇总行(正文上方) */
 .search-summary { display: flex; align-items: center; gap: 8px; padding: 6px 14px 8px 0; font-size: 13px; color: var(--dcdr-text-2); }
@@ -547,14 +532,14 @@ async function withdraw() {
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
 /* 代码块: 语言标签 + 复制 / 运行预览 工具条(正文与思考共用) */
-.msg-bubble :deep(.code-block), .msg-reasoning details > div :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid var(--dcdr-code-border); }
-.msg-bubble :deep(.code-block pre), .msg-reasoning details > div :deep(.code-block pre) { margin: 0; border-radius: 0; }
-.msg-bubble :deep(.code-block-bar), .msg-reasoning details > div :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--dcdr-code-bar); border-bottom: 1px solid var(--dcdr-code-border); }
-.msg-bubble :deep(.code-lang), .msg-reasoning details > div :deep(.code-lang) { font-size: 11px; color: var(--dcdr-code-dim); font-family: monospace; letter-spacing: 0.5px; }
-.msg-bubble :deep(.code-actions), .msg-reasoning details > div :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
-.msg-bubble :deep(.code-action), .msg-reasoning details > div :deep(.code-action) { border: 1px solid var(--dcdr-code-border); background: transparent; color: var(--dcdr-code-dim); font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
-.msg-bubble :deep(.code-action:hover), .msg-reasoning details > div :deep(.code-action:hover) { border-color: var(--dcdr-accent); color: #eaf2ff; background: rgba(46,167,255,0.18); }
-.msg-bubble :deep(.code-action.is-done), .msg-reasoning details > div :deep(.code-action.is-done) { border-color: var(--dcdr-success); color: var(--dcdr-code-ok); }
+.msg-bubble :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid var(--dcdr-code-border); }
+.msg-bubble :deep(.code-block pre) { margin: 0; border-radius: 0; }
+.msg-bubble :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--dcdr-code-bar); border-bottom: 1px solid var(--dcdr-code-border); }
+.msg-bubble :deep(.code-lang) { font-size: 11px; color: var(--dcdr-code-dim); font-family: monospace; letter-spacing: 0.5px; }
+.msg-bubble :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
+.msg-bubble :deep(.code-action) { border: 1px solid var(--dcdr-code-border); background: transparent; color: var(--dcdr-code-dim); font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
+.msg-bubble :deep(.code-action:hover) { border-color: var(--dcdr-accent); color: #eaf2ff; background: rgba(46,167,255,0.18); }
+.msg-bubble :deep(.code-action.is-done) { border-color: var(--dcdr-success); color: var(--dcdr-code-ok); }
 .msg-bubble :deep(h1) { font-size: 20px; font-weight: 700; margin: 16px 0 10px; color: var(--dcdr-text-1); border-bottom: 2px solid var(--dcdr-border); padding-bottom: 6px; }
 .msg-bubble :deep(h2) { font-size: 17px; font-weight: 700; margin: 14px 0 8px; color: var(--dcdr-text-1); }
 .msg-bubble :deep(h3) { font-size: 15px; font-weight: 600; margin: 12px 0 6px; color: var(--dcdr-text-1); }
@@ -603,20 +588,6 @@ async function withdraw() {
 .msg-interrupted { margin-top: 6px; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dcdr-warning); background: color-mix(in srgb, var(--dcdr-warning) 10%, transparent); border: 1px solid color-mix(in srgb, var(--dcdr-warning) 32%, transparent); border-radius: 8px; padding: 4px 10px; }
 .msg-interrupted svg { width: 13px; height: 13px; flex: none; }
 
-/* 工具调用折叠提示 */
-.tool-invoke { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 10px; background: var(--dcdr-surface); overflow: hidden; }
-.tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--dcdr-text-2); text-align: left; }
-.tool-invoke-toggle:hover { background: var(--dcdr-bg-subtle); }
-.tool-icon { width: 13px; height: 13px; flex: none; }
-.tool-caret { margin-left: auto; color: var(--dcdr-text-3); }
-.tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
-.tool-item { border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-surface); padding: 8px 10px; }
-.tool-item-head { display: flex; align-items: center; gap: 8px; }
-.tool-badge { font-size: 12px; font-weight: 600; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); border-radius: 6px; padding: 2px 8px; }
-.tool-id { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
-.tool-undo { margin-left: auto; font-size: 11px; line-height: 1.6; color: var(--dcdr-text-2); background: transparent; border: 1px solid var(--dcdr-border); border-radius: 6px; padding: 1px 9px; cursor: pointer; transition: all .15s; }
-.tool-undo:hover { color: var(--dcdr-accent); border-color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
-.tool-args { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--dcdr-text-2); background: var(--dcdr-surface); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 
 /* 光标动画 */
 .cursor { animation: blink 1s infinite; color: var(--dcdr-accent); font-weight: bold; }

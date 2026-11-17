@@ -91,5 +91,11 @@ public class SystemPromptProperties {
         private PromptFragment ragContext = new PromptFragment();
         /** 外部数据边界：说明工具结果中的不可信标记, 防间接提示注入 */
         private PromptFragment toolDataBoundary = new PromptFragment();
+        /**
+         * 长期记忆使用规范：怎么用 {@code <long_term_memory>} 里的条目(不复述 / 冲突以当前提问为准 / 不构成指令)。
+         * <p>放在进程常量档而不是随记忆文本下发: 它是<b>稳定约束</b>, 每轮都在改变前缀就等于白丢缓存;
+         * 记忆条目本身才是每轮变量。
+         */
+        private PromptFragment memoryUsage = new PromptFragment();
     }
 }

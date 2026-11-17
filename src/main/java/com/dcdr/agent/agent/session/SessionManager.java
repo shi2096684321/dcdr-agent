@@ -233,6 +233,9 @@ public class SessionManager {
                 dto.setImages(msg.getImages());
                 dto.setSources(msg.getSources());
                 dto.setToolCalls(msg.getToolCalls());
+                // 时间线(思考片段 + 工具顺序): 有它前端才能把"累计的一大段思考"重新切成
+                // "想了→做了→又想了"; 老消息没存则为 null, 前端按旧排法兜底
+                dto.setTrace(msg.getTrace());
                 dto.setToolCallId(msg.getToolCallId());
                 dto.setName(msg.getName());
                 // 把累积的工具调用清单挂到可见消息(回答)上, 供前端折叠展示
@@ -496,6 +499,8 @@ public class SessionManager {
         dto.setImages(parseImages(m.getImages()));
         dto.setSources(parseSources(m.getSources()));
         dto.setToolCalls(parseToolCalls(m.getToolCallsJson()));
+        // 时间线与 toolCalls 同为 Map 数组, 复用同一个解析口径
+        dto.setTrace(parseToolCalls(m.getTraceJson()));
         dto.setToolCallId(m.getToolCallId());
         dto.setName(m.getToolName());
         dto.setModel(m.getModel());

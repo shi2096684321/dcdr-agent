@@ -71,6 +71,14 @@ public class MessageDTO {
     /** 引用来源(联网搜索等结果) */
     @Schema(description = "引用来源（联网搜索等结果，含 title/url/content）")
     private List<Map<String, Object>> sources;
+    /**
+     * 时间线：思考片段与工具调用的先后顺序。
+     * <p>元素形如 {@code {"t":"reason","n":812}}（这段思考占 reasoningContent 的字符数）
+     * 或 {@code {"t":"tool","id":"call_1"}}（按 id 引用 toolInvocations 里的那一项）。
+     * <p>老消息为 null，前端退回"整段思考 + 全部工具"的排法。
+     */
+    @Schema(description = "时间线（思考片段长度 + 工具调用 id，按发生顺序）")
+    private List<Map<String, Object>> trace;
     /** Token消耗 */
     @Schema(description = "Token 消耗")
     private Integer tokenUsage;

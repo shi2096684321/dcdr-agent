@@ -249,6 +249,39 @@ class LlmCallTraceTest {
         assertEquals(0, trace.snapshot().size());
     }
 
+    @Test
+    @DisplayName("提问步骤: kind=ask + questions + outputPreview —— 否则纯工具轮在日志里只剩一片空白")
+    void askStepCarriesQuestionText() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordAsk("call_ask_1", List.of(Map.<String, Object>of(
+                "id", "q1",
+                "question", "请选择城市",
+                "options", List.of(Map.of("label", "北京"), Map.of("label", "上海")))));
+
+        Map<String, Object> step = trace.snapshot().stream()
+                .filter(s -> "ask".equals(s.get("kind")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("未写入 kind=ask 的步骤"));
+
+        assertEquals("ask_user", step.get("tool"));
+        assertEquals("call_ask_1", step.get("toolCallId"),
+                "下一轮 questionAnswer 按这个 id 配对, 缺了就无法把回答接回是哪次提问");
+        assertEquals(1, step.get("questionCount"));
+        assertEquals(1, ((List<?>) step.get("questions")).size(), "问题原文要留着: 详情页要渲染题干与选项");
+        // 关键: 这一轮正文为空, 日志页的「模型输出」列只认 outputPreview ——
+        // 不在这里写, 用户看到的永远是空白, 只能去界面里猜这一轮问过什么
+        assertEquals("请选择城市", step.get("outputPreview"));
+        assertEquals("请选择城市".length(), step.get("outputChars"));
+    }
+
+    @Test
+    @DisplayName("提问步骤: 问题列表为空时不写步骤(参数不合 schema 会退化成普通工具, 由模型重试)")
+    void askStepIgnoredWhenNoQuestions() {
+        LlmCallTrace trace = LlmCallTrace.begin();
+        trace.recordAsk("call_bad", List.of());
+        assertEquals(0, trace.snapshot().size());
+    }
+
     private static Map<String, Object> webStep(LlmCallTrace trace) {
         return trace.snapshot().stream()
                 .filter(s -> "web".equals(s.get("kind")))

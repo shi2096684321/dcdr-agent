@@ -50,6 +50,8 @@ public final class LlmCallTrace {
     private int toolSteps = 0;
     /** RAG 检索次数 */
     private int ragCount = 0;
+    /** 向用户提问次数(ask_user 被编排层拦截, 不算工具执行, 单独计数) */
+    private int askCount = 0;
     /** 联网搜索/抓取次数 */
     private int webCount = 0;
     /** 长期记忆召回次数 */
@@ -196,6 +198,63 @@ public final class LlmCallTrace {
         steps.add(step);
         emit(step);
         log.info("[llm-trace] turn={} TOOL {} {}{}", turnId, tools, fmtMs(costMs), interrupted ? " [中断]" : "");
+    }
+
+    /**
+     * 记录一次「向用户提问」({@code ask_user})。
+     *
+     * <p><b>为什么必须单独记一条</b>: 这不是一次工具执行 —— 编排层在 {@code executeTools} 之前
+     * 就把它拦下, 转成 {@code user_input_request} 卡片并结束本轮。于是调用链里既没有 tool 步骤,
+     * 汇总里的"工具"也是 0 步, 而模型这一轮的<b>正文通常是空的</b>(语义产物全在工具参数里),
+     * {@code outputPreview} 自然也是空 —— 三条线索叠加, 复盘时完全看不出"这一轮到底做了什么、
+     * 问的是什么", 只能看到一堆 token 数字。
+     *
+     * <p>把问题文本写进 {@code outputPreview} 是刻意的: 日志页的"模型输出"列取的就是这个字段,
+     * 提问轮在那里显示"请选择城市"才符合直觉(用户看到的正是这句话, 它只是长在卡片里而非正文里)。
+     *
+     * @param toolCallId 这次提问的调用 ID(与下一轮 {@code questionAnswer} 配对的键); 可为 null
+     * @param questions  已归一化的问题列表(见 {@code AskUserTool#parseQuestions}); 为空时不记录
+     */
+    public synchronized void recordAsk(String toolCallId, List<java.util.Map<String, Object>> questions) {
+        if (questions == null || questions.isEmpty()) return;
+        askCount++;
+        chain.add("ask[" + questions.size() + "]");
+        java.util.Map<String, Object> step = new java.util.LinkedHashMap<>();
+        step.put("kind", "ask");
+        step.put("seq", askCount);
+        step.put("tool", "ask_user");
+        if (toolCallId != null) {
+            step.put("toolCallId", toolCallId);
+        }
+        step.put("questionCount", questions.size());
+        step.put("questions", questions);
+        // 与 LLM 步骤共用 outputPreview 口径: 日志页与详情页都不必为 ask 再写一套"它答了什么"
+        java.util.Map<String, Object> preview = new java.util.LinkedHashMap<>();
+        putOutput(preview, askPreview(questions));
+        step.putAll(preview);
+        steps.add(step);
+        emit(step);
+        log.info("[llm-trace] turn={} ASK ask_user 问题={} 首个='{}'", turnId, questions.size(),
+                firstQuestion(questions));
+    }
+
+    /** 提问轮的可读输出: 单个问题直接给问句, 多个问题按序号列出 */
+    private static String askPreview(List<java.util.Map<String, Object>> questions) {
+        if (questions.size() == 1) {
+            return firstQuestion(questions);
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < questions.size(); i++) {
+            if (i > 0) sb.append('\n');
+            sb.append(i + 1).append(". ").append(firstQuestion(List.of(questions.get(i))));
+        }
+        return sb.toString();
+    }
+
+    private static String firstQuestion(List<java.util.Map<String, Object>> questions) {
+        if (questions == null || questions.isEmpty()) return "";
+        Object q = questions.get(0).get("question");
+        return q == null ? "" : q.toString();
     }
 
     /**

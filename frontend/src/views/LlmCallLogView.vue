@@ -28,7 +28,7 @@
         <span class="m-value">{{ total }}</span>
       </div>
       <div class="metric">
-        <span class="m-label">本页平均轮次</span>
+        <span class="m-label">本页平均 LLM 调用</span>
         <span class="m-value">{{ avgLlmCalls }}</span>
       </div>
       <div class="metric">
@@ -52,7 +52,7 @@
         <span>追踪</span>
         <span>来源</span>
         <span>用户消息</span>
-        <span class="ta-r">轮次</span>
+        <span class="ta-r">LLM 调用</span>
         <span class="ta-r">工具</span>
         <span class="ta-r">Token ↑ / ↓</span>
         <span class="ta-r">耗时</span>
@@ -145,7 +145,7 @@
               </button>
             </div>
             <div class="cd-metrics">
-              <span class="cd-metric"><b>{{ detailLog.llmCalls || 0 }}</b> 轮 LLM</span>
+              <span class="cd-metric"><b>{{ detailLog.llmCalls || 0 }}</b> 次 LLM 调用</span>
               <span class="cd-metric"><b>{{ detailLog.toolSteps || 0 }}</b> 工具步</span>
               <span class="cd-metric"><b>{{ fmtTokens(detailLog.totalInTokens) }}</b>↑ / <b>{{ fmtTokens(detailLog.totalOutTokens) }}</b>↓</span>
               <span class="cd-metric"><b>{{ fmtDur(detailLog.totalDurationMs) || '—' }}</b></span>
@@ -228,6 +228,20 @@
                       <div class="cd-tool-head">工具调用 · {{ c.name }}</div>
                       <pre v-if="c.args" class="cd-pre">{{ c.args }}</pre>
                       <pre v-if="c.resultPreview" class="cd-pre">{{ c.resultPreview }}</pre>
+                    </div>
+
+                    <!-- 提问明细: 这一轮的语义产物全在工具参数里, 不渲染出来就只剩一个空输出 -->
+                    <div v-if="sv.askQuestions.length" class="cd-ask">
+                      <div class="cd-web-head">提问 · {{ sv.askQuestions.length }} 个</div>
+                      <div v-for="(q, qi) in sv.askQuestions" :key="'ask' + qi" class="cd-ask-item">
+                        <div class="cd-ask-q">
+                          <span v-if="q.header" class="cd-ask-header">{{ q.header }}</span>
+                          {{ q.question }}
+                        </div>
+                        <div v-if="q.options && q.options.length" class="cd-ask-opts">
+                          <span v-for="(o, oi) in q.options" :key="oi" class="cd-ask-opt">{{ o.label }}</span>
+                        </div>
+                      </div>
                     </div>
 
                     <!-- 联网内容明细: 搜索条目 / 抓取页面(两块互斥, 一次调用要么搜要么抓) -->
@@ -545,6 +559,7 @@ const STEP_HEAD_FIELDS = {
     'contentChars', 'thinPages', 'emptyReason', 'emptyReasonLabel', 'costMs', 'phase',
     'items', 'pages'],
   memory: ['kind', 'seq', 'query', 'hits', 'chars', 'costMs'],
+  ask: ['kind', 'seq', 'tool', 'toolCallId', 'questionCount', 'questions', 'outputPreview', 'outputChars'],
   prompt: ['kind', 'seq', 'systemPromptFingerprint', 'systemPromptChars'],
   citation: ['kind', 'seq', 'citedCount', 'availableCount', 'outOfRange'],
   error: ['kind', 'seq', 'failedStep', 'message']
@@ -589,6 +604,7 @@ function buildStepCard(s, no) {
     calls: Array.isArray(s.calls) ? s.calls : [],
     items: Array.isArray(s.items) ? s.items : [],
     pages: Array.isArray(s.pages) ? s.pages : [],
+    askQuestions: [],
     output: s.outputPreview || '',
     outputChars: Number(s.outputChars) || 0,
     systemPrompt: s.systemPrompt || '',
@@ -670,6 +686,17 @@ function buildStepCard(s, no) {
       card.quote = s.query || ''
       break
     }
+    case 'ask': {
+      // 提问轮: 它被编排层拦截、不执行工具, 所以既不是 llm 也不是 tool —— 单独一类,
+      // 否则这一轮在时间轴上会凭空缺一段(模型有 token 消耗却没有任何产物)
+      const qs = Array.isArray(s.questions) ? s.questions : []
+      card.title = '向用户提问'
+      card.chips.push({ text: `${s.questionCount || qs.length} 个问题`, tone: 'ask' })
+      if (s.toolCallId) card.chips.push({ text: s.toolCallId, mono: true })
+      card.quote = qs.map((q) => q && q.question).filter(Boolean).join(' / ')
+      card.askQuestions = qs
+      break
+    }
     case 'prompt':
       card.title = 'System Prompt 指纹'
       if (s.systemPromptFingerprint) card.chips.push({ text: s.systemPromptFingerprint, mono: true })
@@ -694,14 +721,17 @@ function buildStepCard(s, no) {
 }
 
 /**
- * 最终回答预览: 取最后一个 LLM 步骤的本轮输出。
- * 列表接口已返回(截断 500 字符), 故无需展开步骤/打开详情即可看到"这次答了什么";
- * 多轮时前面的轮次输出在「步骤明细」里逐轮可见。
+ * 最终回答预览: 取最后一个「有产物」的步骤。
+ * <p>
+ * 不能只认 kind=llm: 提问轮(ask)与纯工具轮的正文本来就是空的, 语义产物在工具参数里 ——
+ * 它们的 outputPreview 由 recordAsk/renderAsk 写入, 这里一并取, 否则会出现
+ * "这一轮明明问了用户一句话, 日志却显示输出为空"。
  */
 function finalOutput(log) {
   const steps = (log && log.steps) || []
   for (let i = steps.length - 1; i >= 0; i--) {
-    if (steps[i].kind === 'llm' && steps[i].outputPreview) return steps[i].outputPreview
+    const s = steps[i]
+    if ((s.kind === 'llm' || s.kind === 'ask') && s.outputPreview) return s.outputPreview
   }
   return ''
 }
@@ -755,6 +785,7 @@ function stepLabel(s) {
   // 联网拆成两条步骤后, 徽标要跟着分: 都叫"联网"的话在时间轴上还是分不出哪条是搜索、哪条是抓取
   if (s.kind === 'web') return s.tool === 'web_extract' ? '抓取' : '搜索'
   if (s.kind === 'route') return '路由'
+  if (s.kind === 'ask') return '提问'
   if (s.kind === 'prompt') return '提示词'
   if (s.kind === 'citation') return '引用'
   if (s.kind === 'error') return '失败'
@@ -765,6 +796,7 @@ function stepClass(kind) {
   if (kind === 'memory') return 'step-memory'
   if (kind === 'web') return 'step-web'
   if (kind === 'route') return 'step-route'
+  if (kind === 'ask') return 'step-ask'
   if (kind === 'prompt') return 'step-prompt'
   if (kind === 'citation') return 'step-citation'
   if (kind === 'error') return 'step-error'
@@ -916,6 +948,7 @@ onMounted(() => {
 .step-web { color: var(--dcdr-accent); background: color-mix(in srgb, var(--dcdr-accent) 14%, transparent); }
 .step-prompt { color: var(--dcdr-text-2); background: var(--dcdr-hover); }
 .step-citation { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 12%, transparent); }
+.step-ask { color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 18%, transparent); }
 .step-error { color: var(--dcdr-danger); background: color-mix(in srgb, var(--dcdr-danger) 14%, transparent); }
 .step-src { font-size: 10.5px; color: var(--dcdr-accent-2); background: color-mix(in srgb, var(--dcdr-accent-2) 12%, transparent); border-radius: 4px; padding: 0 5px; }
 .step-model { font-family: var(--dcdr-font-mono); font-size: 10.5px; color: var(--dcdr-text-2); }
@@ -1056,6 +1089,7 @@ onMounted(() => {
 .cd-bar-fill.step-memory { background: var(--dcdr-accent-2); }
 .cd-bar-fill.step-web { background: var(--dcdr-accent); }
 .cd-bar-fill.step-prompt, .cd-bar-fill.step-citation { background: var(--dcdr-text-3); }
+.cd-bar-fill.step-ask { background: var(--dcdr-accent-2); }
 
 /* 时间轴主体 */
 .cd-steps { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px 24px; }
@@ -1080,6 +1114,7 @@ onMounted(() => {
 .cd-dot.step-route { background: var(--dcdr-text-3); }
 .cd-dot.step-prompt { background: var(--dcdr-text-3); }
 .cd-dot.step-citation { background: var(--dcdr-accent-2); }
+.cd-dot.step-ask { background: var(--dcdr-accent-2); }
 .cd-dot.step-error { background: var(--dcdr-danger); }
 
 .cd-card {
@@ -1124,6 +1159,14 @@ onMounted(() => {
 .cd-web-url:hover { text-decoration: underline; }
 .cd-web-text { margin: 4px 0 0; font-size: 11.5px; line-height: 1.65; color: var(--dcdr-text-2); word-break: break-word; }
 .cd-web-fail { margin: 4px 0 0; font-size: 11.5px; line-height: 1.6; color: var(--dcdr-danger); word-break: break-word; }
+
+/* 提问明细: 与联网内容同构(一块标题 + 若干卡片), 不再单独发明一套排版 */
+.cd-ask { margin-top: 10px; }
+.cd-ask-item { padding: 7px 9px; margin-bottom: 5px; border: 1px solid var(--dcdr-border); border-radius: 6px; background: var(--dcdr-surface); }
+.cd-ask-q { font-size: 12px; line-height: 1.6; color: var(--dcdr-text-1); word-break: break-word; }
+.cd-ask-header { font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-accent-2); margin-right: 6px; }
+.cd-ask-opts { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.cd-ask-opt { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; color: var(--dcdr-text-2); background: var(--dcdr-hover); }
 
 .cd-out { margin-top: 10px; }
 .cd-out-head { display: flex; align-items: baseline; gap: 8px; font-family: var(--dcdr-font-mono); font-size: 10px; letter-spacing: 0.4px; color: var(--dcdr-text-3); margin-bottom: 4px; }

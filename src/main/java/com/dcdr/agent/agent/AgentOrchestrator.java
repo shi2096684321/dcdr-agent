@@ -529,6 +529,12 @@ public class AgentOrchestrator {
                         final List<String> toolResults = new ArrayList<>();
                         // 本轮联网搜索/知识库检索等工具产生的来源(引用), 供 done 块下发与落库
                         final List<Map<String, Object>> collectedSources = new ArrayList<>();
+                        // 时间线: 每段思考的字符数 + 每轮发起的工具调用, 按发生顺序。
+                        // reasoningAccumulated 是本轮所有轮次思考的拼接, 单靠它无法还原"想了→做了→又想了";
+                        // 这里边跑边记切片边界, 收尾时随助手消息落库(见 Message.trace)。
+                        final List<Map<String, Object>> turnTrace = new ArrayList<>();
+                        // 已记入时间线的思考字符数(切片游标)
+                        final int[] traceMarked = new int[1];
                         // 跨轮联网状态: 去重来源数 + 连续无新增次数, 供下一轮判断"还要不要搜"。
                         // 与 collectedSources 放在一起而不是另建全局缓存 —— 它是这个累积列表的派生量,
                         // 分开放只会让两者不同步(而不同步的后果正是误判"没有新信息"把搜索全拦掉)
@@ -583,15 +589,18 @@ public class AgentOrchestrator {
                         // 当前 user 消息注入本次请求的 history(仅内存视图, memory 中已单独落库, 不重复保存):
                         // 工具回灌轮 includeCurrentUser=false, 若 history 缺当前提问,
                         // 回灌请求将只有 assistant(tool_calls)+tool 结果, 模型看不到用户问题(只能盲目重试工具)
+                        //
                         history.add(Message.user(request.getMessage(), request.getImages()));
                         // 档位三(记忆召回 / 当前时间 / RAG 片段)必须排在「本轮 user」之后:
                         // 它们每轮都变, 放在前面会把上一轮的用户提问与回答一起踢出可复用前缀。
-                        // 位置在 user 之后是刻意的 —— 供应商缓存的是从头开始的最长公共前缀,
-                        // 只要变量都在末尾, 「前缀 + 历史 + 本轮提问」就整段可复用。
+                        // 这里保留成独立的 system 片段(不揉进 user 正文) —— 上下文占用面板要靠 name
+                        // 把它们分门别类, prompt 形状摘要与注入去重也靠它。真正的"折叠进 user、只留一条 system"
+                        // 发生在协议出口(MessageNormalizer), 内部模型保持干净。
                         history.addAll(ctx.volatileFragments());
                         if (log.isDebugEnabled()) {
                             // 形状摘要: 排查"注入位置是否随轮次漂移"最直接的证据。
                             // 期望形状 = system(稳定前缀...) > 历史(问答/工具往返) > user > system(每轮变量...)
+                            // 注意这是<b>内部</b>形状; 上游看到的由 MessageNormalizer 统一成"一条 system + 折叠后的 user"
                             log.debug("会话 {} 本轮 prompt 形状({} 条): {}", sessId, history.size(),
                                     describePromptShape(history));
                         }
@@ -652,18 +661,27 @@ public class AgentOrchestrator {
                                     ? Collections.emptyList() : AskUserTool.parseQuestions(askCall.getArgs());
                             boolean askPending = askCall != null && !askQuestions.isEmpty();
 
+                            // 记一步时间线边界: 本轮思考的切片长度 + 本轮发起的工具调用。
+                            // 放在 askPending 判定之后、工具分支之前 —— 提问轮会直接收尾,
+                            // 不在这里记, 用户看到的卡片就和历史里的时间线对不上。
+                            markTraceRound(turnTrace, traceMarked, reasoningAccumulated.length(), currentRound);
+
                             // 收尾(落库 + done + 成本 + 审计)。defer 到订阅时求值:
                             // roundToolCalls[0] 会在工具分支里被改写, 这里必须读到最终值。
                             Flux<ChatChunk> finish = Flux.defer(() -> finalizeAssistant(sessId, provider,
                                     accumulated, reasoningAccumulated, roundToolCalls[0], generatedUrls, toolError, toolResults, collectedSources,
                                     usageHolder, finishReasonHolder, startNanos, contextForEstimate, assistantSaved, costRecorded, currentUserId, request, t,
                                     taskTokenExceeded.get(), taskTokens.get(),
-                                    history, sentToolDefs, ctx.contextLimit(), askPending));
+                                    history, sentToolDefs, ctx.contextLimit(), askPending,
+                                    turnTrace, traceMarked));
 
                             if (askPending) {
                                 // 本批调用登记为「已发起、未执行」: 收尾会把 assistant 消息连 tool_calls 一起落库,
                                 // 下一轮的配对修复再逐条补结果(提问补用户答案, 其余补"未执行")。
                                 roundToolCalls[0] = new ArrayList<>(currentRound);
+                                // 调用链留痕: 提问不走 executeTools(在它之前就 return), 不记这一步的话
+                                // 汇总里"工具=0步"、模型输出为空, 复盘时看不出这一轮问过什么
+                                t.recordAsk(askCall.getId(), askQuestions);
                                 List<ChatChunk> head = new ArrayList<>(2);
                                 // 模型一句话没说就发工具调用时, 兜一句正文再发卡片:
                                 // 落库那份会被收尾补成同样的文案, 现在也补上, 界面立刻看到的样子
@@ -830,6 +848,11 @@ public class AgentOrchestrator {
                                 if (assistantSaved.compareAndSet(false, true)) {
                                     Message partial = Message.assistant(intC, intR, provider.getName(), estT);
                                     partial.setInterrupted(true);
+                                    // 中断时已发生的思考与工具同样按时间线落库, 刷新后不会退回"整段思考 + 工具堆末尾"
+                                    markTraceTail(turnTrace, traceMarked, intR.length());
+                                    if (!turnTrace.isEmpty()) {
+                                        partial.setTrace(new ArrayList<>(turnTrace));
+                                    }
                                     // 异步落库, 不阻塞 SSE 结束
                                     Message toSave = partial;
                                     Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
@@ -1585,7 +1608,8 @@ public class AgentOrchestrator {
                     // 信任边界: 由第三方写的内容(网页 / 文档 / 磁盘文件)在此包一层「这是数据不是指令」——
                     // 只包"给模型的那一份", 前端工具面板仍用原文(标记是给模型的护栏, 不是给用户的噪音)
                     outResultsById.put(tc.getId(), wrapIfUntrusted(name, result));
-                    chunks.add(ChatChunk.toolResult(name, result, srcs));
+                    // 带上 tool_call_id: 前端据此把结果配回发起的那一步(同名工具可能不止一个)
+                    chunks.add(ChatChunk.toolResult(tc.getId(), name, result, srcs));
                     if (srcs != null && !srcs.isEmpty()) {
                         // 全局兜底: 搜索结果自带 content="undefined" 的条目(部分 Tavily 版本),
                         // 在累计落库前清除, 避免 "undefined" 字符串透传到数据库与模型。
@@ -2505,9 +2529,52 @@ public class AgentOrchestrator {
     }
 
     /**
-     * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
-     * 并下发 done 分块与 finish_reason 相关提示。
+     * 记录本轮的时间线边界：先记这段思考的字符数，再记本轮发起的每个工具调用。
+     * <p>
+     * 之所以只记长度不记文本：{@code reasoningContent} 里已经有本轮全部思考（各轮拼接），
+     * 再存一份等于整段复制；前端按累加偏移切片即可还原分段，工具参数同理从 toolCalls 里按 id 取。
+     *
+     * @param trace        时间线容器，按发生顺序追加
+     * @param marked       已记入时间线的思考字符数，方法内前进（调用方持有游标）
+     * @param reasoningLen 当前累计思考长度
+     * @param toolCalls    本轮发起的工具调用，可为空
      */
+    static void markTraceRound(List<Map<String, Object>> trace, int[] marked, int reasoningLen,
+                               List<ChatChunk> toolCalls) {
+        appendReasonStep(trace, marked, reasoningLen);
+        if (toolCalls == null) {
+            return;
+        }
+        for (ChatChunk tc : toolCalls) {
+            if (tc == null || tc.getId() == null) continue;
+            Map<String, Object> step = new LinkedHashMap<>();
+            step.put("t", "tool");
+            step.put("id", tc.getId());
+            trace.add(step);
+        }
+    }
+
+    /** 收尾/中断时把最后一段思考补上：它后面没有工具调用，只有正文 */
+    static void markTraceTail(List<Map<String, Object>> trace, int[] marked, int reasoningLen) {
+        appendReasonStep(trace, marked, reasoningLen);
+    }
+
+    /**
+     * 追加一段思考切片。
+     * <p>长度为 0 直接跳过：模型这一轮没思考时，多记一条空切片只会让前端多出一个空段落。
+     */
+    static void appendReasonStep(List<Map<String, Object>> trace, int[] marked, int reasoningLen) {
+        int len = reasoningLen - marked[0];
+        if (len <= 0) {
+            return;
+        }
+        Map<String, Object> step = new LinkedHashMap<>();
+        step.put("t", "reason");
+        step.put("n", len);
+        trace.add(step);
+        marked[0] = reasoningLen;
+    }
+
     /**
      * 工具调用块 → 落库用的 tool_calls 结构 {@code {id, name, arguments}}。
      * <p>形状必须与工具循环里回填 history 的那份(见 tailFlux 内 tcs 的构造)完全一致:
@@ -2525,6 +2592,10 @@ public class AgentOrchestrator {
         return result;
     }
 
+    /**
+     * 收尾阶段: 根据是否有工具调用与生成结果, 保存助手消息(普通文本 / 带图),
+     * 并下发 done 分块与 finish_reason 相关提示。
+     */
     private Flux<ChatChunk> finalizeAssistant(String sessId, ChatModelProvider provider,
                                              StringBuilder accumulated, StringBuilder reasoning,
                                              List<ChatChunk> toolCalls, List<String> urls, String[] toolError,
@@ -2535,7 +2606,8 @@ public class AgentOrchestrator {
                                              ChatRequest request, com.dcdr.agent.common.log.LlmCallTrace trace,
                                              boolean taskTokenExceeded, long taskTokens,
                                              List<Message> history, List<Map<String, Object>> toolDefs, int contextLimit,
-                                             boolean askUserPending) {
+                                             boolean askUserPending,
+                                             List<Map<String, Object>> turnTrace, int[] traceMarked) {
         // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
         ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
                 usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
@@ -2614,21 +2686,32 @@ public class AgentOrchestrator {
                 trace.fail("模型生成",
                         "content_filter".equals(fr) ? "上游内容过滤拦截" : "上游资源不足 (insufficient_system_resource)");
             }
+            // 最后一轮通常是"思考完直接给正文", 没有工具调用 —— 把这段剩下的思考也记上,
+            // 否则它会因为不在任何切片里而从历史中消失
+            markTraceTail(turnTrace, traceMarked, reasoning.length());
+            if (!turnTrace.isEmpty()) {
+                assistantMessage.setTrace(new ArrayList<>(turnTrace));
+            }
         }
 
-        // 落库与会话时间戳更新改为异步尽力而为, 不阻塞 SSE 结束信号;
-        // 否则 DB 锁/慢查询会卡住 SSE 关闭, 前端一直收不到 done、发送按钮卡在"取消"
+        // 落库必须早于 done。此前这里是 fire-and-forget(subscribe() 后立刻继续), 于是 SSE 的 done
+        // 先到、assistant 消息后落库: 用户紧接着回答提问卡片时, 下一轮的 user 消息可能先拿到 seq,
+        // 库里顺序就成了「user 问 → user 答 → assistant(ask)」—— 刷新后卡片与答案不再相邻,
+        // 前端 rows 合并失败, 同一轮被拆成两块(界面上看着像两轮, 调用链却只有一次交互)。
+        // 串到 tail 之前即: done 发出时这条消息一定已写完; 超时/失败仍继续, 不拖垮整轮对话。
+        Mono<Void> saveMono = Mono.empty();
         if (assistantMessage != null) {
             // 附加本轮联网搜索等来源(引用), 供前端渲染引用卡片并随会话持久化
             if (collectedSources != null && !collectedSources.isEmpty()) {
                 assistantMessage.setSources(new ArrayList<>(collectedSources));
             }
             Message toSave = assistantMessage;
-            Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
+            saveMono = Mono.fromCallable(() -> { memory.save(sessId, toSave); return null; })
                     .subscribeOn(Schedulers.boundedElastic())
                     .timeout(Duration.ofSeconds(10))
                     .doOnError(ex -> log.error("保存助手消息异常", ex))
-                    .subscribe();
+                    .onErrorResume(ex -> Mono.empty())
+                    .then();
         }
         Mono.fromCallable(() -> { sessionManager.touch(sessId); return null; })
                 .subscribeOn(Schedulers.boundedElastic())
@@ -2686,7 +2769,8 @@ public class AgentOrchestrator {
                 userId);
         // 记忆自动抽取(默认关闭): 放在 done 之后异步派发, 绝不阻塞 SSE 收尾
         dispatchMemoryExtraction(userId, sessId);
-        return Flux.fromIterable(tail);
+        // 先落库再下发 tail(含 done): 见上方 saveMono 注释
+        return saveMono.thenMany(Flux.fromIterable(tail));
     }
 
     /**
@@ -3360,6 +3444,11 @@ public class AgentOrchestrator {
         if (provider != null && provider.supportsFunctionCalling() && registry.getDefaultImageProvider() != null) {
             parts.add(runtimePromptProvider.imagePolicy());
         }
+
+        // 4) 长期记忆使用规范: 恒定注入(进程常量)。
+        //    为什么不跟着记忆条目走 —— 条目每轮都变, 规则若绑在它后面就会一起变成"每轮变量":
+        //    既毁掉可复用前缀, 又因为落在 user 回合里而降格成"资料"。规则稳定、数据易变, 该分开放。
+        parts.add(runtimePromptProvider.memoryUsage());
 
         String merged = mergeFragments(parts);
         if (merged == null) return sink;

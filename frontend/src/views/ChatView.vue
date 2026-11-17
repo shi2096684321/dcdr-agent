@@ -1,12 +1,29 @@
 <template>
   <div class="chat-mode">
     <aside class="sidebar" :class="{collapsed: sidebarCollapsed}">
+      <!-- 会话导航栏: 标题 + 会话数 + 收起。原来这里只有一颗"新建对话"按钮,
+           没有"这是哪"的标题, 也没有搜索入口 —— 会话一多只能靠滚动找。 -->
       <div class="sidebar-header">
-        <button class="new-btn" @click="newSession">+ 新建对话</button>
+        <span class="sidebar-title">对话</span>
+        <span v-if="sessions.length" class="sidebar-count">{{ sessions.length }}</span>
         <button class="collapse-btn" @click="sidebarCollapsed = true" title="收起侧边栏">«</button>
       </div>
+      <div class="sidebar-nav">
+        <button class="new-btn" @click="newSession">
+          <svg class="new-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span>新建对话</span>
+        </button>
+        <label class="session-search">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.4"/><path d="M16 16l4 4"/></svg>
+          <input v-model="sessionQuery" type="text" placeholder="搜索会话" aria-label="搜索会话"
+                 @keydown.esc="sessionQuery = ''" />
+          <button v-if="sessionQuery" type="button" class="search-clear" title="清除" @click.prevent="sessionQuery = ''">×</button>
+        </label>
+      </div>
       <div class="session-list">
-        <div v-for="s in sessions" :key="s.id" class="session-item" :class="{active: s.id===currentSessionId}" @click="switchSession(s.id)">
+        <template v-for="g in sessionGroups" :key="g.key">
+          <div class="session-group">{{ g.label }}</div>
+        <div v-for="s in g.items" :key="s.id" class="session-item" :class="{active: s.id===currentSessionId}" @click="switchSession(s.id)">
           <template v-if="editingId === s.id">
             <input class="rename-input" v-model="editText" v-focus
                    @click.stop @keyup.enter="saveRename(s.id)" @keyup.esc="cancelRename" @blur="saveRename(s.id)" />
@@ -37,6 +54,11 @@
             </div>
           </template>
         </div>
+        </template>
+        <div v-if="!filteredSessions.length" class="session-empty">
+          <span v-if="sessionQuery">没有匹配「{{ sessionQuery }}」的会话</span>
+          <span v-else>还没有对话，点上方「新建对话」开始</span>
+        </div>
       </div>
     </aside>
     <button v-if="sidebarCollapsed" class="sidebar-expand" @click="sidebarCollapsed = false" title="展开侧边栏">»</button>
@@ -53,7 +75,9 @@
       </div>
 
       <!-- 消息列表 -->
-      <div class="messages" ref="msgBox">
+      <!-- 外层只负责给右侧问题导航提供一个定位基准: 导航要贴在消息区(而不是整个对话区)的垂直中线上 -->
+      <div class="messages-wrap" ref="msgWrap">
+      <div class="messages" ref="msgBox" @scroll.passive="onMessagesScroll">
         <div v-if="messages.length === 0 && !streaming" class="welcome">
           <div class="welcome-badge">
             <img :src="logoUrl" class="welcome-icon" alt="DCDR" />
@@ -98,10 +122,17 @@
         </div>
 
         <!-- 已持久化消息项 -->
-        <template v-for="(msg, idx) in messages" :key="msg.id">
+        <!-- 按"回合"而不是按会话里的每条记录渲染: 提问轮(assistant 问 + 用户答 + assistant 接着做)
+             在库里是三条消息、两次模型调用, 但在用户眼里就是一轮 —— 合并成一个块,
+             只留一个头像、一个思考块、一份操作按钮。 -->
+        <template v-for="row in rows" :key="row.key">
+          <div class="turn" :ref="el => setRowEl(row.key, el)">
           <MessageBubble
-            :msg="msg" :streaming="streaming"
-            :editing="editingSeq === msg.seq"
+            :msg="rowMessage(row)"
+            :streaming="streaming"
+            :editing="editingSeq === rowMessage(row).seq"
+            :hide-body="row.type === 'ask' && !row.follow"
+            :merged-trace="row.type === 'ask' ? askRowTrace(row) : null"
             v-model:editBuffer="editBuffer"
             @start-edit="startEdit"
             @save-edit="saveEdit"
@@ -112,31 +143,41 @@
             @preview-image="previewImage"
             @preview-code="openCodePreview"
             @feedback="onFeedbackChange"
-          />
-          <!-- 提问卡片: 挂在发起提问的那条 assistant 消息下面。
-               "是否已回答"由消息顺序判定(下一条是不是 user) —— 不额外存状态,
-               刷新后重放历史也能得到同样的结果。 -->
-          <AskUserCard
-            v-if="askOf(msg)"
-            :questions="askOf(msg)"
-            :answered="isAskAnswered(idx)"
-            :answer-text="isAskAnswered(idx) ? (messages[idx + 1]?.content || '') : ''"
-            @submit="onAskSubmit"
-            @skip="onAskSkip"
-          />
+          >
+            <!-- 提问卡片插在思考与正文之间: 阅读顺序是"想 → 问你 → 给答案", 同一条时间线 -->
+            <template v-if="row.type === 'ask'" #after-trace>
+              <div v-if="editingSeq !== rowMessage(row).seq" class="ask-slot">
+                <AskUserCard
+                  :questions="row.questions"
+                  :answered="!!row.answer"
+                  :answer-text="row.answer ? (row.answer.content || '') : ''"
+                  @submit="onAskSubmit"
+                  @skip="onAskSkip"
+                />
+              </div>
+            </template>
+          </MessageBubble>
+          </div>
         </template>
 
         <!-- 流式输出中(仅当当前会话正是该流归属会话时展示; 切走则不显示, 返回继续) -->
-        <div v-if="streaming && streamSessionId === currentSessionId" class="msg-item msg-assistant">
-          <div class="msg-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
+        <div v-if="streaming && streamSessionId === currentSessionId"
+             class="msg-item msg-assistant" :class="{ 'msg-continuation': streamContinuation }">
+          <div v-if="!streamContinuation" class="msg-avatar"><img :src="logoUrl" class="avatar-img" alt="DCDR" /></div>
           <div class="msg-content">
-            <div class="msg-role">DCDR</div>
-            <div v-if="reasoningContent" class="msg-reasoning">
-              <details open>
-                <summary>思考</summary>
-                <div v-html="renderReasoning(reasoningContent)" @click="onCodeClick"></div>
-              </details>
-            </div>
+            <div v-if="!streamContinuation" class="msg-role">DCDR</div>
+            <!-- 思考流: 思考文本与工具步骤按发生顺序排在同一条时间线上, 边流边跟在最新一步
+                 提问已回答的续写轮不在这里重复开一个思考块 —— 它接在上一块的合并时间线后面 -->
+            <ThinkingTrace
+              v-if="streamTrace.length && !streamContinuation"
+              :segments="streamTrace"
+              live
+              :elapsed="thinkSeconds"
+              :has-answer="!!streamContent"
+              :live-note="traceLiveNote"
+              @undo-op="onUndoOp"
+              @preview-code="openCodePreview"
+            />
             <div v-if="streamImages.length" class="msg-images">
               <div v-for="(img, idx) in streamImages" :key="idx" class="msg-image-wrapper">
                 <img :src="img" :alt="'生成的图片'" class="msg-image"
@@ -164,34 +205,29 @@
                 </div>
               </div>
             </div>
-            <div v-else-if="statusHint" class="msg-status">
+            <!-- 没有时间线可展示时(准备阶段), 状态提示单独一行; 已有时间线时提示跟在时间线末尾 -->
+            <div v-else-if="statusHint && !streamTrace.length" class="msg-status">
               <span class="status-dot"></span>{{ statusHint }}
             </div>
-            <!-- 工具调用过程(实时): 收到 tool_call 块即累积展示, 无需刷新页面 -->
-            <div v-if="streamToolInvocations.length" class="tool-invoke">
-              <button class="tool-invoke-toggle" @click="streamToolOpen = !streamToolOpen">
-                <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.2a4 4 0 0 1 5.3 5.1l-8.6 8.6a2.6 2.6 0 0 1-3.7-3.7l8.6-8.6"/><path d="M4.4 4.4l3.2 3.2"/></svg>
-                <span>已调用 {{ streamToolInvocations.length }} 个工具</span>
-                <span class="tool-caret">{{ streamToolOpen ? '收起' : '展开' }}</span>
-              </button>
-              <div v-if="streamToolOpen" class="tool-invoke-list">
-                <div v-for="(t, i) in streamToolInvocations" :key="t.id || i" class="tool-item">
-                  <div class="tool-item-head">
-                    <span class="tool-badge">{{ t.name || 'tool' }}</span>
-                    <span v-if="t.id" class="tool-id">{{ t.id }}</span>
-                  </div>
-                  <pre v-if="t.arguments" class="tool-args">{{ t.arguments }}</pre>
-                </div>
-              </div>
-            </div>
             <!-- 等待首个内容块期间的思考动画: 覆盖准备阶段(记忆召回/知识库检索/图片识别/路由)与首 token 等待 -->
-            <div v-if="streamContent || reasoningContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)" @click="onCodeClick"></div>
-            <div v-else-if="!statusHint && !pipeline" class="msg-thinking">
+            <div v-if="streamContent" class="msg-bubble streaming" v-html="renderStreamBubble(streamContent)" @click="onCodeClick"></div>
+            <div v-else-if="!statusHint && !pipeline && !streamTrace.length" class="msg-thinking">
               <span class="think-dots"><i></i><i></i><i></i></span>
               <span class="think-label">思考中<template v-if="thinkSeconds > 0">（{{ thinkSeconds }}s）</template></span>
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- 会话内问题导航: 悬浮/点图标展开的浮层, 不占正文宽度 -->
+      <QuestionNav
+        v-if="navVisible"
+        :items="navItems"
+        :active="navActive"
+        :pinned="navPinned"
+        @toggle="navPinned = !navPinned"
+        @jump="jumpTo"
+      />
       </div>
 
       <!-- 输入区域 -->
@@ -445,6 +481,7 @@ import {
 import { ElMessageBox, ElMessage } from 'element-plus'
 import logoUrl from '@/assets/dcdr-logo.png'
 import MessageBubble from '@/components/MessageBubble.vue'
+import ThinkingTrace from '@/components/ThinkingTrace.vue'
 import AskUserCard from '@/components/AskUserCard.vue'
 import WorkspaceSelector from '@/components/WorkspaceSelector.vue'
 import WorkspaceChangePanel from '@/components/WorkspaceChangePanel.vue'
@@ -452,16 +489,17 @@ import ImagePreviewModal from '@/components/ImagePreviewModal.vue'
 import CodePreviewModal from '@/components/CodePreviewModal.vue'
 import ContextUsageRing from '@/components/ContextUsageRing.vue'
 import AgentContextPicker from '@/components/AgentContextPicker.vue'
+import QuestionNav from '@/components/QuestionNav.vue'
+import { buildTraceSegments } from '@/utils/toolTrace'
 import { useMarkdown } from '@/composables/useMarkdown'
 import { useCodeBlock } from '@/composables/useCodeBlock'
 import { useAuthStore } from '@/stores/auth'
 
-const { renderMarkdown, renderBubbleHtml } = useMarkdown()
+const { renderBubbleHtml } = useMarkdown()
 // 流式正文实时渲染 Markdown(含引用角标), 与最终落库的 MessageBubble 完全一致
 const renderStreamBubble = (text) => renderBubbleHtml(text, streamSources.value)
-// 流式态思考: 代码块同样带「复制 / 运行预览」按钮
-const renderReasoning = (text) => renderMarkdown(text, { codeActions: true })
 // 代码块「复制 / 运行预览」: 复制就地完成, 预览弹窗由本组件统一承载
+// (思考里的代码块同理, 由 ThinkingTrace 内部转发 preview-code 到 openCodePreview)
 const codePreview = ref({ visible: false, code: '', lang: '' })
 function openCodePreview({ code, lang }) {
   codePreview.value = { visible: true, code: code || '', lang: lang || '' }
@@ -515,13 +553,77 @@ onUnmounted(() => {
 // 联网搜索三步流水线状态: null 表示非搜索; {stage:1|2|3, done:bool}
 const pipeline = ref(null)
 const streamSources = ref([])
-// 本轮流式回答中已发生的工具调用清单(实时累积)。
-// 后端把 tool_call 块实时下发, 但历史接口只以聚合的 toolInvocations 返回,
-// 若不在此累积, 工具调用面板要等刷新(重新拉取历史)才出现 —— 表现为"不实时"。
-const streamToolInvocations = ref([])
-// 流式态工具调用面板是否展开(默认收起, 与历史消息一致)
-const streamToolOpen = ref(false)
+// ===== 思考流(trace) =====
+/**
+ * 本轮的时间线段落: {kind:'reason', text} / {kind:'tool', ...} / {kind:'note', text}。
+ * <p>为什么要合并成一条数组: 后端把思考 token 与 tool_call 当作两类独立事件下发,
+ * 分别塞进两个 ref 就只能渲染成"思考面板 + 工具面板"两块, 读到的顺序变成
+ * "所有想法 → 所有工具"。按到达顺序落到同一条数组里, 才是模型真实的"想了→做了→又想了"。
+ */
+const streamTrace = ref([])
+/** 本轮工具调用清单(供落库与刷新后对齐): 从时间线里派生, 不再单独维护一份 */
+const streamToolInvocations = computed(() =>
+  streamTrace.value.filter(s => s.kind === 'tool')
+    .map(s => ({ name: s.name, id: s.id, arguments: s.args })))
+/** 工具执行中的实时提示会重复描述正在跑的那一步, 交给时间线自己的行状态就够了 */
+const traceLiveNote = computed(() => (/^正在调用工具/.test(statusHint.value) ? '' : statusHint.value))
+
+/** 追加思考文本: 同一次推理是逐 token 到达的, 必须追加到最后一段而不是每 token 新起一段 */
+function appendReasoning(text) {
+  if (!text) return
+  const last = streamTrace.value[streamTrace.value.length - 1]
+  if (last && last.kind === 'reason') last.text += text
+  else streamTrace.value.push({ kind: 'reason', text })
+}
+
+/** 工具开始执行: 先入时间线并标记 running, 结果到达时原地翻成 done/error */
+function beginToolStep(call) {
+  streamTrace.value.push({
+    kind: 'tool',
+    name: call.tool,
+    id: call.id,
+    args: call.args,
+    result: '',
+    status: 'running',
+    startedAt: Date.now(),
+    ms: null
+  })
+}
+
+/**
+ * 工具执行结束。
+ * <p>优先按后端下发的 tool_call_id 精确配对 —— 同一批里两个同名工具时，按名字回配会串位。
+ * 老分块没有 id 时退回按工具名倒序找"仍在运行"的最后一步（串行执行时先入的必先出）。
+ */
+function finishToolStep(chunk) {
+  const steps = streamTrace.value
+  const result = chunk.result
+  let idx = -1
+  if (chunk.id) {
+    idx = steps.findIndex(s => s.kind === 'tool' && s.id === chunk.id && s.status === 'running')
+  }
+  if (idx < 0) {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const s = steps[i]
+      if (s.kind !== 'tool' || s.name !== chunk.tool || s.status !== 'running') continue
+      idx = i
+      break
+    }
+  }
+  if (idx < 0) return
+  const s = steps[idx]
+  s.status = String(result || '').includes('工具执行失败') ? 'error' : 'done'
+  s.result = result || ''
+  s.ms = Date.now() - (s.startedAt || Date.now())
+}
+
+/** 出错收尾: 仍在 running 的步骤不会再有结果, 标成失败, 避免时间线上永远转圈 */
+function failRunningTools() {
+  streamTrace.value.forEach(s => { if (s.kind === 'tool' && s.status === 'running') s.status = 'error' })
+}
 const msgBox = ref(null)
+/** 消息区外层(含右侧导航带), 用来判断"还有没有地方放导航" */
+const msgWrap = ref(null)
 const editingId = ref(null)
 const editText = ref('')
 const contextWarning = ref(null)
@@ -701,15 +803,6 @@ async function loadAgents() {
 
 /* ---------- V3.4 统一「+」入口: 已选上下文的 chips ---------- */
 
-/**
- * 轮次 = 用户提问的条数。
- * <p>
- * 不按消息条数算: 一问一答在库里是两行(user + assistant), 显示"2 条"会让用户以为自己
- * 已经聊了两轮, 于是过早去开新会话。用 user 消息数当轮次, 恰好一问一答算一条 ——
- * 且"刚发出、还没回复"的那一轮也会被算进去, 这才是用户心里的一轮。
- */
-const turns = computed(() => messages.value.filter((m) => m.role === 'user').length)
-
 /** 已选知识库(取名称用于 chips, 同时保证只展示当前可见的库) */
 const pickedKbs = computed(() =>
   selectableKnowledgeBases.value.filter((k) => selectedKbIds.value.includes(k.id))
@@ -879,11 +972,63 @@ function isImage(file) {
  * "定时任务 · xxx"里翻自己的会话。显式传 user 而不是依赖后端默认值,
  * 是为了让这里出现"要不要改取哪些来源"的意图变得可见。
  */
+/* ---------- 会话导航栏: 搜索 + 按时间分组 ---------- */
+
+/**
+ * 会话搜索词。
+ * <p>只过滤左侧列表，不影响消息内容 —— 全文检索需要后端支持，
+ * 这里对应的是"我记得那条对话标题里有什么"这个更常见的场景。
+ */
+const sessionQuery = ref('')
+
+const filteredSessions = computed(() => {
+  const q = sessionQuery.value.trim().toLowerCase()
+  if (!q) return sessions.value
+  return sessions.value.filter((s) => (s.title || '').toLowerCase().includes(q))
+})
+
+/**
+ * 会话归到哪个日期桶。
+ * <p>后端给的是不带时区的 {@code yyyy-MM-ddTHH:mm:ss}，{@code new Date()} 按本地时区解析，
+ * 与本机时钟一致；解析失败保守归入"更早"，不让一条坏数据把分组顶乱。
+ */
+function dayBucket(iso) {
+  if (!iso) return 'earlier'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'earlier'
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  const startOfYesterday = new Date(startOfToday)
+  startOfYesterday.setDate(startOfYesterday.getDate() - 1)
+  if (d.getTime() >= startOfToday) return 'today'
+  if (d.getTime() >= startOfYesterday.getTime()) return 'yesterday'
+  return 'earlier'
+}
+
+/**
+ * 分组后的会话（空组不下发）。
+ * <p>按"今天 / 昨天 / 更早"切分：会话一多，纯时间倒序排下来，找三天前的那条只能靠
+ * 记住滚动位置。空组过滤掉，否则新用户会看到三个空标题。
+ */
+const sessionGroups = computed(() => {
+  const buckets = { today: [], yesterday: [], earlier: [] }
+  for (const s of filteredSessions.value) {
+    buckets[dayBucket(s.updatedAt || s.createdAt)].push(s)
+  }
+  return [
+    { key: 'today', label: '今天', items: buckets.today },
+    { key: 'yesterday', label: '昨天', items: buckets.yesterday },
+    { key: 'earlier', label: '更早', items: buckets.earlier }
+  ].filter((g) => g.items.length)
+})
+
 async function loadSessions() { sessions.value = await getSessions('user') }
 
 async function newSession() {
   const s = await createSession({ title: 'New Chat', model: props.currentModel })
   sessions.value.unshift(s)
+  // 清掉搜索词: 否则新建的会话被上一轮的过滤条件挡住, 用户会以为"新建没成功"
+  sessionQuery.value = ''
   currentSessionId.value = s.id
   messages.value = []
   // 新会话没有快照与摘要: 清空而不是沿用上一个会话的
@@ -1090,19 +1235,248 @@ function askOf(msg) {
   }
 }
 
-/** 提问是否已回答: 紧跟着的下一条就是用户消息(提问轮必然以用户回复收尾) */
-function isAskAnswered(idx) {
-  return messages.value[idx + 1]?.role === 'user'
+/**
+ * 该条消息是不是「对提问的回答」：它前面最近的一条非工具消息是带 ask_user 的助手消息。
+ * <p>判定靠位置（不是在消息上存标记）：刷新后重放历史也能得到同样结果，不必新增字段。
+ * <p>为什么不只认"紧邻的前一条"：落库顺序可能错乱、中间也可能夹着被隐藏的工具消息，
+ * 只看 {@code idx - 1} 会漏判，于是"回答"被当成新一轮提问。
+ */
+function isAskAnswerIn(list, idx) {
+  if (idx <= 0) return false
+  if (list[idx]?.role !== 'user') return false
+  for (let j = idx - 1; j >= 0; j--) {
+    const prev = list[j]
+    if (!prev) continue
+    if (prev.role === 'tool') continue
+    if (prev.role === 'assistant') return !!askOf(prev)
+    if (prev.role === 'user') return false
+  }
+  return false
 }
 
-/** 卡片提交: 答案结构化回传, 气泡文案用可读文本(用户能看懂自己在回什么) */
+function isAskAnswerAt(idx) {
+  // 流式续写判定看的是本地列表（此刻还没有 seq，orderedMessages 会原样返回），
+  // 用 messages 直接判即可 —— 也避免在它前面引用后定义的 orderedMessages。
+  return isAskAnswerIn(messages.value, idx)
+}
+
+/** 正在流式生成的这一条，是不是"答完提问之后的续写"（上一轮刚问过） */
+const streamContinuation = computed(() =>
+  messages.value.length > 0 && isAskAnswerAt(messages.value.length - 1))
+
+/**
+ * 按 seq 排好的消息列表（折叠与计数都以它为准）。
+ * <p>只在<b>每条消息都有 seq</b> 时排序：本地刚 push、还没回写 seq 的消息不参与，
+ * 否则 undefined 会把新消息排到最前面，流式输出看起来像"跳到顶部"。
+ */
+const orderedMessages = computed(() => {
+  const list = messages.value
+  if (!list.length || list.some((m) => !m || m.seq == null)) return list
+  return [...list].sort((a, b) => a.seq - b.seq)
+})
+
+/**
+ * 把消息列表折成「回合」。
+ * <p>提问一轮在库里是三条：assistant(问, 正文是占位文案) → user(答) → assistant(接着做)。
+ * 用户视角是一轮，所以这里合成一条 row：
+ * <ul>
+ *   <li>ask 轮：渲染成同一个气泡，卡片插在思考与正文之间，只保留一个头像与一份操作；</li>
+ *   <li>其余消息：原样一条 row。</li>
+ * </ul>
+ * <p><b>为什么不要求"答案紧邻提问"</b>：后端落库是异步的，曾出现 user(答) 先于
+ * assistant(问) 拿到 seq 的情况，紧邻判定会让整轮退化成两块（界面上看着像两轮）。
+ * 这里改为向后找第一条 user 当答案、遇到下一条 assistant 才放弃，并按 seq 排序兜底。
+ * 合并只影响展示 —— 会话上下文、seq、反馈键都还是原来的条目，模型看到的历史不受影响。
+ */
+const rows = computed(() => {
+  const list = orderedMessages.value
+  const out = []
+  for (let i = 0; i < list.length; i++) {
+    const m = list[i]
+    const questions = askOf(m)
+    if (!questions) {
+      out.push({ type: 'msg', key: m.id, msg: m })
+      continue
+    }
+    // 答案：提问之后的第一条 user。中间若又出现 assistant，说明这次提问没人回答
+    // （用户直接开了新话题，或那条回答没落库）—— 卡片照样展示，但不硬凑一个答案。
+    let ansIdx = -1
+    for (let j = i + 1; j < list.length; j++) {
+      const role = list[j]?.role
+      if (role === 'user') { ansIdx = j; break }
+      if (role === 'assistant') break
+    }
+    const answer = ansIdx > 0 ? list[ansIdx] : null
+    // 续写：答案之后的第一条 assistant；若又是一次提问就不并进来 ——
+    // 否则两轮提问会缠成一块，卡片也没法各归各位
+    let follow = null
+    let followIdx = -1
+    if (answer) {
+      for (let j = ansIdx + 1; j < list.length; j++) {
+        const nm = list[j]
+        if (nm?.role === 'user') break
+        if (nm?.role === 'assistant') {
+          if (!askOf(nm)) { follow = nm; followIdx = j }
+          break
+        }
+      }
+    }
+    out.push({ type: 'ask', key: m.id, ask: m, questions, answer, follow })
+    i = followIdx > 0 ? followIdx : (answer ? ansIdx : i)
+  }
+  return out
+})
+
+/**
+ * 轮次 = 用户<b>真正发起</b>的提问次数。
+ * <p>
+ * 不按 user 消息条数算：回答提问卡片（"邵阳"）也是一条 user 消息，但它属于上一轮的追问，
+ * 按条数就会把一次交互算成两轮。反过来，也不按消息区的块数（{@code rows.length}）算 ——
+ * 一次交互本来就是"用户气泡 + AI 块"两块，块数天然是轮次的两倍。
+ * <p>
+ * 口径：user 消息里，凡是紧跟在 ask 之后的（{@link isAskAnswerIn}）都不计，
+ * 于是"问天气 → 卡片问城市 → 答邵阳 → 多云"= 1 轮。
+ */
+const turns = computed(() => {
+  const list = orderedMessages.value
+  let n = 0
+  for (let i = 0; i < list.length; i++) {
+    if (list[i]?.role !== 'user') continue
+    if (isAskAnswerIn(list, i)) continue
+    n++
+  }
+  return n
+})
+
+/** row 的主消息：提问轮有后续回答时用回答那条（操作/反馈/seq 都该落在它身上） */
+function rowMessage(row) {
+  return row.type === 'ask' ? (row.follow || row.ask) : row.msg
+}
+
+/**
+ * 提问轮的合并时间线：提问那次调用的"想 + 问"，接上回答之后的"想 + 做"。
+ * <p>回答还没落库（正在生成）时把实时时间线接上 —— 生成过程中也是一轮，不会先出现两个思考块再合并。
+ */
+function askRowTrace(row) {
+  const segs = buildTraceSegments(row.ask)
+  if (row.follow) return segs.concat(buildTraceSegments(row.follow))
+  // 只有"正在续写的就是这次提问"才接实时时间线。历史里若有"已回答但无后续回答"的提问轮
+  // (续写被中断/失败), 它同样没有 follow, 不按答案身份过滤就会把本轮的实时思考接到旧卡片上。
+  const isCurrentContinuation = streaming.value && streamContinuation.value
+    && row.answer === messages.value[messages.value.length - 1]
+  if (isCurrentContinuation) return segs.concat(streamTrace.value)
+  return segs.length ? segs : null
+}
+
+// ===== 右侧问题导航 =====
+/** 回合 key → DOM 元素, 供导航跳转与"当前在哪一条"的判断 */
+const rowEls = new Map()
+function setRowEl(key, el) {
+  if (el) rowEls.set(key, el)
+  else rowEls.delete(key)
+}
+
+/**
+ * 导航条目：只列用户真的问过的问题。
+ * <p>不列助手回答（它可能很长，列进去就变成第二份正文），也不列提问卡片的回答
+ * （那条已被折进卡片，不是独立问题）。
+ */
+const navItems = computed(() => {
+  const out = []
+  rows.value.forEach((row) => {
+    const m = row.type === 'msg' ? row.msg : null
+    if (!m || m.role !== 'user') return
+    const text = (m.content || '').replace(/\s+/g, ' ').trim()
+    if (!text) return
+    out.push({ key: row.key, text })
+  })
+  return out
+})
+
+/** 当前所处的问题下标（按"哪一条已经滚过视口上沿"算） */
+const navActive = ref(0)
+/** 消息区宽度：窄了就不显示导航 —— 宁可少一个便利功能，也不能压住正文 */
+const navRoom = ref(0)
+/** 是否被"钉住"（用户点了图标）。悬浮展开是临时态，由组件自己管理，不落在这里 */
+const navPinned = ref(false)
+/** 有没有条件放这个导航（问题够多 + 宽度够） */
+const navVisible = computed(() => navItems.value.length > 1 && navRoom.value >= 760)
+
+// 窗口变窄 / 切到短会话时取消钉住, 避免"钉着一个已不存在的面板"这种状态残留
+watch(navVisible, (v) => { if (!v) navPinned.value = false })
+
+let navScrollRaf = 0
+function onMessagesScroll() {
+  if (navScrollRaf) return
+  navScrollRaf = requestAnimationFrame(() => {
+    navScrollRaf = 0
+    syncNavActive()
+  })
+}
+
+function syncNavActive() {
+  const box = msgBox.value
+  if (!box) return
+  // 视口上沿往下 80px: 刚滚过去的那条就算"当前", 而不是要求它正好在最顶上
+  const line = box.getBoundingClientRect().top + 80
+  let idx = 0
+  navItems.value.forEach((item, i) => {
+    const el = rowEls.get(item.key)
+    if (el && el.getBoundingClientRect().top <= line) idx = i
+  })
+  navActive.value = idx
+}
+
+function jumpTo(item) {
+  const el = rowEls.get(item.key)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+let navObserver = null
+onMounted(() => {
+  // 观察外层而不是消息区本身: 导航一出现就会改消息区的 padding-right,
+  // 拿被改的那个元素的宽度做判断会形成"显示→变窄→隐藏→变宽"的抖动
+  const el = msgWrap.value
+  if (!el) return
+  navRoom.value = el.clientWidth
+  if (typeof ResizeObserver === 'undefined') return
+  // 侧栏折叠/窗口缩放都会改变这块区域的宽度, 用观察者而不是只监听 window resize:
+  // 侧栏宽度是过渡动画, window 不会触发事件
+  navObserver = new ResizeObserver((entries) => {
+    navRoom.value = entries[0]?.contentRect?.width || 0
+  })
+  navObserver.observe(el)
+})
+onUnmounted(() => { navObserver?.disconnect() })
+
+// 消息增减(加载历史 / 新的一轮)后重算"当前问题"
+watch(() => navItems.value.length, () => nextTick(syncNavActive))
+
+/**
+ * 卡片提交: 答案结构化回传, 气泡文案用可读文本(用户能看懂自己在回什么)。
+ * <p>会话必须已经存在 —— 这里刻意不落回 {@code send()} 的"无会话就新建"分支:
+ * 提问的回答属于当前这条对话, 一旦新建会话, 用户会看到"问题在一个对话、回答在另一个对话"。
+ */
 function onAskSubmit({ answers, text }) {
+  if (!requireAskSession()) return
   send({ questionAnswer: answers, text })
 }
 
 /** 跳过: 仍然发一条消息 —— 让模型明确"用户不想回答", 而不是以为自己在干等 */
 function onAskSkip() {
+  if (!requireAskSession()) return
   send({ questionAnswer: {}, text: '跳过这些问题，请按你的判断继续' })
+}
+
+/**
+ * 回答提问前校验会话确实还在: 只判断 id 非空不够 —— 会话被删后 id 可能还没清,
+ * 那时 send() 会走"无会话就新建"的分支, 回答就落到另一条对话里了。
+ */
+function requireAskSession() {
+  const id = currentSessionId.value
+  if (id && sessions.value.some(s => s.id === id)) return true
+  ElMessage.warning('当前会话已失效，请刷新页面后重新提问')
+  return false
 }
 
 function scrollBottom() { nextTick(() => { if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight }) }
@@ -1189,8 +1563,7 @@ async function send(opts = {}) {
   reasoningContent.value = ''
   streamImages.value = []
   streamSources.value = []
-  streamToolInvocations.value = []
-  streamToolOpen.value = false
+  streamTrace.value = []
   statusHint.value = ''
   pipeline.value = null
   interruptedRef.value = false
@@ -1224,16 +1597,12 @@ async function send(opts = {}) {
         }
         scrollBottom(); return
       }
-      if (chunk.type === 'error') { statusHint.value = ''; pipeline.value = null; streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
-      if (chunk.type === 'interrupted') { statusHint.value = ''; pipeline.value = null; interruptedRef.value = true; return }
+      if (chunk.type === 'error') { statusHint.value = ''; pipeline.value = null; failRunningTools(); streamContent.value += '\n[错误] ' + (chunk.message || ''); return }
+      if (chunk.type === 'interrupted') { statusHint.value = ''; pipeline.value = null; failRunningTools(); interruptedRef.value = true; return }
       if (chunk.type === 'context_warning') { statusHint.value = ''; contextWarning.value = chunk.message || '对话已较长，建议开启新对话'; return }
       if (chunk.type === 'tool_call') {
-        // 实时累积工具调用明细, 供"已调用 N 个工具"面板边流边展示(否则只能刷新后从历史拿到)
-        streamToolInvocations.value.push({
-          name: chunk.tool,
-          id: chunk.id,
-          arguments: chunk.args
-        })
+        // 工具步骤直接进时间线: 边流边出现在思考里, 不必刷新页面等历史接口的聚合结果
+        beginToolStep(chunk)
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在调用工具生成图片…'
         } else if (chunk.tool === 'web_search') {
@@ -1245,6 +1614,7 @@ async function send(opts = {}) {
       }
       if (chunk.type === 'tool_result') {
         statusHint.value = ''
+        finishToolStep(chunk)
         if (chunk.tool === 'web_search') {
           pipeline.value = pipeline.value || { stage: 0, done: false }
           pipeline.value.stage = 3
@@ -1284,7 +1654,7 @@ async function send(opts = {}) {
       if (chunk.type !== 'chunk') return
       statusHint.value = ''
       const ok = (v) => v != null
-      if (ok(chunk.reasoningContent)) { reasoningContent.value += chunk.reasoningContent; scrollBottom() }
+      if (ok(chunk.reasoningContent)) { reasoningContent.value += chunk.reasoningContent; appendReasoning(chunk.reasoningContent); scrollBottom() }
       if (ok(chunk.content)) { streamContent.value += chunk.content; scrollBottom() }
     },
     () => {
@@ -1319,8 +1689,7 @@ async function send(opts = {}) {
       streamContent.value = ''
       reasoningContent.value = ''
       streamImages.value = []
-      streamToolInvocations.value = []
-      streamToolOpen.value = false
+      streamTrace.value = []
       statusHint.value = ''
       pipeline.value = null
       streamSessionId.value = null
@@ -1344,6 +1713,10 @@ async function send(opts = {}) {
                 // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
                 messages.value[i].sessionId = m.sessionId
                 messages.value[i].feedback = m.feedback || undefined
+                // 时间线(思考↔工具顺序): 流式 chunk 不带 trace, 本地这条消息一直缺它,
+                // buildTraceSegments 因而退回"整段思考 + 全部工具"的旧排法 —— 与刷新后看到的不一致。
+                // 后端随落库记好了 trace, 这里回写让"刚生成"和"刷新后"是同一条时间线。
+                if (m.trace?.length) messages.value[i].trace = m.trace
                 // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
                 if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
                   messages.value[i].toolInvocations = m.toolInvocations
@@ -1362,7 +1735,7 @@ async function send(opts = {}) {
           .catch(() => {})
       }
     },
-    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; statusHint.value = ''; ElMessage.error('对话请求失败：' + (e?.message || '网络异常')) }
+    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; failRunningTools(); statusHint.value = ''; ElMessage.error('对话请求失败：' + (e?.message || '网络异常')) }
   )
 }
 
@@ -1386,8 +1759,7 @@ async function sendImage() {
   streamContent.value = ''
   reasoningContent.value = ''
   streamImages.value = []
-  streamToolInvocations.value = []
-  streamToolOpen.value = false
+  streamTrace.value = []
   statusHint.value = '正在生成图片，请稍候…'
   interruptedRef.value = false
   scrollBottom()
@@ -1405,11 +1777,7 @@ async function sendImage() {
         scrollBottom(); return
       }
       if (chunk.type === 'tool_call') {
-        streamToolInvocations.value.push({
-          name: chunk.tool,
-          id: chunk.id,
-          arguments: chunk.args
-        })
+        beginToolStep(chunk)
         if (chunk.tool === 'image_generation') {
           statusHint.value = '正在生成图片…'
         } else if (chunk.tool === 'web_search') {
@@ -1421,6 +1789,7 @@ async function sendImage() {
       }
       if (chunk.type === 'tool_result') {
         statusHint.value = ''
+        finishToolStep(chunk)
         if (chunk.tool === 'web_search') {
           pipeline.value = pipeline.value || { stage: 0, done: false }
           pipeline.value.stage = 3
@@ -1447,7 +1816,7 @@ async function sendImage() {
       }
       if (chunk.type !== 'chunk') return
       statusHint.value = ''
-      if (chunk.reasoningContent) { reasoningContent.value += chunk.reasoningContent; scrollBottom() }
+      if (chunk.reasoningContent) { reasoningContent.value += chunk.reasoningContent; appendReasoning(chunk.reasoningContent); scrollBottom() }
       if (chunk.content) { streamContent.value += chunk.content; scrollBottom() }
     },
     () => {
@@ -1488,6 +1857,10 @@ async function sendImage() {
                 // 一并回写 sessionId / feedback: 回答反馈以 (sessionId, seq) 定位, 缺一则无法提交
                 messages.value[i].sessionId = m.sessionId
                 messages.value[i].feedback = m.feedback || undefined
+                // 时间线(思考↔工具顺序): 流式 chunk 不带 trace, 本地这条消息一直缺它,
+                // buildTraceSegments 因而退回"整段思考 + 全部工具"的旧排法 —— 与刷新后看到的不一致。
+                // 后端随落库记好了 trace, 这里回写让"刚生成"和"刷新后"是同一条时间线。
+                if (m.trace?.length) messages.value[i].trace = m.trace
                 // 后端聚合的工具调用清单作为兜底: 本地流式未累积到(如期间切换过会话)时补齐
                 if (!messages.value[i].toolInvocations && m.toolInvocations?.length) {
                   messages.value[i].toolInvocations = m.toolInvocations
@@ -1506,7 +1879,7 @@ async function sendImage() {
           .catch(() => {})
       }
     },
-    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; streamImages.value = []; statusHint.value = ''; ElMessage.error('文生图请求失败：' + (e?.message || '网络异常')) }
+    (e) => { streaming.value = false; streamSessionId.value = null; streamContent.value = ''; reasoningContent.value = ''; streamImages.value = []; failRunningTools(); statusHint.value = ''; ElMessage.error('文生图请求失败：' + (e?.message || '网络异常')) }
   )
 }
 
@@ -1594,7 +1967,13 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 /* 侧边栏 */
 .sidebar { width: 240px; background: var(--dcdr-surface-glass); backdrop-filter: blur(14px); border-right: 1px solid var(--dcdr-border); display: flex; flex-direction: column; transition: width 0.25s ease; }
 .sidebar.collapsed { width: 0; min-width: 0; border-right: none; overflow: hidden; }
-.sidebar-header { display: flex; align-items: center; gap: 8px; padding: 14px 12px; border-bottom: 1px solid var(--dcdr-border); }
+.sidebar-header { display: flex; align-items: center; gap: 8px; padding: 14px 12px 6px; }
+.sidebar-title { font-size: 13px; font-weight: 500; color: var(--dcdr-text-1); letter-spacing: 0.2px; }
+/* 会话数: 只在有会话时出现, 用小圆角 pill —— 它是"这里还有多少东西"的量感, 不是标题的一部分 */
+.sidebar-count { font-family: var(--dcdr-font-mono); font-size: 10px; line-height: 16px; padding: 0 6px; border-radius: 8px; color: var(--dcdr-text-3); background: var(--dcdr-hover); }
+.sidebar-header .collapse-btn { margin-left: auto; }
+/* 导航区: 新建 + 搜索。与下面的列表用一条分隔线切开, 滚动时标题与入口不会跟着走 */
+.sidebar-nav { display: flex; flex-direction: column; gap: 8px; padding: 0 12px 10px; border-bottom: 1px solid var(--dcdr-border); }
 .collapse-btn { flex: none; width: 26px; height: 26px; border: none; border-radius: 6px; background: transparent; color: var(--dcdr-text-3); cursor: pointer; font-size: 15px; line-height: 1; transition: all 0.15s; }
 .collapse-btn:hover { background: var(--dcdr-hover); color: var(--dcdr-text-1); }
 .sidebar-expand { position: absolute; left: 0; top: 14px; z-index: 50; width: 26px; height: 36px; border: none; border-radius: 0 8px 8px 0; background: var(--dcdr-accent); color: #fff; cursor: pointer; font-size: 16px; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
@@ -1690,8 +2069,21 @@ onMounted(() => { loadSessions(); loadContextLimit() })
   .context-panel { display: none; }
   .panel-expand { display: none; }
 }
-.new-btn { flex: 1; min-width: 0; height: 38px; color: var(--dcdr-accent-soft); font-size: 13px; font-weight: 500; cursor: pointer; border-radius: var(--dcdr-radius-inner); border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash); transition: background 0.2s ease, border-color 0.2s ease; }
+.new-btn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; height: 36px; color: var(--dcdr-accent-soft); font-size: 12.5px; font-weight: 500; cursor: pointer; border-radius: var(--dcdr-radius-inner); border: 1px solid var(--dcdr-accent-line); background: var(--dcdr-accent-wash); transition: background 0.2s ease, border-color 0.2s ease; }
 .new-btn:hover { background: var(--dcdr-active); border-color: var(--dcdr-accent); }
+.new-icon { width: 14px; height: 14px; flex: none; }
+/* 搜索框: label 包 input, 点图标也能聚焦; focus-within 才亮边框, 平时保持安静 */
+.session-search { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 8px; border-radius: 8px; background: var(--dcdr-surface-faint); border: 1px solid var(--dcdr-border); transition: border-color 0.15s ease, background 0.15s ease; }
+.session-search:focus-within { border-color: var(--dcdr-accent-line); background: var(--dcdr-surface); }
+.search-icon { width: 13px; height: 13px; flex: none; color: var(--dcdr-text-3); }
+.session-search input { flex: 1; min-width: 0; border: none; background: transparent; outline: none; color: var(--dcdr-text-1); font-size: 12px; font-family: inherit; }
+.session-search input::placeholder { color: var(--dcdr-text-3); }
+.search-clear { flex: none; width: 16px; height: 16px; padding: 0; border: none; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; line-height: 1; cursor: pointer; color: var(--dcdr-text-2); background: var(--dcdr-hover); }
+.search-clear:hover { color: var(--dcdr-text-1); }
+/* 分组标签: 等宽小字, 与标题形成层级; 首个分组不留上边距, 否则列表顶部会空一块 */
+.session-group { padding: 8px 6px 4px; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.6px; color: var(--dcdr-text-3); }
+.session-group:first-child { padding-top: 2px; }
+.session-empty { padding: 18px 10px; text-align: center; font-size: 11.5px; line-height: 1.7; color: var(--dcdr-text-3); }
 .session-list { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .session-list::-webkit-scrollbar { width: 4px; }
 .session-list::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 4px; }
@@ -1721,7 +2113,9 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .chat-area { flex: 1; display: flex; flex-direction: column; background: transparent; position: relative; overflow: hidden; }
 /* min-height: 0 让消息区能在 flex 布局里真正收缩: 输入框长高时该被压缩的是消息区(它自己会滚动),
    而不是输入区 —— 否则长输入会被父容器的 overflow:hidden 直接裁掉 */
+.messages-wrap { position: relative; flex: 1 1 0; min-height: 0; display: flex; }
 .messages { flex: 1 1 0; min-height: 0; overflow-y: auto; padding: 24px 32px; display: flex; flex-direction: column; }
+.turn { width: 100%; }
 .messages::-webkit-scrollbar { width: 6px; }
 .messages::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 6px; }
 
@@ -1747,6 +2141,14 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .quick-text i { font-size: 10.5px; font-style: normal; color: var(--dcdr-text-3); }
 .welcome-hint { margin-top: 22px; font-family: var(--dcdr-font-mono); font-size: 9.5px; letter-spacing: 0.2px; color: var(--dcdr-text-3); }
 
+/* 提问卡片: 已并入消息正文列(由 MessageBubble 的插槽渲染), 只负责与上下文的间距 */
+.ask-slot { margin: 4px 0 12px; }
+.ask-slot :deep(.ask-card) { margin-left: 0; max-width: 100%; }
+
+/* 续接块(提问已回答之后继续生成的这一条): 不重复头像, 与上一块贴紧 —— 视觉上是一轮回答的继续 */
+.msg-item.msg-continuation { margin-top: -16px; }
+.msg-item.msg-continuation .msg-content { padding-left: 54px; }
+
 /* 流式输出项(复用消息项样式) */
 .msg-item { display: flex; gap: 14px; margin-bottom: 28px; max-width: 900px; margin-left: auto; margin-right: auto; width: 100%; animation: fadeInUp 0.3s ease; }
 @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -1758,12 +2160,7 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .msg-image-wrapper { position: relative; }
 .msg-image { max-width: 280px; max-height: 240px; border-radius: 12px; object-fit: cover; cursor: pointer; transition: all 0.25s ease; box-shadow: 0 4px 12px rgba(0,0,0,0.1); border: 1px solid var(--dcdr-border); }
 .msg-image:hover { transform: scale(1.02); box-shadow: 0 6px 20px rgba(0,0,0,0.15); }
-.msg-reasoning { margin-bottom: 8px; }
-.msg-reasoning details { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 10px; padding: 10px 14px; }
-.msg-reasoning summary { cursor: pointer; color: var(--dcdr-text-2); font-size: 12px; font-weight: 500; user-select: none; outline: none; padding: 4px 0; }
-.msg-reasoning details > div { color: var(--dcdr-text-2); font-size: 13px; line-height: 1.7; margin-top: 10px; }
-.msg-reasoning details > div :deep(pre) { background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 8px; overflow-x: auto; }
-.msg-reasoning details > div :deep(code) { background: var(--dcdr-surface); padding: 2px 8px; border-radius: 4px; }
+/* 思考: 由 ThinkingTrace 承载(思考文本 + 工具步骤同一条时间线) */
 .msg-bubble { padding: 14px 18px; border-radius: 14px; background: var(--dcdr-surface); border: 1px solid var(--dcdr-border); font-size: 14px; line-height: 1.8; box-shadow: 0 2px 8px rgba(0,0,0,0.04); word-break: break-word; }
 .msg-bubble.streaming { border-color: var(--dcdr-accent-wash); }
 .msg-bubble :deep(pre) { background: var(--dcdr-code-bg); color: var(--dcdr-code-fg); padding: 16px; border-radius: 10px; overflow-x: auto; margin: 10px 0; }
@@ -1771,31 +2168,17 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .msg-bubble :deep(p) { margin: 8px 0; }
 .msg-bubble :deep(img) { max-width: 100%; border-radius: 8px; margin: 8px 0; }
 /* 代码块: 语言标签 + 复制 / 运行预览 工具条(与 MessageBubble 内的历史消息保持一致) */
-.msg-bubble :deep(.code-block), .msg-reasoning details > div :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid var(--dcdr-code-border); }
-.msg-bubble :deep(.code-block pre), .msg-reasoning details > div :deep(.code-block pre) { margin: 0; border-radius: 0; }
-.msg-bubble :deep(.code-block-bar), .msg-reasoning details > div :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--dcdr-code-bar); border-bottom: 1px solid var(--dcdr-code-border); }
-.msg-bubble :deep(.code-lang), .msg-reasoning details > div :deep(.code-lang) { font-size: 11px; color: var(--dcdr-code-dim); font-family: monospace; letter-spacing: 0.5px; }
-.msg-bubble :deep(.code-actions), .msg-reasoning details > div :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
-.msg-bubble :deep(.code-action), .msg-reasoning details > div :deep(.code-action) { border: 1px solid var(--dcdr-code-border); background: transparent; color: var(--dcdr-code-dim); font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
-.msg-bubble :deep(.code-action:hover), .msg-reasoning details > div :deep(.code-action:hover) { border-color: var(--dcdr-accent); color: #eaf2ff; background: rgba(46,167,255,0.18); }
-.msg-bubble :deep(.code-action.is-done), .msg-reasoning details > div :deep(.code-action.is-done) { border-color: var(--dcdr-success); color: var(--dcdr-code-ok); }
+.msg-bubble :deep(.code-block) { margin: 10px 0; border-radius: 11px; overflow: hidden; border: 1px solid var(--dcdr-code-border); }
+.msg-bubble :deep(.code-block pre) { margin: 0; border-radius: 0; }
+.msg-bubble :deep(.code-block-bar) { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--dcdr-code-bar); border-bottom: 1px solid var(--dcdr-code-border); }
+.msg-bubble :deep(.code-lang) { font-size: 11px; color: var(--dcdr-code-dim); font-family: monospace; letter-spacing: 0.5px; }
+.msg-bubble :deep(.code-actions) { margin-left: auto; display: flex; gap: 6px; }
+.msg-bubble :deep(.code-action) { border: 1px solid var(--dcdr-code-border); background: transparent; color: var(--dcdr-code-dim); font-size: 11px; line-height: 1.6; padding: 2px 10px; border-radius: 6px; cursor: pointer; transition: all 0.15s ease; }
+.msg-bubble :deep(.code-action:hover) { border-color: var(--dcdr-accent); color: #eaf2ff; background: rgba(46,167,255,0.18); }
+.msg-bubble :deep(.code-action.is-done) { border-color: var(--dcdr-success); color: var(--dcdr-code-ok); }
 .msg-status { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 12px; background: var(--dcdr-accent-wash); color: var(--dcdr-accent); font-size: 14px; }
 .msg-status .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dcdr-accent); animation: statusPulse 1s ease-in-out infinite; }
 @keyframes statusPulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.2); } }
-/* 流式态工具调用面板(样式与 MessageBubble 内的历史消息面板保持一致) */
-.tool-invoke { margin-top: 8px; border: 1px solid var(--dcdr-border); border-radius: 10px; background: var(--dcdr-surface); overflow: hidden; }
-.tool-invoke-toggle { width: 100%; display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: transparent; border: none; cursor: pointer; font-size: 12px; color: var(--dcdr-text-2); text-align: left; }
-.tool-invoke-toggle:hover { background: var(--dcdr-bg-subtle); }
-/* 图标必须显式给宽高: SVG 只有 viewBox 时默认按 300×150 渲染, 写 font-size 完全不起作用,
-   流式工具调用面板里的扳手图标就会撑成一整块(与 MessageBubble 的历史面板不一致) */
-.tool-invoke .tool-icon { width: 13px; height: 13px; flex: none; }
-.tool-invoke .tool-caret { margin-left: auto; color: var(--dcdr-text-3); font-size: 11px; }
-.tool-invoke-list { padding: 0 12px 10px; display: flex; flex-direction: column; gap: 8px; }
-.tool-invoke .tool-item { border: 1px solid var(--dcdr-border); border-radius: 8px; background: var(--dcdr-surface); padding: 8px 10px; }
-.tool-invoke .tool-item-head { display: flex; align-items: center; gap: 8px; }
-.tool-invoke .tool-badge { font-size: 12px; font-weight: 600; color: var(--dcdr-accent); background: var(--dcdr-accent-wash); border-radius: 6px; padding: 2px 8px; }
-.tool-invoke .tool-id { font-size: 11px; color: var(--dcdr-text-3); font-family: monospace; }
-.tool-invoke .tool-args { margin: 6px 0 0; font-size: 11px; line-height: 1.5; color: var(--dcdr-text-2); background: var(--dcdr-surface); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
 /* 联网搜索三步流水线面板 */
 .search-pipeline { background: linear-gradient(135deg, var(--dcdr-surface) 0%, var(--dcdr-bg-subtle) 100%); border: 1px solid var(--dcdr-border); border-radius: 14px; padding: 14px 16px; margin-bottom: 4px; }
 .pipeline-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }

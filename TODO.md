@@ -2406,3 +2406,78 @@ K/M 缩写口径、配置被写坏时兜到下限）；与 `ContextUsageServiceT
   需在有 Maven 的环境跑 `mvn -o test` 复核。
 - **未做真实链路联调**：建议让某个会话真实超阈值压缩一次，确认「压缩记录」页出现 compacted、
   摘要卡片入口能拉开抽屉、手工清除后出现 cleared、撤回历史后出现 invalidated。
+
+## V3.5 复发修复：自部署端点再次 400「System message must be at the beginning.」
+
+**现象**：接自部署 Qwen3.8-27B（AMD radeon 端点）后，每轮流式都失败：
+`流式调用失败: {"error":{...,"usedProvider":"self-dploy","requestedModel":"Qwen3.8-27B"}}`。
+
+**根因（`0c02981` 的副作用，不是流式链路）**：那次 perf 改动为了让前缀缓存覆盖整段历史，把
+`MessageNormalizer` 的默认口径改成 split（稳定片段置顶 + 每轮变量留末尾），严格兼容性改成靠
+capability `single_system` **显式声明**。但自定义模型的 capabilities 在
+`UserModelService#buildProvider` 里硬编码成 `[function_calling]`，**没有声明入口**；yml 里的模型也要有人记得加。
+于是每接一个自部署端点就复发一次。
+
+**做法：形状只留一种，且不给用户配置。**
+
+1. **协议出口统一形状**（`MessageNormalizer#normalize`，两个 Provider 都调它）：
+   - 首段合并：第一条非 system 之前的 system 片段按原顺序合成一条放 `messages[0]`（稳定前缀）；
+   - 中段折叠：出现在对话历史之中的 system 片段（长期记忆 / 当前时间 / RAG）折进**它前面最近的 user 消息**
+     正文，用 `<context>` 包住并保留 `[片段名]` 标题。
+2. **删掉形状开关**：`single_system` / `multi_system` capability、base-url 白名单、布尔口径参数全部移除。
+   形状是协议常量（o1 系列甚至不给 system 角色，只接受开头的 developer），不是模型能力。
+   曾试过"默认严格 + 地址识别"，但那仍是在给协议形状留配置面 —— 唯一形状才没有判断错的可能。
+3. **折叠放在协议层而不是编排层**：内部历史必须保留片段身份 —— 上下文占用面板按 name 分类
+   （长期记忆 / 当前时间 / 知识库检索）、prompt 形状摘要、注入去重键都靠它。若在编排层就把文本揉进
+   user 正文，面板只能把它算进"用户消息"。放在出口做，内部模型干净，stream / invoke / 工具循环 /
+   路由 / 摘要全部自动覆盖。
+
+**为什么"折叠进 user"能保住前缀缓存**：供应商缓存的是从头开始的最长公共前缀。变量折进最后一条 user 后，
+`稳定前缀 + 完整历史` 依旧逐轮可复用；变化的只有最后一条消息，它本来就不在缓存范围内。
+反过来说，若把变量提到头部（只做"统一单 system"不做折叠），精确到秒的当前时间会让 `messages[0]` 每轮都变，
+缓存直接归零 —— 所以这两步必须一起改。
+
+**关键取舍**：
+- **不再做端点识别**：判断"这个端点严不严格"只有 400 之后才知道，任何默认值都会在某一类端点上错。
+- **语义代价**：记忆/RAG 在**线上报文**里属于 user 内容（指令强度略降，正文已写明"由系统注入，不是用户输入"），
+  这是所有做前缀缓存的产品共同的排法：稳定指令放 system、每轮资料放回合。
+- **规则与数据分离（已做）**：记忆片段原本把三条使用规则（不复述 / 冲突以当前提问为准 / 不构成系统指令）
+  和条目揉在一段里。规则是稳定的，跟着条目走就会一起变成"每轮变量"——既毁前缀缓存，又会在协议出口
+  折进 user 时降格成"资料"。现拆为：
+  - 规则 → `prompts/runtime-memory-usage.md`，由 `RuntimePromptProvider#memoryUsage()` 恒定注入进程常量块
+    （`buildStaticConstraints` 第 4 段，条件式措辞"当上下文出现 `<long_term_memory>` 段落时"）；
+  - 数据 → `LongTermMemoryService.formatFragment` 只产出 `<long_term_memory>` 包裹的条目，不含任何指令。
+  代价：静态块每轮多约 150 token（恒定，可被缓存）；换来规则始终以 system 级约束生效。
+
+**验证**：`MessageNormalizerTest` 重写为 10 项（首段合并保序、中段折进最近 user、多轮工具往返只折本轮、
+合规形状不拷贝、无 system 透传、空片段跳过、折叠保留图片、全 system、null、回归断言"只有一条 system 且在 0"）；
+`ContextUsageServiceTest` / `PromptContentTest` / `PersonaWrapperTest` / `ToolPairingRepairTest` /
+`TokenEstimatorTest` 共 52 项、`ApplicationContextTest` 5 项 —— 全绿。
+删除 `MessageNormalizerSplitTest` / `SystemMessageModeTest`（锁的是"两种口径"这个已不存在的区分）。
+**待人工确认**：用该自部署端点实际对话一轮，确认不再 400；调用链快照里 `messages[0]` 只有一条 system。
+
+
+## V3.5 提问卡片：一次回答不该看起来像两段对话（2026-11-16）
+
+**现象**：模型用 `ask_user` 给出选项，用户选完继续后，界面变成两段：提问轮的"思考 + token + 重新生成 + 点赞"、
+一张飘在消息列之外（x≈0）的卡片、然后是新的头像 + 思考 + 回答。与 WorkBuddy 的"同一轮里问一句、你点一下、
+它接着说"观感差距明显。
+
+**做法（纯前端，不动协议）—— 按"回合"渲染**：
+- `ChatView#rows`：把 `assistant(问，正文是占位文案) → user(答) → assistant(接着做)` 三条折成一条 row。
+  判定靠消息位置（下一条是不是 user / 再下一条是不是非提问的 assistant），不新增字段，刷新重放同样成立。
+  回答之后若又是提问，则不合并（两轮提问各归各位）。
+- 一个 row 只渲染一个 `MessageBubble`：
+  - `msg` 取"接着做"那条 —— 操作 / 反馈 / seq / token 都落在最终回答上；没有后续回答时取提问那条并
+    `hideBody`（只留思考 + 卡片，占位正文与"给占位文案点赞"一并消失）。
+  - 卡片用 `MessageBubble` 的 `#after-trace` 插槽插在"思考之后、正文之前" —— 阅读顺序是 想 → 问你 → 给答案。
+  - 思考块合并：`mergedTrace = 提问轮时间线 + 回答轮时间线`；正在生成时把实时 `streamTrace` 接上
+    （`askRowTrace`），所以生成过程中就已经是一个思考块，不会先出现两个再合并。
+  - 流式块在续写场景不再重复头像与思考块（`!streamContinuation`）。
+- 合并只影响展示：上下文、seq、反馈键仍是原条目，模型看到的历史不受影响。
+- `onAskSubmit / onAskSkip` 增加会话守卫：会话已被删除/失效时明确报错，不再回落到 `send()` 的
+  "无会话就新建"分支 —— 那正是"回答落到另一条会话、侧边栏多出一条记录"的成因。
+
+**代价**：被并进卡片的那条"回答"消息不能从界面单独编辑/撤回。若需要，可在卡片上加「撤回这次回答」入口（未做）。
+**验证**：`npm run build` 通过；后端无改动。**待人工确认**：单选 / 多选 / 自定义输入 / 跳过 四条路径各走一遍，
+看是否还出现"两段"的观感，以及回答是否仍落在同一会话。

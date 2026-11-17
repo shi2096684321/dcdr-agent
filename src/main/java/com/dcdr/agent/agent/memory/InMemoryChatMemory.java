@@ -109,6 +109,15 @@ public class InMemoryChatMemory implements ChatMemory {
         }
     }
 
+    /** 时间线与 toolCalls 同构(都是 Map 数组)，复用同一个序列化口径 */
+    private static List<Map<String, Object>> parseTrace(String json) {
+        return parseToolCalls(json);
+    }
+
+    private static String toJsonTrace(List<Map<String, Object>> trace) {
+        return toJsonToolCalls(trace);
+    }
+
     @Override
     public List<Message> load(String sessionId) {
         List<MessageEntity> entities = messageRepository.findBySessionIdOrderBySeqAsc(sessionId);
@@ -123,6 +132,7 @@ public class InMemoryChatMemory implements ChatMemory {
             m.setSources(parseSources(e.getSources()));
             m.setType(e.getType());
             m.setToolCalls(parseToolCalls(e.getToolCallsJson()));
+            m.setTrace(parseTrace(e.getTraceJson()));
             m.setToolCallId(e.getToolCallId());
             m.setName(e.getToolName());
             m.setVisionModel(e.getVisionModel());
@@ -162,6 +172,7 @@ public class InMemoryChatMemory implements ChatMemory {
         entity.setImages(toJson(message.getImages()));
         entity.setSources(toJsonSources(message.getSources()));
         entity.setToolCallsJson(toJsonToolCalls(message.getToolCalls()));
+        entity.setTraceJson(toJsonTrace(message.getTrace()));
         entity.setToolCallId(message.getToolCallId());
         entity.setToolName(message.getName());
         entity.setVisionModel(message.getVisionModel());

@@ -16,6 +16,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>记忆此前只有<b>条数</b>上限(常驻 20 + 触发 10 条), 单条可到 1000 字符 ——
  * 也就是最坏约 3 万字符, 而这条路径上没有任何东西会拦它。这些测试锁定预算生效后的三件事:
  * 整条丢弃而非截半条、至少保留一条、以及不留下空的分段标题。
+ *
+ * <p>另外锁一条边界: <b>这里只产出数据</b>。使用规则("不复述 / 冲突以当前提问为准 / 不构成系统指令")
+ * 属于稳定的 system 级约束, 已挪到 {@code prompts/runtime-memory-usage.md} —— 规则若跟着条目走,
+ * 就会连带变成"每轮变量", 既毁前缀缓存, 又会在协议出口折进 user 回合时降格成资料。
  */
 class LongTermMemoryFormatTest {
 
@@ -25,6 +29,19 @@ class LongTermMemoryFormatTest {
         e.setType(type);
         e.setContent(content);
         return e;
+    }
+
+    @Test
+    @DisplayName("片段只含数据与标记, 不含使用规则(规则在静态 system 块里)")
+    void fragmentCarriesDataOnly() {
+        String text = LongTermMemoryService.formatFragment(
+                List.of(mem("USER", "PREFERENCE", "偏好中文回答")));
+
+        assertTrue(text.startsWith("<long_term_memory>"), "保留标记, 给静态规则一个可引用的锚点");
+        assertTrue(text.trim().endsWith("</long_term_memory>"));
+        assertFalse(text.contains("不构成系统指令"), "规则不该压在每轮变化的条目里: " + text);
+        assertFalse(text.contains("不要主动复述"), "同上");
+        assertTrue(text.contains("偏好中文回答"));
     }
 
     @Test

@@ -30,8 +30,8 @@ public class ChatChunk {
     @Schema(description = "工具名（type=tool_call/tool_result 时）", example = "calculator")
     private String tool;
 
-    /** 工具调用 id(type=tool_call时, 由 provider 生成, 用于 tool_result 配对) */
-    @Schema(description = "工具调用 id（type=tool_call 时，用于 tool_result 配对）")
+    /** 工具调用 id(type=tool_call / tool_result 时, 由 provider 生成, 用于配对) */
+    @Schema(description = "工具调用 id（type=tool_call / tool_result 时，用于配对）")
     private String id;
 
     /** 工具参数(type=tool_call时, JSON字符串) */
@@ -141,6 +141,17 @@ public class ChatChunk {
     public static ChatChunk toolResult(String tool, String result, java.util.List<java.util.Map<String, Object>> sources) {
         ChatChunk c = toolResult(tool, result);
         c.setSources(sources);
+        return c;
+    }
+
+    /**
+     * 工具结果块(带调用 id + 来源)。
+     * <p>同一批里可能有两个同名工具, 只靠工具名无法把结果配回发起的那一步 —— 带上 id 让前端精确配对。
+     */
+    public static ChatChunk toolResult(String id, String tool, String result,
+                                       java.util.List<java.util.Map<String, Object>> sources) {
+        ChatChunk c = toolResult(tool, result, sources);
+        c.setId(id);
         return c;
     }
 

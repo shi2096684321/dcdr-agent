@@ -495,13 +495,13 @@ agent:
     #   manual = 手写 WebClient 实现(回退选项)
     # 切换引擎只需改 engine 值
     #
-    # capabilities 可选值:
-    #   vision         支持看图
+    # capabilities 只描述**模型本身的能力**, 不描述协议形状:
+    #   vision           支持看图
     #   function_calling 支持函数调用/工具
-    #   single_system  该端点**只接受一条 system 且在 messages[0]**(自部署 vLLM / Qwen3 系 chat_template 如此)。
-    #                  不声明时按「分段合并」发送: 稳定 system 片段置顶, 每轮变化的内容(记忆/时间/RAG)
-    #                  留在 messages 末尾 —— 这是前缀缓存能覆盖整段对话历史的前提。
-    #                  声明后改为全部 system 合并置顶(兼容严格端点, 但每轮变化的内容会截断可复用前缀)。
+    # 消息形状由平台统一决定, 不需要也不允许在这里配置: 协议出口永远只发一条 system 且在 messages[0]
+    # (见 MessageNormalizer)。这是所有 OpenAI 兼容端点的合法形状, 严格端点(vLLM / Qwen3 系 template)
+    # 也只接受这个形状; 每轮变化的上下文(记忆/时间/RAG)改为并进本轮 user 消息,
+    # 所以前缀缓存照旧生效 —— 不需要为"这个端点严不严格"单独开关。
     chat:
       - name: "openai-chat"
         enabled: false

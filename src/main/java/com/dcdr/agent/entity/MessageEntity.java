@@ -91,6 +91,16 @@ public class MessageEntity {
     @Column(columnDefinition = "TEXT")
     private String sources;
 
+    /**
+     * 时间线（思考与工具调用的先后顺序），JSON 数组：
+     * {@code [{"t":"reason","n":812},{"t":"tool","id":"call_1"}]}。
+     * <p>只存"切片长度 + 工具 id"，不重复存思考文本与工具参数 —— 两者分别在
+     * {@link #reasoningContent} 与 {@link #toolCallsJson} 里。老数据为 null，前端按旧排法兜底。
+     */
+    @Schema(description = "时间线（思考片段长度 + 工具调用 id，JSON 数组）")
+    @Column(columnDefinition = "TEXT")
+    private String traceJson;
+
     @Schema(description = "本次消息消耗的 token 数量")
     private Integer tokenUsage;
 

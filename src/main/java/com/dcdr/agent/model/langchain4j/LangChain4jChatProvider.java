@@ -79,8 +79,6 @@ public class LangChain4jChatProvider implements ChatModelProvider {
     private final String model;
     private final Double temperature;
     private final Set<String> capabilities;
-    /** 是否把全部 system 片段合并置顶(严格端点口径, 由 capability single_system 决定) */
-    private final boolean hoistAllSystem;
     /** 本厂商"关闭思考"的请求参数(null=厂商不支持关闭, 忽略用户开关) */
     private final Map<String, Object> thinkingDisableParams;
 
@@ -126,7 +124,6 @@ public class LangChain4jChatProvider implements ChatModelProvider {
         this.model = config.getModel();
         this.temperature = config.getTemperature();
         this.capabilities = config.getCapabilities() != null ? Set.copyOf(config.getCapabilities()) : Set.of();
-        this.hoistAllSystem = this.capabilities.contains(MessageNormalizer.CAPABILITY_SINGLE_SYSTEM);
         this.thinkingDisableParams = resolveThinkingDisableParams(config.getBaseUrl());
     }
 
@@ -306,11 +303,11 @@ public class LangChain4jChatProvider implements ChatModelProvider {
     private dev.langchain4j.model.chat.request.ChatRequest buildChatRequest(
             ChatRequest request, List<Message> history, boolean includeCurrentUser, WireCapture capture) {
         List<ChatMessage> messages = new ArrayList<>();
-        // system 归一化: 编排层按片段注入了多条 system, 在此按口径合并。
-        // 默认 split(稳定片段置顶 + 每轮变量留末尾, 让前缀缓存覆盖整段历史);
-        // 声明了 single_system 能力的端点是严格端点(Qwen3 系模板/vLLM 只吃 messages[0] 一条), 全量置顶。
+        // system 归一化: 编排层按片段注入了多条 system, 在此统一形状(详见 MessageNormalizer):
+        // 首段合并成唯一一条放 messages[0]; 中段(记忆/时间/RAG)折进前面最近的 user 消息。
+        // 这是严格端点(vLLM/Qwen3)唯一接受的形状, 也是所有端点的合法形状。
         // 快照 capture 与真实请求同源, 见 MessageNormalizer 的说明
-        for (Message msg : MessageNormalizer.mergeSystemMessages(history, hoistAllSystem)) {
+        for (Message msg : MessageNormalizer.normalize(history)) {
             appendHistoryMessage(messages, msg, capture);
         }
         if (includeCurrentUser) {
