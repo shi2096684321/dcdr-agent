@@ -6,6 +6,7 @@ import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.DocumentEntity;
 import com.dcdr.agent.entity.KnowledgeBaseEntity;
 import com.dcdr.agent.rag.config.RagProperties;
+import com.dcdr.agent.rag.splitter.SplitterFactory;
 import com.dcdr.agent.repository.DocumentChunkRepository;
 import com.dcdr.agent.repository.DocumentRepository;
 import com.dcdr.agent.repository.KnowledgeBaseRepository;
@@ -45,11 +46,18 @@ public class KnowledgeBaseService {
     private final DocumentRepository documentRepository;
     private final DocumentChunkRepository chunkRepository;
     private final RagProperties properties;
+    /** 校验/解析每个知识库自己的分块配置 */
+    private final SplitterFactory splitterFactory;
     /** V3.1 F-41: 归属判定统一收敛到 OwnershipGuard(与此前手写口径等价, 越权返回 404) */
     private final OwnershipGuard ownershipGuard;
 
+    /**
+     * 创建知识库。
+     * <p>分块参数可按库指定; 为 null 时全部回退到全局 {@code agent.rag.splitter.*} 配置。
+     */
     @Transactional
-    public KnowledgeBaseEntity create(String name, String description, String userId, String visibility) {
+    public KnowledgeBaseEntity create(String name, String description, String userId, String visibility,
+                                      String chunkStrategy, Integer chunkSize, Integer chunkOverlap) {
         validateEnabled();
         if (name == null || name.isBlank()) {
             throw new BusinessException(400, "知识库名称不能为空");
@@ -63,8 +71,7 @@ public class KnowledgeBaseService {
         kb.setVisibility("PLATFORM".equalsIgnoreCase(visibility) ? "PLATFORM" : "USER");
         // 复用 schema 默认值, 显式赋一次保证与 RagProperties 一致
         kb.setEmbeddingModel(properties.getEmbedding().getDefaultProvider());
-        kb.setChunkSize(properties.getSplitter().getChunkSize());
-        kb.setChunkOverlap(properties.getSplitter().getChunkOverlap());
+        applyChunkOptions(kb, splitterFactory.resolve(chunkStrategy, chunkSize, chunkOverlap));
         kb.setDocCount(0);
         kb.setStatus("ready");
         LocalDateTime now = LocalDateTime.now();
@@ -132,14 +139,34 @@ public class KnowledgeBaseService {
         return kbRepository.findAll();
     }
 
+    /**
+     * 更新知识库。分块参数可编辑; 任一参数非 null 即按"整体配置"校验并写回
+     * (未传的项回退全局默认), 避免只改一项时留下非法组合如 overlap >= chunkSize。
+     * <p>分块参数变更只影响<b>之后</b>入库的文档; 存量片段需重新入库才会按新配置切分。
+     */
     @Transactional
-    public KnowledgeBaseEntity update(String kbId, String name, String description, String userId, boolean isAdmin) {
+    public KnowledgeBaseEntity update(String kbId, String name, String description, String userId, boolean isAdmin,
+                                      String chunkStrategy, Integer chunkSize, Integer chunkOverlap) {
         validateEnabled();
         KnowledgeBaseEntity kb = getAccessible(kbId, userId, isAdmin, true);
         if (name != null && !name.isBlank()) kb.setName(name.trim());
         if (description != null) kb.setDescription(description);
+        if (chunkStrategy != null || chunkSize != null || chunkOverlap != null) {
+            // 未传的项以该库当前值为基准(而非全局默认), 这样只改一项不会重置另外两项
+            applyChunkOptions(kb, splitterFactory.resolve(
+                    chunkStrategy != null ? chunkStrategy : kb.getChunkStrategy(),
+                    chunkSize != null ? chunkSize : kb.getChunkSize(),
+                    chunkOverlap != null ? chunkOverlap : kb.getChunkOverlap()));
+        }
         kb.setUpdatedAt(LocalDateTime.now());
         return kbRepository.save(kb);
+    }
+
+    /** 将工厂校验后的分块配置写入实体, 策略 code 统一归一化为小写 */
+    private static void applyChunkOptions(KnowledgeBaseEntity kb, SplitterFactory.SplitOptions options) {
+        kb.setChunkStrategy(options.strategy().getCode());
+        kb.setChunkSize(options.chunkSize());
+        kb.setChunkOverlap(options.chunkOverlap());
     }
 
     /**

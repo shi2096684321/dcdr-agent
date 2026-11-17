@@ -6,7 +6,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 递归字符分块器 (V2.1 RAG 默认策略)。
+ * 递归字符分块器 (V2.1 起为默认策略, 现为四种可选策略之一)。
  * <p>
  * 策略: 依次按优先级分隔符尝试切分, 直到块大小 ≤ chunkSize。
  * <ol>
@@ -23,20 +23,22 @@ import java.util.List;
 public class RecursiveSplitter implements TextSplitter {
 
     /** 分隔符优先级 (从高到低) */
-    private static final String[] SEPARATORS = {"\n\n", "\n", "。", ". ", "! ", "? ", " ", ""};
+    private static final String[] DEFAULT_SEPARATORS = {"\n\n", "\n", "。", ". ", "! ", "? ", " ", ""};
 
     private final int chunkSize;
     private final int chunkOverlap;
+    /** 子类可替换分隔符优先级(如句子优先策略), 默认与历史实现一致 */
+    private final String[] separators;
 
     public RecursiveSplitter(int chunkSize, int chunkOverlap) {
-        if (chunkSize <= 0) {
-            throw new IllegalArgumentException("chunkSize 必须大于 0, 实际: " + chunkSize);
-        }
-        if (chunkOverlap < 0 || chunkOverlap >= chunkSize) {
-            throw new IllegalArgumentException("chunkOverlap 必须在 [0, chunkSize) 范围, 实际: " + chunkOverlap);
-        }
+        this(chunkSize, chunkOverlap, DEFAULT_SEPARATORS);
+    }
+
+    protected RecursiveSplitter(int chunkSize, int chunkOverlap, String[] separators) {
+        SplitterSupport.validate(chunkSize, chunkOverlap);
         this.chunkSize = chunkSize;
         this.chunkOverlap = chunkOverlap;
+        this.separators = separators;
     }
 
     @Override
@@ -49,25 +51,7 @@ public class RecursiveSplitter implements TextSplitter {
         recursiveSplit(text, 0, atoms);
 
         // 2. 合并相邻原子块, 每块尽量接近 chunkSize; 块间保留 overlap 字符
-        List<String> result = new ArrayList<>();
-        StringBuilder current = new StringBuilder(chunkSize);
-        for (String atom : atoms) {
-            if (current.length() + atom.length() > chunkSize && current.length() > 0) {
-                // 当前块已满, 落盘并开启新块; 新块以 overlap 字符回溯开头, 保留语义连续性
-                result.add(current.toString());
-                if (chunkOverlap > 0 && current.length() > chunkOverlap) {
-                    String tail = current.substring(current.length() - chunkOverlap);
-                    current.setLength(0);
-                    current.append(tail);
-                } else {
-                    current.setLength(0);
-                }
-            }
-            current.append(atom);
-        }
-        if (current.length() > 0) {
-            result.add(current.toString());
-        }
+        List<String> result = SplitterSupport.mergeWithOverlap(atoms, chunkSize, chunkOverlap);
         log.debug("递归分块完成: 原文 {} 字符 -> {} 块 (chunkSize={}, overlap={})",
                 text.length(), result.size(), chunkSize, chunkOverlap);
         return result;
@@ -89,7 +73,7 @@ public class RecursiveSplitter implements TextSplitter {
      */
     private void recursiveSplit(String text, int sepIdx, List<String> atoms) {
         if (text.isEmpty()) return;
-        if (text.length() <= chunkSize || sepIdx >= SEPARATORS.length) {
+        if (text.length() <= chunkSize || sepIdx >= separators.length) {
             // 已达最小粒度, 直接硬切到 chunkSize
             if (text.length() <= chunkSize) {
                 atoms.add(text);
@@ -100,7 +84,7 @@ public class RecursiveSplitter implements TextSplitter {
             }
             return;
         }
-        String sep = SEPARATORS[sepIdx];
+        String sep = separators[sepIdx];
         String[] parts;
         if (sep.isEmpty()) {
             // 兜底: 按字符硬切

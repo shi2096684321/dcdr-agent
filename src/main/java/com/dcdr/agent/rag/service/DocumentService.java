@@ -4,17 +4,20 @@ import com.dcdr.agent.common.exception.BusinessException;
 import com.dcdr.agent.entity.DocumentChunkEntity;
 import com.dcdr.agent.entity.DocumentEntity;
 import com.dcdr.agent.entity.KnowledgeBaseEntity;
+import com.dcdr.agent.rag.dto.ChunkPageResult;
 import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.embedding.EmbeddingProvider;
 import com.dcdr.agent.rag.embedding.EmbeddingRegistry;
 import com.dcdr.agent.rag.reader.DocumentReader;
 import com.dcdr.agent.rag.reader.DocumentReaderRegistry;
+import com.dcdr.agent.rag.splitter.SplitterFactory;
 import com.dcdr.agent.rag.splitter.TextSplitter;
 import com.dcdr.agent.repository.DocumentChunkRepository;
 import com.dcdr.agent.repository.DocumentRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.FileSystemResource;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -70,7 +73,8 @@ public class DocumentService {
     private final DocumentChunkRepository chunkRepository;
     private final KnowledgeBaseService knowledgeBaseService;
     private final DocumentReaderRegistry readerRegistry;
-    private final TextSplitter splitter;
+    /** 按知识库自身的策略/块大小/重叠构造分块器, 不再用全局单例 */
+    private final SplitterFactory splitterFactory;
     private final EmbeddingRegistry embeddingRegistry;
     private final RagProperties properties;
     /** RAG 异步入库专用 Scheduler(由 ragExecutor 派生), 注入即用, 无需 @Qualifier */
@@ -163,6 +167,39 @@ public class DocumentService {
     }
 
     /**
+     * 分页查看某文档已入库的分块(真实入库内容, 含元信息前缀)。
+     * <p>
+     * 用于核对"这个文档到底被切成什么样": 检索测试只能看到命中的块, 这里能翻完整列表。
+     * 只查序号/内容/token 数, 不加载 1536 维向量。
+     *
+     * @param page 页码(0-based), 越界自动归 0
+     * @param size 每页条数, 夹在 [1, 100]
+     */
+    public ChunkPageResult listChunks(String kbId, String docId, String userId, boolean isAdmin,
+                                      int page, int size) {
+        knowledgeBaseService.getAccessible(kbId, userId, isAdmin, false); // 存在 + 读权限
+        DocumentEntity doc = getDocument(docId);
+        if (!doc.getKbId().equals(kbId)) {
+            throw new BusinessException(404, "文档不属于该知识库", "DOC_NOT_FOUND");
+        }
+        int safePage = Math.max(0, page);
+        int safeSize = Math.min(Math.max(size, 1), 100);
+        long total = chunkRepository.countByDocId(docId);
+        List<DocumentChunkRepository.ChunkSummary> rows =
+                chunkRepository.findSummariesByDocId(docId, PageRequest.of(safePage, safeSize));
+        List<ChunkPageResult.ChunkItem> items = new ArrayList<>(rows.size());
+        for (DocumentChunkRepository.ChunkSummary row : rows) {
+            String content = row.getContent();
+            items.add(new ChunkPageResult.ChunkItem(
+                    row.getChunkIndex() == null ? 0 : row.getChunkIndex(),
+                    content == null ? 0 : content.length(),
+                    row.getTokenCount(),
+                    content));
+        }
+        return new ChunkPageResult(total, safePage, safeSize, items);
+    }
+
+    /**
      * 删除文档: 删库 + 删向量 + 删落盘文件。
      * <p>
      * 标 {@code @Transactional} 保证删 chunks 与删 document 原子(经 Spring 代理进入, 非自调用)。
@@ -225,6 +262,9 @@ public class DocumentService {
         doc.setUpdatedAt(LocalDateTime.now());
         documentRepository.save(doc);
 
+        // 取知识库配置一次: 分块策略 + 首片元信息前缀都从这里来(存量行策略为空时工厂回退全局默认)
+        KnowledgeBaseEntity kb = knowledgeBaseService.get(doc.getKbId());
+
         try {
             // 2. 读文件 + 解析为文本
             Path path = docPath(doc);
@@ -240,7 +280,9 @@ public class DocumentService {
                 throw new IllegalStateException("文档解析后无可用的文本内容(可能是扫描版 PDF 或空文档)");
             }
 
-            // 3. 分块
+            // 3. 分块(按该知识库配置的策略与参数)
+            TextSplitter splitter = splitterFactory.create(
+                    kb.getChunkStrategy(), kb.getChunkSize(), kb.getChunkOverlap());
             List<String> chunks = splitter.split(text);
             if (chunks.isEmpty()) {
                 throw new IllegalStateException("分块结果为空");
@@ -253,7 +295,7 @@ public class DocumentService {
             //   - chunk #1+: 仅文件名 [文件名], 保留片段内容语义纯度, 避免前缀拉平向量差异
             List<String> enrichedChunks = new ArrayList<>(chunks.size());
             for (int i = 0; i < chunks.size(); i++) {
-                enrichedChunks.add(buildChunkPrefix(doc, i) + chunks.get(i));
+                enrichedChunks.add(buildChunkPrefix(doc, kb, i) + chunks.get(i));
             }
 
             EmbeddingProvider embedding = embeddingRegistry.getDefault();
@@ -312,9 +354,10 @@ public class DocumentService {
      *   - chunk #1+: 仅文件名 [文件名], 保留片段内容语义纯度
      *
      * @param doc        文档实体
+     * @param kb         所属知识库(由 doProcessDocument 一次查出, 避免每片重复查询)
      * @param chunkIndex 片段序号(0-based)
      */
-    private String buildChunkPrefix(DocumentEntity doc, int chunkIndex) {
+    private String buildChunkPrefix(DocumentEntity doc, KnowledgeBaseEntity kb, int chunkIndex) {
         // 非首片: 只带文件名, 避免前缀重复稀释向量语义
         String filename = doc.getFilename();
         if (chunkIndex > 0) {
@@ -324,18 +367,13 @@ public class DocumentService {
 
         // 首片: 完整元信息 [知识库名 | 描述 | 文件名]
         StringBuilder sb = new StringBuilder("[");
-        try {
-            KnowledgeBaseEntity kb = knowledgeBaseService.get(doc.getKbId());
-            if (kb != null) {
-                if (kb.getName() != null && !kb.getName().isBlank()) {
-                    sb.append("知识库: ").append(kb.getName());
-                }
-                if (kb.getDescription() != null && !kb.getDescription().isBlank()) {
-                    sb.append(" | ").append(kb.getDescription());
-                }
+        if (kb != null) {
+            if (kb.getName() != null && !kb.getName().isBlank()) {
+                sb.append("知识库: ").append(kb.getName());
             }
-        } catch (Exception e) {
-            log.warn("构造首片前缀时查询知识库失败, 跳过知识库元信息: {}", doc.getKbId(), e);
+            if (kb.getDescription() != null && !kb.getDescription().isBlank()) {
+                sb.append(" | ").append(kb.getDescription());
+            }
         }
         if (filename != null && !filename.isBlank()) {
             if (sb.length() > 1) sb.append(" | ");

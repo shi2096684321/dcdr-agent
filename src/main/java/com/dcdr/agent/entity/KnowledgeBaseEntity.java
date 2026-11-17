@@ -39,6 +39,18 @@ public class KnowledgeBaseEntity implements OwnedEntity {
     @Column(nullable = false, length = 128)
     private String embeddingModel = "text-embedding-v3";
 
+    /**
+     * 分块策略 code, 取值见 {@code ChunkStrategy}: fixed / recursive / sentence / markdown。
+     * <p>存量行可能为空(DDL 补列前的记录), 摄取时由 SplitterFactory 回退到全局默认, 行为与历史一致。
+     */
+    @Schema(description = "文档分块策略: fixed | recursive | sentence | markdown", defaultValue = "recursive")
+    // 刻意允许为空: ddl-auto=update 给已有数据的表加 NOT NULL 列会被 PostgreSQL 拒绝
+    // ("contains null values"), 列加不上, 后续查询全部报列不存在。
+    // 因此交给 Hibernate 加"可空列", 存量行的 null 由 SplitterFactory 回退全局默认;
+    // NOT NULL DEFAULT 'recursive' 由 docs/sql/v3.4_schema.sql 的增量脚本负责。
+    @Column(length = 24)
+    private String chunkStrategy = "recursive";
+
     @Schema(description = "文档分块大小 (字符数)", defaultValue = "1000")
     @Column(nullable = false)
     private int chunkSize = 1000;

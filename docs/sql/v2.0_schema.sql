@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
     name             VARCHAR(255) NOT NULL,
     description      TEXT,
     embedding_model  VARCHAR(128) NOT NULL DEFAULT 'text-embedding-v3',
+    -- 分块策略 fixed | recursive | sentence | markdown (存量行由增量脚本补列)
+    chunk_strategy   VARCHAR(24)  NOT NULL DEFAULT 'recursive',
     chunk_size       INT          NOT NULL DEFAULT 1000,
     chunk_overlap    INT          NOT NULL DEFAULT 200,
     doc_count        INT          NOT NULL DEFAULT 0,

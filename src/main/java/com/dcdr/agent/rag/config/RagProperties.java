@@ -51,9 +51,9 @@ public class RagProperties {
 
     @Data
     public static class SplitterConfig {
-        /** 分块策略: fixed | paragraph | recursive (当前实现 recursive) */
+        /** 全局默认分块策略: fixed | recursive | sentence | markdown; 各知识库可覆盖 */
         private String strategy = "recursive";
-        /** 每块目标字符数(与 schema knowledge_bases.chunk_size 默认 1000 一致) */
+        /** 全局默认块大小(与 schema knowledge_bases.chunk_size 默认 1000 一致) */
         private int chunkSize = 1000;
         /** 块间重叠字符数(避免语义断裂, 与 schema 默认 200 一致) */
         private int chunkOverlap = 200;

@@ -7,7 +7,7 @@ import com.dcdr.agent.rag.reader.OcrPdfReader;
 import com.dcdr.agent.rag.reader.PdfReader;
 import com.dcdr.agent.rag.reader.PlainTextReader;
 import com.dcdr.agent.rag.reader.WordReader;
-import com.dcdr.agent.rag.splitter.RecursiveSplitter;
+import com.dcdr.agent.rag.splitter.SplitterFactory;
 import com.dcdr.agent.rag.splitter.TextSplitter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -88,13 +88,14 @@ public class RagAutoConfiguration {
     }
 
     /**
-     * 文本分块器: 当前固定使用 {@link RecursiveSplitter}, 参数从配置注入。
-     * 后续可按 strategy 字段扩展为工厂模式(fixed/paragraph/recursive)。
+     * 全局默认分块器: 由 {@link SplitterFactory} 按 {@code agent.rag.splitter.*} 构造。
+     * <p>
+     * 实际入库不走这个单例 —— {@code DocumentService} 按每个知识库自己的配置
+     * 调用工厂构造; 此 Bean 供评测脚本等"需要一份全局默认"的调用方使用。
      */
     @Bean
-    public TextSplitter textSplitter() {
-        RagProperties.SplitterConfig sc = properties.getSplitter();
-        return new RecursiveSplitter(sc.getChunkSize(), sc.getChunkOverlap());
+    public TextSplitter textSplitter(SplitterFactory splitterFactory) {
+        return splitterFactory.createDefault();
     }
 
     /**

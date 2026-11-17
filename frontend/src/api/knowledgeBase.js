@@ -2,6 +2,13 @@ import { api, unwrap } from './http'
 
 // ===== 知识库 CRUD (F-21-001) =====
 export const getKnowledgeBases = () => unwrap(api.get('/api/knowledge-bases'))
+// 可选的切分策略(fixed / recursive / sentence / markdown)
+export const getSplitterOptions = () => unwrap(api.get('/api/knowledge-bases/splitter-options'))
+// 切分预览: 只切文本不入库, 用于调参时观察切分效果
+export const previewSplit = (payload) => unwrap(api.post('/api/knowledge-bases/split-preview', payload))
+// 查看文档已入库的分块(真实内容, 不含向量)
+export const listChunks = (kbId, docId, page = 0, size = 20) =>
+  unwrap(api.get(`/api/knowledge-bases/${kbId}/documents/${docId}/chunks`, { params: { page, size } }))
 export const createKnowledgeBase = (data) => unwrap(api.post('/api/knowledge-bases', data))
 export const getKnowledgeBase = (id) => unwrap(api.get(`/api/knowledge-bases/${id}`))
 export const updateKnowledgeBase = (id, data) => unwrap(api.put(`/api/knowledge-bases/${id}`, data))

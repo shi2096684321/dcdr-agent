@@ -47,7 +47,10 @@
               {{ currentKb.visibility === 'PLATFORM' ? '平台级' : '用户级' }}
             </el-tag>
             <el-tag size="small" type="info">{{ currentKb.docCount || 0 }} 文档</el-tag>
-            <el-tag size="small">{{ currentKb.chunkSize || 1000 }} / {{ currentKb.chunkOverlap || 200 }}</el-tag>
+            <el-tag size="small" :title="splitterHint(currentKb.chunkStrategy)">
+              {{ strategyLabel(currentKb.chunkStrategy) }} · {{ currentKb.chunkSize || 1000 }}/{{ currentKb.chunkOverlap || 200 }}
+            </el-tag>
+            <button v-if="canEditKb(currentKb)" class="chunk-cfg-btn" @click="openChunkDialog" title="修改切分策略与块大小">切分设置</button>
             <span class="kb-desc-full" v-if="currentKb.description" :title="currentKb.description">{{ currentKb.description }}</span>
           </div>
           <div class="kb-toolbar-right">
@@ -83,14 +86,20 @@
                     <span class="error-hint">!</span>
                   </el-tooltip>
                 </span>
-                <span class="doc-actions" v-if="canEditKb(currentKb)">
-                  <button class="doc-action-btn" @click="reprocessDoc(doc)" title="重新入库"
-                          :disabled="doc.status === 'indexing'">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12A8 8 0 1 1 17.2 6.1"/><path d="M20 4.6V9.4H15.2"/></svg>
+                <span class="doc-actions">
+                  <button v-if="(doc.chunkCount || 0) > 0" class="doc-action-btn" @click="openChunks(doc)"
+                          title="查看分块">
+                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h12"/><path d="M8 12h12"/><path d="M8 18h12"/><path d="M4 6h.01"/><path d="M4 12h.01"/><path d="M4 18h.01"/></svg>
                   </button>
-                  <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">
-                    <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 7.2H19.4"/><path d="M9.4 7.2V5.4C9.4 4.8 9.8 4.4 10.4 4.4H13.6C14.2 4.4 14.6 4.8 14.6 5.4V7.2"/><path d="M6.6 7.2L7.4 19C7.4 19.6 7.9 20 8.5 20H15.5C16.1 20 16.6 19.6 16.6 19L17.4 7.2"/></svg>
-                  </button>
+                  <template v-if="canEditKb(currentKb)">
+                    <button class="doc-action-btn" @click="reprocessDoc(doc)" title="重新入库"
+                            :disabled="doc.status === 'indexing'">
+                      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12A8 8 0 1 1 17.2 6.1"/><path d="M20 4.6V9.4H15.2"/></svg>
+                    </button>
+                    <button class="doc-action-btn danger" @click="removeDoc(doc)" title="删除">
+                      <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4.6 7.2H19.4"/><path d="M9.4 7.2V5.4C9.4 4.8 9.8 4.4 10.4 4.4H13.6C14.2 4.4 14.6 4.8 14.6 5.4V7.2"/><path d="M6.6 7.2L7.4 19C7.4 19.6 7.9 20 8.5 20H15.5C16.1 20 16.6 19.6 16.6 19L17.4 7.2"/></svg>
+                    </button>
+                  </template>
                 </span>
               </div>
               <div v-if="!documents.length && !docsLoading" class="empty-docs">
@@ -166,6 +175,25 @@
           <el-input v-model="createForm.description" type="textarea" :rows="3"
                     placeholder="可选，知识库用途说明" maxlength="500" show-word-limit />
         </el-form-item>
+        <el-form-item label="切分策略">
+          <el-select v-model="createForm.chunkStrategy" style="width: 100%">
+            <el-option v-for="s in splitterOptions" :key="s.code" :label="s.label" :value="s.code" />
+          </el-select>
+          <div class="split-tip">{{ splitterHint(createForm.chunkStrategy) }}</div>
+        </el-form-item>
+        <el-form-item label="块大小">
+          <el-input-number v-model="createForm.chunkSize" :min="100" :max="8000" :step="100"
+                           controls-position="right" style="width: 140px" />
+          <span class="split-unit">字符 · 越大上下文越完整，但检索精度会下降</span>
+        </el-form-item>
+        <el-form-item label="重叠字符">
+          <el-input-number v-model="createForm.chunkOverlap" :min="0" :max="createForm.chunkSize - 1" :step="50"
+                           controls-position="right" style="width: 140px" />
+          <span class="split-unit">字符 · 块间重复内容，避免语义断裂</span>
+        </el-form-item>
+        <el-form-item>
+          <el-button size="small" text type="primary" @click="openPreview(createForm)">预览切分效果 →</el-button>
+        </el-form-item>
         <el-form-item v-if="isAdmin" label="可见性" required>
           <el-radio-group v-model="createForm.visibility">
             <el-radio value="USER">用户级</el-radio>
@@ -182,6 +210,121 @@
         <el-button type="primary" @click="confirmCreate" :loading="creating">创建</el-button>
       </template>
     </el-dialog>
+
+    <!-- 切分设置弹窗 -->
+    <el-dialog v-model="chunkDialogVisible" title="切分设置" width="500px">
+      <div class="chunk-dialog-tip">
+        分块配置决定文档入库时如何切片。修改只影响<b>之后</b>入库的文档，
+        存量片段需点文档行的「重新入库」才会按新配置重切。
+      </div>
+      <el-form :model="chunkForm" label-width="96px">
+        <el-form-item label="切分策略">
+          <el-select v-model="chunkForm.chunkStrategy" style="width: 100%">
+            <el-option v-for="s in splitterOptions" :key="s.code" :label="s.label" :value="s.code" />
+          </el-select>
+          <div class="split-tip">{{ splitterHint(chunkForm.chunkStrategy) }}</div>
+        </el-form-item>
+        <el-form-item label="块大小">
+          <el-input-number v-model="chunkForm.chunkSize" :min="100" :max="8000" :step="100"
+                           controls-position="right" style="width: 140px" />
+          <span class="split-unit">字符</span>
+        </el-form-item>
+        <el-form-item label="重叠字符">
+          <el-input-number v-model="chunkForm.chunkOverlap" :min="0" :max="chunkForm.chunkSize - 1" :step="50"
+                           controls-position="right" style="width: 140px" />
+          <span class="split-unit">字符，需小于块大小</span>
+        </el-form-item>
+        <el-form-item>
+          <el-button size="small" text type="primary" @click="openPreview(chunkForm)">预览切分效果 →</el-button>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="chunkDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmChunkUpdate" :loading="savingChunk">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 切分预览弹窗: 只切文本, 不入库/不向量化 -->
+    <el-dialog v-model="previewDialogVisible" title="切分预览" width="640px" top="8vh">
+      <div class="chunk-dialog-tip">
+        仅对文本试切分，<b>不入库、不向量化</b>。真实入库的片段还会带 <b>[文件: …]</b> 元信息前缀，
+        开启重叠时块长也会略大于块大小。当前参数：<b>{{ previewParamsLabel }}</b>
+      </div>
+      <el-input v-model="previewText" type="textarea" :rows="5" maxlength="200000"
+                placeholder="粘贴一段有代表性的文本（如一章节、一段手册），看看会被切成什么样" />
+      <div class="preview-actions">
+        <el-button size="small" type="primary" @click="runPreview"
+                   :loading="previewLoading" :disabled="!previewText.trim()">
+          {{ previewLoading ? '切分中…' : '开始预览' }}
+        </el-button>
+        <span class="preview-hint" v-if="previewResult">
+          原文 {{ previewResult.totalChars }} 字符
+        </span>
+      </div>
+
+      <template v-if="previewResult">
+        <div class="preview-stats">
+          <span>共 <b>{{ previewResult.chunkCount }}</b> 块</span>
+          <span>平均 {{ previewResult.avgChars }} 字符</span>
+          <span>最短 {{ previewResult.minChars }}</span>
+          <span>最长 {{ previewResult.maxChars }}</span>
+        </div>
+        <div class="preview-list">
+          <div v-for="c in previewResult.chunks" :key="c.index" class="preview-item">
+            <div class="preview-item-head">
+              <span class="preview-index">#{{ c.index + 1 }}</span>
+              <span class="preview-len">{{ c.length }} 字符</span>
+            </div>
+            <div class="preview-content">{{ c.content }}<span v-if="c.contentTruncated" class="preview-ellipsis">…</span></div>
+          </div>
+        </div>
+        <div v-if="previewResult.truncated" class="preview-more">
+          仅展示前 {{ previewResult.chunks.length }} 块，共 {{ previewResult.chunkCount }} 块
+        </div>
+      </template>
+      <div v-else-if="!previewLoading" class="preview-empty">
+        粘贴文本后点「开始预览」，这里会列出每块的序号、长度和内容
+      </div>
+
+      <template #footer>
+        <el-button @click="previewDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 已入库分块详情: 真实内容, 含元信息前缀 -->
+    <el-dialog v-model="docChunksVisible" :title="`分块详情 · ${docChunksDoc?.filename || ''}`"
+               width="640px" top="8vh">
+      <div class="chunk-dialog-tip">
+        这是<b>真实入库内容</b>：包含 <b>[文件: …]</b> 元信息前缀，开启重叠时块会略大于块大小。
+      </div>
+      <div v-if="docChunksTotal" class="preview-stats">
+        <span>共 <b>{{ docChunksTotal }}</b> 块</span>
+        <span>第 {{ docChunksPage + 1 }} / {{ docChunksTotalPages }} 页</span>
+        <span>每页 {{ DOC_CHUNKS_PAGE_SIZE }} 块</span>
+      </div>
+      <div class="preview-list chunk-view-list" v-loading="docChunksLoading">
+        <div v-for="c in docChunks" :key="c.chunkIndex" class="preview-item">
+          <div class="preview-item-head">
+            <span class="preview-index">#{{ c.chunkIndex + 1 }}</span>
+            <span class="preview-len">
+              {{ c.length }} 字符<template v-if="c.tokenCount"> · ~{{ c.tokenCount }} tokens</template>
+            </span>
+          </div>
+          <div class="preview-content">{{ c.content }}</div>
+        </div>
+        <div v-if="!docChunks.length && !docChunksLoading" class="preview-empty">该文档暂无分块</div>
+      </div>
+      <div class="chunk-pager" v-if="docChunksTotalPages > 1">
+        <el-button size="small" :disabled="docChunksPage <= 0 || docChunksLoading"
+                   @click="loadChunkPage(docChunksPage - 1)">上一页</el-button>
+        <span class="chunk-pager-info">{{ docChunksPage + 1 }} / {{ docChunksTotalPages }}</span>
+        <el-button size="small" :disabled="docChunksPage >= docChunksTotalPages - 1 || docChunksLoading"
+                   @click="loadChunkPage(docChunksPage + 1)">下一页</el-button>
+      </div>
+      <template #footer>
+        <el-button @click="docChunksVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -190,9 +333,9 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import {
-  getKnowledgeBases, createKnowledgeBase, deleteKnowledgeBase,
-  listDocuments, uploadDocument, deleteDocument, reprocessDocument,
-  searchKnowledgeBase, searchKnowledgeBases
+  getKnowledgeBases, getSplitterOptions, previewSplit, createKnowledgeBase, updateKnowledgeBase, deleteKnowledgeBase,
+  listDocuments, uploadDocument, deleteDocument, reprocessDocument, listChunks,
+  searchKnowledgeBase, searchKnowledgeBases, extractMessage
 } from '@/api'
 
 const authStore = useAuthStore()
@@ -218,10 +361,47 @@ const sidebarCollapsed = ref(false)
 const fileInput = ref(null)
 const activeTab = ref('documents')
 
+// 可选切分策略(后端接口返回; 接口不可用时用内置兜底, 保证旧版后端也能建库)
+const DEFAULT_SPLITTERS = [
+  { code: 'recursive', label: '递归字符', description: '段落→换行→句子→空格逐级降级，通用默认策略' },
+  { code: 'fixed', label: '固定长度', description: '按字符数等长切分，速度最快；可能在句子中间截断' },
+  { code: 'sentence', label: '句子切分', description: '优先按句号/问号/叹号切分，尽量不切断完整句子' },
+  { code: 'markdown', label: 'Markdown 结构', description: '按标题层级切分，每块带上所属标题，适合技术文档' }
+]
+const splitterOptions = ref(DEFAULT_SPLITTERS)
+const DEFAULT_CHUNK = { chunkStrategy: 'recursive', chunkSize: 1000, chunkOverlap: 200 }
+
 // 创建弹窗
 const createDialogVisible = ref(false)
-const createForm = ref({ name: '', description: '', visibility: 'USER' })
+const createForm = ref({ name: '', description: '', visibility: 'USER', ...DEFAULT_CHUNK })
 const creating = ref(false)
+
+// 切分设置弹窗
+const chunkDialogVisible = ref(false)
+const chunkForm = ref({ ...DEFAULT_CHUNK })
+const savingChunk = ref(false)
+
+// 切分预览(纯试切, 不入库)
+const previewDialogVisible = ref(false)
+const previewText = ref('')
+const previewLoading = ref(false)
+const previewResult = ref(null)
+const previewParams = ref({ ...DEFAULT_CHUNK })
+const previewParamsLabel = computed(() => {
+  const p = previewParams.value
+  return `${strategyLabel(p.chunkStrategy)} · ${p.chunkSize}/${p.chunkOverlap}`
+})
+
+// 已入库分块查看(与"切分设置"的 chunkForm 区分命名)
+const docChunksVisible = ref(false)
+const docChunksDoc = ref(null)
+const docChunks = ref([])
+const docChunksTotal = ref(0)
+const docChunksPage = ref(0)
+const docChunksLoading = ref(false)
+const DOC_CHUNKS_PAGE_SIZE = 20
+const docChunksTotalPages = computed(() =>
+  Math.max(1, Math.ceil(docChunksTotal.value / DOC_CHUNKS_PAGE_SIZE)))
 
 // 检索测试
 const searchQuery = ref('')
@@ -232,6 +412,40 @@ const searchDone = ref(false)
 // 多知识库合并检索 (V3.2)
 const multiSearch = ref(false)
 const multiSearchKbIds = ref([])
+
+async function loadSplitterOptions() {
+  try {
+    const options = await getSplitterOptions()
+    if (Array.isArray(options) && options.length) splitterOptions.value = options
+  } catch {
+    // 旧版后端没有该接口时静默用内置列表, 不影响知识库其它操作
+  }
+}
+
+function strategyLabel(code) {
+  return splitterOptions.value.find(s => s.code === code)?.label || code || '递归字符'
+}
+
+function splitterHint(code) {
+  return splitterOptions.value.find(s => s.code === code)?.description || '按字符切分文档'
+}
+
+/** 前端先拦一道非法组合, 后端仍会校验(纵深防御) */
+function validateChunkForm(form) {
+  if (!form.chunkStrategy) {
+    ElMessage.warning('请选择切分策略')
+    return false
+  }
+  if (!Number.isInteger(form.chunkSize) || form.chunkSize < 100 || form.chunkSize > 8000) {
+    ElMessage.warning('块大小需在 100 ~ 8000 字符之间')
+    return false
+  }
+  if (!Number.isInteger(form.chunkOverlap) || form.chunkOverlap < 0 || form.chunkOverlap >= form.chunkSize) {
+    ElMessage.warning('重叠字符需 >= 0 且小于块大小')
+    return false
+  }
+  return true
+}
 
 async function loadKnowledgeBases() {
   loading.value = true
@@ -294,7 +508,7 @@ async function refreshAll() {
 }
 
 function openCreateDialog() {
-  createForm.value = { name: '', description: '', visibility: 'USER' }
+  createForm.value = { name: '', description: '', visibility: 'USER', ...DEFAULT_CHUNK }
   createDialogVisible.value = true
 }
 
@@ -303,6 +517,7 @@ async function confirmCreate() {
     ElMessage.warning('请输入知识库名称')
     return
   }
+  if (!validateChunkForm(createForm.value)) return
   creating.value = true
   try {
     // 普通用户只能创建用户级知识库(平台级选项仅 admin 可见, 此处二次兜底)
@@ -310,7 +525,10 @@ async function confirmCreate() {
     const kb = await createKnowledgeBase({
       name: createForm.value.name.trim(),
       description: createForm.value.description || null,
-      visibility
+      visibility,
+      chunkStrategy: createForm.value.chunkStrategy,
+      chunkSize: createForm.value.chunkSize,
+      chunkOverlap: createForm.value.chunkOverlap
     })
     knowledgeBases.value.unshift(kb)
     createDialogVisible.value = false
@@ -321,6 +539,119 @@ async function confirmCreate() {
   } finally {
     creating.value = false
   }
+}
+
+// ===== 切分预览 =====
+/** 用当前表单的参数快照打开预览弹窗(参数改了需要重新打开, 避免看到"旧参数 + 新文案"的错配) */
+function openPreview(form) {
+  previewParams.value = {
+    chunkStrategy: form.chunkStrategy || DEFAULT_CHUNK.chunkStrategy,
+    chunkSize: form.chunkSize || DEFAULT_CHUNK.chunkSize,
+    chunkOverlap: Number.isInteger(form.chunkOverlap) ? form.chunkOverlap : DEFAULT_CHUNK.chunkOverlap
+  }
+  previewResult.value = null
+  previewDialogVisible.value = true
+}
+
+async function runPreview() {
+  if (!previewText.value.trim()) {
+    ElMessage.warning('请先粘贴一段样本文本')
+    return
+  }
+  previewLoading.value = true
+  try {
+    previewResult.value = await previewSplit({
+      text: previewText.value,
+      ...previewParams.value,
+      maxChunks: 20
+    })
+  } catch (e) {
+    ElMessage.error('预览失败：' + (extractMessage(e) || '未知错误'))
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// ===== 已入库分块 =====
+async function openChunks(doc) {
+  docChunksDoc.value = doc
+  docChunksVisible.value = true
+  await loadChunkPage(0)
+}
+
+async function loadChunkPage(page) {
+  if (!docChunksDoc.value) return
+  docChunksLoading.value = true
+  try {
+    const res = await listChunks(currentKbId.value, docChunksDoc.value.id, page, DOC_CHUNKS_PAGE_SIZE)
+    docChunks.value = res?.chunks || []
+    docChunksTotal.value = res?.total || 0
+    docChunksPage.value = res?.page ?? page
+  } catch (e) {
+    ElMessage.error('加载分块失败：' + (extractMessage(e) || '未知错误'))
+    docChunks.value = []
+  } finally {
+    docChunksLoading.value = false
+  }
+}
+
+// ===== 切分设置 =====
+function openChunkDialog() {
+  if (!currentKb.value) return
+  chunkForm.value = {
+    chunkStrategy: currentKb.value.chunkStrategy || DEFAULT_CHUNK.chunkStrategy,
+    chunkSize: currentKb.value.chunkSize || DEFAULT_CHUNK.chunkSize,
+    chunkOverlap: currentKb.value.chunkOverlap ?? DEFAULT_CHUNK.chunkOverlap
+  }
+  chunkDialogVisible.value = true
+}
+
+async function confirmChunkUpdate() {
+  if (!currentKb.value || !validateChunkForm(chunkForm.value)) return
+  savingChunk.value = true
+  try {
+    const updated = await updateKnowledgeBase(currentKb.value.id, {
+      chunkStrategy: chunkForm.value.chunkStrategy,
+      chunkSize: chunkForm.value.chunkSize,
+      chunkOverlap: chunkForm.value.chunkOverlap
+    })
+    // 就地更新列表与 currentKb, 免去整表刷新导致的选中态跳动
+    const idx = knowledgeBases.value.findIndex(k => k.id === updated.id)
+    if (idx >= 0) knowledgeBases.value.splice(idx, 1, updated)
+    chunkDialogVisible.value = false
+    ElMessage.success('切分配置已保存')
+    if (!documents.value.length) return
+    try {
+      await ElMessageBox.confirm(
+        `是否立即对当前知识库的 ${documents.value.length} 个文档全部重新入库？不重新入库的话，已有片段仍按旧配置切分。`,
+        '应用新配置',
+        { type: 'info', confirmButtonText: '立即重新入库', cancelButtonText: '稍后再说' }
+      )
+      await reindexAllDocs()
+    } catch { /* 用户选择稍后再说 */ }
+  } catch (e) {
+    ElMessage.error('保存失败：' + (extractMessage(e) || '未知错误'))
+  } finally {
+    savingChunk.value = false
+  }
+}
+
+/** 逐文档触发重新入库(后端异步执行), 仅跳过正在入库的文档 */
+async function reindexAllDocs() {
+  const targets = documents.value.filter(d => d.status !== 'indexing')
+  if (!targets.length) return
+  let ok = 0
+  for (const doc of targets) {
+    try {
+      await reprocessDocument(currentKbId.value, doc.id)
+      doc.status = 'pending'
+      ok++
+    } catch (e) {
+      ElMessage.warning(`「${doc.filename}」触发失败：${extractMessage(e) || '未知错误'}`)
+    }
+  }
+  ElMessage.success(`已触发 ${ok} 个文档重新入库`)
+  setTimeout(() => loadDocuments(), 2000)
 }
 
 async function removeKb(kb) {
@@ -457,7 +788,10 @@ function scoreColor(s) {
   return 'var(--dcdr-text-3)'
 }
 
-onMounted(() => { loadKnowledgeBases() })
+onMounted(() => {
+  loadSplitterOptions()
+  loadKnowledgeBases()
+})
 </script>
 
 <style scoped>
@@ -513,6 +847,14 @@ onMounted(() => { loadKnowledgeBases() })
 .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .refresh-btn .spin { display: inline-block; animation: kb-spin 0.8s linear infinite; }
 @keyframes kb-spin { to { transform: rotate(360deg); } }
+.chunk-cfg-btn {
+  height: 28px; padding: 0 10px; flex: none;
+  border: 1px solid var(--dcdr-border); border-radius: 8px;
+  background: var(--dcdr-bg-subtle); color: var(--dcdr-text-2);
+  font-family: inherit; font-size: 11px; cursor: pointer; white-space: nowrap;
+  transition: all 0.2s;
+}
+.chunk-cfg-btn:hover { border-color: var(--dcdr-accent); color: var(--dcdr-accent); background: var(--dcdr-accent-wash); }
 
 /* 文档表 + 检索测试 同屏 */
 .kb-body { flex: 1; display: flex; gap: 16px; padding: 0 24px 20px; overflow: hidden; }
@@ -534,7 +876,7 @@ onMounted(() => { loadKnowledgeBases() })
 .dh-name { flex: 1; }
 .dh-size { width: 150px; flex: none; }
 .dh-status { width: 68px; flex: none; }
-.dh-act { width: 68px; flex: none; }
+.dh-act { width: 96px; flex: none; }
 
 .doc-list { flex: 1; overflow-y: auto; }
 .doc-item {
@@ -552,7 +894,7 @@ onMounted(() => { loadKnowledgeBases() })
 .doc-status.st-indexing { color: var(--dcdr-warning); }
 .doc-status.st-failed { color: var(--dcdr-danger); }
 .error-hint { color: var(--dcdr-danger); cursor: help; font-weight: 700; }
-.doc-actions { width: 68px; flex: none; display: flex; gap: 4px; justify-content: flex-end; }
+.doc-actions { width: 96px; flex: none; display: flex; gap: 4px; justify-content: flex-end; }
 .doc-action-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border: none; border-radius: 7px; background: transparent;
@@ -627,4 +969,47 @@ onMounted(() => { loadKnowledgeBases() })
 
 /* 可见性提示 */
 .vis-tip { margin-top: 6px; font-size: 12px; color: var(--dcdr-text-3); line-height: 1.5; }
+
+/* 切分配置 */
+.split-tip { margin-top: 5px; font-size: 11.5px; line-height: 1.5; color: var(--dcdr-text-3); }
+.split-unit { margin-left: 8px; font-size: 11.5px; color: var(--dcdr-text-3); }
+.chunk-dialog-tip {
+  margin-bottom: 14px; padding: 10px 12px; border-radius: 8px;
+  background: var(--dcdr-accent-wash); color: var(--dcdr-text-2);
+  font-size: 12px; line-height: 1.6;
+}
+.chunk-dialog-tip b { color: var(--dcdr-accent); font-weight: 600; }
+
+/* 切分预览 */
+.preview-actions { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+.preview-hint { font-size: 11.5px; color: var(--dcdr-text-3); }
+.preview-stats {
+  display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; padding: 8px 10px;
+  border-radius: 8px; background: var(--dcdr-bg-subtle);
+  font-size: 11.5px; color: var(--dcdr-text-2);
+}
+.preview-stats b { color: var(--dcdr-accent); }
+.preview-list {
+  margin-top: 10px; max-height: 42vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.preview-item {
+  border: 1px solid var(--dcdr-border); border-radius: 8px; padding: 8px 10px;
+  background: var(--dcdr-surface-faint);
+}
+.preview-item-head {
+  display: flex; justify-content: space-between; margin-bottom: 4px;
+  font-family: var(--dcdr-font-mono); font-size: 9.5px; color: var(--dcdr-text-3);
+}
+.preview-index { color: var(--dcdr-accent); font-weight: 700; }
+.preview-content {
+  font-size: 11.5px; line-height: 1.65; color: var(--dcdr-text-2);
+  white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow-y: auto;
+}
+.preview-ellipsis { color: var(--dcdr-text-3); }
+.preview-more { margin-top: 8px; text-align: center; font-size: 11px; color: var(--dcdr-text-3); }
+.preview-empty { padding: 18px 4px; font-size: 11.5px; color: var(--dcdr-text-3); line-height: 1.7; }
+.chunk-view-list { max-height: 50vh; min-height: 80px; }
+.chunk-pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; }
+.chunk-pager-info { font-family: var(--dcdr-font-mono); font-size: 10px; color: var(--dcdr-text-3); }
 </style>

@@ -1,6 +1,7 @@
 package com.dcdr.agent.repository;
 
 import com.dcdr.agent.entity.DocumentChunkEntity;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -14,6 +15,31 @@ public interface DocumentChunkRepository extends JpaRepository<DocumentChunkEnti
     List<DocumentChunkEntity> findByKbIdOrderByChunkIndexAsc(String kbId);
 
     List<DocumentChunkEntity> findByDocIdOrderByChunkIndexAsc(String docId);
+
+    /** 某文档的分块总数(查看分块详情时用于分页) */
+    long countByDocId(String docId);
+
+    /**
+     * 分页查询某文档的分块摘要: 只取序号/内容/token 数, <b>不查 embedding</b>。
+     * <p>
+     * 一个块带 1536 维向量, 逐行取实体既浪费 IO 又占内存; 界面只需要展示文本。
+     */
+    @Query("""
+            SELECT c.chunkIndex AS chunkIndex, c.content AS content, c.tokenCount AS tokenCount
+            FROM DocumentChunkEntity c
+            WHERE c.docId = :docId
+            ORDER BY c.chunkIndex ASC
+            """)
+    List<ChunkSummary> findSummariesByDocId(@Param("docId") String docId, Pageable pageable);
+
+    /** 分块摘要投影(与 JPQL 别名对应) */
+    interface ChunkSummary {
+        Integer getChunkIndex();
+
+        String getContent();
+
+        Integer getTokenCount();
+    }
 
     /**
      * 按知识库 + 向量余弦距离检索最相近的 Top-K 分块 (V2.1 RAG 检索核心)

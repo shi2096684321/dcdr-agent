@@ -116,3 +116,19 @@ ALTER TABLE llm_usage_logs ADD COLUMN IF NOT EXISTS cache_creation_tokens INTEGE
 
 COMMENT ON COLUMN llm_usage_logs.cache_creation_tokens IS
     '写入前缀缓存的输入 token 数; 仅 Anthropic 系上报, 其余为 0';
+
+-- =============================================================================
+-- 知识库分块策略
+--
+-- 设计要点：
+--   1. 此前 chunk_size / chunk_overlap 虽在知识库表和界面上存在，但摄取时始终用全局
+--      TextSplitter Bean，改这两个字段完全无效。本次补齐"按库配置"链路，并新增策略字段。
+--   2. 存量行默认 recursive：与历史行为逐字一致（全局默认策略也是 recursive）。
+--      不回填、不重切已有向量 —— 老片段仍按老规则切，需用户主动"重新入库"才变更。
+--   3. 四种 code 与 ChunkStrategy 枚举、GET /api/knowledge-bases/splitter-options 一致。
+-- =============================================================================
+
+ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS chunk_strategy VARCHAR(24) NOT NULL DEFAULT 'recursive';
+
+COMMENT ON COLUMN knowledge_bases.chunk_strategy IS
+    '分块策略: fixed=固定长度 / recursive=递归字符 / sentence=句子优先 / markdown=标题结构; 空值回退全局 agent.rag.splitter.strategy';

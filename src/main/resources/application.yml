@@ -364,6 +364,9 @@ agent:
       supported-formats: [pdf, docx, txt, md, markdown, html, htm]
       max-docs-per-kb: 100
     splitter:
+      # 全局默认分块配置。每个知识库可在界面单独选策略/块大小/重叠(见 splitter-options 接口),
+      # 未单独配置的知识库沿用这里的默认值; 参数说明见 GET /api/knowledge-bases/splitter-options。
+      # strategy: fixed(固定长度) | recursive(递归字符,默认) | sentence(句子优先) | markdown(标题结构)
       strategy: recursive
       chunk-size: 1000
       chunk-overlap: 200
