@@ -97,7 +97,7 @@
           <div class="ld-steps" v-if="log.steps && log.steps.length">
             <div v-for="(s, i) in log.steps" :key="i" class="ld-step">
               <span class="step-badge" :class="stepClass(s.kind)">{{ stepLabel(s) }}</span>
-              <span class="step-model" v-if="s.model">{{ s.model }}</span>
+              <span class="step-model" v-if="s.model" :title="s.model">{{ modelLabel(s.model) }}</span>
               <span class="step-purpose" v-if="s.purpose">{{ s.purpose }}</span>
               <span class="step-src" v-if="s.ragSource">{{ s.ragSourceLabel || s.ragSource }}</span>
               <span class="step-meta" v-if="s.query" :title="s.query">{{ s.query }}</span>
@@ -334,8 +334,12 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getLlmCallLogs, getLlmCallLogDetail, extractMessage } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useModelStore } from '@/stores/model'
 
 const authStore = useAuthStore()
+const modelStore = useModelStore()
+/** 模型名兜底: store 缺 labelOf(尚未热更新)时降级显示原值, 不让整页渲染抛错 */
+const modelLabel = (name) => (modelStore?.labelOf ? modelStore.labelOf(name) : (name || ''))
 const loading = ref(false)
 const logs = ref([])
 const total = ref(0)
@@ -534,6 +538,11 @@ const STEP_LABELS = {
 /** 步骤字段值 → 可读文本(「其余字段」折叠区共用) */
 function fieldValue(k, v, s) {
   if (k === 'costMs') return fmtDur(v) || '-'
+  // 模型: 显示人话名, 但原值留在括号里 —— 排障要拿 custom:<uuid> 去 grep 日志
+  if (k === 'model') {
+    const label = modelLabel(v)
+    return label && label !== v ? `${label}（${v}）` : v
+  }
   if (k === 'inTokens' || k === 'outTokens') return v == null ? '-' : fmtTokens(v)
   if (k === 'interrupted') return v ? '是' : '否'
   // 中文名取自后端，原值仍留在括号里：它是按日志/库侧聚合时要 grep 的东西，只留中文反而查不下去
@@ -618,7 +627,7 @@ function buildStepCard(s, no) {
   switch (s.kind) {
     case 'llm':
       card.title = purposeTitle(s.purpose)
-      if (s.model) card.chips.push({ text: s.model, mono: true, tone: 'model' })
+      if (s.model) card.chips.push({ text: modelLabel(s.model), mono: true, tone: 'model' })
       if (s.inTokens != null || s.outTokens != null) {
         card.chips.push({ text: `${fmtTokens(s.inTokens)}↑ / ${fmtTokens(s.outTokens)}↓`, tone: 'tokens' })
       }
@@ -845,6 +854,8 @@ async function loadLogs() {
 
 onMounted(() => {
   loadLogs()
+  // 模型名要翻译成本地配置里的展示名, 依赖全局模型列表(幂等, 已加载则直接复用)
+  modelStore.loadModels().catch(() => {})
 })
 </script>
 

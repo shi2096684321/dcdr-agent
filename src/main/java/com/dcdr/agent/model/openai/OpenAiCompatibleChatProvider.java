@@ -105,6 +105,11 @@ public abstract class OpenAiCompatibleChatProvider implements ChatModelProvider 
         return capabilities.contains("function_calling");
     }
 
+    @Override
+    public Integer getMaxTokens() {
+        return maxTokens;
+    }
+
     /**
      * 构建请求体
      */

@@ -132,3 +132,19 @@ ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS chunk_strategy VARCHAR(24) 
 
 COMMENT ON COLUMN knowledge_bases.chunk_strategy IS
     '分块策略: fixed=固定长度 / recursive=递归字符 / sentence=句子优先 / markdown=标题结构; 空值回退全局 agent.rag.splitter.strategy';
+
+-- =============================================================================
+-- 会话级知识库挂载
+--
+-- 设计要点：
+--   1. 知识库是"这个会话的工作资料"，与 sessions.model 同级，属于会话属性。
+--      此前只存在前端组件状态里：刷新即丢（用户以为还在引用，实际已退回模型自主检索）、
+--      且会从会话 A 串到会话 B。
+--   2. 空值 = 未挂载任何知识库（不强制检索，检索交还给模型的 knowledge_base_search 工具）。
+--   3. 用逗号分隔而非数组列：与代码里 Agent 定义的 kb_ids 存储口径一致，迁移成本最低。
+-- =============================================================================
+
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kb_ids TEXT;
+
+COMMENT ON COLUMN sessions.kb_ids IS
+    '本会话挂载的知识库 ID（逗号分隔）；空=未挂载。挂上后该会话每轮强制检索，跨轮继承';

@@ -32,6 +32,8 @@ import com.dcdr.agent.model.provider.ChatModelProvider;
 import com.dcdr.agent.rag.RagSource;
 import com.dcdr.agent.rag.config.RagProperties;
 import com.dcdr.agent.rag.dto.RetrievalResult;
+import com.dcdr.agent.rag.retrieval.QueryRewriteService;
+import com.dcdr.agent.rag.retrieval.RetrievalGate;
 import com.dcdr.agent.rag.service.RetrievalService;
 import com.dcdr.agent.rag.tool.KnowledgeSearchContextHolder;
 import com.dcdr.agent.rag.tool.KnowledgeSearchTool;
@@ -77,6 +79,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -131,6 +134,8 @@ public class AgentOrchestrator {
     private final ContextLimitPreference contextLimitPreference;
     /** V3.4: 上下文策略(摘要压缩 / 滑动窗口) —— 决定发给模型的历史视图 */
     private final ContextStrategyFactory contextStrategyFactory;
+    /** 检索查询改写: 多轮对话里把"它/这个"补全成可独立检索的句子(失败自动回退原句) */
+    private final QueryRewriteService queryRewriteService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     /**
@@ -327,7 +332,8 @@ public class AgentOrchestrator {
                              WorkspacePromptProvider workspacePromptProvider,
                              ContextUsageService contextUsageService,
                              ContextLimitPreference contextLimitPreference,
-                             ContextStrategyFactory contextStrategyFactory) {
+                             ContextStrategyFactory contextStrategyFactory,
+                             QueryRewriteService queryRewriteService) {
         this.router = router;
         this.memory = memory;
         this.sessionManager = sessionManager;
@@ -356,6 +362,7 @@ public class AgentOrchestrator {
         this.contextUsageService = contextUsageService;
         this.contextLimitPreference = contextLimitPreference;
         this.contextStrategyFactory = contextStrategyFactory;
+        this.queryRewriteService = queryRewriteService;
     }
 
     /**
@@ -2756,7 +2763,7 @@ public class AgentOrchestrator {
                     "本次任务已达 token 上限（累计约 %d token），已生成部分如上。如需继续，请针对结果追问或开启新对话。",
                     taskTokens)));
         } else if ("length".equals(fr)) {
-            tail.add(ChatChunk.contextWarning("回答已达长度上限(max_tokens)被截断，可尝试简化问题或开启新对话。"));
+            tail.add(ChatChunk.contextWarning(outputLimitCutMessage(provider, accumulated, reasoning)));
         } else if ("insufficient_system_resource".equals(fr)) {
             tail.add(ChatChunk.error("生成因后端推理资源不足被打断", "RESOURCE_LIMIT"));
         } else if ("content_filter".equals(fr)) {
@@ -2774,16 +2781,59 @@ public class AgentOrchestrator {
     }
 
     /**
+     * {@code finish_reason=length} 的提示文案。
+     * <p>
+     * <b>为什么必须把数值和来源写进去</b>: 这个上限是<b>输出</b>上限(max_tokens), 与「总上下文」
+     * 那个"占用率分母"毫无关系。旧文案只说"已达长度上限", 用户第一反应就是去调总上下文 ——
+     * 调完毫无变化, 因为两者根本不是一回事。
+     * <p>
+     * <b>为什么要区分"正文为空"</b>: 思考型模型(Qwen3 / GLM-4.5 / reasoner 系)的思维链与正文
+     * <b>共用同一份</b>输出预算。预算小时模型"想完就没了", 正文一个字都发不出来, 此时提示
+     * "可尝试简化问题"是误导 —— 该说的是"调大上限, 或关掉深度思考"。
+     */
+    private static String outputLimitCutMessage(ChatModelProvider provider,
+                                                StringBuilder accumulated, StringBuilder reasoning) {
+        Integer limit = provider.getMaxTokens();
+        String scope = limit != null
+                ? String.format("%d token，%s", limit, outputLimitSource(provider))
+                : "未设置上限，由模型决定";
+        boolean bodyEmpty = accumulated == null || accumulated.toString().isBlank();
+        boolean thoughtSomething = reasoning != null && !reasoning.toString().isBlank();
+        String shared = "思考与正文共用同一份输出预算";
+        if (bodyEmpty && thoughtSomething) {
+            return String.format("输出预算（%s）在「思考」阶段就耗尽了，正文还没开始生成。%s，"
+                    + "请把「单次输出上限」调大一档，或关闭深度思考后重试。", scope, shared);
+        }
+        if (bodyEmpty) {
+            return String.format("输出预算（%s）已耗尽，但没有产出正文。请把「单次输出上限」调大一档后重试。", scope);
+        }
+        return String.format("回答已达输出上限（%s）被截断，剩余内容未生成。%s，"
+                + "可把「单次输出上限」调大一档，或关闭深度思考后重试。", scope, shared);
+    }
+
+    /**
+     * 输出上限的来源描述 —— 让用户知道该去哪个界面改。
+     * <p>前缀 {@code custom:} 与 {@code UserModelService.CUSTOM_PREFIX} 同口径: 这里不 import
+     * service 层(编排层刻意不反向依赖), 故保留字面量并在此注明来源。
+     */
+    private static String outputLimitSource(ChatModelProvider provider) {
+        String name = provider.getName();
+        return name != null && name.startsWith("custom:")
+                ? "来自自定义模型配置" : "来自部署配置 models.chat";
+    }
+
+    /**
      * 阻塞的准备阶段(在 boundedElastic 线程执行):
      * 确保会话、加载记忆、路由决策、保存用户消息、图片自动路由(不支持视觉时直接切换视觉模型回答)、上下文上限估算。
      * 结果封装为 ChatContext 交给流式主链路(此时 request 中的图片已被解析为 base64, 最终回答模型已确定)。
      */
     private ChatContext prepareForChat(ChatRequest request, String userId,
                                        com.dcdr.agent.common.log.LlmCallTrace trace) {
-        // 捕获用户「显式选择」的知识库(在 Agent 定义合并 kbIds 之前):
-        // 显式选择 = 强意图 → 3.3 节走强制检索; Agent 绑定/平台级 = 隐式 → 保持 Agentic(模型自主决定)
-        List<String> explicitKbIds = request.getKnowledgeBaseIds() == null
-                ? Collections.emptyList() : new ArrayList<>(request.getKnowledgeBaseIds());
+        // 捕获本轮请求里的「原始选择」(必须在 Agent 定义合并 kbIds 之前):
+        // null = 调用方没表态(沿用会话里挂的); 空列表 = 明确清空; 非空 = 用户本轮的选择。
+        // 只取原始值, 真正的三态解析与会话落库放在会话确定之后(见 1.2)。
+        List<String> requestedKbIds = request.getKnowledgeBaseIds() == null
+                ? null : new ArrayList<>(request.getKnowledgeBaseIds());
 
         // 0. V2.3 自定义 Agent: 加载并应用 Agent 配置 (model/temperature/kb_ids/tools/systemPrompt)
         //    必须在路由前完成, 因 Agent.model 会覆盖 request.model 影响路由决策
@@ -2802,6 +2852,12 @@ public class AgentOrchestrator {
         //     (Conversation 与 Agent 持久绑定后, 后续轮次才能确定这些记忆属于哪个 Agent)
         sessionManager.bindAgent(sessId, request.getAgentId());
 
+        // 1.2 知识库挂载落到会话上(与 model 同级): 刷新、换设备、切会话都不丢。
+        //     后续轮次即使调用方没再传, 也能继承本会话的选择 —— 用户的心智是"这个会话用这些库",
+        //     而不是"我这句话要不要查资料"。显式选择 = 强意图 → 走强制检索;
+        //     Agent 绑定/平台级库仍是隐式(保持 Agentic, 模型自主决定查不查)。
+        List<String> explicitKbIds = sessionManager.resolveKnowledgeBases(sessId, requestedKbIds);
+
         // 2. 加载记忆 + 组装发给模型的上下文(V3.4: 策略化)
         //    load(): 全量历史(落库与前端展示口径); 具体"发什么"由 ContextStrategy 决定 ——
         //    默认摘要压缩(超预算时把早期对话压成摘要), 也可配 sliding-window 退回旧行为。
@@ -2813,6 +2869,11 @@ public class AgentOrchestrator {
                 contextStrategyFactory.current().apply(sessId, userId, fullHistory, contextLimit);
         List<Message> history = new ArrayList<>(historyView.messages());
         String historyNotice = historyView.notice();
+        // 方案B: 历史里只留最近 N 轮检索片段, 更早的成对裁掉 —— 否则每轮一份文档原文会让
+        // 上下文随对话线性膨胀; 更早的资料本就该由新一轮检索重新召回
+        if (ragProperties.getInject().isAsToolMessage()) {
+            history = trimRagToolPairs(history, ragProperties.getInject().getKeepRecentRetrievals());
+        }
         if (historyNotice != null) {
             log.info("会话 {} 上下文视图调整: 全量 {} 条 → 发送 {} 条",
                     sessId, fullHistory.size(), history.size());
@@ -2904,19 +2965,40 @@ public class AgentOrchestrator {
         //       由 LLM 自主决定是否检索(省 token, 闲聊不查库)。
         List<Map<String, Object>> forcedKbSources = null;
         String forcedKbNotice = null;
+        // 方案B: 本轮检索落下的「调用+结果」一对消息, 待用户消息落库后紧接着写入(顺序必须对)
+        List<Message> ragToolPair = null;
         // 知识库检索只保留一跳: 用户显式选择(强意图) → forced, 未命中明确告知, 不让模型假装查过。
         // 这里原先还有第二条 —— "未显式选择时, 平台拿用户原话先自动检索一遍"(相关度门控后注入)。
         // 已移除, 因为它"每轮必查": 即便这一轮模型压根没打算查资料, 也要付一次 embedding + 向量查询;
         // 而且它在模型没表达意愿的情形下就产生了检索, 与"模型自主调用"在调用链里还难以区分。
         // 未显式选择时, 检索完全交给模型自主决定(见下方 knowledge_base_search 工具)。
         boolean forced = !explicitKbIds.isEmpty() && ragProperties.isEnabled();
-        if (forced) {
+        if (forced && !RetrievalGate.shouldRetrieve(request.getMessage())) {
+            // 寒暄/致谢不值得检索: 省一次 embedding + 向量查询, 也避免把无关片段塞进上下文干扰回答。
+            // 只拦这一小类 —— "继续 / 然后呢"必须放行: 检索片段只在本轮 volatileTail 里、不落库,
+            // 跳过检索等于这一轮模型手上完全没有资料, 那不是省钱, 是逼它编。
+            log.info("会话 {} 挂了知识库, 本轮消息为寒暄/无检索价值, 跳过检索", sessId);
+        } else if (forced) {
             // 强制检索范围 = 显式选择 + Agent 绑定 + 平台级(去重合并, 即 buildEffectiveKbIds 全量口径)
-            RagInject inj = retrieveAndInject(buildEffectiveKbIds(request), request.getMessage(), trace,
-                    memoryChars(memoryFragment), true);
+            // 多轮追问里的"它/这个"必须先补全成可独立检索的句子: 否则向量拿不到可指向的对象,
+            // 检索打偏且静默(无片段、无提示, 模型直接凭记忆答)。失败自动回退原句。
+            String searchQuery = queryRewriteService.rewrite(history, request.getMessage(), userId, sessId);
+            // 历史里已有的片段(按 chunkId) —— 本轮命中同一片段就不再重复注入/落库
+            Set<String> knownChunks = knownRagChunkIds(history);
+            RagInject inj = retrieveAndInject(buildEffectiveKbIds(request), searchQuery, trace,
+                    memoryChars(memoryFragment), true, knownChunks);
             forcedKbSources = inj.sources;
             forcedKbNotice = inj.notice;
-            volatileTail.addAll(inj.fragments);
+            RagProperties.InjectConfig injectCfg = ragProperties.getInject();
+            if (injectCfg.isAsToolMessage() && inj.sources != null && !inj.fragments.isEmpty()) {
+                // 方案B: 片段改由 tool 消息承载 —— 本轮照常给模型看, 同时落库。
+                // 落库后它就成了历史的一部分: 下一轮模型直接看得到, 不必再注入一遍
+                // (OpenAI Responses / Assistants 的做法)。落库推迟到用户消息之后(见下方)。
+                ragToolPair = buildRagToolPair(searchQuery, inj.fragments, inj.sources);
+                volatileTail.addAll(ragToolPair);
+            } else {
+                volatileTail.addAll(inj.fragments);
+            }
         }
 
         // 稳定前缀在前, 对话历史在后: 每轮新增的历史都接在前缀之后, 前缀永远不变。
@@ -2971,6 +3053,13 @@ public class AgentOrchestrator {
         userMsg.setImageCaption(prep.imageCaption());
         userMsg.setImageTokenUsage(prep.imageTokenUsage());
         memory.save(sessId, userMsg);
+        // 方案B: 检索的「调用 + 结果」紧跟用户消息落库 —— 顺序与发给模型的上下文一致,
+        // 下一轮从历史里加载它们, 模型就能直接复用上一轮的资料, 不必重新检索/重新注入
+        if (ragToolPair != null) {
+            for (Message m : ragToolPair) {
+                memory.save(sessId, m);
+            }
+        }
         if (firstMessage) {
             sessionManager.autoTitleFromFirstMessage(sessId, userOriginal);
         }
@@ -3086,7 +3175,8 @@ public class AgentOrchestrator {
      */
     private RagInject retrieveAndInject(List<String> scope, String userMessage,
                                         com.dcdr.agent.common.log.LlmCallTrace trace,
-                                        int memoryChars, boolean forced) {
+                                        int memoryChars, boolean forced,
+                                        Set<String> knownChunkIds) {
         List<RetrievalResult> results;
         long ragStart = System.nanoTime();
         try {
@@ -3096,6 +3186,21 @@ public class AgentOrchestrator {
             log.warn("知识库检索失败, 本次对话降级为无知识库增强: {}", e.getMessage());
             return new RagInject(List.of(), null, null);
         }
+        int rawHits = results.size();
+        // 增量去重: 历史里已经注入过同一片段就不再重复 —— 同一段资料每轮都占一份上下文,
+        // 既费 token, 还会让模型误以为"好几份文件都这么说"(把重复当交叉印证)。
+        // 用 chunkId 而不是文本比对: 片段文本会随分块/前缀微调而变, chunkId 才是稳定标识。
+        if (knownChunkIds != null && !knownChunkIds.isEmpty()) {
+            List<RetrievalResult> fresh = new ArrayList<>(rawHits);
+            for (RetrievalResult r : results) {
+                if (r.getChunkId() == null || !knownChunkIds.contains(r.getChunkId())) fresh.add(r);
+            }
+            if (fresh.size() < rawHits) {
+                log.info("知识库检索增量: 命中 {} 条, 其中 {} 条已在历史中, 本轮注入 {} 条",
+                        rawHits, rawHits - fresh.size(), fresh.size());
+            }
+            results = fresh;
+        }
         // 供库侧聚合判断"匹配度趋势"与"死文档": topScore 看整体匹配度是否下滑,
         // docIds 用于反查"入库很久却从未被召回"的文档(见 docs/sql/eval/retrieval-health.sql)
         double ragTopScore = results.stream().mapToDouble(RetrievalResult::getScore).max().orElse(0.0);
@@ -3104,7 +3209,8 @@ public class AgentOrchestrator {
                 .filter(java.util.Objects::nonNull)
                 .distinct()
                 .collect(java.util.stream.Collectors.toList());
-        trace.recordRag(userMessage, scope.size(), results.size(),
+        // 记原始命中数: 指标口径是"检索器在这个问题上召回了多少", 与"是否重复注入"无关
+        trace.recordRag(userMessage, scope.size(), rawHits,
                 (System.nanoTime() - ragStart) / 1_000_000, ragTopScore, ragDocIds,
                 forced ? RagSource.FORCED : RagSource.AUTO);
         if (!results.isEmpty()) {
@@ -3150,6 +3256,12 @@ public class AgentOrchestrator {
                     forced ? "强制" : "自动", scope, results.size(), injection.injectedCount());
             return new RagInject(List.of(Message.system(frag.getName(), frag.getText())), sources, null);
         }
+        if (rawHits > 0) {
+            // 命中了, 但增量去重后为空(全是历史里已注入过的片段): 模型从历史里就看得见这些内容,
+            // 不必重复注入; 也不能走下面的"未找到"分支 —— 那是在说假话
+            log.info("知识库检索(RAG) 命中 {} 条, 均已在历史中, 本轮不重复注入", rawHits);
+            return new RagInject(List.of(), null, null);
+        }
         if (forced) {
             // 用户显式选择但未命中: 明确指令 + 前端即时提示, 不让模型假装查过
             log.info("知识库检索(RAG) 强制: kbIds={}, 未命中(用户显式选择)", scope);
@@ -3169,6 +3281,128 @@ public class AgentOrchestrator {
      * 命中来源(供来源下发) + 未命中提示(forced 未命中时才非空)。
      */
     private record RagInject(List<Message> fragments, List<Map<String, Object>> sources, String notice) {}
+
+    /**
+     * 历史里已经注入过的检索片段 chunkId（供本轮增量去重）。
+     * <p>从 {@code role=tool} 且工具名为 knowledge_base_search 的消息里读 {@code sources[].chunkId} ——
+     * 这也是为什么落 tool 消息时必须带上 sources: 不带, 下一轮的增量去重就退化成"永远当成新片段"。
+     */
+    static Set<String> knownRagChunkIds(List<Message> history) {
+        Set<String> ids = new HashSet<>();
+        if (history == null) return ids;
+        for (Message m : history) {
+            if (!"tool".equals(m.getRole())) continue;
+            if (m.getName() != null && !KnowledgeSearchTool.NAME.equals(m.getName())) continue;
+            if (m.getSources() == null) continue;
+            for (Map<String, Object> s : m.getSources()) {
+                Object id = s.get("chunkId");
+                if (id != null) ids.add(String.valueOf(id));
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 构造「检索调用 + 结果」一对消息（方案 B）。
+     * <p>
+     * <b>为什么必须成对</b>: OpenAI 兼容协议要求每个 {@code tool_calls[].id} 都有对应的
+     * {@code role=tool} 回灌。只落一条 tool 消息，下一轮请求会被上游 400 直接拒掉
+     * （与 {@code ToolPairingRepair} 守的是同一条规则）。
+     * <p>
+     * <b>为什么 content 为空也要带 toolCalls</b>: 这条 assistant 消息的唯一职责是"说明这次调用发生过"，
+     * 内容在 tool 结果里。给它的 content 塞占位文案反而会污染模型对上下文的解读。
+     */
+    private List<Message> buildRagToolPair(String query, List<Message> fragments,
+                                           List<Map<String, Object>> sources) {
+        String callId = "call_rag_" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String args;
+        try {
+            args = mapper.writeValueAsString(Map.of("query", query == null ? "" : query));
+        } catch (Exception e) {
+            args = "{}";
+        }
+        Map<String, Object> call = new LinkedHashMap<>();
+        call.put("id", callId);
+        call.put("name", KnowledgeSearchTool.NAME);
+        call.put("arguments", args);
+
+        Message callMsg = new Message();
+        callMsg.setRole("assistant");
+        callMsg.setContent("");
+        callMsg.setToolCalls(new ArrayList<>(List.of(call)));
+
+        StringBuilder body = new StringBuilder();
+        for (Message f : fragments) {
+            if (f.getContent() == null || f.getContent().isBlank()) continue;
+            if (body.length() > 0) body.append("\n\n");
+            body.append(f.getContent());
+        }
+        Message resultMsg = new Message();
+        resultMsg.setRole("tool");
+        resultMsg.setToolCallId(callId);
+        resultMsg.setName(KnowledgeSearchTool.NAME);
+        resultMsg.setContent(body.toString());
+        // 带上来源(含 chunkId): 下一轮据此做增量去重, 也是前端引用卡片的依据
+        resultMsg.setSources(sources);
+        return List.of(callMsg, resultMsg);
+    }
+
+    /**
+     * 历史里只保留最近 {@code keep} 轮知识库检索片段，更早的<b>成对</b>移除。
+     * <p>
+     * <b>为什么必须裁</b>: 每轮落一份文档原文，二十轮之后历史里全是重复的片段 ——
+     * 上下文线性膨胀，而真正有用的往往只有最近一轮。
+     * <p>
+     * <b>为什么必须成对</b>: 只删 assistant（tool_calls 悬空）或只删 tool（找不到前驱调用）
+     * 都会让上游 400。混合调用（一次调用里既有 web_search 又有 knowledge_base_search）时
+     * 只摘掉检索那一条，其余保留，不能整条删。
+     */
+    static List<Message> trimRagToolPairs(List<Message> history, int keep) {
+        // keep <= 0 = 不裁: 优先保前缀缓存。历史中段一旦被删, 删除点之后的所有 token 都要重算,
+        // 省下的那几 K 字符远比缓存失效的代价小(详见 RagProperties.InjectConfig 的说明)
+        if (history == null || history.isEmpty() || keep <= 0) return history;
+        int keepN = keep;
+
+        List<String> ragCallIds = new ArrayList<>();
+        for (Message m : history) {
+            if (!"assistant".equals(m.getRole()) || m.getToolCalls() == null) continue;
+            for (Map<String, Object> tc : m.getToolCalls()) {
+                Object name = tc.get("name");
+                Object id = tc.get("id");
+                if (KnowledgeSearchTool.NAME.equals(name) && id != null) {
+                    ragCallIds.add(String.valueOf(id));
+                }
+            }
+        }
+        if (ragCallIds.size() <= keepN) return history;
+
+        Set<String> drop = new HashSet<>(ragCallIds.subList(0, ragCallIds.size() - keepN));
+        List<Message> out = new ArrayList<>(history.size());
+        for (Message m : history) {
+            if ("tool".equals(m.getRole())) {
+                if (m.getToolCallId() != null && drop.contains(m.getToolCallId())) continue;
+                out.add(m);
+                continue;
+            }
+            if ("assistant".equals(m.getRole()) && m.getToolCalls() != null && !m.getToolCalls().isEmpty()) {
+                boolean touched = m.getToolCalls().stream()
+                        .anyMatch(tc -> drop.contains(String.valueOf(tc.get("id"))));
+                if (touched) {
+                    List<Map<String, Object>> kept = new ArrayList<>(m.getToolCalls().size());
+                    for (Map<String, Object> tc : m.getToolCalls()) {
+                        if (!drop.contains(String.valueOf(tc.get("id")))) kept.add(tc);
+                    }
+                    if (kept.isEmpty() && (m.getContent() == null || m.getContent().isBlank())) {
+                        continue;   // 这条 assistant 只为那次检索而生, 整条移除
+                    }
+                    m.setToolCalls(kept.isEmpty() ? null : kept);
+                }
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
 
     /**
      * 长期记忆片段实际占用的字符数, 供背景信息统一记账。

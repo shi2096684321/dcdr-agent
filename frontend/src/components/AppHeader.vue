@@ -25,7 +25,7 @@
         <span class="ws-label">联网搜索</span>
       </button>
 
-      <el-select :model-value="currentModel" placeholder="选择模型" class="model-select" @change="onModelChange">
+      <el-select ref="modelSelectRef" :model-value="currentModel" placeholder="选择模型" class="model-select" @change="onModelChange">
         <el-option-group label="对话模型">
           <el-option v-for="m in platformChatModels" :key="m.name" :label="m.label" :value="m.name">
             <span>{{ m.label }}</span><el-tag size="small" style="margin-left: 8px">对话</el-tag>
@@ -34,6 +34,8 @@
         <el-option-group v-if="customModels.length" label="我的自定义模型">
           <el-option v-for="m in customModels" :key="m.name" :label="m.label" :value="m.name">
             <span>{{ m.label }}</span><el-tag size="small" type="warning" style="margin-left: 8px">自定义</el-tag>
+            <!-- 就地编辑: 不必先跳「管理自定义模型」再找那一行。click.stop 阻止 li 的选中逻辑, 否则点编辑会顺带切模型 -->
+            <el-icon class="um-opt-edit" title="编辑这个模型" @click.stop="editCustomModel(m)"><Edit /></el-icon>
           </el-option>
         </el-option-group>
         <el-option-group label="图片生成">
@@ -138,8 +140,11 @@
       <el-form-item label="采样温度">
         <el-input-number v-model="umForm.temperature" :min="0" :max="2" :step="0.1" />
       </el-form-item>
-      <el-form-item label="最大token">
-        <el-input-number v-model="umForm.maxTokens" :min="1" :max="32000" :step="100" />
+      <el-form-item label="单次输出上限">
+        <el-select v-model="umForm.limitChoice" style="width: 100%">
+          <el-option v-for="o in outputLimitOptions" :key="String(o.value)" :label="o.label" :value="o.value" />
+        </el-select>
+        <div class="um-tip">模型一次最多能写多少。思考型模型的思考与正文<b>共用</b>这份预算，选小了会「想完就没、正文空白」；拿不准就留在「自动」。</div>
       </el-form-item>
       <el-form-item label="启用">
         <el-switch v-model="umForm.enabled" />
@@ -157,7 +162,7 @@
 
 <script setup>
 import { reactive, ref, computed, watch } from 'vue'
-import { User as UserIcon, Lock, Setting, SwitchButton, Bell } from '@element-plus/icons-vue'
+import { User as UserIcon, Lock, Setting, SwitchButton, Bell, Edit } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/stores/auth'
 import { useModelStore } from '@/stores/model'
@@ -172,6 +177,8 @@ import appVersion from 'virtual:app-version'
 
 // 模型下拉中的"管理自定义模型"哨兵选项值
 const MANAGE_MODELS = '__manage_models__'
+/** 模型下拉的实例: 就地编辑时要先收起下拉, 否则编辑弹窗会被"半开的下拉"压在下面 */
+const modelSelectRef = ref(null)
 
 const isCustom = (m) => typeof m.name === 'string' && m.name.startsWith('custom:')
 
@@ -233,7 +240,23 @@ const umSaving = ref(false)
 const umPreset = ref('')
 const anyPreset = computed(() => PRESETS.find((p) => p.label === umPreset.value))
 const defaultModelPlaceholder = computed(() => (anyPreset.value ? `如: ${anyPreset.value.model}` : 'deepseek-chat'))
-const umForm = reactive({ id: '', name: '', baseUrl: '', apiKey: '', model: '', temperature: 0.7, maxTokens: 2000, enabled: true })
+const umForm = reactive({ id: '', name: '', baseUrl: '', apiKey: '', model: '', temperature: 0.7, limitChoice: 'auto', enabled: true })
+// 单次输出上限(max_tokens): 刻意不让用户填数字 —— 这是"模型的输出能力", 不是业务参数,
+// 而填错的后果(正文空白)与那个数字之间没有任何直观联系。做成档位, 与「总上下文」下拉同构。
+const OUTPUT_LIMITS = [
+  { value: 8192, label: '8K · 日常对话' },
+  { value: 16384, label: '16K · 长回答 / 代码' },
+  { value: 32768, label: '32K · 长文分析' },
+  { value: 65536, label: '64K · 超长输出（部分模型不支持）' }
+]
+// 'auto' = 不传 max_tokens, 由模型自己决定(最不容易报错, 推荐默认);
+// 历史数据里可能存着 2000 这类自由填写的值, 单独抽一项出来显示, 否则下拉框会显示成空白
+const outputLimitOptions = computed(() => {
+  const cur = umForm.limitChoice
+  const auto = { value: 'auto', label: '自动（交给模型决定，推荐）' }
+  if (typeof cur !== 'number' || OUTPUT_LIMITS.some((o) => o.value === cur)) return [auto, ...OUTPUT_LIMITS]
+  return [auto, { value: cur, label: `${cur} · 当前值${cur < 4096 ? '（偏小，建议上调）' : ''}` }, ...OUTPUT_LIMITS]
+})
 const umTitle = computed(() => (umForm.id ? '编辑自定义模型' : '新增自定义模型'))
 
 // 选中内置厂商后自动填 endpoint, 名称留空则带上厂商名
@@ -252,7 +275,7 @@ function emptyUm() {
   umForm.apiKey = ''
   umForm.model = ''
   umForm.temperature = 0.7
-  umForm.maxTokens = 2000
+  umForm.limitChoice = 'auto'
   umForm.enabled = true
 }
 
@@ -287,10 +310,30 @@ function openUmEdit(m) {
     apiKey: '',
     model: m.model,
     temperature: m.temperature,
-    maxTokens: m.maxTokens,
+    limitChoice: m.maxTokens ?? 'auto',
     enabled: m.enabled
   })
   umFormVisible.value = true
+}
+
+/**
+ * 模型下拉里就地编辑某一项自定义模型。
+ * <p>下拉项只带 {@code custom:<id>} 与展示名, 不含 baseUrl / 温度 / 输出上限, 所以按 id 取一次完整配置;
+ * 顺手把 umItems 也刷新, 免得随后打开「管理」弹窗看到旧值。
+ */
+async function editCustomModel(m) {
+  modelSelectRef.value?.blur()
+  const id = String(m?.name || '').slice('custom:'.length)
+  if (!id) return
+  try {
+    const list = await getUserModels()
+    umItems.value = list
+    const full = list.find((x) => x.id === id)
+    if (!full) return ElMessage.warning('该模型已不存在，请刷新后重试')
+    openUmEdit(full)
+  } catch (e) {
+    ElMessage.error(extractMessage(e) || '加载模型失败')
+  }
 }
 
 async function submitUm() {
@@ -306,7 +349,7 @@ async function submitUm() {
       apiKey: umForm.apiKey.trim(),
       model: umForm.model.trim(),
       temperature: umForm.temperature,
-      maxTokens: umForm.maxTokens,
+      maxTokens: umForm.limitChoice === 'auto' ? null : umForm.limitChoice,
       enabled: umForm.enabled
     }
     if (umForm.id) await updateUserModel(umForm.id, payload)
@@ -630,6 +673,22 @@ async function submitChangePassword() {
   gap: 4px;
 }
 
+/* 模型下拉里自定义模型行的「编辑」图标: 右对齐, 平时淡显, 悬停才亮
+   (float 与 margin-left:auto 并列写 —— li 在 Element Plus 各版本里 flex/block 都出现过) */
+.um-opt-edit {
+  float: right;
+  margin-left: auto;
+  color: var(--dcdr-text-3);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.um-opt-edit:hover {
+  opacity: 1;
+  color: var(--dcdr-text-1);
+}
+
 .um-empty {
   text-align: center;
   padding: 40px 0;
@@ -641,5 +700,12 @@ async function submitChangePassword() {
   color: var(--dcdr-text-3);
   font-size: 12px;
   margin-left: 16px;
+}
+
+/* 表单内的说明文字: 比 placeholder 更"该被读到"的告警(如输出上限过小的后果) */.um-tip {
+  color: var(--dcdr-text-3);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
 }
 </style>

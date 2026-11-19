@@ -78,6 +78,9 @@ public class LangChain4jChatProvider implements ChatModelProvider {
     private final String provider;
     private final String model;
     private final Double temperature;
+    /** 输出上限(max_tokens), 原样取自 ModelConfig; null=不传该字段, 走上游厂商默认。
+     *  留存一份给编排层用: finish_reason=length 的提示要报出数值, 否则用户只能靠猜 */
+    private final Integer maxTokens;
     private final Set<String> capabilities;
     /** 本厂商"关闭思考"的请求参数(null=厂商不支持关闭, 忽略用户开关) */
     private final Map<String, Object> thinkingDisableParams;
@@ -123,6 +126,7 @@ public class LangChain4jChatProvider implements ChatModelProvider {
         this.provider = config.getProvider();
         this.model = config.getModel();
         this.temperature = config.getTemperature();
+        this.maxTokens = config.getMaxTokens();
         this.capabilities = config.getCapabilities() != null ? Set.copyOf(config.getCapabilities()) : Set.of();
         this.thinkingDisableParams = resolveThinkingDisableParams(config.getBaseUrl());
     }
@@ -179,6 +183,11 @@ public class LangChain4jChatProvider implements ChatModelProvider {
     @Override
     public boolean supportsFunctionCalling() {
         return capabilities.contains("function_calling");
+    }
+
+    @Override
+    public Integer getMaxTokens() {
+        return maxTokens;
     }
 
     @Override

@@ -486,8 +486,8 @@ const customChatModels = computed(() =>
 
 function modelLabel(name) {
   if (!name) return '跟随专家/平台默认'
-  const hit = modelStore.chatModels.find((m) => m.name === name)
-  return hit ? hit.label : name
+  // 统一走 store.labelOf: 自定义模型是 custom:<uuid>, 查不到时也不能把 UUID 直接摆到界面上
+  return modelStore?.labelOf ? modelStore.labelOf(name) : name
 }
 
 // 常用 cron 预设

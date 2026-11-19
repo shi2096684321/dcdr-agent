@@ -99,6 +99,31 @@ public class RagProperties {
         private HybridConfig hybrid = new HybridConfig();
         /** 相关性重排(ReRankingContentAggregator, 需配置 ScoringModel)。默认关闭 */
         private RerankConfig rerank = new RerankConfig();
+        /** 检索查询改写: 多轮对话里把"它/这个"补全成可独立检索的句子。默认开启, 失败自动回退原句 */
+        private QueryRewriteConfig rewrite = new QueryRewriteConfig();
+    }
+
+    /**
+     * 检索查询改写。
+     *
+     * <p><b>解决什么</b>: 挂了知识库的会话是"每轮都检索", 但检索用的是用户原话。第二轮问
+     * 「它的价格呢」时, 向量里没有"它"指向任何东西 —— 检索必然打偏, 而且失败是静默的
+     * (没有片段、模型凭记忆答)。改写就是用最近几轮把这句话补成
+     * 「A123 订单的价格是多少」, 再拿去检索。
+     *
+     * <p><b>代价</b>: 每轮多一次小模型调用(几十 token 出、几百 token 入)。所以:
+     * 只在"会话挂了库 + 历史非空 + 本句确实依赖上文(含指代或过短)"时才触发;
+     * 失败/超时一律回退原句, 绝不阻断对话。
+     */
+    @Data
+    public static class QueryRewriteConfig {
+        private boolean enabled = true;
+        /** 改写用模型: 填 model-registry 的 provider 名(如 qwen-chat), 不是上游模型 id; 留空跟随系统默认 */
+        private String model = "";
+        /** 单次改写超时(秒): 超时即用原句。这段等待发生在首字节之前, 别调大 */
+        private int timeoutSeconds = 8;
+        /** 送进改写请求的历史消息条数上限 */
+        private int historyMessages = 6;
     }
 
     /**
@@ -130,6 +155,39 @@ public class RagProperties {
          * <p>关闭仅用于对比测试(观察该防护对回答质量的影响), 生产不建议关闭。
          */
         private boolean boundaryMarker = true;
+
+        /**
+         * 检索结果以 <b>tool 消息</b>承载并落库（方案 B）。
+         *
+         * <p><b>为什么</b>: 此前片段只注入当轮的 system 上下文(volatileTail), 用完即弃 ——
+         * 于是"这个会话挂了库"就必须每轮重新检索、重新付费。改成落一对
+         * {@code assistant(tool_calls)} + {@code tool(结果)} 之后, 片段成为会话历史的一部分,
+         * 下一轮模型直接看得到, 不必重复注入(OpenAI Responses / Assistants 的做法)。
+         *
+         * <p><b>代价</b>: 历史里会多出文档原文(体积、隐私), 所以同时受
+         * {@link #keepRecentRetrievals} 限制 —— 只留最近几轮, 更早的成对裁掉。
+         *
+         * <p>关闭则退回旧行为(当轮 system 注入、不落库)。
+         */
+        private boolean asToolMessage = true;
+
+        /**
+         * 历史里最多保留几轮检索片段（{@code <= 0} = 不裁剪，默认）。
+         *
+         * <p><b>为什么默认不裁</b>: 前缀缓存是"只追加"的艺术 —— 历史中段一旦被删或被改，
+         * <b>删除点之后的所有 token 都要按全价重算</b>。而每轮新增的片段本身多数能命中缓存
+         * （读取价约为输入价的 1/10），省下的那几 K 字符远比缓存失效的代价小。
+         *
+         * <p>重复问题改由两条更便宜的手段解决：
+         * <ol>
+         *   <li><b>增量去重</b>：历史里已注入过的 chunk 不再重复注入/落库（按 chunkId 比对）；</li>
+         *   <li><b>摘要压缩</b>：文量真的涨起来时由 {@code agent.memory.compaction} 统一收敛 ——
+         *       低频（十几轮一次）改写一次历史，比每轮破坏前缀划算得多。</li>
+         * </ol>
+         *
+         * <p>只有在你明确"宁可牺牲缓存也要压小上下文"时才调成正数（如 1）。
+         */
+        private int keepRecentRetrievals = 0;
     }
 
     @Data

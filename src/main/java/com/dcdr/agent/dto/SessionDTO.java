@@ -22,6 +22,8 @@ public class SessionDTO {
     private boolean titleAuto;
     @Schema(description = "默认模型")
     private String model;
+    @Schema(description = "本会话挂载的知识库 ID 列表(空=未挂载)。随会话持久化: 刷新/换设备/切会话都不丢")
+    private List<String> knowledgeBaseIds = new ArrayList<>();
     @Schema(description = "本会话使用的自定义 Agent ID (V3.1; 为空表示通用助手)。用于 Agent 级长期记忆归属")
     private String agentId;
     @Schema(description = "绑定的工作区 ID (V3.3 F-49; 为空表示未授权任何目录)") 

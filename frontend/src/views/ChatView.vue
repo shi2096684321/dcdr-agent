@@ -473,6 +473,7 @@ import {
   getSessions, createSession, getMessages, deleteMessages,
   streamChat, streamChatImage, stopChat,
   renameSession, deleteSession, uploadFile,
+  setSessionKnowledgeBases,
   buildExportUrl, getKnowledgeBases, getAgents, getSkills, rewindSession, undoOperation,
   getContextUsage, getContextLimit, updateContextLimit,
   getSessionSummary, updateSessionSummary, clearSessionSummary,
@@ -741,6 +742,36 @@ onUnmounted(() => window.removeEventListener('resize', autoGrowInput))
 const knowledgeBases = ref([])
 const selectedKbIds = ref([])
 const kbLoading = ref(false)
+/** 正在按会话还原选择: 期间不要回写, 否则每次切会话都会把"还原"当成"用户改选"再存一遍 */
+let kbRestoring = false
+
+/**
+ * 知识库属于会话属性(与 model 同级): 选择变化即存到会话。
+ * <p>存服务端而不是留在组件里, 才能做到刷新不丢、切会话各自独立 —— 组件状态会随刷新清零,
+ * 且会从会话 A 串到会话 B。
+ */
+watch(selectedKbIds, async (ids) => {
+  if (kbRestoring || !currentSessionId.value) return
+  try {
+    await setSessionKnowledgeBases(currentSessionId.value, [...ids])
+  } catch (e) {
+    // 保存失败不阻断对话: 本轮请求仍会带上选择, 只是这一会话下次打开可能拿不到
+    console.error('保存会话知识库失败', e)
+  }
+}, { deep: true })
+
+/** 按会话还原知识库选择(切换/进入会话时调用) */
+async function restoreSessionKbs(session) {
+  // 列表里查不到(刚创建、或列表尚未刷新)时保持现状: 空数组会把用户刚选的库误清掉
+  if (!session) return
+  const ids = session.knowledgeBaseIds || []
+  const same = ids.length === selectedKbIds.value.length && ids.every((id) => selectedKbIds.value.includes(id))
+  if (same) return
+  kbRestoring = true
+  selectedKbIds.value = [...ids]
+  await nextTick()
+  kbRestoring = false
+}
 
 // 选择器可选列表: 普通用户过滤掉 PLATFORM 级(平台库走后端无感 Agentic 注入, 不应被显式选择);
 // admin 可见全部(可显式选平台库触发强制检索)
@@ -1031,6 +1062,11 @@ async function newSession() {
   sessionQuery.value = ''
   currentSessionId.value = s.id
   messages.value = []
+  // 新会话继承当前的知识库选择: 用户的心智是"我在用这批资料工作", 不该每开一个对话重勾一遍
+  // (对齐 ChatGPT / Claude 的"项目内新对话自动继承项目知识库")
+  if (selectedKbIds.value.length) {
+    setSessionKnowledgeBases(s.id, [...selectedKbIds.value]).catch(() => {})
+  }
   // 新会话没有快照与摘要: 清空而不是沿用上一个会话的
   contextUsage.value = null
   summaryView.value = null
@@ -1056,6 +1092,8 @@ async function switchSession(id) {
   // 占用与摘要都按会话独立, 切过去就要换成这个会话的
   loadContextUsage(id)
   loadSummary(id)
+  // 知识库同理: 各会话挂了哪些库是独立事实, 不能沿用上一个会话的选择
+  restoreSessionKbs(sessions.value.find((s) => s.id === id))
   scrollBottom()
 }
 
@@ -1581,7 +1619,9 @@ async function send(opts = {}) {
       images: (userMsg.images || []).map(i => i.url),
       webSearch: props.webSearch,
       thinkingEnabled: props.thinkingEnabled,
-      knowledgeBaseIds: selectedKbIds.value.length > 0 ? selectedKbIds.value.slice() : undefined,
+      // 总是传数组: 空数组 = 用户明确没挂库, 后端据此把会话的挂载一起清掉;
+      // 传 undefined 会让后端"沿用会话里挂的", 用户清空后仍会被强制检索
+      knowledgeBaseIds: selectedKbIds.value.slice(),
       // 手动指定的技能: 后端会直接把其正文注入本轮上下文(不再等模型调 skill_load)
       skillNames: selectedSkillNames.value.length > 0 ? selectedSkillNames.value.slice() : undefined,
       agentId: selectedAgentId.value || undefined

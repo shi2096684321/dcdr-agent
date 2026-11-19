@@ -101,7 +101,7 @@
         <div class="c-title">按模型用量</div>
         <div class="bar-chart" v-if="modelRows.length">
           <div v-for="m in modelRows" :key="m.model" class="bar-row">
-            <span class="bar-date model">{{ m.model }}</span>
+            <span class="bar-date model" :title="m.model">{{ modelLabel(m.model) }}</span>
             <div class="bar-track">
               <div class="bar-fill in" :style="{ width: pctModel(m.inputTokens) }"></div>
               <div class="bar-fill out" :style="{ width: pctModel(m.outputTokens) }"></div>
@@ -157,7 +157,11 @@
         </div>
       </div>
       <el-table :data="llmRows" size="small" style="margin-top: 12px">
-        <el-table-column prop="provider" label="模型" min-width="150" />
+        <el-table-column prop="provider" label="模型" min-width="150">
+          <template #default="{ row }">
+            <span :title="row.provider">{{ modelLabel(row.provider) }}</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="calls" label="调用" width="90" />
         <el-table-column label="失败" width="90">
           <template #default="{ row }">
@@ -258,7 +262,7 @@
             </div>
             <div class="bar-chart" v-if="(costReport?.byModel || []).length">
               <div v-for="m in costReport.byModel" :key="m.model" class="bar-row">
-                <span class="bar-date model" :title="m.model">{{ m.model }}</span>
+                <span class="bar-date model" :title="m.model">{{ modelLabel(m.model) }}</span>
                 <div class="bar-track">
                   <div class="bar-fill in" :style="{ width: pctCostModel(m.inputTokens) }"></div>
                   <div class="bar-fill out" :style="{ width: pctCostModel(m.outputTokens) }"></div>
@@ -380,7 +384,9 @@
 
       <div class="c-sub" style="margin-top: 16px">按模型好评率</div>
       <el-table :data="stats?.modelStats || []" size="small">
-        <el-table-column prop="model" label="模型" min-width="170" />
+        <el-table-column prop="model" label="模型" min-width="170">
+          <template #default="{ row }">{{ modelLabel(row.model) }}</template>
+        </el-table-column>
         <el-table-column prop="total" label="反馈数" width="90" />
         <el-table-column prop="up" label="点赞" width="80" />
         <el-table-column prop="down" label="点踩" width="80" />
@@ -414,7 +420,9 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="model" label="模型" min-width="140" />
+        <el-table-column prop="model" label="模型" min-width="140">
+          <template #default="{ row }">{{ modelLabel(row.model) }}</template>
+        </el-table-column>
         <el-table-column label="原因" min-width="200">
           <template #default="{ row }">
             <el-tag v-for="c in (row.reasonTags || [])" :key="c" size="small" type="info" effect="plain" class="fb-tag">
@@ -465,8 +473,16 @@ import {
   getFeedbackStats, listFeedback, getFeedbackReasonTags
 } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { useModelStore } from '@/stores/model'
 
 const authStore = useAuthStore()
+const modelStore = useModelStore()
+/**
+ * 模型名兜底: 报表里落的是模型标识(自定义模型为 custom:<uuid>)。
+ * <p>用可选调用 + 原值兜底, 是为了 store 尚未热更新(缺 labelOf)时降级成显示原值, 而不是让
+ * 整个渲染函数抛错 —— 那会让图表和表格一起变成"没有数据", 看起来像后端挂了。
+ */
+const modelLabel = (name) => (modelStore?.labelOf ? modelStore.labelOf(name) : (name || ''))
 const loading = ref(false)
 const days = ref(30)
 const scope = ref('')
@@ -681,7 +697,11 @@ function reloadAll() {
   loadCostReport()
 }
 
-onMounted(() => { reloadAll() })
+onMounted(() => {
+  reloadAll()
+  // 报表里落的是模型标识(自定义模型为 custom:<uuid>), 需要模型列表才能翻译成展示名
+  modelStore.loadModels().catch(() => {})
+})
 </script>
 
 <style scoped>

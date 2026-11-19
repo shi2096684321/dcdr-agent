@@ -60,6 +60,19 @@ public interface ChatModelProvider {
     }
 
     /**
+     * 本 provider 实际发给上游的输出上限(max_tokens)。
+     * <p>
+     * <b>只用于把"为什么被截断"讲清楚</b>: finish_reason=length 时, 编排层要在提示里报出
+     * 具体数值与来源, 否则用户只能看到一句没有数字的"已达长度上限", 自然去改别的配置
+     * (比如「总上下文」—— 那是占用率的分母, 与输出长度无关)。
+     *
+     * @return 上限 token 数; {@code null} = 未配置(请求里不带该字段, 由上游按厂商默认值裁剪)
+     */
+    default Integer getMaxTokens() {
+        return null;
+    }
+
+    /**
      * 生成"本次实际发给上游的请求体"快照(JSON 文本), 供调用链日志忠实归档。
      * <p>
      * <b>为什么由 Provider 提供, 而不是编排层自己拼</b>: 编排层持有的只是"业务视角的历史",

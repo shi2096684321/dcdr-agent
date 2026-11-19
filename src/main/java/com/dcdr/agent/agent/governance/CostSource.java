@@ -31,7 +31,14 @@ public enum CostSource {
     MEMORY_COMPACTION("memory_compaction", "历史对话压缩"),
 
     /** 专家 AI 生成(用户一句话需求 → 专家配置草稿) */
-    AGENT_GENERATE("agent_generate", "AI 生成专家");
+    AGENT_GENERATE("agent_generate", "AI 生成专家"),
+
+    /**
+     * 检索查询改写(多轮对话里把"它/这个"补全成可独立检索的句子)。
+     * <p>单列一条是为了能算清它的性价比: 每轮多一次小调用, 换来的是检索命中率 ——
+     * 混进"对话"里就永远说不清该不该继续开着。
+     */
+    RAG_REWRITE("rag_rewrite", "检索改写");
 
     /** 落库取值; 与 enum 名分开写死: 改名即等于改报表口径与历史数据 */
     private final String value;

@@ -42,6 +42,12 @@ public class SessionEntity implements OwnedEntity {
     @Schema(description = "当前会话使用的模型名称")
     private String model;
 
+    @Schema(description = "本会话挂载的知识库 ID(逗号分隔; 空=未挂载)。"
+            + "刻意与 model 同级存在会话上: 知识库是「这个会话的工作资料」, 属于会话属性 —— "
+            + "存在浏览器里会随刷新丢失、并串到别的会话")
+    @Column(columnDefinition = "TEXT")
+    private String kbIds;
+
     @Schema(description = "本会话使用的自定义 Agent ID (V3.1; 为空表示未指定/通用助手)。"
             + "用于 Agent 级长期记忆的归属, 以及历史消息的 Agent 归因")
     @Column(length = 64)

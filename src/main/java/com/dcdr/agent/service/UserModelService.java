@@ -39,6 +39,15 @@ public class UserModelService {
     /** 用户自定义对话模型的命名前缀, 路由层据此区分平台模型与用户模型 */
     public static final String CUSTOM_PREFIX = "custom:";
 
+    /**
+     * 输出上限(max_tokens)的健康下限, 低于它只告警不阻断。
+     * <p>
+     * 4096 的依据: 思考型模型单轮思维链常见 1~3K token, 上限小于它时预算会被思考吃光,
+     * 表现为"正文一个字都没输出、finish_reason=length"。这里<b>不拦</b>是因为"就要极短回答"
+     * 是合法用法, 硬性拒绝会把正常需求挡在门外 —— 只留一条日志, 出问题时能回溯到是谁配的。
+     */
+    private static final int HEALTHY_OUTPUT_TOKENS = 4096;
+
     private final UserModelConfigRepository repository;
     private final ApiKeyCipher cipher;
     private final LlmCircuitBreaker circuitBreaker;
@@ -185,6 +194,13 @@ public class UserModelService {
         e.setModel(dto.getModel().trim());
         e.setTemperature(dto.getTemperature());
         e.setMaxTokens(dto.getMaxTokens());
+        if (dto.getMaxTokens() != null && dto.getMaxTokens() < HEALTHY_OUTPUT_TOKENS) {
+            // 思考型模型的思维链与正文共用这份预算: 过小会"想完就没了"(正文零输出 + finish_reason=length),
+            // 用户只会看到一句没有数字的截断提示, 然后去改"总上下文"—— 那与此毫无关系, 改了也没用
+            log.warn("自定义模型输出上限偏小: model={}, max_tokens={} (< {}), "
+                            + "思考型模型可能在思考阶段就耗尽预算、正文无法输出",
+                    e.getModel(), dto.getMaxTokens(), HEALTHY_OUTPUT_TOKENS);
+        }
         e.setEnabled(dto.isEnabled());
         if (applyApiKey) {
             e.setApiKeyEncrypted(cipher.encrypt(dto.getApiKey()));

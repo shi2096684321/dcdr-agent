@@ -129,6 +129,27 @@ public class SessionController {
         return Mono.just(Result.success());
     }
 
+    @Operation(summary = "设置会话挂载的知识库",
+            description = "知识库挂载属于会话属性(与 model 同级): 刷新、换设备、切会话都不丢; "
+                    + "挂上后该会话的每一轮都会基于这些库做强制检索。传空数组表示清空挂载。")
+    @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = String.class)))
+    @PutMapping("/{id}/knowledge-bases")
+    public Mono<Result<List<String>>> setKnowledgeBases(
+            @Parameter(description = "会话 ID", required = true) @PathVariable String id,
+            @RequestBody(required = false) Map<String, Object> body) {
+        Object raw = body == null ? null : body.get("knowledgeBaseIds");
+        // 缺省即清空: PUT 的语义是"设置成这个值", 不传等于没挂库; 想"不表态"请用接口调用时省略整个 body
+        List<String> ids = raw instanceof List<?> list
+                ? list.stream().filter(java.util.Objects::nonNull).map(String::valueOf).toList()
+                : List.of();
+        return ownershipGuard.currentContext().map(ctx -> {
+            if (sessionManager.getSession(id, ctx.userId()) == null) {
+                return Result.<List<String>>error(404, "会话不存在或无权访问");
+            }
+            return Result.success(sessionManager.resolveKnowledgeBases(id, ids));
+        });
+    }
+
     @Operation(summary = "获取会话消息历史",
             description = "返回指定会话的全部消息记录; V3.1 F-48 起每条助手回答附带当前用户的反馈状态 (feedback: up/down/null)")
     @ApiResponse(responseCode = "200", content = @Content(schema = @Schema(implementation = MessageDTO.class)))

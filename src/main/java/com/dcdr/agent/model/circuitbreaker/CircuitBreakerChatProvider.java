@@ -66,6 +66,10 @@ public class CircuitBreakerChatProvider implements ChatModelProvider {
     @Override
     public boolean supportsFunctionCalling() { return delegate.supportsFunctionCalling(); }
 
+    /** 装饰器必须委托: 否则编排层拿不到真实上限, 截断提示只能退回"不提数字" */
+    @Override
+    public Integer getMaxTokens() { return delegate.getMaxTokens(); }
+
     @Override
     public ChatResponse invoke(ChatRequest request, List<Message> history) {
         circuitBreaker.check(delegate.getName());

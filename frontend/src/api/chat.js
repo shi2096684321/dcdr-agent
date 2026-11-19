@@ -15,6 +15,13 @@ export const getSessions = (source) =>
 export const createSession = (data) => unwrap(api.post('/api/sessions', data))
 export const deleteSession = (id) => api.delete(`/api/sessions/${id}`).then(r => r.data)
 export const renameSession = (id, title) => api.put(`/api/sessions/${id}/title`, { title }).then(r => r.data)
+
+/**
+ * 设置会话挂载的知识库(空数组=清空)。
+ * 知识库属于会话属性(与 model 同级), 存服务端而不是组件状态 —— 刷新/换设备/切会话都不丢。
+ */
+export const setSessionKnowledgeBases = (id, knowledgeBaseIds) =>
+  unwrap(api.put(`/api/sessions/${id}/knowledge-bases`, { knowledgeBaseIds }))
 export const getSession = (id) => unwrap(api.get(`/api/sessions/${id}`))
 
 // ===== 消息历史 =====

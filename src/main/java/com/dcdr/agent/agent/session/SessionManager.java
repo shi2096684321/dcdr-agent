@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -313,8 +314,68 @@ public class SessionManager {
     }
 
     /**
-     * 保存最近一轮的上下文占用快照 (V3.4)。
+     * 解析「本会话挂载的知识库」，并把本轮请求里的选择落库。
      * <p>
+     * <b>为什么归到会话上</b>: 知识库是"这个会话的工作资料", 与 {@code model} 同一层级。
+     * 只放在浏览器状态里有三个副作用 —— 刷新即丢(用户以为还在引用, 实际已退回模型自主检索)、
+     * 跨会话乱带(A 会话选的库作用到 B)、多端不一致。
+     * <p>
+     * <b>三态</b>:
+     * <ul>
+     *   <li>{@code requested} 非空 → 写回会话, 本轮即用它</li>
+     *   <li>{@code requested} 空列表 → 用户明确清空, 会话一并清空</li>
+     *   <li>{@code requested == null} → 调用方没表态(脚本/接口调用), 沿用会话里挂的</li>
+     * </ul>
+     * 与 {@link #bindAgent} 同一取舍: <b>不</b>更新 {@code updatedAt} —— 改资料挂载不是"会话有新内容",
+     * 不该把会话顶到列表最前。
+     *
+     * @param sessionId 会话 ID; null 时无法持久化, 仅回显请求值
+     * @param requested 本轮请求里的选择; null 表示调用方未表态
+     * @return 本轮生效的显式选择(可能为空列表)
+     */
+    @Transactional
+    public List<String> resolveKnowledgeBases(String sessionId, List<String> requested) {
+        List<String> normalized = requested == null ? null : normalizeKbIds(requested);
+        if (sessionId == null) return normalized == null ? List.of() : normalized;
+        SessionEntity s = sessionRepository.findById(sessionId).orElse(null);
+        if (s == null) return normalized == null ? List.of() : normalized;
+        if (normalized == null) {
+            return parseKbIds(s.getKbIds());
+        }
+        String current = s.getKbIds();
+        // 空列表统一落成 null: DB 里 null 与 "" 都表示"未挂载", 只留一种表示才好比较
+        String next = normalized.isEmpty() ? null : String.join(",", normalized);
+        if (!java.util.Objects.equals(current, next)) {
+            s.setKbIds(next);
+            sessionRepository.save(s);
+            log.info("会话 {} 知识库变更: {} -> {}", sessionId, current, next);
+        }
+        return normalized;
+    }
+
+    /** 逗号分隔的知识库 ID → 列表(去空、去重), null/空串返回空列表 */
+    static List<String> parseKbIds(String raw) {
+        if (raw == null || raw.isBlank()) return List.of();
+        List<String> out = new ArrayList<>();
+        for (String part : raw.split(",")) {
+            String id = part.trim();
+            if (!id.isEmpty() && !out.contains(id)) out.add(id);
+        }
+        return out;
+    }
+
+    private static List<String> normalizeKbIds(List<String> ids) {
+        List<String> out = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            if (id == null) continue;
+            String v = id.trim();
+            if (!v.isEmpty() && !out.contains(v)) out.add(v);
+        }
+        return out;
+    }
+
+    /**
+     * 保存最近一轮的上下文占用快照 (V3.4)。     * <p>
      * <b>不更新 {@code updatedAt}</b>: 这不是"会话有新内容", 不应因此把会话顶到列表最前 ——
      * 与 {@link #bindAgent} 同一取舍。
      * <p>
@@ -384,6 +445,7 @@ public class SessionManager {
         dto.setTitle(e.getTitle());
         dto.setTitleAuto(Boolean.TRUE.equals(e.getTitleAuto()));
         dto.setModel(e.getModel());
+        dto.setKnowledgeBaseIds(parseKbIds(e.getKbIds()));
         dto.setAgentId(e.getAgentId());
         dto.setWorkspaceId(e.getWorkspaceId());
         // 存量数据 source 可能为 null(加列前的会话), 一律按用户会话兜底, 否则对话列表会漏掉它们

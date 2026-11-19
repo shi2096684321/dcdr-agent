@@ -115,7 +115,7 @@
             <div class="template-desc">{{ t.description || '—' }}</div>
             <div class="template-meta">
               <span v-if="t.profession">{{ t.profession }} · </span>
-              <span v-if="t.model">{{ t.model }}</span>
+              <span v-if="t.model">{{ modelLabel(t.model) }}</span>
               <span v-if="t.temperature != null">· 温度 {{ t.temperature }}</span>
             </div>
             <el-button size="small" type="primary" plain @click="cloneAgent(t)">克隆为我的专家</el-button>
@@ -344,6 +344,8 @@ const emit = defineEmits(['go-skills'])
 
 const authStore = useAuthStore()
 const modelStore = useModelStore()
+/** 模型名兜底: 模板卡片上存的是模型标识(自定义模型为 custom:<uuid>), 查不到就显示原值 */
+const modelLabel = (name) => (modelStore?.labelOf ? modelStore.labelOf(name) : (name || ''))
 
 const loading = ref(false)
 const agents = ref([])
