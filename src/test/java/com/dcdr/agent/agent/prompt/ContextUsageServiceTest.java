@@ -142,14 +142,17 @@ class ContextUsageServiceTest {
     @DisplayName("百分比 = 已用 / 生效上限, 且读到快照时按新分母重算")
     void percentFollowsCurrentLimit() {
         ContextUsageService svc = service();
-        ContextUsage usage = svc.compute(List.of(Message.user("你好")), List.of(), 10_000);
-        assertEquals(usage.getTotalTokens() * 100.0 / 10_000, usage.getPercent(), 0.05);
+        // 分母刻意取小(100)而不是 1 万: 这里的分子只有几个 token(单条消息 + 协议包装),
+        // 在 1 万的分母下百分比小到一位小数, 0.1 与 0.0 会因为舍入互相跳变 ——
+        // 用例要锁的是"按新分母重算", 不是舍入行为。
+        ContextUsage usage = svc.compute(List.of(Message.user("你好")), List.of(), 100);
+        assertEquals(usage.getTotalTokens() * 100.0 / 100, usage.getPercent(), 0.05);
 
         String json = svc.toJson(usage);
         assertNotNull(json);
         // 用户把总上下文翻倍: 分子不变, 分母翻倍 → 百分比减半
-        ContextUsage reloaded = svc.fromJson(json, 20_000);
-        assertEquals(20_000, reloaded.getLimitTokens());
+        ContextUsage reloaded = svc.fromJson(json, 200);
+        assertEquals(200, reloaded.getLimitTokens());
         assertEquals(Math.round(usage.getPercent() / 2 * 10) / 10.0, reloaded.getPercent(), 0.06,
                 "改了总上下文后必须按新分母重算, 否则界面会一直显示旧比例");
     }
@@ -169,6 +172,34 @@ class ContextUsageServiceTest {
 
         assertEquals(withoutReasoning, withReasoning,
                 "占用口径是「下一轮会被重发的内容」, 历史思维链不在其中");
+    }
+
+    @Test
+    @DisplayName("没有可信实测时校准原样返回 —— 不能把估算值凭空改小")
+    void calibrateWithoutMeasuredUsageKeepsEstimate() {
+        ContextUsageService svc = service();
+        ContextUsage usage = svc.compute(List.of(Message.user("你好")), List.of(), LIMIT);
+        int before = usage.getTotalTokens();
+
+        svc.calibrateTo(usage, 0);
+
+        assertEquals(before, usage.getTotalTokens(), "targetTokens<=0 表示没有实测, 应保持估算值");
+    }
+
+    @Test
+    @DisplayName("按实测总用量校准: 分子直接等于模型返回的 total, 不再叠加估算")
+    void calibrateToMeasuredTotal() {
+        ContextUsageService svc = service();
+        ContextUsage usage = svc.compute(
+                List.of(Message.user("你好"), Message.assistant("一条回答", null)),
+                List.of(toolDef("calculator")), LIMIT);
+        int target = usage.getTotalTokens() + 777;
+
+        svc.calibrateTo(usage, target);
+
+        assertEquals(target, usage.getTotalTokens(), "有实测 usage 时分子就是它");
+        assertEquals(target, usage.getSegments().stream().mapToInt(ContextUsage.Segment::getTokens).sum(),
+                "五段之和仍须等于总数");
     }
 
     @Test

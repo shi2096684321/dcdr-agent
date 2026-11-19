@@ -101,8 +101,8 @@
 
         <!-- 元信息 -->
         <div v-if="!hideBody && msg.role === 'assistant' && (msg.tokenUsage != null || msg.durationMs != null)" class="msg-meta">
-          <span v-if="msg.durationMs != null">{{ (msg.durationMs / 1000).toFixed(1) }}s</span>
-          <span v-if="msg.tokenUsage != null">{{ msg.tokenUsage }} token</span>
+          <span v-if="msg.durationMs != null" title="本轮耗时（含工具调用，不含准备阶段）">{{ (msg.durationMs / 1000).toFixed(1) }}s</span>
+          <span v-if="msg.tokenUsage != null">{{ formatTokens(msg.tokenUsage) }} token</span>
         </div>
 
         <!-- 操作: 编辑历史消息 / 重新生成助手回答 -->
@@ -212,6 +212,15 @@ const { renderMarkdown, renderBubbleHtml } = useMarkdown()
 const { handleCodeClick } = useCodeBlock((payload) => emit('preview-code', payload))
 
 const hasSources = computed(() => props.msg?.sources && props.msg.sources.length > 0)
+
+/**
+ * token 数展示: >= 1000 用 K(保留一位小数), 否则原值。
+ * <p>与上下文弹层同一口径 —— 同一屏里"3.2K"和"3200"并排会看起来像两个量级。
+ */
+function formatTokens(value) {
+  const n = Number(value) || 0
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
+}
 
 /**
  * 历史消息兼容: 旧版本后端会把非图片工具的执行结果原样拼到回答末尾 ——

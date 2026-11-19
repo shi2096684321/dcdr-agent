@@ -228,6 +228,19 @@
         @toggle="navPinned = !navPinned"
         @jump="jumpTo"
       />
+
+      <!-- 回到最新对话: 滚到最后一轮的顶部(而不是回答结尾)。只有最新一轮的开头被滚出视口时才出现,
+           所以它回答的是"我在看旧消息, 带我回刚才那轮", 而不是"一直拽我到最底" -->
+      <transition name="to-bottom">
+        <button v-if="showScrollToBottom" type="button" class="to-bottom"
+                title="回到最新对话" aria-label="回到最新对话" @click="jumpToLatest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 4.5v14.2" />
+            <path d="M5.6 12.6L12 19.2l6.4-6.6" />
+          </svg>
+        </button>
+      </transition>
       </div>
 
       <!-- 输入区域 -->
@@ -308,7 +321,8 @@
             <!-- 上下文占用圆环(V3.4): 常驻显示本轮已用 / 总上下文, 点击展开五段明细并调整分母。
                  放在 meta 与发送键之间 —— input-meta 的 margin-left:auto 会把它俩一起推到右侧 -->
             <ContextUsageRing :usage="contextUsage" :limit-view="contextLimitView"
-                              :saving="contextLimitSaving" @update-limit="onUpdateContextLimit" />
+                              :session-total="sessionTotalTokens" :saving="contextLimitSaving"
+                              @update-limit="onUpdateContextLimit" />
             <button class="send-btn gradient-bg" @click="streaming ? stop() : send()"
                     :disabled="(!input.trim() && !selectedFiles.length) && !streaming">
               <svg v-if="!streaming" class="ic-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19.4V5"/><path d="M5.6 11.4L12 5L18.4 11.4"/></svg>
@@ -625,6 +639,10 @@ function failRunningTools() {
 const msgBox = ref(null)
 /** 消息区外层(含右侧导航带), 用来判断"还有没有地方放导航" */
 const msgWrap = ref(null)
+/** 是否贴在底部: 只决定流式新内容要不要自动跟随(按钮的显示条件另算, 见 latestTurnBelow) */
+const nearBottom = ref(true)
+/** 距底部多少像素以内算"在底部": 留一点余量, 轻微滚动不算离开 */
+const BOTTOM_THRESHOLD = 120
 const editingId = ref(null)
 const editText = ref('')
 const contextWarning = ref(null)
@@ -637,6 +655,20 @@ const contextUsage = ref(null)
 /** 总上下文设置: 生效值 / 个人值 / 部署默认 / 允许范围 / 是否可改 */
 const contextLimitView = ref(null)
 const contextLimitSaving = ref(false)
+/**
+ * 本会话累计消耗: 每轮助手消息落库的 tokenUsage 之和。
+ * <p>
+ * 与圆环的"已使用"是两笔账: 后者是"当前窗口还占着多少"(下一轮要重发的量, 压缩后会下降),
+ * 这里是"这个会话一共烧了多少"(只增不减)。用户问"两轮 12K + 13K 为什么显示 12K",
+ * 问的就是后者 —— 只显示窗口占用时, 累计消耗在界面上根本不存在。
+ * <p>
+ * 口径是"每轮最后一模型调用的 usage"(落库值), 因此比多轮工具任务的真实总消耗略低;
+ * 要做精确账单应查 llm_usage_logs, 但这里回答的是"我聊了这么多花了多少"。
+ */
+const sessionTotalTokens = computed(() =>
+  messages.value.reduce(
+    (sum, m) => sum + (m.role === 'assistant' && m.tokenUsage != null ? Number(m.tokenUsage) || 0 : 0),
+    0))
 
 // ===== 历史摘要 (V3.4) =====
 /** 当前会话的压缩摘要(available=false 表示还没压缩过) */
@@ -1094,7 +1126,7 @@ async function switchSession(id) {
   loadSummary(id)
   // 知识库同理: 各会话挂了哪些库是独立事实, 不能沿用上一个会话的选择
   restoreSessionKbs(sessions.value.find((s) => s.id === id))
-  scrollBottom()
+  forceScrollBottom()
 }
 
 /**
@@ -1448,6 +1480,8 @@ function onMessagesScroll() {
   if (navScrollRaf) return
   navScrollRaf = requestAnimationFrame(() => {
     navScrollRaf = 0
+    nearBottom.value = isNearBottom()
+    syncLatestTurnBelow()
     syncNavActive()
   })
 }
@@ -1487,8 +1521,9 @@ onMounted(() => {
 })
 onUnmounted(() => { navObserver?.disconnect() })
 
-// 消息增减(加载历史 / 新的一轮)后重算"当前问题"
+// 消息增减(加载历史 / 新的一轮)后重算"当前问题"与"最新一轮是否在视口内"
 watch(() => navItems.value.length, () => nextTick(syncNavActive))
+watch(() => rows.value.length, () => nextTick(syncLatestTurnBelow))
 
 /**
  * 卡片提交: 答案结构化回传, 气泡文案用可读文本(用户能看懂自己在回什么)。
@@ -1517,7 +1552,80 @@ function requireAskSession() {
   return false
 }
 
-function scrollBottom() { nextTick(() => { if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight }) }
+/** 距底部是否在阈值内(轻微滚动不算离开) */
+function isNearBottom() {
+  const box = msgBox.value
+  if (!box) return true
+  return box.scrollHeight - box.scrollTop - box.clientHeight <= BOTTOM_THRESHOLD
+}
+
+/** 强制滚到底: 发送消息、切会话这类"用户明确要看最新内容"的场景用, 不受上滚影响 */
+function forceScrollBottom() {
+  nextTick(() => {
+    const box = msgBox.value
+    if (!box) return
+    box.scrollTop = box.scrollHeight
+    nearBottom.value = true
+  })
+}
+
+/**
+ * 流式跟随: 只在用户本来就贴着底部时才滚动。
+ * <p>不能无条件滚: 用户上滚查看历史时, 每个 chunk 都把视口拽回底部, 等于永远看不完 ——
+ * 那样"回到最新对话"按钮也几乎不会出现。
+ */
+function scrollBottom() {
+  if (nearBottom.value) forceScrollBottom()
+}
+
+/** 最后一轮对话的 DOM 节点(与右侧问题导航共用同一份 rowEls) */
+function latestTurnEl() {
+  const last = rows.value[rows.value.length - 1]
+  return last ? rowEls.get(last.key) : null
+}
+
+/** 最新一轮是否还整个在视口下方(用户正在看更早的消息) */
+const latestTurnBelow = ref(false)
+
+function syncLatestTurnBelow() {
+  const box = msgBox.value
+  const el = latestTurnEl()
+  if (!box || !el) {
+    latestTurnBelow.value = false
+    return
+  }
+  const boxRect = box.getBoundingClientRect()
+  const rect = el.getBoundingClientRect()
+  // 只认"这一轮还没进入视口": 只要它的顶部已经出现在视口里, 用户就算"在最新对话处"——
+  // 哪怕正在读这轮回答的后半段(开头被滚过去), 也不该弹"回到最新对话"。
+  latestTurnBelow.value = rect.top > boxRect.bottom - 40
+}
+
+/** 有内容、且最新一轮还整个在视口下方时才显示按钮 */
+const showScrollToBottom = computed(() =>
+  latestTurnBelow.value && (messages.value.length > 0 || streaming.value))
+
+/**
+ * 回到最新一次对话: 滚到最后一轮的<b>顶部</b>, 不是回答结尾。
+ * <p>滚动到底部只能看到最新回答的最后几行, 用户还得自己往回找这轮的提问与开头。
+ */
+function jumpToLatest() {
+  const box = msgBox.value
+  const el = latestTurnEl()
+  if (!box || !el) { jumpToBottom(); return }
+  // 先离开"贴底"状态: 否则紧接着到达的流式 chunk 会立刻把视口拽回底部, 这次跳转等于没做
+  nearBottom.value = false
+  const delta = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8
+  box.scrollTo({ top: Math.max(0, delta), behavior: 'smooth' })
+}
+
+/** 兜底: 没有任何回合 DOM 时退回滚到底 */
+function jumpToBottom() {
+  const box = msgBox.value
+  if (!box) return
+  nearBottom.value = true
+  box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' })
+}
 
 /** 模型类型 → 中文名(仅用于提示文案) */
 const MODEL_TYPE_LABEL = { CHAT: '对话', IMAGE: '图片生成', VIDEO: '视频生成', AUDIO: '语音' }
@@ -1606,7 +1714,8 @@ async function send(opts = {}) {
   pipeline.value = null
   interruptedRef.value = false
   askRound.value = null
-  scrollBottom()
+  // 刚发出消息: 无论之前是否上滚, 都要立刻看到这一轮
+  forceScrollBottom()
 
   await streamChat(
     {
@@ -1802,7 +1911,8 @@ async function sendImage() {
   streamTrace.value = []
   statusHint.value = '正在生成图片，请稍候…'
   interruptedRef.value = false
-  scrollBottom()
+  // 同上: 刚发出生成请求, 立刻回到最新位置
+  forceScrollBottom()
 
   await streamChatImage(
     { sessionId: currentSessionId.value, prompt: text },
@@ -2158,6 +2268,23 @@ onMounted(() => { loadSessions(); loadContextLimit() })
 .turn { width: 100%; }
 .messages::-webkit-scrollbar { width: 6px; }
 .messages::-webkit-scrollbar-thumb { background: var(--dcdr-bg); border-radius: 6px; }
+
+/* 回到最新对话: 圆形悬浮按钮, 水平居中贴消息区底部(左右各留白, 不挡正文两侧) */
+.to-bottom {
+  position: absolute; left: 50%; bottom: 18px; z-index: 7;
+  /* 居中与 hover 位移共用 transform: 位移一律写在 translateX(-50%) 之后, 否则居中会失效 */
+  transform: translateX(-50%);
+  width: 34px; height: 34px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%; border: 1px solid var(--dcdr-border-strong);
+  background: var(--dcdr-surface); color: var(--dcdr-text-2);
+  box-shadow: var(--dcdr-shadow-card); cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.to-bottom:hover { color: var(--dcdr-accent); border-color: var(--dcdr-accent-line); transform: translateX(-50%) translateY(-1px); }
+.to-bottom svg { width: 16px; height: 16px; }
+.to-bottom-enter-active, .to-bottom-leave-active { transition: opacity 0.15s ease, transform 0.15s ease; }
+.to-bottom-enter-from, .to-bottom-leave-to { opacity: 0; transform: translateX(-50%) translateY(6px); }
 
 /* 欢迎页 */
 .welcome { text-align: center; padding-top: 84px; max-width: 620px; margin: 0 auto; }

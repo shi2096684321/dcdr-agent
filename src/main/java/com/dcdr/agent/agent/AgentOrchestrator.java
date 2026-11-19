@@ -627,6 +627,10 @@ public class AgentOrchestrator {
 
                         // 首轮模型流(user 消息已在 history, 不再由 provider 追加);
                         // tracedRound: 调用链打点(订阅计时, doFinally 记录 token/耗时/是否中断)
+                        // 每轮调用前清空实测值: usageHolder 的语义是"最后一次调用的 usage", 不能跨轮残留。
+                        // 否则最后一轮没返回 usage 时, 收尾校准会拿上一轮(更小)的 prompt —— 表现为
+                        // "多聊一轮, 上下文占用反而变小"。
+                        usageHolder[0] = null;
                         Flux<ChatChunk> upstream = tracedRound(
                                 provider.stream(request, history, false).doOnNext(collector),
                                 t, "round-1", provider, usageHolder, request, history);
@@ -768,6 +772,8 @@ public class AgentOrchestrator {
                                         return null;
                                     }).subscribeOn(Schedulers.boundedElastic()).subscribe();
                                     // 下一轮: 不再追加当前 user 消息(user 消息已注入 history)
+                                    // 清空上一轮实测值, 保证收尾校准时 usage 一定属于最后一轮(见首轮注释)
+                                    usageHolder[0] = null;
                                     return tracedRound(
                                             provider.stream(request, history, false).doOnNext(collector),
                                             t, "round-" + (toolRound[0] + 1), provider, usageHolder, request, history);
@@ -785,6 +791,8 @@ public class AgentOrchestrator {
                             ChatRequest wrapUpReq = request.copyWithoutTools();
                             List<Message> wrapUpHistory = new ArrayList<>(history);
                             wrapUpHistory.add(Message.system("runtime:tool-loop-stop", TOOL_LOOP_STOP_NOTICE));
+                            // 同上: wrapup 也是一次独立的模型调用, 前一轮的 usage 不能留到这里
+                            usageHolder[0] = null;
                             return tracedRound(
                                     provider.stream(wrapUpReq, wrapUpHistory, false).doOnNext(collector),
                                     t, "round-" + (toolRound[0] + 2) + "-wrapup", provider, usageHolder, wrapUpReq, wrapUpHistory)
@@ -855,6 +863,8 @@ public class AgentOrchestrator {
                                 if (assistantSaved.compareAndSet(false, true)) {
                                     Message partial = Message.assistant(intC, intR, provider.getName(), estT);
                                     partial.setInterrupted(true);
+                                    // 中断消息同样记耗时: 用户点停止的那一刻, "已经跑了多久"正是复盘要看的信息
+                                    partial.setDurationMs(durationMs);
                                     // 中断时已发生的思考与工具同样按时间线落库, 刷新后不会退回"整段思考 + 工具堆末尾"
                                     markTraceTail(turnTrace, traceMarked, intR.length());
                                     if (!turnTrace.isEmpty()) {
@@ -2615,9 +2625,18 @@ public class AgentOrchestrator {
                                              List<Message> history, List<Map<String, Object>> toolDefs, int contextLimit,
                                              boolean askUserPending,
                                              List<Map<String, Object>> turnTrace, int[] traceMarked) {
-        // 真实 usage 优先, 模型未返回时估算兜底 —— 统一收敛在 TokenEstimator.resolveUsage
-        ChatResponse.TokenUsage u = tokenEstimator.resolveUsage(
-                usageHolder[0], contextForEstimate, accumulated.toString(), reasoning.toString());
+        // 真实 usage 优先; 模型未返回时估算兜底。
+        // 兜底口径必须补上工具定义: 工具定义是每轮重发的固定成本, 而 contextForEstimate 只含消息
+        // —— 漏算会让"本轮消耗·输入"比占用面板少一整块, 两个数字互相打架正是"不准"的来源。
+        boolean measuredUsage = usageHolder[0] != null && usageHolder[0].getTotal() > 0;
+        ChatResponse.TokenUsage u;
+        if (measuredUsage) {
+            u = usageHolder[0];
+        } else {
+            u = tokenEstimator.resolveUsage(null, contextForEstimate, accumulated.toString(), reasoning.toString());
+            u.setPrompt(u.getPrompt() + contextUsageService.estimateToolDefs(toolDefs));
+            u.setTotal(u.getPrompt() + u.getCompletion());
+        }
         int p = u.getPrompt();
         int c = u.getCompletion();
         int t = u.getTotal();
@@ -2699,6 +2718,9 @@ public class AgentOrchestrator {
             if (!turnTrace.isEmpty()) {
                 assistantMessage.setTrace(new ArrayList<>(turnTrace));
             }
+            // 本轮耗时随消息落库: done 块的 durationMs 只在前端本次流式里存在, 不存则刷新/切会话就没了。
+            // 口径与 done 块一致(含工具轮次, 不含准备阶段), 否则两处显示会互相矛盾。
+            assistantMessage.setDurationMs(durationMs);
         }
 
         // 落库必须早于 done。此前这里是 fire-and-forget(subscribe() 后立刻继续), 于是 SSE 的 done
@@ -2731,15 +2753,20 @@ public class AgentOrchestrator {
         // V3.4: 这一轮结束后的上下文占用 + 本轮消耗。
         // 为什么要在收尾再算一次: 开头那次只算得到 prompt 侧 —— 答案还没生成, 用户看到的是
         // "刚发出去时的那点占用", 而真正占住窗口的是"问题 + 答案"。收尾这次把已生成的回答补进
-        // history 重算, 下一条消息发出去之前看到的数字就是真实占用。顺带把本轮实测 usage 挂上,
-        // 让"这轮花了多少"和"窗口里躺着多少"分开呈现 —— 两者是不同的账。
+        // history 重算, 下一条消息发出去之前看到的数字就是真实占用。
+        // 本轮消耗仍写进快照(保留接口契约), 但界面不再展示 —— 它和"已使用"是两笔账,
+        // 并排显示只会让人拿两个不同口径的数字互相对账。
         // 注意这里没切 boundedElastic: 它是 CPU 型计算(不是阻塞 IO), 且结果必须同步拿到才能插在
         // done 之前(异步化会让 context_usage 与 done 乱序)。代价是大上下文下占用 reactor 线程
         // 几百毫秒 —— 若后续成为热点, 应改为"复用开头结果 + 只算本轮增量", 而不是简单挪线程。
         ContextUsage afterTurn = contextUsageService.compute(appendAnswer(history, assistantMessage), toolDefs, contextLimit);
-        // measured 口径与 TokenEstimator.resolveUsage 一致: 模型回了非零 usage 才算实测
-        boolean measured = usageHolder[0] != null && usageHolder[0].getTotal() > 0;
-        contextUsageService.withRound(afterTurn, p, c, t, measured);
+        // 实测优先: 有真实 usage 时, 分子直接就是模型实际用了多少(prompt + completion),
+        // 不再叠加任何估算。分词器、图片估值、消息包装的差异全部被真实值吸收。
+        // 分段与段内明细仍按估算比例分摊(厂商不会给分段明细), 但总量的口径与模型完全一致。
+        if (measuredUsage) {
+            afterTurn = contextUsageService.calibrateTo(afterTurn, t);
+        }
+        contextUsageService.withRound(afterTurn, p, c, t, measuredUsage);
         tail.add(ChatChunk.contextUsage(afterTurn));
         persistContextUsage(sessId, afterTurn);
 

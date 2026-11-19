@@ -104,6 +104,10 @@ public class MessageEntity {
     @Schema(description = "本次消息消耗的 token 数量")
     private Integer tokenUsage;
 
+    @Schema(description = "本轮耗时(毫秒, assistant 消息)")
+    @Column(name = "duration_ms")
+    private Long durationMs;
+
     @Schema(description = "是否为失败(错误)消息, 用于前端展示重试入口")
     @Column
     private Boolean error;

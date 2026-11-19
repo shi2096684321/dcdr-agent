@@ -231,6 +231,7 @@ public class SessionManager {
                 dto.setFeedback(msg.getSeq() == null ? null : feedbacks.get(msg.getSeq()));
                 dto.setError(msg.getError());
                 dto.setTokenUsage(msg.getTokenUsage());
+                dto.setDurationMs(msg.getDurationMs());
                 dto.setImages(msg.getImages());
                 dto.setSources(msg.getSources());
                 dto.setToolCalls(msg.getToolCalls());
@@ -568,6 +569,7 @@ public class SessionManager {
         dto.setModel(m.getModel());
         dto.setToolsUsed(m.getToolsUsed());
         dto.setTokenUsage(m.getTokenUsage());
+        dto.setDurationMs(m.getDurationMs());
         dto.setSeq(m.getSeq());
         dto.setFeedback(feedback);
         dto.setError(m.getError());

@@ -40,7 +40,7 @@
         <div class="cu-stats">
           <span class="cu-percent">{{ percentText }}%</span>
           <span class="cu-used-info">
-            <span class="cu-used-label">已使用</span>
+            <span class="cu-used-label">当前占用</span>
             <span class="cu-used-value">{{ usedK }} / {{ totalK }}</span>
           </span>
         </div>
@@ -63,18 +63,17 @@
           </div>
         </div>
 
-        <!-- 本轮消耗与上面的"占用"是两笔账: 上面是这一轮结束后窗口里躺着多少(下一轮要重发),
-             这里是刚才那一轮真正烧了多少(每轮独立)。混成一个数就分不清"是历史太长还是这轮太长"。
-             收尾时才有值 —— 调用模型前答案还不存在。 -->
-        <div v-if="round" class="cu-round">
-          <div class="round-row">
-            <span class="round-k">本轮消耗</span>
-            <span class="round-total">{{ fmt(round.total) }}</span>
-          </div>
-          <div class="round-sub">
-            输入 {{ fmt(round.prompt) }} · 输出 {{ fmt(round.completion) }} ·
-            {{ round.measured ? '模型实测' : '估算（模型未返回用量）' }}
-          </div>
+        <!-- 会话累计: 与上面的"窗口占用"是两笔账 —— 上面会随压缩/裁剪下降, 这里只增不减。
+             两轮各 12K、13K 时, 上面显示的是"第二轮结束时窗口里约 13K", 这里是 25K。 -->
+        <div v-if="sessionTotal > 0" class="cu-session">
+          <span class="cu-session-label">本会话累计消耗</span>
+          <span class="cu-session-value">{{ fmt(sessionTotal) }}</span>
+        </div>
+
+        <!-- 口径说明: 这里不是"整个会话累计烧了多少", 而是"当前窗口还占着多少"。
+             触发历史压缩或检索片段裁剪后, 数字下降是正常的(窗口里确实少了), 不是统计出错。 -->
+        <div class="cu-note">
+          上方「当前占用」是这次对话在窗口里已装下的量（有模型实测用量时以实测为准），压缩或裁剪后会下降；「本会话累计消耗」是每轮用量之和，只增不减。
         </div>
       </template>
 
@@ -111,6 +110,8 @@ const props = defineProps({
   usage: { type: Object, default: null },
   /** ContextLimitView: limit/userValue/defaultValue/min/max/editable */
   limitView: { type: Object, default: null },
+  /** 本会话累计消耗(每轮 tokenUsage 之和); 与"窗口占用"是两笔账 */
+  sessionTotal: { type: Number, default: 0 },
   saving: { type: Boolean, default: false }
 })
 const emit = defineEmits(['update-limit'])
@@ -209,8 +210,6 @@ const fmt = (n) => {
 const usedK = computed(() => fmt(used.value))
 const totalK = computed(() => fmt(limit.value))
 
-/** 本轮模型消耗(收尾时下发; 调用前为空) */
-const round = computed(() => props.usage?.lastRound || null)
 
 /**
  * 把各段 token 换算成"占窗口的百分比", 并保证五行加起来正好等于顶部显示的总百分比。
@@ -245,10 +244,10 @@ const rows = computed(() => {
   }))
 })
 
-/** hover 提示: 百分比 · 已用 / 上限 上下文已使用(与 WorkBuddy 的措辞一致) */
+/** hover 提示: 百分比 · 当前占用 / 上限 —— 措辞用"占用"而不是"已使用", 免得被当成会话累计消耗 */
 const tipText = computed(() => {
   if (!hasData.value) return '上下文用量：暂无数据，点击查看'
-  return `${percentText.value}% · ${usedK.value} / ${totalK.value} 上下文已使用`
+  return `${percentText.value}% · ${usedK.value} / ${totalK.value} 当前占用`
 })
 
 const editable = computed(() => props.limitView?.editable !== false)
@@ -328,19 +327,21 @@ function onSelect(value) {
 .cu-seg { height: 100%; transition: width 0.25s ease; }
 
 .cu-legend { display: flex; flex-direction: column; gap: 4px; }
+/* 会话累计: 与图例用虚线隔开 —— 上面是"窗口里躺着多少", 这里是"一共烧了多少" */
+.cu-session {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--dcdr-border);
+}
+.cu-session-label { font-size: 11.5px; color: var(--dcdr-text-2); }
+.cu-session-value {
+  font-size: 13px; font-weight: 600; color: var(--dcdr-text-1);
+  font-variant-numeric: tabular-nums;
+}
+.cu-note { margin-top: 8px; font-size: 10.5px; line-height: 1.5; color: var(--dcdr-text-3); }
 .cu-row { display: flex; align-items: center; gap: 8px; height: 22px; }
 .cu-swatch { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; }
 .cu-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dcdr-text-1); }
 .cu-row-value { flex: none; font-size: 12px; color: var(--dcdr-text-3); font-variant-numeric: tabular-nums; }
-
-/* 本轮消耗: 与图例用一条虚线隔开 —— 上面是"窗口占用", 这里是"这一轮的账单" */
-.cu-round {
-  margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--dcdr-border);
-}
-.round-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.round-k { font-size: 12px; color: var(--dcdr-text-2); }
-.round-total { font-size: 13px; font-weight: 600; color: var(--dcdr-text-1); font-variant-numeric: tabular-nums; }
-.round-sub { margin-top: 2px; font-size: 10.5px; line-height: 1.5; color: var(--dcdr-text-3); }
 
 .cu-empty {
   padding: 10px 12px; margin-bottom: 4px; border-radius: 10px;

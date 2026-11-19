@@ -148,3 +148,18 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS kb_ids TEXT;
 
 COMMENT ON COLUMN sessions.kb_ids IS
     '本会话挂载的知识库 ID（逗号分隔）；空=未挂载。挂上后该会话每轮强制检索，跨轮继承';
+
+-- =============================================================================
+-- 消息耗时（V3.4 修正）
+--
+-- 设计要点：
+--   1. 耗时此前只在 done 块里下发给前端，刷新/切会话后消失 —— 用户看不出"这次回答为什么慢"。
+--   2. 口径与 done 块一致：从流式主链路开始到收尾，含工具轮次，不含准备阶段
+--      （记忆召回/路由/图片识别），因此两处显示必然一致。
+--   3. 不回填存量：老消息当时确实没记（NULL），补 0 会被读成"瞬间回答"。
+-- =============================================================================
+
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS duration_ms BIGINT;
+
+COMMENT ON COLUMN messages.duration_ms IS
+    '本轮耗时(毫秒, assistant 消息); NULL=该改动之前的存量消息';

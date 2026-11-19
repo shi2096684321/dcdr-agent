@@ -82,6 +82,9 @@ public class MessageDTO {
     /** Token消耗 */
     @Schema(description = "Token 消耗")
     private Integer tokenUsage;
+    /** 本轮耗时(毫秒, assistant 消息) */
+    @Schema(description = "本轮耗时(毫秒)")
+    private Long durationMs;
     @Schema(description = "创建时间")
     private LocalDateTime createdAt;
 }

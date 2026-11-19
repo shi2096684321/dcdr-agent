@@ -28,6 +28,13 @@ public class Message {
     /** token 消耗(assistant消息, 仅统计用, 可为空) */
     private Integer tokenUsage;
 
+    /**
+     * 本轮耗时(毫秒, assistant消息)。
+     * <p>从流式主链路开始到收尾, 含工具轮次, 不含准备阶段(记忆召回/路由/图片识别)。
+     * 必须落库: 前端只在流式当次拿到 done 块的 durationMs, 不存的话刷新/切会话就看不到。
+     */
+    private Long durationMs;
+
     /** 是否为失败(错误)消息 */
     private Boolean error;
     /** 是否被用户手动中断(产生不完整的回复) */
@@ -99,6 +106,7 @@ public class Message {
         copy.type = type;
         copy.reasoningContent = reasoningContent;
         copy.tokenUsage = tokenUsage;
+        copy.durationMs = durationMs;
         copy.error = error;
         copy.interrupted = interrupted;
         copy.images = images;

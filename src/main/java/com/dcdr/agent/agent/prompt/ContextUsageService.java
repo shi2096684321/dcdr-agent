@@ -32,8 +32,9 @@ import java.util.Set;
  * 工具按注册类型分: MCP 工具({@link McpTool})与插件({@link PluginToolAdapter})归"连接器与 MCP",
  * 其余归"工具及子智能体"(本仓库暂无子智能体概念, 该分类先只统计工具定义)。
  *
- * <p><b>全是估算</b>: 走 {@link TokenEstimator} 的 cl100k BPE。同一段中文, Qwen 的分词器通常比
- * cl100k 更省, 因此这里的结果对国产模型偏保守(略高)。界面标注"估算"是契约的一部分。
+ * <p><b>默认是估算, 收尾可被实测校准</b>: {@link #compute} 走 cl100k BPE; 模型返回了真实 usage 时,
+ * 由 {@link #calibrate} 用"实测 prompt + 答案估算"覆盖总量与分段 —— 这是"已使用"能与模型口径
+ * 对上的唯一办法(分词器/图片/消息包装的差异全被真实值吸收)。未实测时仍是估算, 界面标注不变。
  */
 @Slf4j
 @Component
@@ -71,6 +72,21 @@ public class ContextUsageService {
             Map.entry("runtime:tool-data", "外部数据边界"));
 
     private static final String PLATFORM_PROMPT_LABEL = "平台系统提示词";
+
+    /**
+     * 单条消息在协议里的固定开销(role 分隔符 / 消息包装)。
+     * <p>各家在 3~4 token, 取 4 —— 这一项逐条累积, 上百条历史时就是几百 token。
+     * 漏算它会让所有"逐条相加"的结果系统性偏低。
+     */
+    private static final int MESSAGE_OVERHEAD_TOKENS = 4;
+
+    /**
+     * 单张图片的估算占用。
+     * <p>视觉模型的图片 token 由分辨率折算(常见 1K~2K), 与 base64 字节数弱相关,
+     * 无法从 data URL 低成本还原, 故取固定估值。历史图片每轮都会重发, 漏算会让视觉轮次严重偏低。
+     * 若模型返回了真实 usage, 收尾那次会以实测值校准, 这里的估值只影响"模型未返回 usage"的场景。
+     */
+    private static final int IMAGE_TOKENS_ESTIMATE = 1_000;
 
     private final TokenEstimator tokenEstimator;
     private final ToolRegistry toolRegistry;
@@ -201,6 +217,17 @@ public class ContextUsageService {
     }
 
     /**
+     * 工具定义的 token 总量(与"工具及子智能体"分段同一口径)。
+     * <p>
+     * 供"模型未返回 usage 时的兜底估算"复用: 调用方手里的上下文消息列表不含工具定义,
+     * 若各自补一遍就会形成两套口径。这里公开出来, 保证兜底值与面板值同源。
+     */
+    public int estimateToolDefs(List<Map<String, Object>> toolDefs) {
+        if (toolDefs == null || toolDefs.isEmpty()) return 0;
+        return estimateJson(toolDefs);
+    }
+
+    /**
      * 单条消息在<b>下一轮会被重发</b>的 token 数。
      * <p>
      * 与 {@code TokenEstimator#estimate(List)} 的差别只有一条: <b>不计思维链</b>。
@@ -210,13 +237,17 @@ public class ContextUsageService {
      * 凭空翻倍, 用户照着这个数字去开新会话就是白开。
      */
     private int tokensOf(Message m) {
-        int tokens = tokenEstimator.estimate(m.getContent());
+        int tokens = MESSAGE_OVERHEAD_TOKENS + tokenEstimator.estimate(m.getContent());
         // 工具往返: assistant 的 tool_calls 结构化字段与 tool 角色的名称/调用 id 同样会被重发
         if (m.getToolCalls() != null && !m.getToolCalls().isEmpty()) {
             tokens += estimateJson(m.getToolCalls());
         }
         if (m.getToolCallId() != null) tokens += tokenEstimator.estimate(m.getToolCallId());
         if (m.getName() != null) tokens += tokenEstimator.estimate(m.getName());
+        // 只有 user 的图片会以 image_url 发给模型; assistant 的生图结果在协议出口被改写成占位文本, 不计
+        if ("user".equals(m.getRole()) && m.getImages() != null && !m.getImages().isEmpty()) {
+            tokens += m.getImages().size() * IMAGE_TOKENS_ESTIMATE;
+        }
         return tokens;
     }
 
@@ -261,6 +292,90 @@ public class ContextUsageService {
 
     private static double round1(double v) {
         return Math.round(v * 10) / 10.0;
+    }
+
+    // ===== 实测校准 =====
+
+    /**
+     * 用"模型实测的总用量"校准已用总量 (V3.4 修正)。
+     *
+     * <p><b>为什么必须校准</b>: 分段统计走 cl100k 估算, 而真实请求由模型自己的分词器计量,
+     * 再叠加"图片按固定估值""每条消息协议开销"这些近似 —— 同一轮里面板的数字与模型返回的
+     * usage 天然对不上。模型既然给了真实用量, 就没有理由继续把估算值当分子。
+     *
+     * <p><b>口径</b>: 分子直接取厂商返回的 {@code prompt + completion}, 不再叠加任何估算 ——
+     * 用户要的是"当前对话实际用了多少", 任何二次加工都只是让数字离真实更远。
+     * 唯一偏差是 completion 含思维链、而思维链下一轮不重发, 所以它比"严格窗口占用"略高;
+     * 这个差异不做修正, 修正就又回到估算。
+     *
+     * <p>分段与段内明细仍按估算比例分摊(厂商不会给分段明细), 用最大余数补齐,
+     * 保证"五段之和 == totalTokens"不变 —— 界面拿它当账单, 和差一个 token 都会被用户发现。
+     *
+     * @param usage        已算好的估算结果(用于分段与段内比例)
+     * @param targetTokens 模型实测总用量; {@code <= 0} 表示没有可信实测, 原样返回
+     */
+    public ContextUsage calibrateTo(ContextUsage usage, int targetTokens) {
+        if (usage == null || targetTokens <= 0) return usage;
+        int target = targetTokens;
+        int estimated = usage.getTotalTokens();
+        if (estimated <= 0 || target == estimated) return usage;
+
+        List<ContextUsage.Segment> segments = usage.getSegments();
+        if (segments == null || segments.isEmpty()) return usage;
+        int[] segTokens = new int[segments.size()];
+        for (int i = 0; i < segments.size(); i++) {
+            segTokens[i] = segments.get(i).getTokens();
+        }
+        int[] scaledSeg = scale(segTokens, target);
+
+        for (int i = 0; i < segments.size(); i++) {
+            ContextUsage.Segment seg = segments.get(i);
+            List<ContextUsage.Item> items = seg.getItems();
+            if (items != null && !items.isEmpty()) {
+                int[] itemTokens = new int[items.size()];
+                for (int j = 0; j < items.size(); j++) {
+                    itemTokens[j] = items.get(j).getTokens();
+                }
+                int[] scaledItems = scale(itemTokens, scaledSeg[i]);
+                for (int j = 0; j < items.size(); j++) {
+                    items.get(j).setTokens(scaledItems[j]);
+                }
+            }
+            seg.setTokens(scaledSeg[i]);
+        }
+
+        int total = 0;
+        for (ContextUsage.Segment s : segments) total += s.getTokens();
+        for (ContextUsage.Segment s : segments) {
+            s.setPercent(round1(total == 0 ? 0 : s.getTokens() * 100.0 / total));
+        }
+        usage.setTotalTokens(total);
+        usage.setPercent(percent(total, usage.getLimitTokens()));
+        return usage;
+    }
+
+    /**
+     * 按比例把一组计数缩放到 {@code target}, 余数补给最大项。
+     * <p>用最大余数而不是逐项四舍五入: 后者会让分量之和与目标差出好几个 token,
+     * 而界面明确要求"五段之和 == 总数"。
+     */
+    private static int[] scale(int[] values, int target) {
+        int[] out = new int[values.length];
+        if (values.length == 0) return out;
+        long sum = 0;
+        for (int v : values) sum += v;
+        if (sum <= 0 || target <= 0) return out;
+
+        int maxIdx = 0;
+        long acc = 0;
+        for (int i = 0; i < values.length; i++) {
+            out[i] = (int) (values[i] * (long) target / sum);
+            acc += out[i];
+            if (values[i] > values[maxIdx]) maxIdx = i;
+        }
+        // 余数(最多一项)补给最大分段: 它最不容易因 +1 显得突兀
+        out[maxIdx] += (int) (target - acc);
+        return out;
     }
 
     // ===== 快照存取 =====
