@@ -50,6 +50,7 @@
 | V3.1.0 | [`RELEASE-v3.1.0.md`](RELEASE-v3.1.0.md) |
 | V3.2.0-ui | [`RELEASE-v3.2.0-ui.md`](RELEASE-v3.2.0-ui.md) |
 | V3.3.0 | [`RELEASE-v3.3.0.md`](RELEASE-v3.3.0.md) |
+| V3.4.0 | [`RELEASE-v3.4.0.md`](RELEASE-v3.4.0.md) |
 
 ---
 
